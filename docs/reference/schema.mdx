@@ -331,7 +331,7 @@ CREATE TABLE candidates (
 	run_id INTEGER,
 	parent_id INTEGER,
 	tree_sha VARCHAR NOT NULL,
-	commit_sha VARCHAR NOT NULL,
+	revision VARCHAR NOT NULL,
 	summary VARCHAR,
 	origin VARCHAR(16) DEFAULT 'run' NOT NULL,
 	verdict VARCHAR(16),

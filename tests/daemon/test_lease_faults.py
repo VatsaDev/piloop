@@ -47,13 +47,12 @@ from piloop.db.models import (
     RunStatus,
 )
 from piloop.db.session import Database
-from piloop.ids import RunId, TargetKind
+from piloop.ids import Revision, RunId, TargetKind
 from piloop.otel import Tracer
 from piloop.plugins.cas.contract import CAS
 from piloop.plugins.executor.contract import AgentFinished, AgentReport, EvaluationReport, Source
 from piloop.plugins.executor.kit.leases import NOT_TAKEN, SERVE, Leases, StaleReport, Timing
 from piloop.plugins.executor.workers import Workers
-from piloop.plugins.vcs.contract import Revision
 from piloop.plugins.vcs.git import bundles as store_commits
 from piloop.proc import alive, started
 from piloop.settings import Settings
@@ -266,16 +265,16 @@ def test_a_late_report_of_a_frozen_worker_is_refused_and_kept_as_a_stale_report(
     [payload] = stale()
     assert (payload.lease, payload.worker) == (1, 'w2')
     report = payload.report
-    assert isinstance(report, AgentFinished) and report.commits is not None
-    commits = report.commits
+    assert isinstance(report, AgentFinished) and report.work is not None
+    work = report.work
     run = run_row(db, run_id)
     assert (run.status, run.end) == (RunStatus.FAILED, RunEnd.WORKER_LOST), 'the late report changed nothing'
     with db.session() as s:
         assert s.scalars(select(Candidate).where(Candidate.run_id == run_id)).all() == []
     other = tmp_path / 'other'
     subprocess.run(['git', 'clone', '-q', campaign.path, str(other)], check=True)
-    store_commits.unbundle(CAS.selected({}).open(tmp_path), Repo(other), commits.blob, commits.head)
-    assert Repo(other).commit(commits.head).summary == 'a line', 'its commit is kept, by the digest of its bundle'
+    store_commits.unbundle(CAS.selected({}).open(tmp_path), Repo(other), work.blob, work.head)
+    assert Repo(other).commit(work.head).summary == 'a line', 'its commit is kept, by the digest of its bundle'
 
 
 def test_a_report_whose_answer_was_lost_is_sent_again_and_applies_once(

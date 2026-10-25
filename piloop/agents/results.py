@@ -116,7 +116,7 @@ class StartupAnomaly(EventModel):
 
 
 class WrapUp(EventModel):
-    """The daemon told an agent to commit and stop, with the ``comment``: the note that carries the prompt.
+    """The daemon told an agent to save its work and stop, with the ``comment``: the note that carries the prompt.
 
     An implementer of a stopped campaign, or an agent cancelled with its wrap-up, is ended ``STOP_GRACE_SECONDS`` later.
     An implementer whose role timeout is near is ended by its timeout. A note that does not reach the agent has its
@@ -200,7 +200,7 @@ class Ran:
     """The agent started to work, and its process ended."""
 
     process: AgentExit
-    commits: Transfer | None = None
+    work: Transfer | None = None
     """Its versions in the CAS, when it was asked for them and made some."""
     kind: Literal['ran'] = 'ran'
 
@@ -229,7 +229,7 @@ class Lost:
 class DaemonStopped:
     """The daemon stopped before the agent started or while it ran. The stop writes the rows."""
 
-    commits: Transfer | None = None
+    work: Transfer | None = None
     """Its versions in the CAS, when it ran, was asked for them and made some."""
     kind: Literal['daemon_stopped'] = 'daemon_stopped'
 
@@ -424,7 +424,7 @@ class CampaignResults:
                     _record(s, w.id, PromptOutcome(kind='comment.undelivered', comment=comment, error=UNREAD))
                 w.usage = report.usage
                 if self._stopping():
-                    self._stopped(s, w, report.commits)
+                    self._stopped(s, w, report.work)
                     return
                 asked = _asked_to_end(s, w.id)
                 ending = w.state is AgentSessionState.ENDING  # its error says why the daemon ended it
@@ -436,7 +436,7 @@ class CampaignResults:
                 w.error = w.error if ending else process.error
                 seconds = process.seconds
                 worked = asked or not _never_worked(s, w, report)
-                ended = Ran(process, report.commits) if worked else NotStarted(process.error or NEVER_WORKED)
+                ended = Ran(process, report.work) if worked else NotStarted(process.error or NEVER_WORKED)
             case _:
                 assert_never(report)
         session_finished(s, w)
@@ -487,10 +487,10 @@ class CampaignResults:
         return scratch
 
     @staticmethod
-    def _stopped(s: Session, w: AgentSession, commits: Transfer | None) -> None:
+    def _stopped(s: Session, w: AgentSession, work: Transfer | None) -> None:
         w.state, w.error = AgentSessionState.KILLED, RunEnd.DAEMON_STOPPED
         session_finished(s, w)
-        _ended(s, w.id, DaemonStopped(commits))
+        _ended(s, w.id, DaemonStopped(work))
 
     def _measured(self, s: Session, job: EvaluationJob, report: EvaluationReport) -> None:
         """Record each sample of an evaluation as one measurement, and take the evaluation out of the queue.

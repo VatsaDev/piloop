@@ -1,1 +1,1 @@
-- Code: `git -C <repo> show <candidates.commit_sha>`; a candidate against its parent: `git -C <repo> diff <parent commit_sha> <commit_sha>`.
+- Code: `git -C <repo> show <candidates.revision>`; a candidate against its parent: `git -C <repo> diff <parent revision> <revision>`.

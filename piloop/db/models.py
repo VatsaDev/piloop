@@ -54,6 +54,7 @@ from piloop.ids import (
     EvaluatorId,
     IdeaId,
     MeasurementId,
+    Revision,
     RoleName,
     RunId,
     TargetKind,
@@ -509,6 +510,7 @@ class Base(DeclarativeBase):
         CommentId: Integer,
         RoleName: String,
         TrackName: String,
+        Revision: String,
         dict[str, float]: JSON,
         dict[str, object]: JSON,
         Usage: PydanticJSON(TypeAdapter(Usage)),
@@ -864,10 +866,10 @@ class Candidate(Tracked, Base):
     """The candidate that this one comes from."""
     tree_sha: Mapped[str]
     """The hash of the contents. Two commits with the same tree are the same candidate."""
-    commit_sha: Mapped[str]
-    """One commit that has this tree, pinned under ``refs/piloop/``."""
+    revision: Mapped[Revision]
+    """The vcs provider's name for one version that has this tree, which it keeps (``Repository.keep``)."""
     summary: Mapped[str | None]
-    """The first line of the commit message."""
+    """The first line of what the version says about itself."""
     origin: Mapped[Origin] = mapped_column(default=Origin.RUN, server_default=Origin.RUN.value)
     verdict: Mapped[Outcome | None]
     """The judgement against the candidate's bar. NULL while it is pending, and on a candidate whose origin is not

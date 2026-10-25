@@ -83,7 +83,7 @@ class RoleConfig(Parameters):
 class ImplementerRole(RoleConfig):
     """``[roles.implementer]``, and every ``[roles.<name>]`` table with ``runs = true``: a role that does runs.
 
-    The run queue starts its agents. Each agent does one idea in a new worktree at its run's base, and its commits are
+    The run queue starts its agents. Each agent does one idea in a new checkout at its run's base, and its versions are
     scored and judged when it ends. A new role of this kind takes the implementer's defaults, its prompt included.
     """
 
@@ -102,14 +102,14 @@ class ImplementerRole(RoleConfig):
     max_concurrent: int = Field(default=4, ge=1)
     """The maximum number of implementers that run at the same time, on all workers together. A run that is being
     scored after its implementer ended does not count."""
-    writes: list[str] = ['commits', 'comments(finding) on your idea', 'comments(note) on your run']
+    writes: list[str] = ['versions', 'comments(finding) on your idea', 'comments(note) on your run']
     """What an implementer may write, as its brief states it."""
     files: Files = Files.NOTHING
     """An implementer files no ideas and no seeds. Its hunches go in its finding, which research reads."""
     recovery_requeues: int = Field(default=2, ge=0)
-    """How many times one idea goes back to the queue from the last commit of a run that did not succeed: a new
-    implementer then starts from that commit to finish the work, also when the idea has no attempts left. When the head
-    moved past the commit, it starts on the head, and a note gives the ``git cherry-pick`` of the commits. After that,
+    """How many times one idea goes back to the queue from the last version of a run that did not succeed: a new
+    implementer then starts from that version to finish the work, also when the idea has no attempts left. When the
+    head moved past the version, it starts on the head, and a note names the change to take. After that,
     the idea settles as after any failed run, so an idea whose implementers keep dying is not run forever. 0 never
     requeues."""
     explore_every: int = Field(default=4, ge=0)

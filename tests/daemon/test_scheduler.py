@@ -38,7 +38,7 @@ from piloop.agents.roles import SQL_HINT, compose_brief
 from piloop.campaign.campaigns import sync
 from piloop.campaign.stop import Ending, request_cancel, request_stop, runs
 from piloop.config import CampaignConfig, load_campaign_config
-from piloop.daemon.run_controller import UNCOMMITTED_SUMMARY, RunController, wrap_up_lead
+from piloop.daemon.run_controller import RunController, wrap_up_lead
 from piloop.daemon.scheduler import STARTUP_BREAKER, STARTUP_WINDOW, RunQueued, RunRerouted, Scheduler
 from piloop.db import sql
 from piloop.db.events import has, in_order, payload_of
@@ -80,7 +80,7 @@ from piloop.plugins.executor.workers import Workers
 from piloop.plugins.role.research import ResearchRole
 from piloop.plugins.runtime.contract import Handle
 from piloop.plugins.trigger.low_water import LowWaterTrigger
-from piloop.plugins.vcs.git import GitRepository, commands as git
+from piloop.plugins.vcs.git import UNCOMMITTED, GitRepository, commands as git
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring.ledger import current_evaluator, due, head, import_reference, request_remeasure
 from tests.conftest import (
@@ -271,8 +271,8 @@ def test_a_sweep_checks_out_the_head(db: Database, campaign: Campaign, runtime: 
     scheduler.wait()
     with db.session() as s:
         best = s.get_one(Candidate, 2)
-        assert best.verdict is Outcome.KEEP and best.commit_sha != s.get_one(Candidate, 1).commit_sha
-        best_sha = best.commit_sha
+        assert best.verdict is Outcome.KEEP and best.revision != s.get_one(Candidate, 1).revision
+        best_sha = best.revision
     write_toml(Path(campaign.path), '#!/bin/sh\ngit rev-parse HEAD > workspace/head.txt\n')
     set_config(db, campaign)
     agent_session_id = request_watchdog(db, campaign)
@@ -464,9 +464,7 @@ def test_a_run_starts_from_the_best_as_of_its_start_not_as_of_the_idea(
     """A run starts from the head at the time the run starts, not at the time its idea was written."""
     (idea,) = add_ideas(db, campaign, 'written while the baseline was best')
     with db.session() as s:
-        s.add(
-            Candidate(campaign_id=campaign.id, tree_sha='b', commit_sha='b', verdict=Outcome.KEEP, verdict_by='human')
-        )
+        s.add(Candidate(campaign_id=campaign.id, tree_sha='b', revision='b', verdict=Outcome.KEEP, verdict_by='human'))
         s.flush()
         s.add(Measurement(candidate_id=2, evaluator_id=1, metrics={'score': 9, 'size': 9}))
         s.commit()
@@ -515,7 +513,7 @@ def commit_candidate(
     """Commit ``files`` on candidate ``parent``'s commit, and add the commit as a candidate with ``verdict``."""
     repo = Repo(campaign.path)
     with db.session() as s:
-        repo.git.checkout('-q', '--detach', s.get_one(Candidate, parent).commit_sha)
+        repo.git.checkout('-q', '--detach', s.get_one(Candidate, parent).revision)
         for name, body in files.items():
             (Path(campaign.path) / name).write_text(body)
         repo.git.add('-A')
@@ -526,7 +524,7 @@ def commit_candidate(
             campaign_id=campaign.id,
             parent_id=parent,
             tree_sha=commit.tree.hexsha,
-            commit_sha=commit.hexsha,
+            revision=commit.hexsha,
             verdict=verdict,
         )
         s.add(c)
@@ -591,10 +589,8 @@ def test_a_blocked_idea_waits_for_every_prerequisite_then_starts_from_the_head(
     with db.session() as s:
         assert [s.get_one(Candidate, c).verdict for c in (2, 3)] == [Outcome.KEEP] * 2, 'scores 2 and 3'
         # a human keeps a commit outside any run: the head is now candidate#4, which no prerequisite made
-        sha = s.get_one(Candidate, 3).commit_sha
-        s.add(
-            Candidate(campaign_id=campaign.id, tree_sha='h', commit_sha=sha, verdict=Outcome.KEEP, verdict_by='human')
-        )
+        sha = s.get_one(Candidate, 3).revision
+        s.add(Candidate(campaign_id=campaign.id, tree_sha='h', revision=sha, verdict=Outcome.KEEP, verdict_by='human'))
         s.flush()
         s.add(Measurement(candidate_id=4, evaluator_id=1, metrics={'score': 9, 'size': 9}))
         s.commit()
@@ -647,7 +643,7 @@ def test_a_prerequisite_that_ended_without_a_keep_parks_the_ideas_after_it_with_
                         campaign_id=campaign.id,
                         run_id=run.id,
                         tree_sha=f't{run.id}',
-                        commit_sha=f'c{run.id}',
+                        revision=f'c{run.id}',
                         verdict=verdict,
                     )
                 )
@@ -1100,12 +1096,12 @@ def test_stop_keeps_the_work_of_the_runs_it_cuts_and_the_next_run_of_the_idea_st
     step, head = git.pinned(repo, 'refs/piloop/demo/r1/')
     assert repo.commit(step).summary == 'step'
     recovered = repo.commit(head)
-    assert recovered.summary == UNCOMMITTED_SUMMARY and recovered.tree['solve.txt'].data_stream.read().endswith(
+    assert recovered.summary == UNCOMMITTED and recovered.tree['solve.txt'].data_stream.read().endswith(
         b'step\ndraft\n'
     ), 'the uncommitted line is its own recovered commit, as for any run'
     with db.session() as s:
         cut = s.scalars(select(Candidate).where(Candidate.run_id == 1).order_by(Candidate.id)).all()
-        assert [(c.commit_sha, c.origin, c.verdict) for c in cut] == [
+        assert [(c.revision, c.origin, c.verdict) for c in cut] == [
             (step, Origin.RECOVERED, None),
             (head, Origin.RECOVERED, None),
         ]
@@ -1641,7 +1637,7 @@ def test_a_keep_that_cannot_be_checked_out_is_measured_as_a_crash_once(
             Candidate(
                 campaign_id=campaign.id,
                 tree_sha='0' * 40,
-                commit_sha='0' * 40,
+                revision='0' * 40,
                 verdict=Outcome.KEEP,
                 verdict_by='human',
             )
@@ -2042,7 +2038,7 @@ def test_implementers_of_a_stopped_campaign_are_told_to_wrap_up_then_ended_after
         [
             (
                 1,
-                '[piloop] The campaign stopped (max_runs: 2 runs). Commit what you have now, with a message that says where it stands. Leave your finding and stop. This session ends in 10 minutes.',
+                '[piloop] The campaign stopped (max_runs: 2 runs). Save what you have now, with a summary that says where it stands. Leave your finding and stop. This session ends in 10 minutes.',
             )
         ]
     ), 'a sweep is bounded by its timeout and the closing watchdog is one: only implementers are wound down'
@@ -2158,11 +2154,11 @@ def test_a_cancelled_run_is_told_to_wrap_up_and_ended_after_the_grace(
         [
             (
                 1,
-                '[piloop] Your run was cancelled (by human). Commit what you have now, with a message that says where it stands. Leave your finding and stop. This session ends in 10 minutes.',
+                '[piloop] Your run was cancelled (by human). Save what you have now, with a summary that says where it stands. Leave your finding and stop. This session ends in 10 minutes.',
             ),
             (
                 3,
-                '[piloop] This sweep was cancelled (by orchestrator). Commit what you have now, with a message that says where it stands. Leave your finding and stop. This session ends in 10 minutes.',
+                '[piloop] This sweep was cancelled (by orchestrator). Save what you have now, with a summary that says where it stands. Leave your finding and stop. This session ends in 10 minutes.',
             ),
         ]
     ), 'only the cancelled run and the cancelled sweep are told'
@@ -2587,8 +2583,8 @@ def test_an_implementer_is_told_once_to_wrap_up_before_its_timeout(
     [(agent, prompt)] = fake.prompts  # once
     assert agent == 1 and prompt.text == IsStr(
         regex=re.escape(
-            f'[piloop] Your time is almost up (the role timeout of {timeout:g}s). Commit what you have now, with a'
-            ' message that says where it stands. Leave your finding and stop. This session ends in'
+            f'[piloop] Your time is almost up (the role timeout of {timeout:g}s). Save what you have now, with a'
+            ' summary that says where it stands. Leave your finding and stop. This session ends in'
         )
         + r' [\d.]+ minutes\.'  # the time left when the tick ran: a loaded host takes seconds of it
     )
@@ -2624,7 +2620,7 @@ def test_an_implementer_is_told_to_wrap_up_before_the_campaign_stops_when_that_c
         scheduler.tick()
     [(agent, prompt)] = fake.prompts
     assert agent == 1 and prompt.text.startswith(
-        "[piloop] Your time is almost up (the campaign's stop, 900s after you started). Commit what you have now"
+        "[piloop] Your time is almost up (the campaign's stop, 900s after you started). Save what you have now"
     )
     scheduler.stop(timeout=5)
 

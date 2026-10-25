@@ -31,18 +31,21 @@ app = cyclopts.App(
 @app.command(name='import')
 def candidate_import(
     ref: CampaignRef,
-    commit: Annotated[str, cyclopts.Parameter(help="A commit, branch or tag in the campaign's repo.")],
+    version: Annotated[
+        str,
+        cyclopts.Parameter(help="A version in the campaign's repo, as its vcs names one: a revision, a branch, a tag."),
+    ],
     /,
     *,
     summary: Annotated[
-        str | None, cyclopts.Parameter(help="A summary of the candidate. Default: the commit's subject line.")
+        str | None, cyclopts.Parameter(help="A summary of the candidate. Default: the version's own summary.")
     ] = None,
 ) -> None:
-    """Register the tree of a commit as a reference candidate: a starting point for an idea.
+    """Register the files of a version as a reference candidate: a starting point for an idea.
 
     The daemon measures it with the current evaluator. A reference is never kept, and it is never the head or a bar.
     It does not count in the kept total, the sparkline or a stop condition. To import a candidate of another campaign,
-    fetch its `commit_sha` into this repo first (`git fetch <its repo> <sha>`).
+    bring its `revision` into this campaign's repo first.
     """
     with common.session() as s:
         campaign = common.campaign(s, ref)
@@ -53,7 +56,7 @@ def candidate_import(
                 campaign,
                 cfg,
                 repository(campaign),
-                commit,
+                version,
                 summary=summary,
                 actor=common.settings.actor,
             )
@@ -129,8 +132,8 @@ def candidate_note(
 
     The verdict becomes `interesting`, with the cause `note` and your reason before the daemon's. The candidate is not
     kept and sets no bar, but it stays listed and ideas can start from it. Each `--follow-up` is a seed whose `base_candidate_id` is the
-    candidate. An implementer files no follow-ups. When its candidate does not exist yet, an implementer ends its commit message
-    with a `Piloop-Note: <reason>` trailer instead, and the daemon applies the note when it judges the commit.
+    candidate. An implementer files no follow-ups. When its candidate does not exist yet, an implementer notes the
+    version that it saves instead, and the daemon applies the note when it judges the version.
     """
     with common.refused(), common.session() as s:
         candidate, ideas = ops.note_candidate(

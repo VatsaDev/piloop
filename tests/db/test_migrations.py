@@ -32,8 +32,8 @@ from piloop.db.session import (
     RELEASES,
     BackupFailed,
     Database,
+    MigrationRevision,
     Release,
-    Revision,
     SchemaAhead,
     SchemaMismatch,
     SchemaTooOld,
@@ -126,11 +126,11 @@ def test_head_has_every_table_and_trigger_and_matches_the_models(tmp_path: Path)
         triggers = [t for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name")]
         assert triggers == sorted(t.name for t in PERSISTENT), 'the package lists what the migrations install'
         con.execute("INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', '{}')")
-        con.execute("INSERT INTO candidates (campaign_id, tree_sha, commit_sha) VALUES (1, 't', 'c')")
+        con.execute("INSERT INTO candidates (campaign_id, tree_sha, revision) VALUES (1, 't', 'c')")
         with pytest.raises(
             sqlite3.IntegrityError, match='UNIQUE constraint failed: candidates.campaign_id, candidates.tree_sha'
         ):
-            con.execute("INSERT INTO candidates (campaign_id, tree_sha, commit_sha) VALUES (1, 't', 'other commit')")
+            con.execute("INSERT INTO candidates (campaign_id, tree_sha, revision) VALUES (1, 't', 'other commit')")
         with pytest.raises(sqlite3.IntegrityError, match='CHECK constraint failed'):
             con.execute("UPDATE candidates SET verdict = 'maybe' WHERE id = 1")
         assert con.execute('SELECT status, stopped_reason FROM campaigns').fetchall() == [('active', None)]
@@ -342,7 +342,7 @@ def test_a_database_at_a_revision_this_build_does_not_have_is_refused_and_left_a
     engine.dispose()
 
 
-TOO_OLD = tuple(Release(Version(0, minor, 0), Revision(f'000{minor}')) for minor in (1, 2, 3))
+TOO_OLD = tuple(Release(Version(0, minor, 0), MigrationRevision(f'000{minor}')) for minor in (1, 2, 3))
 """Releases for a piloop 0.4 that migrates from 0.3.0's head, 0003: a database at 0001 is two releases behind it."""
 
 
@@ -1904,3 +1904,53 @@ def test_0044_adds_the_worker_instances_and_events_on_them_keeping_every_row_and
         assert sorted(t for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'trigger'")) == (
             triggers_at(before)
         )
+
+
+def test_0045_renames_commit_sha_to_revision_a_job_captures_a_run_a_report_carries_work_and_downgrades(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0044')
+    transfer = {'blob': 'b', 'head': 'h'}
+    jobs = [{'kind': 'agent', 'commits': {'summary': 'piloop: uncommitted implementer changes', 'run': 12}}]
+    jobs.append({'kind': 'agent', 'commits': None})
+    payloads = [
+        {'kind': 'agent_session.job_ended', 'ended': {'kind': 'ran', 'process': {}, 'commits': transfer}},
+        {'kind': 'agent_session.job_ended', 'ended': {'kind': 'daemon_stopped', 'commits': None}},
+        {'kind': 'agent_session.job_ended', 'ended': {'kind': 'lost', 'reason': 'r'}},
+        {'kind': 'lease.stale_report', 'lease': 1, 'report': {'kind': 'agent_finished', 'commits': transfer}},
+        {'kind': 'candidate.deleted', 'tree_sha': 't', 'commit_sha': 'c', 'origin': 'run', 'verdict': 'keep'},
+        {'kind': 'candidate.imported', 'ref': 'main', 'commit': 'c'},
+    ]
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute("INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', '{}')")
+        con.execute("INSERT INTO candidates (campaign_id, tree_sha, commit_sha) VALUES (1, 't', 'c')")
+        for job in jobs:
+            con.execute("INSERT INTO leases (kind, agent_session_id, job) VALUES ('agent', 1, ?)", (dumps(job),))
+        for payload in payloads:
+            con.execute(
+                "INSERT INTO events (actor, target_kind, target_id, payload) VALUES ('daemon', 'agent_session', 1, ?)",
+                (dumps(payload),),
+            )
+    command.upgrade(cfg, '0045')
+    leases, events = 'SELECT job FROM leases ORDER BY id', 'SELECT payload FROM events ORDER BY id'
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert [loads(j) for (j,) in con.execute(leases)] == [
+            {'kind': 'agent', 'capture': 12},
+            {'kind': 'agent', 'capture': None},
+        ]
+        assert [loads(p) for (p,) in con.execute(events)] == [
+            {'kind': 'agent_session.job_ended', 'ended': {'kind': 'ran', 'process': {}, 'work': transfer}},
+            {'kind': 'agent_session.job_ended', 'ended': {'kind': 'daemon_stopped', 'work': None}},
+            payloads[2],
+            {'kind': 'lease.stale_report', 'lease': 1, 'report': {'kind': 'agent_finished', 'work': transfer}},
+            {'kind': 'candidate.deleted', 'tree_sha': 't', 'revision': 'c', 'origin': 'run', 'verdict': 'keep'},
+            {'kind': 'candidate.imported', 'ref': 'main', 'revision': 'c'},
+        ]
+        assert con.execute('SELECT revision FROM candidates').fetchall() == [('c',)]
+    command.downgrade(cfg, '0044')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert [loads(j) for (j,) in con.execute(leases)] == jobs
+        assert [loads(p) for (p,) in con.execute(events)] == payloads
+        assert con.execute('SELECT commit_sha FROM candidates').fetchall() == [('c',)]

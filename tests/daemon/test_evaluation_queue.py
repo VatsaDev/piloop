@@ -161,7 +161,7 @@ def test_a_cancel_holds_when_the_daemon_restarts_before_it_sees_it(db: Database,
         evaluator = s.get_one(Campaign, campaign.id).evaluator_id
         assert evaluator is not None
         base = baseline(db, campaign.id).id
-        other = Candidate(campaign_id=campaign.id, tree_sha='t', commit_sha='c')
+        other = Candidate(campaign_id=campaign.id, tree_sha='t', revision='c')
         s.add(other)
         s.flush()
         running, _ = queue.request(s, base, evaluator)
@@ -207,7 +207,7 @@ def add_campaign(db: Database, name: str, trees: int) -> list[CandidateId]:
         other = Campaign(name=name, path=f'/{name}', config=bare_config(name))
         s.add(other)
         s.flush()
-        made = [Candidate(campaign_id=other.id, tree_sha=f'{name}{i}', commit_sha=f'{name}{i}') for i in range(trees)]
+        made = [Candidate(campaign_id=other.id, tree_sha=f'{name}{i}', revision=f'{name}{i}') for i in range(trees)]
         s.add_all(made)
         s.commit()
         return [c.id for c in made]
@@ -231,7 +231,7 @@ def test_a_busy_campaign_never_holds_back_another_campaign(db: Database, campaig
             s.delete(evaluation)
             s.flush()
 
-        candidate = Candidate(campaign_id=campaign.id, tree_sha='t', commit_sha='c')
+        candidate = Candidate(campaign_id=campaign.id, tree_sha='t', revision='c')
         s.add(candidate)
         s.flush()
 
@@ -267,7 +267,7 @@ def test_a_campaign_takes_its_head_before_its_older_requests(db: Database, campa
     with db.session() as s:
         evaluator = s.get_one(Campaign, campaign.id).evaluator_id
         assert evaluator is not None
-        other = Candidate(campaign_id=campaign.id, tree_sha='t', commit_sha='c')
+        other = Candidate(campaign_id=campaign.id, tree_sha='t', revision='c')
         s.add(other)
         s.flush()
         older = queue.request(s, other.id, evaluator)[0]
@@ -404,7 +404,7 @@ def test_a_waiting_evaluation_that_this_daemon_did_not_ask_for_is_never_submitte
     """A row that another daemon left has no job here: it waits for the reap, and holds back no request of this one."""
     base = baseline(db, campaign.id)
     with db.session() as s:
-        other = Candidate(campaign_id=campaign.id, tree_sha='t2', commit_sha=base.commit_sha, parent_id=base.id)
+        other = Candidate(campaign_id=campaign.id, tree_sha='t2', revision=base.revision, parent_id=base.id)
         s.add(other)
         s.flush()
         s.add(Evaluation(candidate_id=other.id, evaluator_id=s.get_one(Campaign, campaign.id).evaluator_id))

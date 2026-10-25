@@ -30,7 +30,7 @@ from piloop.campaign.stop import (
     timeout as agent_timeout,
 )
 from piloop.config import CampaignConfig, ConfigError, load_campaign_config
-from piloop.daemon.run_controller import SKIPPED_REASON, RunFinished
+from piloop.daemon.run_controller import NO_CHANGES, SKIPPED_REASON, RunFinished
 from piloop.db.events import in_order
 from piloop.db.models import (
     AgentSession,
@@ -168,7 +168,7 @@ def add_candidate(
             run_id=run_id,
             parent_id=1,
             tree_sha=f'tree{run_id}',
-            commit_sha=f'commit{run_id}',
+            revision=f'commit{run_id}',
             origin=origin,
             verdict=verdict,
             verdict_reason=why,
@@ -262,7 +262,7 @@ def test_a_campaign_that_max_runs_stopped_shows_all_its_runs_in_the_progress_lin
     )
     with db.session() as s:
         run = s.get_one(Run, in_flight)
-        run.status, run.end, run.error = RunStatus.FAILED, RunEnd.FAILED, 'implementer produced no commits'
+        run.status, run.end, run.error = RunStatus.FAILED, RunEnd.FAILED, NO_CHANGES
         run.finished_at = utcnow()
         s.commit()
     assert (reason(db, campaign), progress_line(db, campaign, cfg)) == (None, 'run 1/2'), 'a run without a commit'
@@ -402,7 +402,7 @@ def test_plateau_counts_finished_runs_since_the_last_keep(db: Database, campaign
     add_run(db, campaign, status=RunStatus.SUCCEEDED)
     assert reason(db, campaign) == 'plateau: 2 runs without a keep'
     with db.session() as s:
-        s.add(Candidate(campaign_id=campaign.id, tree_sha='imported', commit_sha='c', origin=Origin.REFERENCE))
+        s.add(Candidate(campaign_id=campaign.id, tree_sha='imported', revision='c', origin=Origin.REFERENCE))
         s.commit()
     assert reason(db, campaign) == 'plateau: 2 runs without a keep', 'an imported reference resets nothing'
 
@@ -415,7 +415,7 @@ def test_only_runs_that_produced_a_measured_candidate_count_toward_max_runs(db: 
     whose candidate waits for its measurement also counts.
     """
     configure(db, campaign, max_runs=3)
-    add_run(db, campaign, status=RunStatus.FAILED, error='implementer produced no commits', measured=False)
+    add_run(db, campaign, status=RunStatus.FAILED, error=NO_CHANGES, measured=False)
     add_candidate(db, campaign, add_run(db, campaign, measured=False), Origin.SKIPPED, SKIPPED_REASON)
     with db.session() as s:
         row = s.get_one(Campaign, campaign.id)
@@ -438,7 +438,7 @@ def test_plateau_counts_the_runs_that_max_runs_counts(db: Database, campaign: Ca
     """
     configure(db, campaign, plateau=2)
     add_run(db, campaign, keep_score=5.0)
-    add_run(db, campaign, status=RunStatus.FAILED, error='implementer produced no commits', measured=False)
+    add_run(db, campaign, status=RunStatus.FAILED, error=NO_CHANGES, measured=False)
     add_candidate(db, campaign, add_run(db, campaign, measured=False), Origin.SKIPPED, SKIPPED_REASON)
     add_run(db, campaign, status=RunStatus.SUCCEEDED, measured=False)
     add_run(db, campaign, status=RunStatus.FAILED, error='agent exit 1', measured=False)

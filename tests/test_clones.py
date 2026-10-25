@@ -8,12 +8,11 @@ import pytest
 from covalence import Cid
 from git import GitCommandError, Repo
 
-from piloop.ids import CampaignId, RunId
+from piloop.ids import CampaignId, Revision, RunId
 from piloop.plugins.cas.contract import Cas
-from piloop.plugins.executor.contract import Commits, RepoId, Source, Workspace
+from piloop.plugins.executor.contract import RepoId, Source, Workspace
 from piloop.plugins.executor.kit.clones import WORKSPACE, Clones, Fetch, of_record
 from piloop.plugins.executor.kit.jobs import remote_site
-from piloop.plugins.vcs.contract import Revision
 from piloop.plugins.vcs.git import FETCHED, Git
 from piloop.plugins.vcs.git.bundles import bundle, unbundle
 from piloop.plugins.vcs.git.commands import has
@@ -21,7 +20,7 @@ from piloop.store.tree import Manifest, Missing, put_tree
 from tests.conftest import disk
 
 REPO = RepoId(CampaignId(1))
-LEFTOVERS = Commits(summary='leftovers', run=RunId(1))
+LEFTOVERS = RunId(1)
 
 
 def commit(repo: Path, name: str, text: str) -> str:

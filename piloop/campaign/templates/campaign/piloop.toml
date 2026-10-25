@@ -5,7 +5,7 @@
 # PILOOP_CAMPAIGN_<KEY> overrides a key when `piloop init` reads the file. Join nested keys with __.
 
 name = "my-campaign"                       # required; short identifier; piloop names git refs after it
-evaluate = ["uv", "run", "python", "evaluate.py"]  # required; run in a clean worktree of each commit; prints METRIC lines
+evaluate = ["uv", "run", "python", "evaluate.py"]  # required; run in a clean checkout of each version; prints METRIC lines
 evaluate_timeout = 600                    # seconds; a slower evaluation is stopped and recorded as a crash
 runtime = "subprocess"                    # subprocess: a background process per agent · or a package's runtime
 harnesses = ["pi", "claude", "codex"]     # not the default, which is ["pi"]; runs use these in turn, unless an idea names one

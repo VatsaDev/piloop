@@ -132,7 +132,7 @@ def run_candidate(
             run_id=run.id,
             parent_id=parent,
             tree_sha=Repo(campaign.path).commit(commit).tree.hexsha if commit else f'tree {idea_id}',
-            commit_sha=commit or f'commit {idea_id}',
+            revision=commit or f'commit {idea_id}',
             verdict=verdict,
             verdict_by=by,
         )

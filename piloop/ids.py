@@ -19,6 +19,8 @@ MeasurementId = NewType('MeasurementId', int)
 EvaluatorId = NewType('EvaluatorId', int)
 AgentSessionId = NewType('AgentSessionId', int)
 CommentId = NewType('CommentId', int)
+Revision = NewType('Revision', str)
+"""The vcs provider's name for a version of a campaign's files: a commit SHA under ``git``."""
 
 ROLE_NAME = r'^[a-z][a-z0-9_-]{0,19}$'
 """A role's name, which is also its config table, CLI name, signature and pane prefix."""

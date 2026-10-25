@@ -17,7 +17,7 @@ from covalence import Cid
 from git import Repo
 from git.exc import BadName, GitError, InvalidGitRepositoryError, NoSuchPathError
 
-from piloop.ids import RunId
+from piloop.ids import Revision, RunId
 from piloop.plugins.cas.contract import Cas
 from piloop.plugins.host import Check
 from piloop.plugins.vcs.contract import (
@@ -29,7 +29,6 @@ from piloop.plugins.vcs.contract import (
     RebaseVersion,
     ReferenceVersion,
     Repository,
-    Revision,
     RunVersion,
     Transfer,
     UnknownRevision,
@@ -47,7 +46,10 @@ NOTE = 'Piloop-Note'
 """The trailer of a note on a commit, applied when it is judged."""
 RECOVERED = 'Piloop-Recovered'
 """The trailer of the commit that ``capture`` makes of what an agent left uncommitted: ``Piloop-Recovered: run#<id>``."""
+UNCOMMITTED = 'piloop: uncommitted implementer changes'
+"""The subject of the commit that ``capture`` makes of what an agent left uncommitted."""
 PROMPTS = Path(__file__).parent / 'prompts'
+GITIGNORE = '.gitignore'
 """What the built-in prompts say about each ``Part``, one file each."""
 FETCHED = 'refs/piloop/fetched/'
 """Where a clone pins each commit that came as a bundle: it stays, and the next fetch names it as a commit it has."""
@@ -152,10 +154,10 @@ class GitRepository(Repository):
     def untracked(self, revision: Revision, names: Sequence[str]) -> list[str]:
         return git.untracked(self.repo, revision, names)
 
-    def capture(self, cas: Cas, base: Revision, summary: str, run: RunId, ignore: Sequence[str]) -> Transfer | None:
+    def capture(self, cas: Cas, base: Revision, run: RunId, ignore: Sequence[str]) -> Transfer | None:
         """Commit what the agent left uncommitted on its own, never amended into its last commit, then bundle them."""
         if git.is_dirty(self.repo, list(ignore)):
-            git.commit_all(self.repo, f'{summary}\n\n{RECOVERED}: run#{run}', list(ignore))
+            git.commit_all(self.repo, f'{UNCOMMITTED}\n\n{RECOVERED}: run#{run}', list(ignore))
         head = self.repo.head.commit.hexsha
         if head == base:
             return None
@@ -166,12 +168,17 @@ class GitRepository(Repository):
 class Git(Vcs):
     """Keep versions as commits of a git repository, git 2.40 or later."""
 
-    def init(self, path: Path, template: str, owned: Sequence[str]) -> None:
+    def init(self, path: Path, summary: str, owned: Sequence[str], ignore: Sequence[str]) -> list[str]:
+        """An existing ``.gitignore`` is the campaign's: it is kept as it is."""
+        written = [] if (path / GITIGNORE).exists() else [GITIGNORE]
+        if written:
+            (path / GITIGNORE).write_text(''.join(f'{p}\n' for p in ignore))
         repo = Repo.init(path, initial_branch='main') if not (path / '.git').exists() else Repo(path)
         if not repo.head.is_valid():
             repo.git.add('-A')
-            repo.git.commit('-qm', f'{template}: baseline')
-            return
+            repo.git.commit('-qm', summary)
+            return written
+        owned = [*owned, GITIGNORE]
         # git status leaves out what the repo's ignore file ignores, which git add would refuse to take by name
         # and --no-renames reports a rename as its two paths, not as one "old -> new" record
         status = repo.git.status('--porcelain', '-z', '--no-renames', '--untracked-files=all', '--', *owned)
@@ -182,6 +189,7 @@ class Git(Vcs):
             repo.git.add('-A', '--', *unstaged)
         if changed:
             repo.git.commit('-qm', f'piloop init: {", ".join(changed)}', '--', *changed)
+        return written
 
     def open(self, path: Path) -> GitRepository:
         try:

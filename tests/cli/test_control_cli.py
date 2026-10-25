@@ -132,7 +132,7 @@ def test_a_hand_keep_off_the_head_says_which_candidate_the_daemon_judges_on_the_
         s.flush()
         for sha, verdict in zip(shas, (Outcome.DISCARD, Outcome.KEEP), strict=True):
             tree = repo.commit(sha).tree.hexsha
-            s.add(Candidate(campaign_id=1, run_id=run.id, parent_id=1, commit_sha=sha, tree_sha=tree, verdict=verdict))
+            s.add(Candidate(campaign_id=1, run_id=run.id, parent_id=1, revision=sha, tree_sha=tree, verdict=verdict))
         s.commit()
     out()
     run_cli(['candidate', 'verdict', '2', 'keep', '--reason', 'the score misses it'])
@@ -155,7 +155,7 @@ def test_a_hand_keep_off_the_head_of_a_candidate_that_no_run_made_is_refused(cam
             repo.git.add(name)
             repo.git.commit('-qm', name)
             sha = repo.head.commit.hexsha
-            s.add(Candidate(campaign_id=1, commit_sha=sha, tree_sha=repo.commit(sha).tree.hexsha, verdict=verdict))
+            s.add(Candidate(campaign_id=1, revision=sha, tree_sha=repo.commit(sha).tree.hexsha, verdict=verdict))
         s.commit()
     repo.git.checkout('-q', branch)
     with pytest.raises(SystemExit, match='candidate#3 does not build on the head candidate#2'):
@@ -175,7 +175,7 @@ def crashed(campaign_path: Path) -> int:
             run_id=run.id,
             parent_id=1,
             tree_sha='t',
-            commit_sha='c',
+            revision='c',
             verdict=Outcome.CRASH,
             verdict_by='daemon',
         )

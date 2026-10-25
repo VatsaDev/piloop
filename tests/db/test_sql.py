@@ -318,7 +318,7 @@ def test_verdict_brief_and_campaign_status_changes_carry_what_the_feed_needs(
     sql.run(
         con, "INSERT INTO ideas (track, campaign_id, title, hypothesis, created_by) VALUES ('score', 1, 't', 'h', 'me')"
     )
-    sql.run(con, "INSERT INTO candidates (campaign_id, tree_sha, commit_sha) VALUES (1, 'tree', 'sha')")
+    sql.run(con, "INSERT INTO candidates (campaign_id, tree_sha, revision) VALUES (1, 'tree', 'sha')")
     sql.run(con, "INSERT INTO runs (idea_id, attempt, base_candidate_id, harness, model) VALUES (1, 1, 1, 'pi', 'm')")
     sql.run(
         con,
@@ -371,9 +371,7 @@ def test_deletes_leave_tombstones_and_cascades_too(con: sqlite3.Connection) -> N
     sql.run(
         con, "INSERT INTO ideas (track, campaign_id, title, hypothesis, created_by) VALUES ('score', 1, 't', 'h', 'me')"
     )
-    sql.run(
-        con, "INSERT INTO candidates (campaign_id, tree_sha, commit_sha, verdict) VALUES (1, 'tree', 'sha', 'keep')"
-    )
+    sql.run(con, "INSERT INTO candidates (campaign_id, tree_sha, revision, verdict) VALUES (1, 'tree', 'sha', 'keep')")
     sql.run(
         con, "INSERT INTO comments (target_kind, target_id, author, kind, body) VALUES ('idea', 1, 'me', 'note', 'hi')"
     )
@@ -394,7 +392,7 @@ def test_deletes_leave_tombstones_and_cascades_too(con: sqlite3.Connection) -> N
                 'human',
                 'candidate',
                 1,
-                '{"kind":"candidate.deleted","tree_sha":"tree","commit_sha":"sha","origin":"run","verdict":"keep"}',
+                '{"kind":"candidate.deleted","tree_sha":"tree","revision":"sha","origin":"run","verdict":"keep"}',
             ),
             (
                 'idea.deleted',

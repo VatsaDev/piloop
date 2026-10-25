@@ -98,9 +98,9 @@ daemon never overwrites a verdict that is not its own.
 - When a limit in `[plugins.stop_rule]` of `piloop.toml` is reached, or after `piloop campaign stop <campaign> [--kill]`, the daemon:
   - sets `campaigns.status='stopped'` (`stopped_reason` says which condition, or who stopped it);
   - drops the requests and queued runs pending at that moment (their ideas go back to `ready`);
-  - tells each running implementer to commit and stop, and ends it 10 minutes later (`--kill`: at once); its commits are
-    scored;
-  - checks the `stopped` triggers once those commits are judged: by default, they request one closing watchdog sweep;
+  - tells each running implementer to save its work and stop, and ends it 10 minutes later (`--kill`: at once); its
+    versions are scored;
+  - checks the `stopped` triggers once those versions are judged: by default, they request one closing watchdog sweep;
   - starts and files nothing more.
 - Stop a campaign with `piloop campaign stop`, not with an UPDATE of `campaigns.status`: an UPDATE gets no closing sweep.
 - `piloop run cancel <run> [--wrap-up]` and `piloop agent cancel <agent-session> [--wrap-up]` end one run or one agent,

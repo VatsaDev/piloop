@@ -29,9 +29,9 @@ from piloop.db.events import emit
 from piloop.db.models import LIVE, AgentSession, AgentSessionState, Campaign, utcnow
 from piloop.db.session import Database
 from piloop.harnesses import SESSION_ENV, SESSION_ID, fill, takes_session_id
-from piloop.ids import AgentSessionId, TargetKind, TargetRef
+from piloop.ids import AgentSessionId, RunId, TargetKind, TargetRef
 from piloop.otel import Span, Tracer
-from piloop.plugins.executor.contract import AgentJob, AgentKey, Commits, Executor, ExecutorConfig, LeftJob, Source
+from piloop.plugins.executor.contract import AgentJob, AgentKey, Executor, ExecutorConfig, LeftJob, Source
 from piloop.plugins.runtime.contract import AgentStart
 
 PROMPT = 'Your brief is in {path}. Read all of it, in parts if a read comes back cut short, then follow it.'
@@ -79,14 +79,14 @@ class Launcher:
         place: str,
         artifact: Source,
         timeout: float,
-        commits: Commits | None = None,
+        capture: RunId | None = None,
     ) -> Ended:
         """Run agent session row ``agent_session_id`` to the end on the executor, and return how it ended.
 
         The steps are: pick the harness and model, fill in the row, submit the agent's job, and wait for its result,
         which closes the row (``piloop.agents.results``). The executor makes the job's ``place`` (its log directory),
         materializes ``artifact`` in it (a worktree), starts the agent, and removes the worktree after. Its log files
-        come back into ``place`` under this home. With ``commits``, they come back too: ``Ended.commits``. ``timeout``
+        come back into ``place`` under this home. With ``capture``, its work comes back too: ``Ran.work``. ``timeout``
         is the seconds that the agent may run.
         """
         with self.tracer.span('piloop.agent', agent_session=agent_session_id) as span:
@@ -94,7 +94,7 @@ class Launcher:
                 try:
                     if self.cancelled.is_set():
                         return DaemonStopped()
-                    job = self._prepare(agent_session_id, span, brief, place, artifact, timeout, commits)
+                    job = self._prepare(agent_session_id, span, brief, place, artifact, timeout, capture)
                     self.executor.submit(job)
                 except Exception as e:  # a harness or a runtime that piloop.toml no longer has, an executor's refusal
                     span.error(e)
@@ -143,7 +143,7 @@ class Launcher:
         place: str,
         artifact: Source,
         timeout: float,
-        commits: Commits | None,
+        capture: RunId | None,
     ) -> AgentJob:
         """Fill in the row, mark it ``starting``, emit ``<kind>.started``, and return the agent's job.
 
@@ -195,7 +195,7 @@ class Launcher:
                 servers=cfg.role_servers(kind),
                 usage=definition.usage,
                 session_id=session_id,
-                commits=commits,
+                capture=capture,
             )
             w.harness, w.model, w.runtime, w.log_dir = harness, model, runtime_kind, str(self.home / place)
             w.state, w.started_at = AgentSessionState.STARTING, utcnow()
@@ -210,7 +210,7 @@ class Launcher:
         'an agent that a 0.2 daemon started (before leases): delete Launcher.left, Scheduler._left, LeftJob.job and'
         ' LeftJob.handle, and a None AgentJob.spec',
     )
-    def left(self, s: Session, w: AgentSession, artifact: Source, place: str, commits: Commits | None) -> LeftJob:
+    def left(self, s: Session, w: AgentSession, artifact: Source, place: str, capture: RunId | None) -> LeftJob:
         """The ``LeftJob`` of a running agent, with its job as its row has it: no spec, so it is re-attached, never started.
 
         Only an agent that a daemon before leases started needs it: an executor finds its own jobs again.
@@ -228,7 +228,7 @@ class Launcher:
             spec=None,
             usage=definition.usage if definition is not None else None,
             session_id=w.session_id,
-            commits=commits,
+            capture=capture,
         )
         return LeftJob(AgentKey(w.id), job, dict(w.handle) or None, w.started_at)
 

@@ -165,7 +165,7 @@ def developed_seed(db: Database, campaign: Campaign, title: str, pointers: str, 
                     campaign_id=campaign.id,
                     run_id=run.id,
                     parent_id=1,
-                    commit_sha='a' * 40,
+                    revision='a' * 40,
                     tree_sha='b' * 40,
                     verdict=Outcome.KEEP,
                 )

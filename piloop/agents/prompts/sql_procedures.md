@@ -1,7 +1,7 @@
 # Working with the piloop database
 
 You have direct SQL access to piloop's SQLite database through `piloop sql`.
-Any statement is allowed except schema changes and transactions. Every statement commits on its own.
+Any statement is allowed except schema changes and transactions. Each statement is a transaction of its own.
 `PRAGMA table_info(<table>)` works.
 The database is the coordination layer: the daemon, the orchestrator, the watchdog and every implementer read and write the
 same tables.
@@ -128,7 +128,7 @@ ORDER BY bm25(ideas_fts) LIMIT 20;
 
 - An implementation to copy, from any campaign: drop the `p.repo` filter, keep what kept or was noted (`JOIN runs r ON
   r.idea_id = i.id JOIN candidates c ON c.run_id = r.id WHERE c.verdict IN ('keep', 'interesting')`) and select
-  `p.path, c.commit_sha`. {vcs:show}
+  `p.path, c.revision`. {vcs:show}
 - How a past idea was worked: `SELECT w.id, json_extract(w.usage, '$.source'), w.log_dir FROM agent_sessions w JOIN
   runs r ON r.id = w.run_id WHERE r.idea_id = <idea>`. The source is the harness's own file of the session.
   `<log_dir>/transcript.txt` is its screen. An archived workspace can be
@@ -175,7 +175,7 @@ Special reasons:
 - `cause = 'moved'` is a keep that was rebased: it kept against its own bar, but the head moved on. The reason names
   the merged candidate or the conflict.
 - `cause = 'note'` is a regressed result that an agent kept in view as a lead.
-- A `skipped` commit asked not to be evaluated (scaffolding). It has no measurement and says nothing about the idea.
+- A `skipped` version asked not to be evaluated (scaffolding). It has no measurement and says nothing about the idea.
 
 Roles, tracks, margins and floors are in `campaigns.config`.
 

@@ -395,6 +395,8 @@ fails, and a new file stays in the worktree. An evaluation that changes a linked
 `[plugins.vcs]` in `piloop.toml` selects how a campaign saves versions. `git` is the default, and a git campaign does
 not change. `documents.commit_sha` is gone: no code read it.
 
+`candidates.commit_sha` is `candidates.revision`: the commit SHA under `git`. Rename it in your own SQL and triggers.
+
 ## Upgrading to 0.2.0
 
 Read this before you upgrade from 0.1.0.

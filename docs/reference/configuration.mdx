@@ -173,18 +173,18 @@ escalation for each series of failures: an unknown spend is never read as $0.
 
 `[roles.implementer]`, and every `[roles.<name>]` table with `runs = true`: a role that does runs.
 
-The run queue starts its agents. Each agent does one idea in a new worktree at its run's base, and its commits are
+The run queue starts its agents. Each agent does one idea in a new checkout at its run's base, and its versions are
 scored and judged when it ends. A new role of this kind takes the implementer's defaults, its prompt included.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `timeout` | number | `1800` | The number of seconds one implementer may run before it is stopped. Its brief states it. A quarter of it before, at most 10 minutes, the daemon tells the implementer to wrap up. |
 | `max_concurrent` | integer | `4` | The maximum number of implementers that run at the same time, on all workers together. A run that is being scored after its implementer ended does not count. |
-| `writes` | list\[string\] | `["commits", "comments(finding) on your idea", "comments(note) on your run"]` | What an implementer may write, as its brief states it. |
+| `writes` | list\[string\] | `["versions", "comments(finding) on your idea", "comments(note) on your run"]` | What an implementer may write, as its brief states it. |
 | `files` | `nothing` \| `seeds` \| `ideas` | `"nothing"` | An implementer files no ideas and no seeds. Its hunches go in its finding, which research reads. |
 | `runs` | boolean | `true` | The agents of this role do runs. A table without `runs = true` is a sweeping role. |
 | `takes` | string \| null | `null` | The ideas that this role takes: an SQL condition on the `ideas` table, without parameters, for example `priority >= 3` or `track = 'speed'`. When unset, the role takes every runnable idea. A free slot of a role that you define is filled before a slot of the implementer, so the implementer takes what the other roles leave. |
-| `recovery_requeues` | integer | `2` | How many times one idea goes back to the queue from the last commit of a run that did not succeed: a new implementer then starts from that commit to finish the work, also when the idea has no attempts left. When the head moved past the commit, it starts on the head, and a note gives the `git cherry-pick` of the commits. After that, the idea settles as after any failed run, so an idea whose implementers keep dying is not run forever. 0 never requeues. |
+| `recovery_requeues` | integer | `2` | How many times one idea goes back to the queue from the last version of a run that did not succeed: a new implementer then starts from that version to finish the work, also when the idea has no attempts left. When the head moved past the version, it starts on the head, and a note names the change to take. After that, the idea settles as after any failed run, so an idea whose implementers keep dying is not run forever. 0 never requeues. |
 | `explore_every` | integer | `4` | At least one run of this role in this many starts from an alternative starting point. When none of the role's last `explore_every - 1` runs did, the next slot goes to the most urgent ready idea that is pinned to a base other than the head (a reference, an older keep or a note), whatever its priority. Nothing changes while no such idea is ready. 0 turns this off. |
 
 ## SweepRole

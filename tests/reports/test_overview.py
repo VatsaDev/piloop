@@ -114,7 +114,7 @@ def candidate(
         campaign_id=campaign.id,
         parent_id=parent,
         tree_sha=f'tree{when}',
-        commit_sha=f'{when:07.0f}abcdef',
+        revision=f'{when:07.0f}abcdef',
         summary=f'score {value:g}',
         verdict=verdict,
         **kw,
@@ -371,7 +371,7 @@ def test_an_agent_that_investigates_incidents_dead_at_startup_is_no_incident(db:
 def test_a_crashed_measurement_or_an_unmeasured_parent_is_not_same_as_parent(db: Database, campaign: Campaign) -> None:
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
-        orphan = Candidate(campaign_id=p.id, parent_id=1, tree_sha='x', commit_sha='x', verdict=Outcome.CRASH)
+        orphan = Candidate(campaign_id=p.id, parent_id=1, tree_sha='x', revision='x', verdict=Outcome.CRASH)
         s.add(orphan)
         s.flush()
         s.add(Measurement(candidate_id=orphan.id, evaluator_id=p.evaluator_id, metrics={}, error='died'))
@@ -445,9 +445,7 @@ def test_branches_and_notes_say_where_else_a_run_may_start(db: Database, campaig
         candidate(s, p, 1, Outcome.KEEP, 2, 65, run_id=branch.id)
         noted = candidate(s, p, 1, Outcome.INTERESTING, 0.5, 66, run_id=branch.id, verdict_by=f'run#{branch.id}')
         noted.cause, noted.verdict_reason = Cause.NOTE, 'halves the eval time; against candidate#1: score 0.5 vs 1'
-        s.add(
-            Candidate(campaign_id=p.id, tree_sha='unmeasured', commit_sha='u', verdict=Outcome.KEEP, run_id=branch.id)
-        )
+        s.add(Candidate(campaign_id=p.id, tree_sha='unmeasured', revision='u', verdict=Outcome.KEEP, run_id=branch.id))
         s.commit()
     trajectory = render(db, campaign).split('### Trajectory\n')[1].split('### Now')[0]
     assert trajectory == snapshot("""\

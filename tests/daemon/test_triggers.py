@@ -121,7 +121,7 @@ def finish_a_run(db: Database, campaign: Campaign, title: str, verdict: Outcome 
             run_id=run_id,
             parent_id=1,
             tree_sha=f'tree{run_id}',
-            commit_sha=f'commit{run_id}',
+            revision=f'commit{run_id}',
             verdict=verdict,
         )
         s.add(candidate)

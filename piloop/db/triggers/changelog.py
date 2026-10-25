@@ -161,7 +161,7 @@ class CandidateDeleted(EventModel):
 
     kind: Literal['candidate.deleted'] = 'candidate.deleted'
     tree_sha: str
-    commit_sha: str
+    revision: str
     origin: Origin
     verdict: Outcome | None
 

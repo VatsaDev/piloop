@@ -44,6 +44,7 @@ from piloop.plugins.executor.kit.leases import Answer, LeaseQueued, Leases
 from piloop.plugins.executor.workers import Workers
 from piloop.plugins.role.watchdog import WatchdogRole
 from piloop.plugins.runtime.contract import AgentExit, AgentSpec, ExitStatus
+from piloop.plugins.vcs.contract import Part
 from piloop.plugins.vcs.git import Git
 from piloop.usage import Usage
 from piloop.usage.jsonl import CWD_ENCODERS
@@ -52,6 +53,7 @@ from tests.conftest import (
     HARNESS_PROMPT_TO_FILE,
     HARNESS_SLEEPS,
     RESEARCH,
+    SCOUT,
     WATCHDOG,
     ScriptRuntime,
     events,
@@ -60,6 +62,7 @@ from tests.conftest import (
     serving,
     write_toml,
 )
+from tests.test_vcs import ALLOWED_WORDS, git_words
 from tests.usage.test_usage import PI_SPEC, SESSIONS
 
 NO_USAGE_FILE = {'file': '/nonexistent/{session_id}.jsonl', 'tally': 'pi'}
@@ -162,7 +165,7 @@ def test_brief_is_role_prompt_campaign_brief_procedures_then_context(campaign: C
     assert brief.endswith(
         f"""# Context
 - You are watchdog#7, the watchdog for campaign#1 (demo).
-- Campaign repo: {campaign.path}, on the daemon's machine. Your worktree's repo has every candidate commit.
+- Campaign repo: {campaign.path}, on the daemon's machine. Your checkout can read every candidate's version.
 - Sign what you write as 'watchdog#7' (comments.author, ideas.created_by).
 - Why this agent started (context, not a scope): timer
 - piloop: `{PILOOP_HINT}` is this daemon's piloop. Run every `piloop` command of this brief with it.
@@ -174,6 +177,24 @@ def test_brief_is_role_prompt_campaign_brief_procedures_then_context(campaign: C
 - extra line
 """
     )
+
+
+@pytest.mark.parametrize('kind', [IMPLEMENTER, WATCHDOG, RESEARCH, SCOUT])
+@pytest.mark.parametrize('incident', [False, True])
+def test_a_brief_says_git_or_commit_only_in_the_vcs_providers_parts(
+    campaign: Campaign, db: Database, mocker: MockerFixture, kind: RoleName, incident: bool
+) -> None:
+    def marked(self: Git, part: Part) -> str:
+        return f'<{part}>'
+
+    mocker.patch.object(Git, 'prompt', marked)
+    with db.session() as s:
+        p = s.get_one(Campaign, campaign.id)
+        agent = Agent(role=kind, session=7)
+        brief = compose_brief(role_in(p, kind), p, agent, reason='timer', context='', incident=incident)
+    for phrase, _ in ALLOWED_WORDS.values():
+        brief = brief.replace(phrase, '')
+    assert git_words(brief) == []
 
 
 def test_a_roles_addendum_follows_the_campaign_brief_in_that_roles_briefs_only(
@@ -226,7 +247,7 @@ def test_launch_runs_the_row_through_its_lifecycle(
         (1, AgentSessionFinished(role=WATCHDOG, reason='test', state=AgentSessionState.EXITED, error=None)),
     ]
     [ended] = [payload.ended for _, payload in events if isinstance(payload, JobEnded)]
-    assert isinstance(ended, Ran) and ended.commits is None, 'how it ended, for what waits for it'
+    assert isinstance(ended, Ran) and ended.work is None, 'how it ended, for what waits for it'
     [span] = [span for span in spans.get_finished_spans() if span.name == 'piloop.agent']
     assert dict(span.attributes or {}) == {
         'agent_session': 1,

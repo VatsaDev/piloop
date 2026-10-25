@@ -732,12 +732,12 @@ def test_candidate_import_registers_a_reference_shown_apart_and_refuses_a_bad_re
             None,
             f'imported from elsewhere ({sha[:7]})',
         )
-        assert (c.run_id, c.parent_id, c.commit_sha, c.measurements) == (None, None, sha, [])
+        assert (c.run_id, c.parent_id, c.revision, c.measurements) == (None, None, sha, [])
         [event] = s.scalars(select(Event).where(Event.kind == 'candidate.imported')).all()
         assert (event.actor, event.target_id, event.payload) == (
             'human',
             2,
-            CandidateImported(ref='elsewhere', commit=sha),
+            CandidateImported(ref='elsewhere', revision=sha),
         )
     repo.git.branch('-qD', 'elsewhere')
     assert repo.git.rev_parse('refs/piloop/demo/reference/2') == sha, 'pinned: it outlives its branch'
@@ -780,8 +780,8 @@ def test_candidate_remeasure_asks_the_daemon_to_measure_a_candidate_again_and_re
             1,
             RemeasureRequested(repeats=3),
         )
-        s.add(Candidate(campaign_id=1, commit_sha='0' * 40, tree_sha='1' * 40))
-        s.add(Candidate(campaign_id=1, commit_sha='2' * 40, tree_sha='3' * 40, verdict=Outcome.DISCARD, parent_id=1))
+        s.add(Candidate(campaign_id=1, revision='0' * 40, tree_sha='1' * 40))
+        s.add(Candidate(campaign_id=1, revision='2' * 40, tree_sha='3' * 40, verdict=Outcome.DISCARD, parent_id=1))
         s.commit()
     run_cli(['candidate', 'remeasure', '3', '--repeats', '5'])
     assert (
@@ -885,9 +885,9 @@ def test_eval_queue_lists_the_running_then_the_waiting_evaluations_and_eval_canc
     run_cli(['eval', 'queue'])
     assert out().strip() == '0 running, 0 waiting; `piloop eval cancel <candidate>`'
     with closing(Database(common.settings.database_url, actor=System.HUMAN)) as db, db.session() as s:
-        s.add(Candidate(campaign_id=1, tree_sha='t', commit_sha='c', summary='a newer commit'))
-        s.add(Candidate(campaign_id=1, tree_sha='u', commit_sha='d', summary='an older commit'))
-        s.add(Candidate(campaign_id=1, tree_sha='v', commit_sha='e', summary='a merge'))
+        s.add(Candidate(campaign_id=1, tree_sha='t', revision='c', summary='a newer commit'))
+        s.add(Candidate(campaign_id=1, tree_sha='u', revision='d', summary='an older commit'))
+        s.add(Candidate(campaign_id=1, tree_sha='v', revision='e', summary='a merge'))
         s.flush()
         # 2 hours ago: the ages print as 2h however slow the CLI calls below are on a loaded runner
         then = utcnow() - timedelta(hours=2)
@@ -941,7 +941,7 @@ def test_candidate_note_keeps_a_regressed_result_in_view_with_follow_ups_pinned_
     with closing(Database(common.settings.database_url, actor=System.HUMAN)) as db, db.session() as s:
         for tree, verdict in (('worse', Outcome.DISCARD), ('waiting', None)):
             c = Candidate(
-                campaign_id=1, tree_sha=tree, commit_sha=tree, summary=tree, verdict=verdict, verdict_by='daemon'
+                campaign_id=1, tree_sha=tree, revision=tree, summary=tree, verdict=verdict, verdict_by='daemon'
             )
             c.verdict_reason = 'against candidate#1: score 0 vs 1' if verdict is Outcome.DISCARD else None
             s.add(c)
@@ -1151,7 +1151,7 @@ def test_campaign_stop_and_cancels_are_requests_that_the_daemon_acts_on(campaign
         'cancel requested for run#1: the daemon acts on its next tick',
         'cancel requested for agent_session#3: the daemon acts on its next tick',
         'cancel requested for agent_session#1: the daemon acts on its next tick',
-        'stop requested for demo: the daemon tells its implementers to commit and stop on its next tick',
+        'stop requested for demo: the daemon tells its implementers to save their work and stop on its next tick',
     ]
     with pytest.raises(SystemExit, match='run#9 is not queued or running'):
         run_cli(['run', 'cancel', '9'])
@@ -1719,7 +1719,7 @@ def test_with_several_tracks_every_idea_and_seed_names_its_track(campaign_path: 
     run_cli(['idea', 'add', 'demo', 'shorter lines', '--track', 'size'])
     run_cli(['idea', 'seed', 'demo', 'more lines', '--from', 'run#1', '--track', 'score'])
     with closing(Database(common.settings.database_url, actor=System.HUMAN)) as db, db.session() as s:
-        worse = Candidate(campaign_id=1, tree_sha='w', commit_sha='w', summary='w', verdict=Outcome.DISCARD)
+        worse = Candidate(campaign_id=1, tree_sha='w', revision='w', summary='w', verdict=Outcome.DISCARD)
         s.add(worse)
         s.commit()
     run_cli(['candidate', 'note', '2', 'cheaper', '--follow-up', 'trim it', '--track', 'size'])

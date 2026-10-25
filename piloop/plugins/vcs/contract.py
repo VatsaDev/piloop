@@ -17,17 +17,15 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import NewType, Protocol
+from typing import Protocol
 
 from covalence import Cid
 from pydantic import BaseModel, ConfigDict
 
-from piloop.ids import CandidateId, RunId
+from piloop import deprecated
+from piloop.ids import CandidateId, Revision, RunId
 from piloop.plugins.cas.contract import BlobAddress, Cas
 from piloop.plugins.host import Capability, Check, Choice, Parameters, Scope
-
-Revision = NewType('Revision', str)
-"""The provider's name for a version: a commit SHA under ``git``."""
 
 
 @dataclass(frozen=True)
@@ -190,8 +188,9 @@ class Repository(Protocol):
         """Keep ``revision`` for ``why``, also after whatever named it is gone."""
         ...
 
+    @deprecated.until('0.4.0', 'a run that a daemon before 0.3.0 received has no RunReceived: delete Repository.kept')
     def kept(self, campaign: str, run: RunId) -> list[Version]:
-        """The versions of ``run`` that ``keep`` kept (``RunVersion``), in their order."""
+        """The versions of ``run`` that ``keep`` kept (``RunVersion``), in their order, for a run before 0.3.0."""
         ...
 
     def checkout(self, revision: Revision, path: Path) -> None:
@@ -213,11 +212,11 @@ class Repository(Protocol):
         """Those of ``names`` that ``revision`` does not hold: what was put in its checkout from elsewhere."""
         ...
 
-    def capture(self, cas: Cas, base: Revision, summary: str, run: RunId, ignore: Sequence[str]) -> Transfer | None:
+    def capture(self, cas: Cas, base: Revision, run: RunId, ignore: Sequence[str]) -> Transfer | None:
         """Put the versions that an agent saved in this checkout of ``base`` into ``cas``, or None when it saved none.
 
         What it left unsaved, outside ``ignore`` (the paths that are not its work), is saved first as a ``recovered``
-        version of ``run``. A version that the agent saved is never changed: it is scored as the agent made it.
+        version of ``run``, with a summary that the provider writes. A version that the agent saved is never changed: it is scored as the agent made it.
         """
         ...
 
@@ -226,11 +225,15 @@ class Vcs(Parameters, ABC):
     """A vcs provider: its parameters, the keys of ``[plugins.vcs]`` besides ``provider``, and its operations."""
 
     @abstractmethod
-    def init(self, path: Path, template: str, owned: Sequence[str]) -> None:
+    def init(self, path: Path, summary: str, owned: Sequence[str], ignore: Sequence[str]) -> list[str]:
         """Make ``path`` a repository if it is not one, and save its files for ``piloop init``.
 
-        A repository with no version yet saves all its files, as the baseline of ``template``. Else it saves the paths
-        in ``owned`` that changed, and nothing else: other changes in a shared checkout are someone's work.
+        A repository with no version yet saves all its files, as the baseline, with ``summary``. Else it saves the
+        paths in ``owned`` that changed, and nothing else: other changes in a shared checkout are someone's work. No
+        version ever holds a path in ``ignore`` (data, environments, the shared workspace).
+
+        Returns:
+            The paths that it wrote, relative to ``path``, which it saves as ``owned``.
         """
 
     @abstractmethod

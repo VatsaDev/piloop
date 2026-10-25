@@ -44,7 +44,7 @@ from piloop.db.models import (
 )
 from piloop.ids import CampaignId, CandidateId, IdeaId, TargetKind, TargetRef, TrackName
 from piloop.plugins.role.contract import Files
-from piloop.plugins.vcs.contract import Revision, VcsError
+from piloop.plugins.vcs.contract import VcsError
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring.ledger import (
     MOVED,
@@ -247,7 +247,7 @@ def missing_head(s: Session, candidate: Candidate) -> Candidate | None:
     if trunk is None or ancestor is not None:
         return None
     try:
-        builds = repository(campaign).contains(Revision(candidate.commit_sha), Revision(trunk.commit_sha))
+        builds = repository(campaign).contains(candidate.revision, trunk.revision)
     except VcsError as e:
         raise Refused(
             f'the vcs cannot tell if candidate#{candidate.id} builds on the head candidate#{trunk.id}: {e}'

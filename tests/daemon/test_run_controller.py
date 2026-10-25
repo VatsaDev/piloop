@@ -36,7 +36,6 @@ from piloop.daemon.run_controller import (
     NO_CHANGES,
     RECOVERED_REASON,
     SKIPPED_REASON,
-    UNCOMMITTED_SUMMARY,
     RecoveryRequeued,
     RunController,
     RunFacts,
@@ -76,6 +75,7 @@ from piloop.ids import (
     CandidateId,
     CommentId,
     EvaluatorId,
+    Revision,
     RoleName,
     RunId,
     TargetKind,
@@ -89,8 +89,8 @@ from piloop.plugins.executor.kit.jobs import INPUTS_CHANGED, INPUTS_REBUILT
 from piloop.plugins.executor.workers import Workers
 from piloop.plugins.executor.workers.worker import _Control
 from piloop.plugins.runtime.contract import AgentExit, Handle
-from piloop.plugins.vcs.contract import Revision
-from piloop.plugins.vcs.git import GitRepository, commands as git
+from piloop.plugins.vcs.contract import Part
+from piloop.plugins.vcs.git import UNCOMMITTED, Git, GitRepository, commands as git
 from piloop.plugins.vcs.git.commands import pin as git_pin
 from piloop.plugins.verdict_rule.contract import VERDICT_RULES, Outcome
 from piloop.scoring.evaluate import CHANGED_INPUTS
@@ -141,6 +141,7 @@ from tests.conftest import (
     write_script,
     write_toml,
 )
+from tests.test_vcs import git_words
 from tests.usage.test_usage import PI_SPEC, SESSIONS
 
 
@@ -219,7 +220,7 @@ class Scored:
     """A candidate with its (single) measurement flattened on, for terse assertions."""
 
     def __init__(self, c: Candidate) -> None:
-        self.id, self.parent_id, self.commit_sha, self.summary = c.id, c.parent_id, c.commit_sha, c.summary
+        self.id, self.parent_id, self.revision, self.summary = c.id, c.parent_id, c.revision, c.summary
         self.verdict, self.verdict_by = c.verdict, c.verdict_by
         [m] = c.measurements
         self.metrics, self.error = m.metrics, m.error
@@ -281,7 +282,7 @@ def test_successful_run_scores_the_commit(
     assert dict(measure.attributes or {}) == snapshot(
         {
             'run': 1,
-            'commit': IsStr(),
+            'revision': IsStr(),
             'candidate': 2,
             'evaluation': 1,
             'joined': False,
@@ -291,7 +292,7 @@ def test_successful_run_scores_the_commit(
         }
     )
     assert dict(candidate.attributes or {}) == snapshot(
-        {'run': 1, 'commit': IsStr(), 'candidate': 2, 'verdict': 'keep', 'summary': 'add a line', 'score': 2.0}
+        {'run': 1, 'revision': IsStr(), 'candidate': 2, 'verdict': 'keep', 'summary': 'add a line', 'score': 2.0}
     )
 
     run = run_row(db, run_id)
@@ -517,7 +518,7 @@ def test_work_a_stopped_implementer_left_uncommitted_is_recovered_and_a_new_run_
     assert (run_row(db, run_id).status, run_row(db, run_id).error) == (RunStatus.FAILED, INTERRUPTED)
     [(summary, verdict, reason, measurements, _)] = scored(db, run_id)
     assert (summary, verdict, reason, measurements) == (
-        UNCOMMITTED_SUMMARY,
+        UNCOMMITTED,
         Origin.RECOVERED,
         RECOVERED_REASON.format(run=run_id),
         0,
@@ -530,7 +531,7 @@ def test_work_a_stopped_implementer_left_uncommitted_is_recovered_and_a_new_run_
         assert note.body.startswith(f'requeued from candidate#{recovered.id}: run#{run_id} ended failed')
         trunk = head(s, s.get_one(Campaign, campaign.id))
         assert trunk is not None and trunk.id == baseline(db, campaign.id).id, 'the head did not move'
-        recovered_id, recovered_sha, idea_id = recovered.id, recovered.commit_sha, idea.id
+        recovered_id, recovered_sha, idea_id = recovered.id, recovered.revision, idea.id
     repo = Repo(campaign.path)
     assert 'data' not in repo.git.show('--stat', '--format=', recovered_sha), 'linked paths are never committed'
     assert repo.git.log('-1', '--format=%(trailers:key=Piloop-Recovered,valueonly)', recovered_sha).strip() == (
@@ -594,7 +595,7 @@ def test_a_run_that_timed_out_after_its_commits_is_retried_from_its_last_commit(
         assert (idea.status, idea.base_candidate_id) == (IdeaStatus.READY, second.id), 'max_runs=1 is spent'
         [note] = s.scalars(select(Comment).where(Comment.target_kind == TargetKind.IDEA)).all()
         assert note.body == (
-            f'requeued from candidate#{second.id}: run#{run_id} ended timed_out after its commits; the next run starts'
+            f'requeued from candidate#{second.id}: run#{run_id} ended timed_out after its versions; the next run starts'
             ' from its last one to finish the work'
         )
         assert [e.payload for e in s.scalars(select(Event).where(has(RecoveryRequeued)))] == [
@@ -630,10 +631,10 @@ def test_a_failed_run_whose_commits_the_head_moved_past_is_retried_on_the_head_w
         idea = s.get_one(Idea, run_row(db, slow).idea_id)
         assert (idea.status, idea.base_candidate_id) == (IdeaStatus.READY, None), 'on the head'
         [note] = s.scalars(select(Comment).where(Comment.target == TargetRef(TargetKind.IDEA, idea.id))).all()
-        base = baseline(db, campaign.id).commit_sha
+        base = baseline(db, campaign.id).revision
         assert note.body == (
-            f'requeued on the head: run#{slow} ended failed after its commits, and the head moved past them. To start'
-            f' from them, run git cherry-pick {base}..{second.commit_sha}'
+            f'requeued on the head: run#{slow} ended failed after its versions, and the head moved past them. To start'
+            f' from them, take the change from {base} to {second.revision} onto the head'
         )
     assert wipe.verdict is Outcome.DISCARD
 
@@ -647,7 +648,7 @@ def test_dirt_after_a_commit_is_recovered_on_its_own_and_the_commit_is_scored_as
     execute(controller(db, runtime, tmp_path), db, run_id)
     assert [(c[0], c[1], c[3]) for c in scored(db, run_id)] == [
         ('the idea', Outcome.KEEP, 1),
-        (UNCOMMITTED_SUMMARY, Origin.RECOVERED, 0),
+        (UNCOMMITTED, Origin.RECOVERED, 0),
     ], 'never amended: the implementer declared its commit, not the dirt after it'
     [e] = [c for c in candidates_measured(db, run_id)]
     assert e.metrics['score'] == 2.0
@@ -1087,7 +1088,7 @@ def test_brief_carries_history_and_comments(
     assert (
         '- Your session ends 0.3 minutes after it starts, at `$PILOOP_DEADLINE` (Unix time). The daemon tells you to'
         ' wrap up 0.1 minutes before, but a message reaches you only between two tool calls: start no command that'
-        ' can run past the deadline. Commit each step that runs, and leave your finding before the end.\n' in brief
+        ' can run past the deadline. Save each step that runs, and leave your finding before the end.\n' in brief
     ), 'the role timeout of 20s'
     assert "VALUES ('idea', 2, 'implementer#2', 'escalation', 1, '...')" in brief, (
         'a request is an escalation, never a note'
@@ -1096,20 +1097,27 @@ def test_brief_carries_history_and_comments(
     assert '- A hunch worth a run of its own goes in your finding' in brief and 'idea seed demo' not in brief
 
 
-def test_an_implementer_brief_names_its_worktree_as_the_place_to_work_and_the_campaign_repo_as_read_only(
-    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+def test_an_implementer_brief_names_its_checkout_as_the_place_to_work_and_the_campaign_repo_as_read_only(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
 ) -> None:
     """Given only the campaign repo's path, an implementer edited and committed there: never scored, and main moved.
 
-    The brief names no path of the worktree: the worker makes it, on whichever machine runs the job."""
+    The brief names no path of the checkout: the worker makes it, on whichever machine runs the job. Only the vcs
+    provider's parts of it say git or commit."""
+
+    def marked(self: Git, part: Part) -> str:
+        return f'<{part}>'
+
+    mocker.patch.object(Git, 'prompt', marked)
     run_id = make_run(db, campaign)
     execute(controller(db, runtime, tmp_path), db, run_id)
     brief = run_row(db, run_id).brief or ''
     assert (
-        '- Your cwd is your worktree: make every edit, run every evaluation and make every commit there.'
-        f' Only its commits are scored. The campaign repo, {campaign.path}, is read-only for you: read its history'
-        ' and candidates, never edit, run or commit in it.'
+        '- Your cwd is your checkout: make every edit, run every evaluation and save every version there.'
+        f' Only its versions are scored. The campaign repo, {campaign.path}, is read-only for you: read its history'
+        ' and candidates, never edit, run or save in it.'
     ) in brief
+    assert git_words(brief) == []
 
 
 @pytest.mark.parametrize('budget', [400, 0])
@@ -1200,7 +1208,7 @@ def test_the_head_is_the_latest_trunk_keep_whatever_it_scores(db: Database, camp
         ):
             origin = Origin.RUN if verdict else Origin.REFERENCE
             rows[tree] = c = Candidate(
-                campaign_id=campaign.id, tree_sha=tree, commit_sha=tree, origin=origin, verdict=verdict, run_id=run_id
+                campaign_id=campaign.id, tree_sha=tree, revision=tree, origin=origin, verdict=verdict, run_id=run_id
             )
             s.add(c)
             s.flush()
@@ -1212,7 +1220,7 @@ def test_the_head_is_the_latest_trunk_keep_whatever_it_scores(db: Database, camp
             ' run keep (d) never moves the head and a reference is never one'
         )
         assert head(s, proj, excluding=rows['b']) == rows['a'], 'the candidate being judged is never its own bar'
-        unscored = Candidate(campaign_id=campaign.id, tree_sha='u', commit_sha='u', origin=Origin.REFERENCE)
+        unscored = Candidate(campaign_id=campaign.id, tree_sha='u', revision='u', origin=Origin.REFERENCE)
         s.add(unscored)
         s.flush()
         assert [c.tree_sha for c in due(s, proj)] == ['u'], 'a reference that no evaluator measured'
@@ -1246,7 +1254,7 @@ def test_a_new_evaluator_measures_what_a_verdict_needs_then_what_someone_asked_f
             rows[tree] = c = Candidate(
                 campaign_id=campaign.id,
                 tree_sha=tree,
-                commit_sha=tree,
+                revision=tree,
                 origin=Origin.RUN if verdict else Origin.REFERENCE,
                 verdict=verdict,
                 verdict_by=System.DAEMON,
@@ -1269,7 +1277,7 @@ def test_a_new_evaluator_measures_what_a_verdict_needs_then_what_someone_asked_f
         add('crash', Outcome.CRASH, parent='k2', run=done)
         add('repeat', Outcome.DISCARD, parent='k3', run=done)
         add('head', Outcome.KEEP, parent='k5')
-        fresh = Candidate(campaign_id=campaign.id, tree_sha='fresh', commit_sha='fresh', origin=Origin.REFERENCE)
+        fresh = Candidate(campaign_id=campaign.id, tree_sha='fresh', revision='fresh', origin=Origin.REFERENCE)
         s.add(fresh)
         s.add(
             Idea(
@@ -1346,7 +1354,7 @@ def test_implementer_env_points_at_the_daemon_home(
     run_id = make_run(db, campaign)
     execute(controller(db, ScriptRuntime(), tmp_path), db, run_id)
     [e] = candidates(db, run_id)
-    lines = Repo(campaign.path).git.show(f'{e.commit_sha}:env.txt').splitlines()
+    lines = Repo(campaign.path).git.show(f'{e.revision}:env.txt').splitlines()
     env = dict(line.split('=', 1) for line in lines if '=' in line)
     assert (env['PILOOP_HOME'], env['PATH']) == (str(tmp_path), f'{tmp_path / "bin"}{os.pathsep}{os.environ["PATH"]}')
     assert {name: env.get(name) for name in cleared} == dict.fromkeys(cleared, '')
@@ -1612,7 +1620,7 @@ def test_a_fast_implementer_that_left_uncommitted_work_started_and_its_work_is_r
     execute(controller(db, runtime, tmp_path), db, run_id)
     assert (run_row(db, run_id).status, run_row(db, run_id).error) == (RunStatus.FAILED, INTERRUPTED)
     [(summary, verdict, *_)] = scored(db, run_id)
-    assert (summary, verdict) == (UNCOMMITTED_SUMMARY, Origin.RECOVERED)
+    assert (summary, verdict) == (UNCOMMITTED, Origin.RECOVERED)
     with db.session() as s:
         assert s.scalar(select(func.count()).select_from(AgentSession).where(AgentSession.run_id == run_id)) == 1, (
             'no relaunch'
@@ -1670,15 +1678,15 @@ TIMEOUT = 'implementer timeout after 1s'
         ),
         pytest.param(RunFacts(finding=True), (RunEnd.FINISHED, None), id='finding'),
         pytest.param(RunFacts(cancelled=True), (RunEnd.CANCELLED, None), id='cancel'),
-        pytest.param(RunFacts(ended=True, commits=1), (RunEnd.CAMPAIGN_STOPPED, None), id='stop'),
+        pytest.param(RunFacts(ended=True, versions=1), (RunEnd.CAMPAIGN_STOPPED, None), id='stop'),
         pytest.param(RunFacts(timed_out=True, error=TIMEOUT), (RunEnd.TIMED_OUT, TIMEOUT), id='timeout'),
         pytest.param(
-            RunFacts(error='implementer exit 1', commits=1), (RunEnd.FAILED, 'implementer exit 1'), id='error'
+            RunFacts(error='implementer exit 1', versions=1), (RunEnd.FAILED, 'implementer exit 1'), id='error'
         ),
         pytest.param(RunFacts(asked=CommentId(7)), (RunEnd.AWAITING_ANSWER, 'comment#7'), id='asked'),
         pytest.param(RunFacts(), (RunEnd.FAILED, NO_CHANGES), id='nothing'),
-        pytest.param(RunFacts(commits=1, recovered_only=True), (RunEnd.FAILED, INTERRUPTED), id='recovered-only'),
-        pytest.param(RunFacts(commits=2), (RunEnd.FINISHED, None), id='commits'),
+        pytest.param(RunFacts(versions=1, recovered_only=True), (RunEnd.FAILED, INTERRUPTED), id='recovered-only'),
+        pytest.param(RunFacts(versions=2), (RunEnd.FINISHED, None), id='commits'),
         # the overlaps that fix the order: each pair of neighbouring rows, and the #116 cases
         pytest.param(
             RunFacts(finding=True, asked=CommentId(7), timed_out=True, error=TIMEOUT),
@@ -1688,13 +1696,13 @@ TIMEOUT = 'implementer timeout after 1s'
         pytest.param(RunFacts(finding=True, ended=True), (RunEnd.FINISHED, None), id='finding-stop'),
         pytest.param(RunFacts(finding=True, cancelled=True), (RunEnd.FINISHED, None), id='finding-cancel'),
         pytest.param(
-            RunFacts(finding=True, timed_out=True, error=TIMEOUT, commits=1),
+            RunFacts(finding=True, timed_out=True, error=TIMEOUT, versions=1),
             (RunEnd.FINISHED, None),
             id='finding-timeout',
         ),
         pytest.param(RunFacts(finding=True, error='implementer exit 1'), (RunEnd.FINISHED, None), id='finding-error'),
         pytest.param(
-            RunFacts(finding=True, commits=1, recovered_only=True),
+            RunFacts(finding=True, versions=1, recovered_only=True),
             (RunEnd.FINISHED, None),
             id='finding-recovered-only',
         ),
@@ -1713,9 +1721,9 @@ TIMEOUT = 'implementer timeout after 1s'
             (RunEnd.CANCELLED, None),
             id='cancel-timeout',
         ),
-        pytest.param(RunFacts(cancelled=True, commits=1), (RunEnd.CANCELLED, None), id='cancel-commits'),
+        pytest.param(RunFacts(cancelled=True, versions=1), (RunEnd.CANCELLED, None), id='cancel-commits'),
         pytest.param(
-            RunFacts(timed_out=True, error=TIMEOUT, asked=CommentId(7), commits=1),
+            RunFacts(timed_out=True, error=TIMEOUT, asked=CommentId(7), versions=1),
             (RunEnd.TIMED_OUT, TIMEOUT),
             id='timeout-asked',
         ),
@@ -1725,7 +1733,7 @@ TIMEOUT = 'implementer timeout after 1s'
             id='error-asked',
         ),
         pytest.param(
-            RunFacts(asked=CommentId(7), commits=1), (RunEnd.AWAITING_ANSWER, 'comment#7'), id='asked-commits'
+            RunFacts(asked=CommentId(7), versions=1), (RunEnd.AWAITING_ANSWER, 'comment#7'), id='asked-commits'
         ),
     ],
 )
@@ -1916,7 +1924,7 @@ def test_uncommitted_changes_without_a_finding_are_scored_but_not_an_attempt_tha
     run = run_row(db, run_id)
     assert (run.status, run.error) == (RunStatus.FAILED, INTERRUPTED)
     [(summary, verdict, *_)] = scored(db, run_id)
-    assert (summary, verdict) == (UNCOMMITTED_SUMMARY, Origin.RECOVERED), 'what it left is kept, not judged'
+    assert (summary, verdict) == (UNCOMMITTED, Origin.RECOVERED), 'what it left is kept, not judged'
     with db.session() as s:
         assert s.get_one(Idea, run.idea_id).status is IdeaStatus.READY
 
@@ -1989,7 +1997,7 @@ def test_a_stop_between_the_implementers_end_and_the_runs_close_leaves_the_row_t
         ex.launcher.cancel()
         raise RuntimeError('worktree pulled away')
 
-    mocker.patch.object(RunController, '_commits', side_effect=stopped_meanwhile)
+    mocker.patch.object(RunController, '_received', side_effect=stopped_meanwhile)
     run_id = make_run(db, campaign)
     execute(ex, db, run_id)
     run = run_row(db, run_id)
@@ -2191,7 +2199,7 @@ def test_units_of_a_candidate_are_the_mean_per_unit_over_its_measurements(
     with db.session() as s:
         evaluator_id = s.get_one(Campaign, campaign.id).evaluator_id
         assert evaluator_id is not None
-        c = Candidate(campaign_id=campaign.id, tree_sha='t', commit_sha='t')
+        c = Candidate(campaign_id=campaign.id, tree_sha='t', revision='t')
         s.add(c)
         s.flush()
         rows = [Measurement(candidate_id=c.id, evaluator_id=evaluator_id, metrics={'score': 1.0}) for _ in range(4)]
@@ -2214,7 +2222,7 @@ def test_pairs_are_the_samples_of_a_candidate_next_to_the_successful_samples_of_
     with db.session() as s:
         evaluator_id = s.get_one(Campaign, campaign.id).evaluator_id
         assert evaluator_id is not None
-        bar, other, c = (Candidate(campaign_id=campaign.id, tree_sha=t, commit_sha=t) for t in 'boc')
+        bar, other, c = (Candidate(campaign_id=campaign.id, tree_sha=t, revision=t) for t in 'boc')
         s.add_all([bar, other, c])
         s.flush()
 
@@ -2309,7 +2317,7 @@ def test_dirt_after_a_skip_commit_is_committed_on_its_own_and_evaluated(
     execute(controller(db, runtime, tmp_path), db, run_id)
     assert [(c[0], c[1], c[3]) for c in scored(db, run_id)] == [
         ('scaffold', Origin.SKIPPED, 0),
-        (UNCOMMITTED_SUMMARY, Origin.RECOVERED, 0),
+        (UNCOMMITTED, Origin.RECOVERED, 0),
     ], 'the work after a skip commit is recovered on its own: never amended into the commit'
 
 
@@ -2439,7 +2447,7 @@ def keep_elsewhere(
     repo = Repo(campaign.path)
     with db.session() as s:
         parent = s.get_one(Candidate, on)
-        repo.git.checkout('-q', '--detach', parent.commit_sha)
+        repo.git.checkout('-q', '--detach', parent.revision)
         for name, text in files.items():
             (Path(campaign.path) / name).write_text(text)
         repo.git.add('-A')
@@ -2479,7 +2487,7 @@ def test_a_trunk_run_that_merges_a_branch_keep_is_judged_against_the_head_not_th
     )
     trunk = keep_elsewhere(db, campaign, 'trunk keep', {'other.txt': 'x\n'}, {'score': 1.0, 'size': 5.0})
     with db.session() as s:
-        kept_sha = s.get_one(Candidate, kept).commit_sha
+        kept_sha = s.get_one(Candidate, kept).revision
     write_toml(Path(campaign.path), f'#!/bin/sh\ngit merge -q --no-edit {kept_sha}\n')
     reload_campaign(db, campaign)
     run_id = make_run(db, campaign)
@@ -2526,7 +2534,7 @@ def test_a_run_pinned_to_a_non_keep_is_judged_against_its_nearest_keep_on_every_
         trunk = head(s, s.get_one(Campaign, campaign.id))
         assert trunk is not None and trunk.parent_id == lead, 'a trunk run: its keep is the new head'
         brief = s.get_one(Run, run_id).brief or ''
-    assert f'- candidate#{lead} is no keep: your commits are judged against candidate#1, its nearest keep' in brief
+    assert f'- candidate#{lead} is no keep: your versions are judged against candidate#1, its nearest keep' in brief
 
 
 def test_a_keep_that_lost_the_race_to_the_head_is_merged_onto_it_and_judged_there_again_and_again(
@@ -2580,12 +2588,12 @@ def test_a_keep_that_lost_the_race_to_the_head_is_merged_onto_it_and_judged_ther
             (x.id, Rebased(head=h2, rebased=merged.id)),
             (merged.id, Rebased(head=h3.id, rebased=final.id)),
         ]
-        assert [p.hexsha for p in repo.commit(final.commit_sha).parents] == [h3.commit_sha, merged.commit_sha]
+        assert [p.hexsha for p in repo.commit(final.revision).parents] == [h3.revision, merged.revision]
         assert sorted((Path(campaign.path) / '.git' / 'refs' / 'piloop' / 'demo' / 'rebase').iterdir()) == [
             Path(campaign.path) / '.git' / 'refs' / 'piloop' / 'demo' / 'rebase' / str(c)
             for c in sorted((x.id, merged.id))
         ], 'every merge commit is pinned'
-        tree = set(repo.git.ls_tree('--name-only', final.commit_sha).splitlines())
+        tree = set(repo.git.ls_tree('--name-only', final.revision).splitlines())
         assert {'notes.txt', 'docs.txt', 'solve.txt'} <= tree, "the head's changes and the run's, together"
         assert s.get_one(Idea, run_row(db, run_id).idea_id).status is IdeaStatus.DONE
 
@@ -2634,7 +2642,7 @@ def test_a_keep_whose_merge_onto_the_head_conflicts_stays_interesting_and_files_
         ), 'unpinned, so it runs from the head, on the run track'
         assert seed.hypothesis == (
             f'Follow-up of candidate#{x.id} (add a line): it kept against its own bar but its merge onto the head'
-            f' candidate#{h2} conflicts in solve.txt: from the head, git merge {x.commit_sha} and resolve the conflicts'
+            f' candidate#{h2} conflicts in solve.txt: from the head, merge candidate#{x.id} ({x.revision}) and resolve the conflicts'
         )
         [event] = s.scalars(select(Event).where(has(Rebased))).all()
         assert (event.target_id, event.payload) == (x.id, Rebased(head=h2, conflicts=['solve.txt']))
@@ -2875,7 +2883,7 @@ def test_a_merge_commit_descends_from_its_first_parent_the_runs_base(
     side = keep_elsewhere(db, campaign, 'notes', {'notes.txt': 'n\n'}, metrics, verdict=Outcome.INTERESTING)
     trunk = keep_elsewhere(db, campaign, 'docs', {'docs.txt': 'd\n'}, metrics)
     with db.session() as s:
-        side_sha = s.get_one(Candidate, side).commit_sha
+        side_sha = s.get_one(Candidate, side).revision
     write_toml(Path(campaign.path), f'#!/bin/sh\ngit merge -q --no-ff --no-edit {side_sha}\n')
     reload_campaign(db, campaign)
     run_id = make_run(db, campaign)
@@ -2903,7 +2911,7 @@ def test_a_keep_that_has_the_heads_changes_without_its_history_is_judged_against
     run_id = make_run(db, campaign)
     h2 = keep_elsewhere(db, campaign, 'other', {'other.txt': 'x\n'}, {'score': 1.0, 'size': 5.0})
     with db.session() as s:
-        h2_sha = s.get_one(Candidate, h2).commit_sha
+        h2_sha = s.get_one(Candidate, h2).revision
     pick = f'#!/bin/sh\ngit cherry-pick -n {h2_sha}\necho line >> solve.txt\ngit commit -qam "the head and a line"\n'
     write_toml(Path(campaign.path), pick)
     reload_campaign(db, campaign)

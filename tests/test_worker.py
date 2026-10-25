@@ -48,7 +48,6 @@ from piloop.plugins.executor.contract import (
     AgentJob,
     AgentKey,
     AgentReport,
-    Commits,
     EvaluationJob,
     EvaluationReport,
     MissingBlobs,
@@ -392,9 +391,9 @@ def test_an_agent_that_removes_its_own_worktree_is_still_reported(
         place='logs',
         artifact=head_of(ex, agent_session_id),
         timeout=60,
-        commits=Commits(summary='leftovers', run=RunId(1)),
+        capture=RunId(1),
     )
-    assert isinstance(outcome, Ran) and outcome.process.error is not None and outcome.commits is None, (
+    assert isinstance(outcome, Ran) and outcome.process.error is not None and outcome.work is None, (
         'the report says what is known'
     )
     assert rows(db, agent_session_id)[1].state is LeaseState.REPORTED

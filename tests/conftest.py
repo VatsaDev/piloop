@@ -311,7 +311,7 @@ def register(db: Database, campaign_path: Path) -> Campaign:
         base = Candidate(
             campaign_id=proj.id,
             tree_sha=repo.head.commit.tree.hexsha,
-            commit_sha=sha,
+            revision=sha,
             summary='baseline',
             origin=Origin.BASELINE,
             verdict=Outcome.KEEP,

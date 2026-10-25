@@ -141,7 +141,9 @@ def attach(agent_session_id: Annotated[AgentSessionId, cyclopts.Parameter(help='
 WrapUp = Annotated[
     bool,
     cyclopts.Parameter(
-        name='--wrap-up', help='Tell the agent to commit and stop first, and end it 10 minutes later.', negative=''
+        name='--wrap-up',
+        help='Tell the agent to save its work and stop first, and end it 10 minutes later.',
+        negative='',
     ),
 ]
 
@@ -174,7 +176,7 @@ def agent_cancel(
     """Cancel an agent of any role. The daemon acts on its next tick.
 
     A requested agent never starts. A running one is ended with every process that it started, at once or, with
-    `--wrap-up`, after it was told to commit and stop. For an implementer, this cancels its run (`piloop run cancel`).
+    `--wrap-up`, after it was told to save its work and stop. For an implementer, this cancels its run (`piloop run cancel`).
     """
     with common.session() as s:
         agent_session = s.get(AgentSession, agent_session_id)
@@ -192,7 +194,7 @@ def run_cancel(
     """Cancel a queued or running run. The daemon acts on its next tick.
 
     A queued run never starts, and a run whose implementer fails to start is not launched again. A running implementer is ended
-    with every process that it started, at once or, with `--wrap-up`, after it was told to commit and stop. The run
+    with every process that it started, at once or, with `--wrap-up`, after it was told to save its work and stop. The run
     closes as `cancelled`, unless the implementer left its finding before the daemon ended it: a later finding is
     refused. Its commits are scored, and its idea is parked: set it `ready` to run it again.
     """

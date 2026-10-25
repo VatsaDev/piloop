@@ -234,7 +234,7 @@ PILOOP_ACTOR=orchestrator piloop resume <name>
 
 ### Cancel a run, stop a campaign
 
-- A run that became redundant: `piloop run cancel <run> --wrap-up`. The implementer is told to commit and stop, and ended
+- A run that became redundant: `piloop run cancel <run> --wrap-up`. The implementer is told to save its work and stop, and ended
   10 minutes later, with every process it started. Its commits are scored and its idea is parked. Without `--wrap-up`,
   it is ended at once. `piloop agent cancel <agent-session> [--wrap-up]` does the same for an agent of any role, a sweep too.
 - A campaign: `piloop campaign stop <name> --reason '<why>'`. The daemon stops it as a limit of the stop rule does: it
@@ -250,7 +250,7 @@ Use this for a candidate of another campaign, or a branch.
   Never `INSERT INTO candidates`.
 - The daemon measures it.
 - Start an idea from it with `piloop idea add <name> '<title>' --base <c>`.
-- A candidate of another campaign is its `commit_sha`. If it is in another repo, fetch it into this repo first.
+- A candidate of another campaign is its `revision`. If it is in another repo, fetch it into this repo first.
 - A reference is never a keep and never the head. It is the bar only of a run that is pinned to it.
 
 Branch runs:
@@ -387,9 +387,9 @@ without a priority), out of the inbox.
 ## Read a candidate or a session
 
 - The commit is in the repo:
-  - `SELECT commit_sha, summary FROM candidates WHERE id = <c>`, then `git show <commit_sha>`.
-  - `git diff <parent commit_sha> <commit_sha>` compares it with its parent (`candidates.parent_id`).
-  - `git cherry-pick <commit_sha>` takes it.
+  - `SELECT revision, summary FROM candidates WHERE id = <c>`, then `git show <revision>`.
+  - `git diff <parent revision> <revision>` compares it with its parent (`candidates.parent_id`).
+  - `git cherry-pick <revision>` takes it.
   - The kept lineage in `piloop history` lists the commit of each candidate.
 - Why it was made: read the session of the agent that made it, the harness's own file. `agent_sessions.usage->>'$.source'`
   names it, for any agent, sweeps included. It is long: read it only for a specific question.

@@ -299,7 +299,7 @@ class CandidatesPanel:
         body = [
             f'verdict {label(c)} by {c.verdict_by or NONE}: {c.verdict_reason or NONE}',
             f'parent {f"candidate#{c.parent_id}" if c.parent_id else NONE} · run {f"#{c.run_id}" if c.run_id else NONE}'
-            f' · commit {c.commit_sha[:12]} · {age(c.created_at, ctx.now)} ago',
+            f' · revision {c.revision[:12]} · {age(c.created_at, ctx.now)} ago',
             '',
             f'metrics under {NONE if evaluator is None else f"evaluator#{evaluator}"} (vs parent):',
         ]

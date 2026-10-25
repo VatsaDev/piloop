@@ -259,7 +259,7 @@ def stop(
     This works also while the campaign is paused or held at its `[spend]` limit. A paused campaign gets its closing
     review; a held one as `[spend] closing_review` says. It drops the queued runs and the requested agents, and the
     `stopped` triggers request the closing review. Each
-    running implementer is told to commit and stop, and is ended 10 minutes later. What the implementers committed is scored.
+    running implementer is told to save its work and stop, and is ended 10 minutes later. What the implementers saved is scored.
     With `--kill`, the implementers are ended at once, and what they committed is still scored. On a stopped campaign,
     `--kill` ends the implementers that are still winding down. The campaign's `piloop.toml` is not changed.
     """
@@ -271,5 +271,5 @@ def stop(
             )
         request_stop(s, campaign, common.settings.actor, reason=reason, ending=Ending.NOW if kill else Ending.WRAP_UP)
         s.commit()
-        how = 'ends its implementers at once' if kill else 'tells its implementers to commit and stop'
+        how = 'ends its implementers at once' if kill else 'tells its implementers to save their work and stop'
         common.console.print(f'stop requested for {campaign.name}: the daemon {how} on its next tick', markup=False)

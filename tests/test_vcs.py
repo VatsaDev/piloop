@@ -1,7 +1,7 @@
 """The vcs seam: core reaches git only through the contract, so the ``git`` provider is the only code that runs it."""
 
 import ast
-import hashlib
+import re
 from pathlib import Path
 
 import pytest
@@ -14,12 +14,20 @@ from piloop.reports.overview import TOOLS
 
 ROOT = Path(piloop.__file__).parent
 PROVIDER = ROOT / 'plugins' / 'vcs' / 'git'
-ALLOWED = {
-    'capabilities.py': 'it re-exports every built-in provider for plugins, and nothing in piloop imports it',
-    'db/migrations/versions/0006_research_memory.py': 'a migration is frozen at its revision, when every campaign was git',
-    'cli/upgrade.py': "``git ls-remote`` of piloop's own install source, which is no campaign's",
+GITPYTHON = ('git', 'git.exc')
+"""What migration 0006 imports of GitPython."""
+ALLOWED: dict[str, tuple[tuple[str, ...], str]] = {
+    'capabilities.py': (
+        ('piloop.plugins.vcs.git',),
+        'it re-exports every built-in provider for plugins, and nothing in piloop imports it',
+    ),
+    'db/migrations/versions/0006_research_memory.py': (
+        GITPYTHON,
+        'a migration is frozen at its revision, when every campaign was git',
+    ),
+    'cli/upgrade.py': ((), "``git ls-remote`` of piloop's own install source, which is no campaign's"),
 }
-"""What may reach git outside the provider, and why."""
+"""What may reach git outside the provider: the modules that it may import (none: it may run git), and why."""
 
 
 def _git(module: str) -> bool:
@@ -28,7 +36,7 @@ def _git(module: str) -> bool:
 
 
 def _outside() -> list[Path]:
-    return [p for p in ROOT.rglob('*.py') if not p.is_relative_to(PROVIDER) and str(p.relative_to(ROOT)) not in ALLOWED]
+    return [p for p in ROOT.rglob('*.py') if not p.is_relative_to(PROVIDER)]
 
 
 def _imports(tree: ast.AST) -> list[str]:
@@ -60,32 +68,22 @@ def test_only_the_git_provider_imports_git_or_runs_it() -> None:
     argv: list[str] = []
     for path in _outside():
         tree = ast.parse(path.read_text(), str(path))
-        where = path.relative_to(ROOT)
-        imports += [f'{where}: {m}' for m in _imports(tree) if _git(m)]
-        argv += [f'{where}:{line}' for line in _git_argv(tree)]
+        where = str(path.relative_to(ROOT))
+        allowed = ALLOWED.get(where)
+        imports += [f'{where}: {m}' for m in _imports(tree) if _git(m) and (allowed is None or m not in allowed[0])]
+        if allowed is None or allowed[0]:
+            argv += [f'{where}:{line}' for line in _git_argv(tree)]
     assert imports == [], 'core reaches git through piloop.plugins.vcs.contract'
     assert argv == [], 'core runs no git: the provider does'
 
 
 def test_the_allowed_files_still_need_their_exception() -> None:
     """An exception whose reason is gone goes with it."""
-    for rel in ALLOWED:
+    for rel, (modules, _) in ALLOWED.items():
         tree = ast.parse((ROOT / rel).read_text())
-        assert any(map(_git, _imports(tree))) or _git_argv(tree), f'{rel} no longer reaches git: delete it from ALLOWED'
+        needed = set(modules) <= set(_imports(tree)) if modules else bool(_git_argv(tree))
+        assert needed, f'{rel} no longer reaches git so: change or delete it in ALLOWED'
 
-
-BEFORE = {
-    'TOOLS.txt': '99bce2bfe88bf00959838d10cd28ee1df874305e25fd6242b9137022178ec447',
-    'implementer.md': '5d886da05bcee55fb5c87b48df3f69e3b7e08973213322a7f1874c2623de1b2d',
-    'research.md': '9e6c8f3071daf8cd35475ce2bc3645d7161650acd1591828328a7b30a012e680',
-    'scout.md': '93b669faacc78e1333b5bd71e875e1369923781ff820d30ec5e7bbcd48f38947',
-    'sql_orchestrator.md': '983855dff5673c6d40d20522e8f629ebc9d3e18bd9938708f46a21dda5a23f99',
-    'sql_procedures.md': '2b83783206d3922ab42c0121da3ce1b65c9c34bf1a5594712fb939a30f6332a2',
-    'watchdog.md': '2278c57e18f1bbfb79f4a4a0f567465141f755acdefd6e38e22a14f4d18fbad1',
-    'watchdog_incident.md': '9b3ed86a60bbef091f7327f5c21e1d70be5ab8d97fe6170289b797a35c3d0870',
-    'watchdog_progress.md': '3a717f95296438d6efe4dc5fd995293bd05bcdc69fdafadb6c6334abf3c5aa53',
-}
-"""The SHA-256 of each built-in prompt, and of the tools of the context, before the ``git`` provider wrote its parts."""
 
 BUILT_IN = sorted(
     [*PROMPTS.glob('*.md'), *(Path(piloop.__file__).parent / 'plugins' / 'role' / 'prompts').glob('*.md')]
@@ -93,12 +91,35 @@ BUILT_IN = sorted(
 """The built-in prompts: the briefs' own, and those of the built-in roles."""
 
 
-def test_the_git_provider_writes_the_built_in_prompts_byte_for_byte_as_they_were() -> None:
-    """Moving the git parts into the provider changed no brief. Edit a prompt on purpose: update its line."""
-    vcs = VCS.selected({})
-    rendered = {p.name: prompted(p.read_text(), vcs) for p in BUILT_IN}
-    rendered['TOOLS.txt'] = '\n'.join(prompted(line, vcs) for line in TOOLS)
-    assert {name: hashlib.sha256(text.encode()).hexdigest() for name, text in rendered.items()} == BEFORE
+def test_every_built_in_provider_writes_every_part() -> None:
+    """A provider that left a part out would leave a hole in a brief."""
+    for name, provider in VCS.builtins().items():
+        vcs = provider()
+        assert [part for part in Part if not vcs.prompt(part).strip()] == [], f'{name} writes every part'
+
+
+GIT_WORDS = re.compile(r'\bgit\b|commit|worktree|cherry-pick|\bsha\b|trailer', re.IGNORECASE)
+"""Words that only a provider's parts may say: git's own, and its name for a version."""
+ALLOWED_WORDS = {
+    'scout.md': (
+        'its recent commits, issues and releases (`gh api repos/<owner>/<repo>/commits`',
+        "a GitHub repo that the scout watches, which is no campaign's",
+    ),
+}
+"""A phrase of a core prompt that may say one of ``GIT_WORDS``, and why."""
+
+
+def git_words(text: str) -> list[str]:
+    """The lines of ``text`` that say one of ``GIT_WORDS`` outside a ``{vcs:<part>}``."""
+    return [line for line in PART.sub('', text).splitlines() if GIT_WORDS.search(line)]
+
+
+def test_no_core_prompt_says_git_or_commit_outside_the_providers_parts() -> None:
+    texts = {p.name: p.read_text() for p in BUILT_IN} | {'TOOLS': '\n'.join(TOOLS)}
+    for name, (phrase, _) in ALLOWED_WORDS.items():
+        assert phrase in texts[name], f'{name} no longer says it: delete it from ALLOWED_WORDS'
+        texts[name] = texts[name].replace(phrase, '')
+    assert {name: found for name, text in texts.items() if (found := git_words(text))} == {}
 
 
 def test_each_part_is_in_a_built_in_prompt_and_the_git_provider_writes_each() -> None:

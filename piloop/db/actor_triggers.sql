@@ -145,7 +145,7 @@ END;
 CREATE TEMP TRIGGER candidates_deleted_event AFTER DELETE ON candidates
 BEGIN
   INSERT INTO events (at, actor, target_kind, target_id, payload)
-  VALUES (strftime('%Y-%m-%d %H:%M:%f', 'now'), (SELECT actor FROM temp.session_actor), 'candidate', OLD.id, json_object('kind', 'candidate.deleted', 'tree_sha', OLD.tree_sha, 'commit_sha', OLD.commit_sha, 'origin', OLD.origin, 'verdict', OLD.verdict));
+  VALUES (strftime('%Y-%m-%d %H:%M:%f', 'now'), (SELECT actor FROM temp.session_actor), 'candidate', OLD.id, json_object('kind', 'candidate.deleted', 'tree_sha', OLD.tree_sha, 'revision', OLD.revision, 'origin', OLD.origin, 'verdict', OLD.verdict));
 END;
 
 -- Every comment is an event, with the same shape as the event of the persistent escalation trigger. That trigger

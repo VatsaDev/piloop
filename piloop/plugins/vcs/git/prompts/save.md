@@ -1,6 +1,6 @@
 ## Commits
 
-- Commit your work in this worktree.
+- Commit your work in this worktree, your checkout: a commit is a saved version.
 - After your run ends, the daemon scores every commit you made with the campaign's evaluate command. Each commit becomes
   a candidate with a measurement and a verdict. Nothing is scored while you work: do not wait for a score or a verdict.
   When you need a number before you stop, measure it yourself.

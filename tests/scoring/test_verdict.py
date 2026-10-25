@@ -454,7 +454,7 @@ def test_only_a_judgement_is_overridden_and_a_note_needs_a_regressed_result() ->
     """``refusal`` is the one table of who may set which verdict by hand."""
 
     def of(origin: Origin, verdict: Outcome | None) -> Candidate:
-        return Candidate(campaign_id=1, tree_sha='t', commit_sha='c', origin=origin, verdict=verdict)
+        return Candidate(campaign_id=1, tree_sha='t', revision='c', origin=origin, verdict=verdict)
 
     note = Cause.NOTE
     assert [

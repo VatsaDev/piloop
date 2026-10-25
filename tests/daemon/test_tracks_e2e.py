@@ -122,7 +122,7 @@ def test_two_tracks_rebase_a_keep_that_lost_the_race_and_refuse_one_past_the_oth
             'against candidate#2: accuracy 2 vs 1 (+1; aggregate: no per-unit results); guardrails: cost 2 vs 2'
             ' (+0; aggregate: no per-unit results) within its margin 1'
         ), 'judged on the head, where both tracks gained'
-        assert [p.hexsha for p in repo.commit(merged.commit_sha).parents] == [trimmed.commit_sha, raced.commit_sha]
+        assert [p.hexsha for p in repo.commit(merged.revision).parents] == [trimmed.revision, raced.revision]
         [(rebased, payload)] = in_order(s, Rebased)
         assert (rebased.target_id, payload) == (raced.id, Rebased(head=trimmed.id, rebased=merged.id))
         assert sorted(p.track for _, p in in_order(s, RunQueued)) == ['accuracy', 'cost']

@@ -11,6 +11,7 @@ from covalence import Cid
 from piloop.cli import common
 from piloop.db.models import LeaseWorker, TokenScope
 from piloop.db.session import Database
+from piloop.ids import Revision
 from piloop.net import tokens
 from piloop.net.server import Server, app
 from piloop.net.tokens import Tokens
@@ -21,7 +22,6 @@ from piloop.plugins.executor.kit.leases import Leases
 from piloop.plugins.executor.kit.remote import lease_routes
 from piloop.plugins.network.contract import NetworkHost
 from piloop.plugins.network.https import TOKEN_ENV, Https
-from piloop.plugins.vcs.contract import Revision
 from piloop.settings import Settings
 from tests.cli.test_cli import run_cli
 from tests.conftest import disk, wait_until

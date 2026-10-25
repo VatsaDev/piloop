@@ -308,12 +308,14 @@ class Capability[P: Parameters]:
         return self.get(self.choice.default).model()
 
     def validated(self, table: object) -> P:
-        """Validate a table as the provider that its ``provider`` key names, else the default.
+        """Validate a table as the provider that its ``provider`` key names, else the default. A provider is itself.
 
         Raises:
             ValidationError: The provider refuses its parameters.
             ValueError: The table is not a table, or names no provider that there is.
         """
+        if isinstance(table, self.contract):
+            return table
         if not isinstance(table, Mapping):
             raise ValueError('not a table')
         keys = {str(k): v for k, v in table.items() if k != 'provider'}
@@ -382,38 +384,6 @@ type Plugins = dict[str, Parameters]
 
 
 @dataclass(frozen=True)
-class Chosen[P: Parameters]:
-    """``Annotated[P, Chosen(capability)]``: a provider of ``capability`` with its parameters, as its table.
-
-    The table is a ``[plugins.<name>]`` table: its ``provider`` key and its parameters. Data that a file's choice reaches
-    carries it so, as a job carries the campaign's vcs provider to its worker (``Source.vcs``).
-    """
-
-    capability: Capability[P]
-
-    def __get_pydantic_core_schema__(self, source: object, handler: GetCoreSchemaHandler) -> CoreSchema:
-        return core_schema.no_info_plain_validator_function(
-            self.validate,
-            serialization=core_schema.plain_serializer_function_ser_schema(self.dump, info_arg=True),
-        )
-
-    def validate(self, value: object) -> P:
-        """The provider that the table's ``provider`` key names, with its parameters (``Capability.validated``)."""
-        if isinstance(value, self.capability.contract):
-            return value
-        found = self.capability.validated(value)
-        assert isinstance(found, self.capability.contract)  # it validates as the provider that the table names
-        return found
-
-    def dump(self, provider: P, info: core_schema.SerializationInfo) -> dict[str, object]:
-        assert isinstance(provider, Parameters)  # a chosen contract subclasses it (Capability.__init__)
-        return {
-            'provider': self.capability.name_of(provider),
-            **provider.model_dump(mode=info.mode, exclude_unset=True),
-        }
-
-
-@dataclass(frozen=True)
 class PluginTables:
     """``Annotated[Plugins, PluginTables(scope)]``: ``[plugins]`` of the file of ``scope``.
 
@@ -459,13 +429,11 @@ class PluginTables:
     def _table(known: Mapping[str, Capability[Parameters]], name: str, table: object) -> Parameters:
         if (capability := known.get(name)) is None:
             raise ValueError(f'no capability has that name; there is {", ".join(sorted(known)) or "none"}')
-        found = Chosen(capability).validate(table)
-        assert isinstance(found, Parameters)  # a chosen contract subclasses it (Capability.__init__)
-        return found
+        return capability.validated(table)
 
     def dump(self, plugins: Plugins, info: core_schema.SerializationInfo) -> dict[str, dict[str, object]]:
         known = self._capabilities()
-        return {name: Chosen(known[name]).dump(provider, info) for name, provider in plugins.items()}
+        return {name: known[name].dumped(provider, info.mode) for name, provider in plugins.items()}
 
 
 @dataclass(frozen=True)
@@ -474,14 +442,14 @@ class Entry[P: Parameters]:
 
     The table is validated as a ``[plugins.<name>]`` table is (``Capability.validated``: without ``provider``, the
     default), and dumped back with its ``provider``. ``P`` may be narrower than the contract: a provider that is not a
-    ``P`` is refused. A trigger of a role, and the remote of the ``cached`` CAS, are entries.
+    ``P`` is refused. A trigger of a role, the remote of the ``cached`` CAS and the vcs provider of a job are entries.
     """
 
     capability: Capability[P]
 
     def __get_pydantic_core_schema__(self, source: type[object], handler: GetCoreSchemaHandler) -> CoreSchema:
         def validate(value: object) -> object:
-            found = value if isinstance(value, self.capability.contract) else self.capability.validated(value)
+            found = self.capability.validated(value)
             if not isinstance(found, source):
                 raise ValueError(
                     f'{self.capability.name_of(found)} cannot be here: this key takes a {source.__qualname__}'

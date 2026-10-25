@@ -174,7 +174,7 @@ def agent_job(db: Database, campaign: Campaign, tmp_path: Path) -> AgentJob:
     return AgentJob(
         agent_session=agent_session_id,
         runtime='subprocess',
-        artifact=Source(vcs=Git(), repo=RepoId(campaign.id), revision=baseline(db, campaign.id).commit_sha),
+        artifact=Source(vcs=Git(), repo=RepoId(campaign.id), revision=baseline(db, campaign.id).revision),
         place='logs',
         timeout=60,
         brief='b',
@@ -193,7 +193,7 @@ def evaluation_job(db: Database, campaign: Campaign, tmp_path: Path, runner: str
         evaluation=evaluation_id,
         candidate=base.id,
         runner=runner,
-        artifact=Source(vcs=Git(), repo=RepoId(campaign.id), revision=base.commit_sha),
+        artifact=Source(vcs=Git(), repo=RepoId(campaign.id), revision=base.revision),
         place='eval',
         command=['true'],
         timeout=60,
@@ -379,7 +379,7 @@ def evaluation_job_for_another_candidate(db: Database, campaign: Campaign, tmp_p
     """An evaluation of a second candidate: one candidate and evaluator have one evaluation."""
     base = baseline(db, campaign.id)
     with db.session() as s:
-        candidate = Candidate(campaign_id=campaign.id, tree_sha='t2', commit_sha=base.commit_sha, parent_id=base.id)
+        candidate = Candidate(campaign_id=campaign.id, tree_sha='t2', revision=base.revision, parent_id=base.id)
         s.add(candidate)
         s.flush()
         evaluation = Evaluation(candidate_id=candidate.id, evaluator_id=s.get_one(Campaign, campaign.id).evaluator_id)
@@ -390,7 +390,7 @@ def evaluation_job_for_another_candidate(db: Database, campaign: Campaign, tmp_p
         evaluation=evaluation_id,
         candidate=candidate_id,
         runner='process',
-        artifact=Source(vcs=Git(), repo=RepoId(campaign.id), revision=base.commit_sha),
+        artifact=Source(vcs=Git(), repo=RepoId(campaign.id), revision=base.revision),
         place='eval2',
         command=['true'],
         timeout=60,

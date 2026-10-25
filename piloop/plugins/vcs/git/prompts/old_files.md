@@ -1,1 +1,1 @@
-Your worktree is a commit, and any older file is `git show <commit_sha>:<path>`.
+Your worktree is a commit, and any older file is `git show <revision>:<path>`.

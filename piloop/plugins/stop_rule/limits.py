@@ -18,8 +18,8 @@ class Limits(StopRule):
     ``[plugins.stop_rule]`` sets the limits. One is enough. Without one, the campaign has no end.
 
     The daemon checks the limits on every tick, before it requests anything. When one is reached, the campaign is
-    ``stopped`` (``campaigns.status``, ``stopped_reason``). Running implementers are told to commit and stop, and are
-    ended 10 minutes later. What they committed is scored. Most harnesses read the message only when the turn ends: an
+    ``stopped`` (``campaigns.status``, ``stopped_reason``). Running implementers are told to save their work and stop, and
+    are ended 10 minutes later. What they saved is scored. Most harnesses read the message only when the turn ends: an
     implementer that is ended before it left its finding ends its run ``campaign_stopped``, which does not count toward
     ``max_runs`` or ``plateau``. Pending requests and queued runs are dropped (``campaign_stopped``). Once the last
     commits are scored, the ``stopped`` triggers fire once, which by default requests the watchdog's closing review,
@@ -31,9 +31,9 @@ class Limits(StopRule):
     changed.
 
     ``max_runs`` and ``plateau`` count the same runs: those that reached the evaluator, with a candidate that is
-    measured or waits for its measurement. A run that ended at a cheap check with no commit, with only
-    ``Piloop-Eval: skip`` commits, or before it committed because of a harness or host fault, says nothing about the
-    metric, so it counts toward neither. A run that a daemon stop, a daemon crash or a campaign stop ended does not
+    measured or waits for its measurement. A run that ended at a cheap check with no version, with only versions that
+    asked to be skipped, or before it saved one because of a harness or host fault, says nothing about the metric, so
+    it counts toward neither. A run that a daemon stop, a daemon crash or a campaign stop ended does not
     count either. ``max_spend``, ``max_tokens`` and ``max_hours`` stay hard limits on what all runs cost.
 
     The hold comes first: a limit does not stop a held campaign. A stop that someone requests still stops it

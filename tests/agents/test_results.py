@@ -66,7 +66,7 @@ def test_an_evaluation_that_left_the_queue_or_never_started_is_settled(
         evaluation=waiting,
         candidate=base.id,
         runner='process',
-        artifact=Source(vcs=Git(), repo=RepoId(campaign.id), revision=base.commit_sha),
+        artifact=Source(vcs=Git(), repo=RepoId(campaign.id), revision=base.revision),
         place='eval',
         command=['true'],
         timeout=60,
@@ -122,7 +122,7 @@ def test_the_finished_event_of_an_agent_says_the_state_of_its_closed_row(
     job = AgentJob(
         agent_session=agent_session_id,
         runtime='subprocess',
-        artifact=Source(vcs=Git(), repo=RepoId(campaign.id), revision=baseline(db, campaign.id).commit_sha),
+        artifact=Source(vcs=Git(), repo=RepoId(campaign.id), revision=baseline(db, campaign.id).revision),
         place='agent',
         timeout=60,
         brief=None,
@@ -152,7 +152,7 @@ def test_two_results_for_one_job_in_plain_sessions_close_its_row_once_and_measur
     agent = AgentJob(
         agent_session=agent_session_id,
         runtime='subprocess',
-        artifact=Source(vcs=Git(), repo=RepoId(campaign.id), revision=baseline(db, campaign.id).commit_sha),
+        artifact=Source(vcs=Git(), repo=RepoId(campaign.id), revision=baseline(db, campaign.id).revision),
         place='agent',
         timeout=60,
         brief=None,
@@ -162,7 +162,7 @@ def test_two_results_for_one_job_in_plain_sessions_close_its_row_once_and_measur
         evaluation=evaluation_id,
         candidate=base.id,
         runner='process',
-        artifact=Source(vcs=Git(), repo=RepoId(campaign.id), revision=base.commit_sha),
+        artifact=Source(vcs=Git(), repo=RepoId(campaign.id), revision=base.revision),
         place='eval',
         command=['true'],
         timeout=60,
@@ -356,7 +356,7 @@ def test_a_report_naming_a_blob_the_cas_lacks_is_refused_until_it_is_there_then_
         evaluation=evaluation_id,
         candidate=base.id,
         runner='process',
-        artifact=Source(vcs=Git(), repo=RepoId(campaign.id), revision=base.commit_sha),
+        artifact=Source(vcs=Git(), repo=RepoId(campaign.id), revision=base.revision),
         place='runs/1/eval-0',
         command=['true'],
         timeout=60,
@@ -381,7 +381,7 @@ def test_the_blobs_of_a_report_are_its_files_and_its_bundle(tmp_path: Path) -> N
     notes = cas.put(b'notes')
     finished = AgentFinished(
         process=AgentExit(ExitStatus.EXITED, 1),
-        commits=Transfer(blob=bundle, head='h'),
+        work=Transfer(blob=bundle, head='h'),
         files={'brief.md': brief},
         workspace={'NOTES.md': notes},
     )
@@ -412,7 +412,7 @@ def test_two_agents_that_change_one_workspace_file_keep_the_first_ones_and_the_s
         job = AgentJob(
             agent_session=agent,
             runtime='subprocess',
-            artifact=Source(vcs=Git(), repo=RepoId(campaign.id), revision=base.commit_sha, workspace=workspace),
+            artifact=Source(vcs=Git(), repo=RepoId(campaign.id), revision=base.revision, workspace=workspace),
             place=f'agent_sessions/{agent}',
             timeout=60,
             brief=None,

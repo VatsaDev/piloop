@@ -22,12 +22,12 @@ from piloop.db.events import emit
 from piloop.db.models import Campaign, CampaignStatus, Candidate, EventModel, Measurement, Origin
 from piloop.db.session import Database
 from piloop.db.sql import sql_error
-from piloop.ids import CampaignId, CandidateId, TargetKind, TargetRef
+from piloop.ids import CampaignId, CandidateId, Revision, TargetKind, TargetRef
 from piloop.plugins.cas.contract import CAS, Cas
 from piloop.plugins.executor.contract import RepoId, Source, Workspace
 from piloop.plugins.role.contract import ideas_taken
 from piloop.plugins.stop_rule.contract import STOP_RULES
-from piloop.plugins.vcs.contract import VCS, Repository, Revision, Vcs
+from piloop.plugins.vcs.contract import VCS, Repository, Vcs
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.proc import child_env
 from piloop.scoring.evaluate import Failed, Measured, run_evaluate
@@ -50,7 +50,8 @@ WORKSPACE = 'workspace'
 deprecated.until('0.4.0', 'campaign directories keep their 0.1.0 name: move projects/ to campaigns/, delete PROJECTS')
 PROJECTS = 'projects'
 """The directory under the piloop home that holds each campaign's directory."""
-GITIGNORE = 'data\n.venv\nworkspace\n__pycache__/\n'
+IGNORED = ('data', '.venv', WORKSPACE, '__pycache__')
+"""What no version of a new campaign holds (``Vcs.init``)."""
 TEMPLATES = Path(__file__).parent / 'templates'
 BLANK = TEMPLATES / 'campaign'
 """The template ``piloop init`` writes into a repo without a ``piloop.toml``."""
@@ -63,9 +64,9 @@ EXAMPLE_DATA: dict[str, dict[str, str]] = {
         'data/train.csv': 'https://raw.githubusercontent.com/datasciencedojo/datasets/master/titanic.csv'
     },
 }
-"""Per example template: ``relative path → URL`` downloaded into the campaign (gitignored, not committed)."""
-EVALUATE_CONTRACT = """The evaluate command is the referee. piloop runs it (the `evaluate` argv in piloop.toml) in a clean worktree of every
-commit that an implementer makes. It prints one `METRIC <name>=<value>` line for each metric under [[metrics]] and exits 0.
+"""Per example template: ``relative path → URL`` downloaded into the campaign (in no version: ``IGNORED``)."""
+EVALUATE_CONTRACT = """The evaluate command is the referee. piloop runs it (the `evaluate` argv in piloop.toml) in a clean checkout of every
+version that an implementer saves. It prints one `METRIC <name>=<value>` line for each metric under [[metrics]] and exits 0.
 A non-zero exit is recorded as a crash, with the reason on stderr. Make it deterministic. Make sure that an implementer
 can change the score only through the code that it is supposed to change."""
 
@@ -74,7 +75,7 @@ class CampaignError(RuntimeError):
     """Registration failed. The message says why and what to do."""
 
 
-def create_campaign_repo(dest: Path, template: Path, data: dict[str, str], *, ignore: str = GITIGNORE) -> list[str]:
+def create_campaign_repo(dest: Path, template: Path, data: dict[str, str]) -> list[str]:
     """Copy ``template`` to ``dest``, download ``data`` and make a repository with a baseline version (``Vcs.init``).
 
     If ``dest`` already has a ``piloop.toml``, it is a campaign: the template is not copied.
@@ -83,9 +84,8 @@ def create_campaign_repo(dest: Path, template: Path, data: dict[str, str], *, ig
     Args:
         dest: The campaign repo. It can already exist and can already be a repository.
         template: The directory to copy. ``data/``, ``.git``, ``.venv`` and ``__pycache__`` are not copied.
-        data: ``relative path → URL`` to download into ``dest``. These files are not saved, so ``ignore`` must cover
+        data: ``relative path → URL`` to download into ``dest``. These files are not saved, so ``IGNORED`` must cover
             them.
-        ignore: The ``.gitignore`` to write if the campaign has none.
 
     Returns:
         The repo-relative paths that this call wrote.
@@ -109,9 +109,6 @@ def create_campaign_repo(dest: Path, template: Path, data: dict[str, str], *, ig
             copy_function=copy_missing,
             ignore=shutil.ignore_patterns('data', '.git', '.venv', '__pycache__'),
         )
-    if not (dest / '.gitignore').exists():
-        (dest / '.gitignore').write_text(ignore)
-        written.append('.gitignore')
     if CONFIG_FILE in written:
         toml = dest / CONFIG_FILE
         toml.write_text(toml.read_text().replace(f'name = "{NAME_PLACEHOLDER}"', f'name = "{_slug(dest)}"', 1))
@@ -127,8 +124,8 @@ def create_campaign_repo(dest: Path, template: Path, data: dict[str, str], *, ig
     # Only a valid config is saved: it raises ConfigError, and the repo stays as it was, piloop.toml unsaved.
     plugins = load_campaign_config(dest).plugins if (dest / CONFIG_FILE).is_file() else {}
     # Only init's own files: in a shared checkout, other changed files are someone else's work in progress.
-    owned = sorted({*written, '.gitignore', *_template_files(template)})
-    VCS.selected(plugins).init(dest, template.name, owned)
+    owned = sorted({*written, *_template_files(template)})
+    written += VCS.selected(plugins).init(dest, f'{template.name}: baseline', owned, IGNORED)
     return sorted(written)
 
 
@@ -376,12 +373,8 @@ class Sources:
         manifest = put_tree(self._cas, workspace, names, seen=self._seen).manifest.put(self._cas)
         place = workspace.relative_to(self._home).as_posix()
         with self._db.session() as s:
-            history = [
-                Revision(sha)
-                for sha in s.scalars(
-                    select(Candidate.commit_sha).where(Candidate.campaign_id == campaign.id).distinct()
-                )
-            ]
+            query = select(Candidate.revision).where(Candidate.campaign_id == campaign.id).distinct()
+            history = list(s.scalars(query))
         update = {'workspace': Workspace(place=place, manifest=manifest), 'history': history}
         return self.source(campaign, revision).model_copy(update=update)
 

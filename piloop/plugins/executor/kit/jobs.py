@@ -28,7 +28,7 @@ from typing import Protocol, assert_never
 from covalence import Cid
 
 from piloop.config import BRIEF_FILE, TRANSCRIPT
-from piloop.ids import CommentId
+from piloop.ids import CommentId, Revision
 from piloop.mcp import RENDERERS, Launch, expand, forwarded_env
 from piloop.otel import Span
 from piloop.plugins.cas.contract import Cas
@@ -47,7 +47,7 @@ from piloop.plugins.executor.contract import (
 from piloop.plugins.executor.kit.clones import Clones, Fetch, of_record, own_clone
 from piloop.plugins.executor.kit.relay import RELAY_ARGV
 from piloop.plugins.runtime.contract import AgentExit, AgentSpec, ExitStatus, Handle, Runtime, taken
-from piloop.plugins.vcs.contract import Repository, Revision
+from piloop.plugins.vcs.contract import Repository
 from piloop.proc import PILOOP_ARGV, child_env, kill_group
 from piloop.scoring.evaluate import EvalResult, Failed, InputsChanged, Killed, Measured, NotRun, run_evaluate
 from piloop.settings import INPUTS_DIR
@@ -346,8 +346,8 @@ def _finish(
             span.event('agent_session.usage_unknown', agent_session=job.agent_session, error=error)
     try:
         report.changed = job.artifact.vcs.changed(cwd, site.clones.ignored(job.artifact))
-        if job.commits is not None:
-            report.commits = site.clones.bring_back(job.artifact, cwd, job.commits)
+        if job.capture is not None:
+            report.work = site.clones.bring_back(job.artifact, cwd, job.capture)
         report.workspace = site.clones.changed(job.artifact, cwd)
     except Exception as e:  # a worktree that is gone: the report says what is known
         span.error(e)
@@ -355,7 +355,7 @@ def _finish(
     report.read, report.unread = _reads(control.queued(), log_dir)
     report.files = site.files(job)
     process = report.process
-    head = report.commits.head if report.commits is not None else None
+    head = report.work.head if report.work is not None else None
     span.set(status=process.status, error=process.error, head=head)
     return report
 

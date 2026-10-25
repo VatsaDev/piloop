@@ -74,7 +74,6 @@ from piloop.daemon.run_controller import (
     RunController,
     branches,
     close_run,
-    commits_of,
     finding_of,
     handed_off,
     run_place,
@@ -106,7 +105,17 @@ from piloop.db.models import (
 )
 from piloop.db.session import Database
 from piloop.db.triggers import DAEMON_ACTOR
-from piloop.ids import AgentSessionId, CandidateId, CommentId, IdeaId, RoleName, RunId, TargetKind, TargetRef, TrackName
+from piloop.ids import (
+    AgentSessionId,
+    CandidateId,
+    CommentId,
+    IdeaId,
+    RoleName,
+    RunId,
+    TargetKind,
+    TargetRef,
+    TrackName,
+)
 from piloop.otel import Tracer
 from piloop.plugins.executor.contract import AgentKey, LeftJob, Prompt
 from piloop.plugins.role.contract import Files, ImplementerRole, SweepRole, ideas_taken
@@ -115,7 +124,7 @@ from piloop.plugins.role.scout import ScoutRole
 from piloop.plugins.stop_rule.contract import GO, Fact, Go, Hold, Stop
 from piloop.plugins.trigger.contract import TRIGGERS, Backlog, Fire, Incident, TrackBacklog
 from piloop.plugins.trigger.low_water import LowWaterTrigger
-from piloop.plugins.vcs.contract import NotARepository, Revision
+from piloop.plugins.vcs.contract import NotARepository
 from piloop.reports.overview import anomalies, assigned, overview, reported
 from piloop.reports.pack import pack
 from piloop.reports.wake import lessons_overview
@@ -131,12 +140,12 @@ PUSHED_KINDS = tuple(kind for kind in CommentKind if kind is not CommentKind.ESC
 STEER_LINE_CHARS = 200
 """The number of characters of a comment's first line that a ``[piloop]`` line quotes. The implementer can query the rest."""
 STOP_GRACE_SECONDS = 600
-"""The seconds that an implementer that was told to wrap up has to commit its work before the daemon ends it."""
+"""The seconds that an implementer that was told to wrap up has to save its work before the daemon ends it."""
 WAIT_SECONDS = 120.0
 """How long ``Scheduler.wait`` waits by default before it fails: generous for a loaded host, since it returns as soon
 as nothing is in flight."""
 WRAP_UP_PROMPT = (
-    '[piloop] {what} ({cause}). Commit what you have now, with a message that says where it stands.'
+    '[piloop] {what} ({cause}). Save what you have now, with a summary that says where it stands.'
     ' Leave your finding and stop. This session ends in {minutes:g} minutes.'
 )
 EventModel.retire('agent_session.jobs_left')  # 0.2.0 listed the jobs of an idle implementer; its finding ends it now
@@ -319,11 +328,11 @@ class Scheduler:
             run = s.get_one(Run, w.run_id)
             if run.status is not RunStatus.RUNNING or not (self._runs_dir / str(w.run_id) / 'worktree').is_dir():
                 return None
-            artifact = sources.source(campaign, Revision(run.base.commit_sha))
-            return self._controller.launcher.left(s, w, artifact, run_place(w.run_id), commits_of(w.run_id))
+            artifact = sources.source(campaign, run.base.revision)
+            return self._controller.launcher.left(s, w, artifact, run_place(w.run_id), w.run_id)
         if not (self._agent_sessions_dir / str(w.id) / 'worktree').is_dir():
             return None
-        artifact = sources.source(campaign, Revision(checkout_candidate(s, campaign).commit_sha))
+        artifact = sources.source(campaign, checkout_candidate(s, campaign).revision)
         return self._controller.launcher.left(s, w, artifact, sweep_place(w.id), None)
 
     def _fail_open(self, end: RunEnd, *, reaped: bool, sparing: Collection[AgentSessionId] = ()) -> None:
@@ -623,9 +632,9 @@ class Scheduler:
         finished (``run_outcome``).
 
         A wrap-up prompt (``WrapUp``) is a note on the agent, which its executor delivers. An implementer whose role
-        timeout is ``wrap_up_lead`` away is told to commit and stop. Its timeout ends it.
+        timeout is ``wrap_up_lead`` away is told to save its work and stop. Its timeout ends it.
 
-        An implementer of a stopped campaign is told to commit and stop, and ended after the grace period
+        An implementer of a stopped campaign is told to save its work and stop, and ended after the grace period
         (``STOP_GRACE_SECONDS``), or at once when the stop request asked to end it ``now``. The runs then close and their
         commits are scored. An implementer that the daemon ends (``AgentEnded``) without its finding closes its run as
         cut by the stop (``RunEnd.CAMPAIGN_STOPPED``), not as a failed attempt. Sweeps of a stopped campaign are not
@@ -1356,7 +1365,7 @@ class Scheduler:
                 wake=lessons_overview(s, campaign, cfg.wake_budget(role.kind)),
             )
         sources = self._controller.sources  # outside the session: it puts the linked inputs into the CAS
-        artifact = sources.agent(campaign, Revision(base.commit_sha))
+        artifact = sources.agent(campaign, base.revision)
         place = sweep_place(agent_session_id)
         self._controller.launcher.launch(agent_session_id, brief=brief, place=place, artifact=artifact, timeout=timeout)
 

@@ -1,6 +1,6 @@
 """The evaluate command: score the checkout it runs in and print one ``METRIC <name>=<value>`` line per metric.
 
-piloop runs this command (``evaluate`` in ``piloop.toml``) in a clean worktree of every commit that an implementer makes.
+piloop runs this command (``evaluate`` in ``piloop.toml``) in a clean checkout of every version that an implementer saves.
 Print every metric under ``[[metrics]]`` in ``piloop.toml`` to stdout and exit 0. If the candidate cannot be scored,
 exit non-zero with the reason on stderr, and piloop records a crash. Be deterministic: use fixed seeds and fixed
 splits. Make sure the candidate can change the score only through what it is supposed to change.

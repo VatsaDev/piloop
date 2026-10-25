@@ -522,7 +522,7 @@ class CandidateImported(EventModel):
 
     kind: Literal['candidate.imported'] = 'candidate.imported'
     ref: str
-    commit: str
+    revision: Revision
 
 
 REBASED_SUFFIX = re.compile(r' \(rebased onto candidate#\d+\)$')
@@ -548,12 +548,12 @@ def rebase(s: Session, cfg: CampaignConfig, repo: Repository, candidate: Candida
     """
     subject = REBASED_SUFFIX.sub('', candidate.summary or '')
     message = f'{subject} (rebased onto candidate#{onto.id})'
-    merged = repo.merge(Revision(onto.commit_sha), Revision(candidate.commit_sha), message)
+    merged = repo.merge(onto.revision, candidate.revision, message)
     if isinstance(merged, Conflicts):
         paths = ', '.join(merged.paths)
         why = (
             f'it kept against its own bar but its merge onto the head candidate#{onto.id} conflicts in {paths}:'
-            f' from the head, git merge {candidate.commit_sha} and resolve the conflicts'
+            f' from the head, merge candidate#{candidate.id} ({candidate.revision}) and resolve the conflicts'
         )
         assert candidate.run is not None  # only a run's candidate is rebased
         stopped = s.get_one(Campaign, candidate.campaign_id).status is CampaignStatus.STOPPED
@@ -609,7 +609,7 @@ def supersede_composed(s: Session, repo: Repository, candidate: Candidate, seed:
     )
     for old in s.scalars(composes):
         assert old.provenance is not None  # the IN clause matched it
-        if repo.contains(Revision(candidate.commit_sha), Revision(by_provenance[old.provenance].commit_sha)):
+        if repo.contains(candidate.revision, by_provenance[old.provenance].revision):
             s.add(IdeaLink(idea_id=seed.id, target_id=old.id, kind=LinkKind.SUPERSEDES))
 
 
@@ -671,7 +671,7 @@ def resolve(
         run_id=run_id,
         parent_id=parent.id if parent else None,
         tree_sha=version.tree,
-        commit_sha=version.revision,
+        revision=version.revision,
         summary=version.summary,
         origin=origin,
     )
@@ -709,14 +709,14 @@ def import_reference(
         version = repo.version(ref)
     except UnknownRevision as e:
         raise ImportRefused(str(e)) from e
-    sha = version.revision
+    revision = version.revision
     candidate, created = resolve(s, campaign.id, version, parent=None, run_id=None, origin=Origin.REFERENCE)
     if not created:
         raise ImportRefused(f'the tree of {ref!r} already is candidate#{candidate.id} ({label(candidate)})')
     candidate.summary = summary or candidate.summary
-    candidate.verdict_reason = f'imported from {ref} ({sha[:7]})'
-    repo.keep(sha, ReferenceVersion(cfg.name, candidate.id))
-    imported = CandidateImported(ref=ref, commit=sha)
+    candidate.verdict_reason = f'imported from {ref} ({revision[:7]})'
+    repo.keep(revision, ReferenceVersion(cfg.name, candidate.id))
+    imported = CandidateImported(ref=ref, revision=revision)
     emit(s, imported, TargetRef(TargetKind.CANDIDATE, candidate.id), actor)
     return candidate
 

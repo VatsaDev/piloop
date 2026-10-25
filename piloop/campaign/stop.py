@@ -107,8 +107,8 @@ def counted() -> ColumnElement[bool]:
     """Select the runs that count toward the run limits, ``max_runs`` and ``plateau``: those that reached the evaluator.
 
     Such a run has a candidate that is measured or waiting for its verdict (``scored``). A run that stopped with no
-    commit, or with only ``Piloop-Eval: skip`` commits, does not count: it stopped at a cheap check, or a harness or
-    host fault ended it before it committed. It says nothing about the idea's effect on the metric. ``[spend]``,
+    version, or with only versions that asked to be skipped, does not count: it stopped at a cheap check, or a harness
+    or host fault ended it before it saved one. It says nothing about the idea's effect on the metric. ``[spend]``,
     ``max_tokens`` and ``max_hours`` limit what such runs cost. This is the one rule for both limits.
     """
     return attempt() & scored()

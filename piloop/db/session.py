@@ -41,7 +41,7 @@ from piloop.version import Version, installed
 
 MIGRATIONS = Path(__file__).parent / 'migrations'
 BACKUP_INFIX = '.bak-'
-Revision = NewType('Revision', str)
+MigrationRevision = NewType('MigrationRevision', str)
 """An Alembic revision id of ``MIGRATIONS``, such as ``0001``."""
 
 
@@ -50,10 +50,13 @@ class Release:
     """A minor release at its ``.0``, and the head revision that it shipped."""
 
     version: Version
-    head: Revision
+    head: MigrationRevision
 
 
-RELEASES = (Release(Version(0, 1, 0), Revision('0001')), Release(Version(0, 2, 0), Revision('0018')))
+RELEASES = (
+    Release(Version(0, 1, 0), MigrationRevision('0001')),
+    Release(Version(0, 2, 0), MigrationRevision('0018')),
+)
 """Every minor release, oldest first. The newest is the floor: this piloop migrates a database from its head or from a
 newer revision, never from an older one, so a database upgrades one minor release at a time.
 
@@ -186,7 +189,7 @@ def unmigratable(database: Path) -> SchemaMismatch | None:
         return None
     if (refused := foreign(database, stamp)) is not None:
         return refused
-    at = Revision(stamp)
+    at = MigrationRevision(stamp)
     position, floor = chain.index, RELEASES[-1]
     if position(at) < position(HERDR_REMOVED) and (refused := on_herdr(database)) is not None:
         return refused
@@ -205,7 +208,7 @@ def unmigratable(database: Path) -> SchemaMismatch | None:
     )
 
 
-HERDR_REMOVED = Revision('0034')
+HERDR_REMOVED = MigrationRevision('0034')
 """The revision that moves the stopped campaigns off the herdr runtime."""
 
 
@@ -241,9 +244,9 @@ def on_herdr(database: Path) -> SchemaMismatch | None:
     )
 
 
-def revisions() -> list[Revision]:
+def revisions() -> list[MigrationRevision]:
     """Every schema revision that this piloop knows, oldest first."""
-    return [Revision(r.revision) for r in reversed(list(ScriptDirectory(str(MIGRATIONS)).walk_revisions()))]
+    return [MigrationRevision(r.revision) for r in reversed(list(ScriptDirectory(str(MIGRATIONS)).walk_revisions()))]
 
 
 def schema_mismatch(database: Path, daemon: int | None, actor: Actor) -> SchemaMismatch | None:

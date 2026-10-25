@@ -28,15 +28,15 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, TypeAdapter
 from sqlalchemy.orm import Session
 
 from piloop.db.session import Database
-from piloop.ids import AgentSessionId, CampaignId, CandidateId, CommentId, RunId
+from piloop.ids import AgentSessionId, CampaignId, CandidateId, CommentId, Revision, RunId
 from piloop.mcp import McpServer
 from piloop.net import Route
 from piloop.otel import Tracer
 from piloop.plugins.cas.contract import BlobAddress, Cas
-from piloop.plugins.host import Capability, Choice, Chosen, Parameters, Scope
+from piloop.plugins.host import Capability, Choice, Parameters, Scope
 from piloop.plugins.network.contract import Network
 from piloop.plugins.runtime.contract import AgentExit, AgentStart
-from piloop.plugins.vcs.contract import VCS, Repository, Revision, Transfer, Vcs
+from piloop.plugins.vcs.contract import VCS, Repository, Transfer, Vcs
 from piloop.runtime.factory import RuntimeFactory
 from piloop.usage import Usage, UsageSpec
 
@@ -75,7 +75,7 @@ class Source(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    vcs: Annotated[Vcs, Chosen(VCS)]
+    vcs: Annotated[Vcs, VCS.entry]
     """The campaign's vcs provider, with its parameters (``[plugins.vcs]``): the worker checks out with it."""
     repo: RepoId
     revision: Revision
@@ -94,17 +94,6 @@ class MissingBlobs(Exception):
 
     A worker puts every blob before it reports, so a blob missing then is in another CAS, or lost.
     """
-
-
-class Commits(BaseModel):
-    """How an agent's versions come back: what it left unsaved as a version of its own (``Repository.capture``)."""
-
-    model_config = ConfigDict(frozen=True)
-
-    summary: str
-    """The summary of the version of what the agent left unsaved."""
-    run: RunId
-    """The run that the version of what the agent left unsaved is recovered for."""
 
 
 DEADLINE_ENV = 'PILOOP_DEADLINE'
@@ -144,8 +133,9 @@ class AgentJob(BaseModel):
     """How to read the session's tokens when it ends (``Harness.usage``)."""
     session_id: str | None = None
     """The session id the launcher made for the argv (``{session_id}``), or None when the runtime reports it."""
-    commits: Commits | None = None
-    """Bring the agent's versions back. None for a sweep: nothing that it saves comes back."""
+    capture: RunId | None = None
+    """Bring the agent's work back, with what it left unsaved as a version recovered for this run
+    (``Repository.capture``). None for a sweep: nothing that it saves comes back."""
 
     @property
     def needs_session_id(self) -> bool:
@@ -205,8 +195,8 @@ class AgentFinished(BaseModel):
     usage: Usage | None = None
     changed: bool = True
     """Whether the agent changed its checkout: a saved version, or an unsaved change outside the links."""
-    commits: Transfer | None = None
-    """Its versions, when the job asked for them back and there are some."""
+    work: Transfer | None = None
+    """Its work: its versions, when the job asked for them back (``AgentJob.capture``) and there are some."""
     files: dict[str, BlobAddress] = Field(default_factory=dict)
     """Its log directory's files by relative path: core puts them in the job's place under its own home."""
     read: list[CommentId] = Field(default_factory=list)
@@ -218,8 +208,8 @@ class AgentFinished(BaseModel):
 
     def blobs(self) -> list[Cid]:
         """Every blob that it names: what the CAS holds before core applies it."""
-        commits = [self.commits.blob] if self.commits is not None else []
-        return [*self.files.values(), *(blob for blob in self.workspace.values() if blob is not None), *commits]
+        work = [self.work.blob] if self.work is not None else []
+        return [*self.files.values(), *(blob for blob in self.workspace.values() if blob is not None), *work]
 
 
 class AgentNotStarted(BaseModel):

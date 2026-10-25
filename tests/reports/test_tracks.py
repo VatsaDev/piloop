@@ -84,8 +84,8 @@ def test_history_and_pack_show_each_track(db: Database, campaign: Campaign) -> N
     )
     assert [line for line in text.splitlines() if line.startswith(('| candidate', '| #4'))] == snapshot(
         [
-            "| candidate | parent | track | score | size | vs parent (its track's primary) | idea (by)           | commit  | tokens | summary  |",
-            '| #4        | #2     | size  | 3     | 8    | -2                              | idea#3 (research#4) | 0000060 | —      | score 3  |',
+            "| candidate | parent | track | score | size | vs parent (its track's primary) | idea (by)           | revision | tokens | summary  |",
+            '| #4        | #2     | size  | 3     | 8    | -2                              | idea#3 (research#4) | 0000060  | —      | score 3  |',
         ]
     )
     assert [line for line in packed.splitlines() if line.startswith('| metric')] == snapshot(

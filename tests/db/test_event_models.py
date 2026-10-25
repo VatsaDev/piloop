@@ -92,7 +92,7 @@ def test_every_trigger_writes_an_event_that_loads_as_the_model_that_renders_it(
             "UPDATE ideas SET status = 'parked', priority = 0, track = 'size', base_candidate_id = 1 WHERE id = 1",
             "INSERT INTO idea_links (idea_id, target_id, kind) VALUES (1, 2, 'after')",
             'DELETE FROM idea_links',
-            "INSERT INTO candidates (campaign_id, tree_sha, commit_sha) VALUES (1, 'tree', 'sha')",
+            "INSERT INTO candidates (campaign_id, tree_sha, revision) VALUES (1, 'tree', 'sha')",
             "UPDATE candidates SET origin = 'skipped' WHERE id = 2",
             "UPDATE candidates SET origin = 'run', verdict = 'interesting', verdict_by = 'human' WHERE id = 2",
             "INSERT INTO runs (idea_id, attempt, base_candidate_id, harness, model) VALUES (1, 1, 1, 'pi', 'm')",

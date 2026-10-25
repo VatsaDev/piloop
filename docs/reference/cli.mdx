@@ -197,7 +197,7 @@ piloop campaign stop REF [--kill] [--reason TEXT]
 ```
 
 Stops a campaign on the daemon's next tick, as a [limit of the stop rule](/concepts/cost#stop-conditions) does, also a
-paused or held one. With `--kill`, the implementers are ended at once, without the prompt to commit and stop, and their
+paused or held one. With `--kill`, the implementers are ended at once, without the prompt to save their work and stop, and their
 commits are still scored. On a stopped campaign, `--kill` ends the implementers that are still winding down.
 `--reason` goes into `stopped_reason`.
 
@@ -536,7 +536,7 @@ piloop run cancel RUN_ID [--wrap-up]
 Cancels a queued or running run on the daemon's next tick. A queued run never starts, and a run whose implementer fails to
 start is not launched again. A running implementer is ended with
 [every process that it started](/concepts/roles#when-an-agent-ends), also those in sessions of their own. With `--wrap-up`, the implementer is first told to
-commit and stop, and ended 10 minutes later. The run closes as `cancelled`, unless its implementer left its finding
+save its work and stop, and ended 10 minutes later. The run closes as `cancelled`, unless its implementer left its finding
 before the daemon ended it: a later finding is refused. Its commits are scored, it counts toward no run limit, and its idea is parked: set the idea `ready` to run it again.
 
 ### piloop agent cancel
@@ -547,7 +547,7 @@ piloop agent cancel AGENT_SESSION_ID [--wrap-up]
 
 Cancels an agent of any role on the daemon's next tick: a sweep, or an implementer, whose run it cancels as
 `piloop run cancel` does. A requested agent never starts. A running one is ended with every process that it started,
-at once or, with `--wrap-up`, after it was told to commit and stop.
+at once or, with `--wrap-up`, after it was told to save its work and stop.
 
 ### piloop agent messages
 

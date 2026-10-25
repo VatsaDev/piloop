@@ -32,6 +32,7 @@ from covalence import Cid
 from pydantic import BaseModel, RootModel, ValidationError
 
 from piloop.db.models import NoLease
+from piloop.ids import Revision
 from piloop.net import MAX_POLL_SECONDS, Changed, Polled, Refusal, Route
 from piloop.net.tokens import Caller
 from piloop.otel import Tracer
@@ -57,7 +58,6 @@ from piloop.plugins.executor.kit.leases import (
     Work,
 )
 from piloop.plugins.executor.kit.relay import LeaseCall, Run
-from piloop.plugins.vcs.contract import Revision
 
 FIRST_BACKOFF = 0.2
 MAX_BACKOFF = 5.0

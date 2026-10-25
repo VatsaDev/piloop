@@ -133,7 +133,7 @@ def live_campaign(db: Database, campaign: Campaign, tmp_path: Path) -> Campaign:
                     run_id=run.id,
                     parent_id=n - 1,
                     tree_sha=f't{n}',
-                    commit_sha='x',
+                    revision='x',
                     summary=f'[wip] step {n}',
                     verdict=verdict,
                     created_at=ago(minutes=minutes),
@@ -224,7 +224,7 @@ def live_campaign(db: Database, campaign: Campaign, tmp_path: Path) -> Campaign:
         )
         s.add(other)
         s.flush()
-        s.add(Candidate(campaign_id=other.id, tree_sha='o1', commit_sha='o'))
+        s.add(Candidate(campaign_id=other.id, tree_sha='o1', revision='o'))
         s.commit()
         for e in s.scalars(select(Event)):  # trigger-written events are stamped to the second
             e.at = ago(minutes=1)
@@ -625,7 +625,7 @@ def test_the_ideas_and_candidates_details(db: Database, live_campaign: Campaign)
         [
             ' candidate#4',
             ' verdict keep by —: —',
-            ' parent candidate#3 · run #1 · commit x · 1h ago',
+            ' parent candidate#3 · run #1 · revision x · 1h ago',
             '',
             ' metrics under evaluator#1 (vs parent):',
             '   score 4 (+2)',
@@ -644,7 +644,7 @@ def test_imported_references_are_listed_apart_as_starting_points(db: Database, l
             Candidate(
                 campaign_id=live_campaign.id,
                 tree_sha='r1',
-                commit_sha='r',
+                revision='r',
                 summary='paper repro',
                 origin=Origin.REFERENCE,
                 created_at=utcnow() - timedelta(hours=2),  # a fixed age: "0s" became "1s" on a slow machine
@@ -836,7 +836,7 @@ def test_the_sparkline_is_the_head_after_each_trunk_keep_so_a_branch_keep_leaves
             campaign_id=live_campaign.id,
             run_id=branch.id,
             tree_sha='b',
-            commit_sha='b',
+            revision='b',
             summary='b',
             verdict=Outcome.KEEP,
         )

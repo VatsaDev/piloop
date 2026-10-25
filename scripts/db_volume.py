@@ -178,7 +178,7 @@ def _candidates(con: sqlite3.Connection, v: Volume, rng: random.Random) -> dict[
         last[p] = c
         owners[c] = p
     con.executemany(
-        'INSERT INTO candidates (id, campaign_id, run_id, parent_id, tree_sha, commit_sha, summary, origin, verdict)'
+        'INSERT INTO candidates (id, campaign_id, run_id, parent_id, tree_sha, revision, summary, origin, verdict)'
         ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
         rows,
     )

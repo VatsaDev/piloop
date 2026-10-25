@@ -38,8 +38,8 @@ piloop history my-campaign     # the kept lineage, with the gain of each keep ov
 The commit of a candidate, and its diff from its parent:
 
 ```bash
-piloop sql "SELECT commit_sha, summary, verdict_reason FROM candidates WHERE id = 42"
-git show <commit_sha>
+piloop sql "SELECT revision, summary, verdict_reason FROM candidates WHERE id = 42"
+git show <revision>
 ```
 
 Check that no keep changed a frozen file, such as the evaluate command or the data:

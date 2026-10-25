@@ -110,7 +110,7 @@ class StaleReport(EventModel):
     worker: str
     reason: str
     report: Report
-    """What it brought back, by address: its commits and files stay in the CAS."""
+    """What it brought back, by address: its work and files stay in the CAS."""
 
 
 class LeaseUnreachable(EventModel):

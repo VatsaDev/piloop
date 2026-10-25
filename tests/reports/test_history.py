@@ -20,7 +20,7 @@ from piloop.db.models import (
     RunStatus,
 )
 from piloop.db.session import Database
-from piloop.ids import IMPLEMENTER, TargetKind, TargetRef
+from piloop.ids import IMPLEMENTER, Revision, TargetKind, TargetRef
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.reports.history import (
     FINDINGS_IN_HISTORY,
@@ -84,7 +84,7 @@ def scored(
             run_id=run.id,
             parent_id=parent,
             tree_sha=f'{row.id}-{run.id}-{n}',
-            commit_sha=f'{row.id}{run.id}{n}0000deadbeef',
+            revision=f'{row.id}{run.id}{n}0000deadbeef',
             summary=f'{row.title} commit' if error is None else None,
             verdict=verdict,
         )
@@ -121,7 +121,7 @@ def test_history_lists_every_idea_with_its_outcome_the_lineage_and_the_findings(
     db: Database, campaign: Campaign
 ) -> None:
     with db.session() as s:
-        s.get_one(Candidate, 1).commit_sha = 'ba5e11ae0000'
+        s.get_one(Candidate, 1).revision = Revision('ba5e11ae0000')
         kept = idea(s, campaign, 'more lines', priority=1, family='appending', created_by='research#9')
         e2 = scored(
             s,
@@ -168,7 +168,7 @@ def test_history_lists_every_idea_with_its_outcome_the_lineage_and_the_findings(
 
 ## History: kept lineage
 
-| candidate | parent | score | vs parent | idea (by) | commit | tokens | summary |
+| candidate | parent | score | vs parent | idea (by) | revision | tokens | summary |
 |---|---|---|---|---|---|---|---|
 | #1 | — | 1 | — | — | ba5e11a | — | baseline |
 | #2 | #1 | 3 | +2 | idea#1 (research#9) | 1100000 | 234k | more lines commit |
@@ -224,7 +224,7 @@ def test_history_when_a_human_kept_an_unscored_commit_and_an_idea_builds_on_it(
 ) -> None:
     with db.session() as s:
         unscored = Candidate(
-            campaign_id=campaign.id, tree_sha='y', commit_sha='y', verdict=Outcome.KEEP, verdict_by='human:t'
+            campaign_id=campaign.id, tree_sha='y', revision='y', verdict=Outcome.KEEP, verdict_by='human:t'
         )
         s.add(unscored)
         s.flush()

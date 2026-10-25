@@ -38,8 +38,8 @@ FIRST_LINE_CHARS = 200
 """How much of a comment's first line a brief shows. The rest is a query away: ``comment#<id>`` names the row."""
 BRIEF_WIDTH = 1000
 """Wide enough that no bounded cell wraps. A wrapped cell breaks the markdown table."""
-SHORT_SHA = 7
-"""Enough of a commit SHA for ``git show``."""
+SHORT_REVISION = 7
+"""Enough of a revision to name it: a short commit SHA under ``git``."""
 
 
 def history(s: Session, campaign: Campaign, cfg: CampaignConfig) -> str:
@@ -118,7 +118,7 @@ def renderables(
             *(t.primary.name for t in tracks),
             "vs parent (its track's primary)" if cfg.multitrack else 'vs parent',
             'idea (by)',
-            'commit',
+            'revision',
             'tokens',
             'summary',
         ],
@@ -134,7 +134,7 @@ def renderables(
             *(_value(c, t.primary, evaluator_id) for t in tracks),
             _delta(c, track.primary, evaluator_id),
             f'idea#{c.run.idea.id} ({c.run.idea.created_by})' if c.run is not None else NONE,
-            c.commit_sha[:SHORT_SHA],
+            c.revision[:SHORT_REVISION],
             human(tokens) if tokens is not None else NONE,
             cell(c.summary or NONE),
         )
@@ -154,14 +154,14 @@ def _starting_points(
     deciding = [*(t.primary for t in cfg.all_tracks), *cfg.guardrails]
     table = titled_table(
         f'{heading}History: starting points (pin one with base_candidate_id; never kept)',
-        ['candidate', 'commit', *(m.name for m in deciding), 'summary'],
+        ['candidate', 'revision', *(m.name for m in deciding), 'summary'],
         table_box,
     )
     evaluator_id = campaign.evaluator_id
     for c in found:
         table.add_row(
             f'#{c.id}',
-            c.commit_sha[:SHORT_SHA],
+            c.revision[:SHORT_REVISION],
             *(_value(c, m, evaluator_id) for m in deciding),
             cell(c.summary or NONE),
         )

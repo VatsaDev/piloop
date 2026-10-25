@@ -19,7 +19,7 @@ from pytest_mock import MockerFixture
 
 from piloop.db.models import Campaign, LeaseState, NoLease, TokenScope
 from piloop.db.session import Database
-from piloop.ids import CampaignId, CommentId
+from piloop.ids import CampaignId, CommentId, Revision
 from piloop.net import MAX_POLL_SECONDS, tokens
 from piloop.net.server import Server, app
 from piloop.net.tokens import Tokens
@@ -42,7 +42,6 @@ from piloop.plugins.executor.kit.leases import (
 from piloop.plugins.executor.kit.remote import Remote, lease_routes
 from piloop.plugins.network.contract import NetworkHost
 from piloop.plugins.network.https import Https, HttpsNetwork
-from piloop.plugins.vcs.contract import Revision
 from tests.conftest import Dial, disk, wait_until
 from tests.fixtures.netfault import CutResponse, Proxy
 from tests.test_lease import (

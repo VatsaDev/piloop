@@ -113,7 +113,7 @@ def waiting(db: Database, campaign: Campaign, tmp_path: Path, n: int = 1, runner
             evaluation=next(EVALUATIONS),
             candidate=base.id,
             runner=runner,
-            artifact=Source(vcs=Git(), repo=RepoId(campaign.id), revision=base.commit_sha),
+            artifact=Source(vcs=Git(), repo=RepoId(campaign.id), revision=base.revision),
             place='eval',
             command=['true'],
             timeout=60,
