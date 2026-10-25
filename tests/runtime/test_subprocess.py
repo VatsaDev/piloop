@@ -8,6 +8,7 @@ import time
 from dataclasses import fields
 from pathlib import Path
 
+import psutil
 import pytest
 from dirty_equals import IsPositive, IsStr
 
@@ -192,12 +193,18 @@ def test_reused_pid_is_not_mistaken_for_the_implementer(tmp_path: Path) -> None:
     assert not Subprocess().open()._alive(impostor)
 
 
-def test_kill_tolerates_a_vanished_group(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize('error', [ProcessLookupError, PermissionError])
+def test_kill_tolerates_a_vanished_group(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: type[OSError]) -> None:
+    """The group exits as it is killed: Linux answers ESRCH, macOS EPERM for a group of zombies."""
     rt = Subprocess().open()
     handle = rt.start(spec(tmp_path, script(tmp_path, 'sleep 5')))
+    killpg = os.killpg
 
-    def gone(*_: object) -> None:
-        raise ProcessLookupError
+    def gone(pgid: int, signum: int) -> None:
+        killpg(pgid, signum)
+        while psutil.Process(pgid).status() != psutil.STATUS_ZOMBIE:  # exited, and not reaped yet
+            time.sleep(0.01)
+        raise error
 
     monkeypatch.setattr(os, 'killpg', gone)
     rt.kill(handle)

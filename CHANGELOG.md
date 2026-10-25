@@ -5,6 +5,14 @@ All notable changes to piloop are in this file. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before 1.0, a minor release may contain breaking changes.
 A deprecated configuration key shows a warning for at least one minor release before it is removed.
 
+## [0.3.1](https://github.com/hiloopai/piloop/compare/v0.3.0...v0.3.1) - 2026-10-25
+
+0.3.0 was tagged but never published: its release checks failed on macOS. 0.3.1 is 0.3.0 plus this fix.
+
+### Fixed
+
+- On macOS, an evaluator that exited before its stale lease killed it no longer fails the job, and is reaped.
+
 ## [0.3.0](https://github.com/hiloopai/piloop/compare/v0.2.1...v0.3.0) - 2026-10-25
 
 This release has breaking changes, marked **Breaking** below. Read

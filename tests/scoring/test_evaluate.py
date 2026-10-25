@@ -1,5 +1,6 @@
 import os
 import signal
+import subprocess
 import time
 from pathlib import Path
 
@@ -23,6 +24,20 @@ from piloop.scoring.evaluate import (
 def test_parse_metrics() -> None:
     out = 'noise\nMETRIC acc=0.83\nMETRIC loss = -1.5e-3\nMETRIC big=1E+20\nMETRICS bad=1\nMETRIC nan=x\nMETRIC=3\n'
     assert parse_metrics(out) == snapshot({'acc': 0.83, 'loss': -0.0015, 'big': 1e20})
+
+
+def test_an_evaluate_that_its_tracker_refuses_is_killed_and_reaped(tmp_path: Path) -> None:
+    """A tracker that raises ends the evaluate command at once, and it is reaped: no zombie, no Popen left running."""
+    procs: list[subprocess.Popen[bytes]] = []
+
+    def refuse(proc: subprocess.Popen[bytes] | None) -> None:
+        if proc is not None:
+            procs.append(proc)
+            raise RuntimeError('refused')
+
+    with pytest.raises(RuntimeError, match='refused'):
+        run_evaluate(['sleep', '30'], cwd=tmp_path, log_dir=tmp_path, timeout=30, required=set(), track=refuse)
+    assert [proc.returncode for proc in procs] == [-signal.SIGKILL]
 
 
 def test_evaluate_ok(tmp_path: Path) -> None:
