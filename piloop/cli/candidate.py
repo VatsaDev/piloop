@@ -96,7 +96,7 @@ def candidate_remeasure(
         s.commit()
         campaign = s.get_one(Campaign, candidate.campaign_id)
         later = ops.measuring_held(s, campaign, campaign.config)
-        bar = f'next to its bar candidate#{bar_of(candidate.parent).id}' if candidate.parent is not None else 'alone'
+        bar = f'next to its bar candidate#{bar_of(s, candidate.parent).id}' if candidate.parent is not None else 'alone'
         effect = 'then judges it again' if rejudgeable(candidate) else 'its verdict stays'
         common.console.print(
             f'candidate#{candidate.id} {label(candidate)}: the daemon measures it {repeats} times {bar}{later}; {effect}',

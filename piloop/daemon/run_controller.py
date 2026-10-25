@@ -102,29 +102,28 @@ from piloop.plugins.runtime.contract import ExitStatus
 from piloop.plugins.secrets.contract import SECRETS, HomeSecrets, SecretsProvider
 from piloop.plugins.section.contract import Rendering, markdown
 from piloop.plugins.vcs.contract import Repository, RunVersion, Transfer, Version
-from piloop.plugins.verdict_rule.contract import Outcome
+from piloop.plugins.verdict_rule.contract import Lineage, Outcome, Trunk
 from piloop.runtime.factory import RuntimeFactory, make_runtime
 from piloop.scoring import queue
 from piloop.scoring.ledger import (
     MOVED,
     CandidateJudged,
-    Lineage,
     RejudgeFailed,
-    Trunk,
     answer_rejudge,
     bar_of,
     current_evaluator,
     head,
     judge,
     measured,
-    raises_bar,
-    rebase,
+    node,
+    on_moved,
     remeasure_asked,
     reproposed,
     resolve,
     score,
     side,
     unjudged,
+    verdict_rule,
 )
 from piloop.scoring.verdict import UNMEASURED, judgeable, label, override, pending, refusal, rejudgeable, write
 from piloop.settings import StorageSettings
@@ -684,7 +683,7 @@ class RunController:
             parent = candidate.parent
             # a merge that no run judges is measured as its run would: paired with its head when the track repeats
             paired = cfg.track(candidate.run.idea.track).repeats if unjudged(candidate) and candidate.run else None
-            bar = bar_of(parent).id if (asked is not None or paired) and parent is not None else None
+            bar = bar_of(s, parent).id if (asked is not None or paired) and parent is not None else None
             repeats = asked.repeats if asked is not None else paired or 1
             campaign_id, revision = campaign.id, candidate.revision
             vcs, campaign_path = vcs_of(campaign), Path(campaign.path)
@@ -750,7 +749,7 @@ class RunController:
                 side(run),
             )
             s.commit()
-            bar_id, revision = bar_of(candidate.parent).id, candidate.revision
+            bar_id, revision = bar_of(s, candidate.parent).id, candidate.revision
         with self._tracer.span('piloop.candidate', run=scope.run_id, revision=revision, candidate=candidate_id) as span:
             notes = list(repo.version(revision).notes)
             judged = self._judge(scope, candidate_id, bar_id, span, judge_now=True, unmeasured=None, notes=notes)
@@ -771,8 +770,8 @@ class RunController:
         all of them. It judges the candidates that the stop left pending, including rebased ones
         (``_follow``).
 
-        Each candidate is judged on the run's track (``ledger.judge``) against a bar. The bar starts at the run's base,
-        or at the nearest keep if the base is not a keep (``ledger.bar_of``). Each keep becomes the new bar. A run that
+        Each candidate is judged on the run's track (``ledger.judge``) against a bar. The bar starts at the bar of the
+        run's base (``ledger.bar_of``). Each keep becomes the new bar. A run that
         is not a branch run keeps on the trunk only while its bar is the head. If the head has moved past the bar, a
         keep is rebased onto the head and the merge is judged there (``_judge``, ``_follow``). A commit whose tree is
         already a candidate is that candidate. It is measured only if the current evaluator has not measured it, and it
@@ -797,7 +796,7 @@ class RunController:
                 current_evaluator(s, run.idea.campaign, cfg).id,
                 side(run),
             )
-            bar_id = bar_of(run.base).id
+            bar_id = bar_of(s, run.base).id
             candidate = run.base
             ids: list[CandidateId] = []
             for version in versions:
@@ -988,8 +987,8 @@ class RunController:
 
         A keep against a bar that is no longer the head stays off the trunk, unless the run is a branch run. The head
         moved while the run worked or while the daemon measured. The candidate becomes ``interesting``
-        (``Cause.MOVED``) and is merged onto the head in the same transaction (``ledger.rebase``). The merge is judged
-        next (``Judged.merged``). See ``_verdict``.
+        (``Cause.MOVED``), and what the verdict rule says follows is done in the same transaction (``ledger.on_moved``):
+        by default its merge onto the head, which is judged next (``Judged.merged``). See ``_verdict``.
 
         Otherwise the commit's ``Piloop-Note`` ``notes`` are added after the verdict, signed by the run. They turn a
         discard or an interesting candidate into a noted ``interesting`` (``Cause.NOTE``). A keep or a crash keeps
@@ -1010,7 +1009,8 @@ class RunController:
                         write(candidate, verdict, cause=cause, reason=reason, by=System.DAEMON)
                         if onto is not None:
                             moved = True
-                            merged = rebase(s, scope.cfg, scope.repo, candidate, onto).rebased
+                            rebased = on_moved(s, scope.cfg, scope.repo, candidate, onto)
+                            merged = rebased.rebased if rebased is not None else None
                         judged = CandidateJudged(
                             verdict=verdict,
                             score=score(candidate, scope.evaluator_id, scope.track.primary),
@@ -1025,7 +1025,7 @@ class RunController:
                     case _:
                         assert_never(unmeasured)
                 s.commit()
-            advanced = raises_bar(candidate, scope.side) or moved
+            advanced = verdict_rule(scope.cfg).raises_bar(node(s, candidate), scope.side) or moved
             span.set(
                 verdict=label(candidate),
                 summary=candidate.summary,
@@ -1177,11 +1177,11 @@ class RunController:
                 f'- candidate#{base.id} is where run#{base.run_id}, an earlier run of this idea, stopped.{unmeasured}'
                 ' Read its diff against its parent, finish the work, and save what you would ship.'
             )
-        if (bar := bar_of(base)) is not base:
+        if (bar := bar_of(s, base)) is not base:
             at_bar = ', '.join(f'{t.primary.name}={score(bar, evaluator_id, t.primary)}' for t in cfg.all_tracks)
             lines.append(
-                f'- candidate#{base.id} is no keep: your versions are judged against candidate#{bar.id}, its nearest'
-                f' keep ({at_bar}).'
+                f'- candidate#{base.id} is not your bar: your versions are judged against candidate#{bar.id}'
+                f' ({at_bar}).'
             )
         if cfg.multitrack:
             guards = ', '.join(
@@ -1389,12 +1389,12 @@ def _requeue(s: Session, run: Run, last: Candidate, end: RunEnd) -> None:
     """
     idea = run.idea
     trunk = head(s, idea.campaign)
-    moved = not run.branch and trunk is not None and branches(idea.campaign, last, trunk)
+    moved = not run.branch and trunk is not None and branches(s, idea.campaign, last, trunk)
     idea.status, idea.base_candidate_id = IdeaStatus.READY, None if moved else last.id
     emit(s, RecoveryRequeued(run=run.id, candidate=last.id), TargetRef(TargetKind.IDEA, idea.id), System.DAEMON)
     body = (
         f'requeued on the head: run#{run.id} ended {end} after its versions, and the head moved past them. To start'
-        f' from them, take the change from {bar_of(run.base).revision} to {last.revision} onto the head'
+        f' from them, take the change from {bar_of(s, run.base).revision} to {last.revision} onto the head'
         if moved
         else f'requeued from candidate#{last.id}: run#{run.id} ended {end} after its versions; the next run starts'
         ' from its last one to finish the work'
@@ -1402,16 +1402,16 @@ def _requeue(s: Session, run: Run, last: Candidate, end: RunEnd) -> None:
     s.add(Comment(target=TargetRef(TargetKind.IDEA, idea.id), author=DAEMON_ACTOR, kind=CommentKind.NOTE, body=body))
 
 
-def branches(campaign: Campaign, pinned: Candidate | None, computed: Candidate | None) -> bool:
+def branches(s: Session, campaign: Campaign, pinned: Candidate | None, computed: Candidate | None) -> bool:
     """Return True if a run on ``pinned`` is a branch run: the pinned base's bar is not the current head.
 
-    A pin to a non-keep whose nearest keep is the head is not a branch. Its run is judged against the head
+    A pin whose bar is the head, such as a non-keep on top of it, is not a branch. Its run is judged against the head
     (``ledger.bar_of``). Nor is a pin whose version has the head's (``Repository.contains``), such as a compose that
     cherry-picked it: a keep of it builds on the head.
     """
     if pinned is None or computed is None:
         return pinned is not None
-    if bar_of(pinned).id == computed.id:
+    if bar_of(s, pinned).id == computed.id:
         return False
     return not repository(campaign).contains(pinned.revision, computed.revision)
 

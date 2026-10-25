@@ -4,7 +4,7 @@ from sqlalchemy import select
 
 from piloop.api.views import Lines, Rendered
 from piloop.campaign.ideas import runnable
-from piloop.db.models import OPEN_RUNS, Candidate, Idea, Run, campaign_runs
+from piloop.db.models import OPEN_RUNS, Idea, Run, campaign_runs
 from piloop.plugins.section.contract import Rendering, Section, Surface
 from piloop.reports.overview import known, num
 from piloop.scoring.ledger import baseline, head, score, track_of, trunk_keeps
@@ -29,7 +29,7 @@ class Tracks(Section):
         evaluator_id = campaign.evaluator_id
         trunk = head(s, campaign)
         first = baseline(s, campaign)
-        steps = s.scalars(trunk_keeps(campaign).where(Candidate.run_id.is_not(None)).order_by(Candidate.id)).all()
+        steps = [c for c in trunk_keeps(s, campaign) if c.run_id is not None]
         open_runs = campaign_runs(campaign.id).where(Run.status.in_(OPEN_RUNS)).with_only_columns(Idea.track)
         running = Counter(s.scalars(open_runs))
         ready = Counter(s.scalars(select(Idea.track).where(Idea.campaign_id == campaign.id, runnable())))

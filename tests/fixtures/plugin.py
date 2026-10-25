@@ -2,10 +2,12 @@
 its own with a provider and a verdict rule that calls it, and objects of the wrong type."""
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from datetime import timedelta
 from importlib.resources import files
 from typing import Annotated
 
+from piloop.ids import CandidateId
 from piloop.plugins.host import Capability, Parameters, Tier
 from piloop.plugins.role.contract import ImplementerRole, SweepRole
 from piloop.plugins.runtime.contract import RUNTIMES, Handle, RuntimeName
@@ -13,7 +15,17 @@ from piloop.plugins.runtime.subprocess import Subprocess, SubprocessRuntime
 from piloop.plugins.stop_rule.contract import GO, Fact, Go, Hold, Stop, StopCase, StopRule
 from piloop.plugins.trigger.contract import Fire, Pass, Trigger, TriggerEntry
 from piloop.plugins.verdict_rule.bootstrap import Bootstrap
-from piloop.plugins.verdict_rule.contract import Case, Judgement, Outcome, VerdictRule
+from piloop.plugins.verdict_rule.contract import (
+    Case,
+    Judgement,
+    Leave,
+    Lineage,
+    Moved,
+    Node,
+    Outcome,
+    Rebase,
+    VerdictRule,
+)
 
 
 class EveryPass(Trigger):
@@ -128,3 +140,48 @@ class Undecided(VerdictRule):
 NOT_A_TRIGGER = 'every_pass'
 NOT_A_ROLE = 'auditor'
 NOT_A_RUNTIME = 'typed'
+
+
+class BaseBar(Bootstrap):
+    """``base_bar``: the built-in rule, but a run's bar is its base, a keep or not."""
+
+    def bar(self, ancestry: Sequence[Node]) -> CandidateId:
+        return ancestry[0].id
+
+
+class EveryKeep(Bootstrap):
+    """``every_keep``: the built-in rule, but every keep raises the bar, a branch run's on the trunk too."""
+
+    def raises_bar(self, node: Node, lineage: Lineage) -> bool:
+        return node.verdict is Outcome.KEEP
+
+
+class FirstHead(Bootstrap):
+    """``first_head``: the built-in rule, but the head is the first trunk keep."""
+
+    def head(self, trunk: Sequence[Node]) -> CandidateId | None:
+        return trunk[0].id if trunk else None
+
+
+class Leaves(Bootstrap):
+    """``leaves``: the built-in rule, but a keep that lacks the head is not merged onto it."""
+
+    def on_moved(self, moved: Moved) -> Rebase | Leave:
+        return Leave()
+
+
+class NoCompose(Bootstrap):
+    """``no_compose``: the built-in rule, but a merge onto the head that conflicts files no seed."""
+
+    def on_moved(self, moved: Moved) -> Rebase | Leave:
+        return Rebase(conflicts=Leave())
+
+
+class Astray(Bootstrap):
+    """``astray``: the built-in rule, but its lineage methods choose a candidate that they were not given."""
+
+    def bar(self, ancestry: Sequence[Node]) -> CandidateId:
+        return CandidateId(10**6)
+
+    def head(self, trunk: Sequence[Node]) -> CandidateId | None:
+        return CandidateId(10**6)

@@ -95,14 +95,12 @@ from piloop.plugins.runtime.contract import AgentExit, Handle
 from piloop.plugins.vcs.contract import Part
 from piloop.plugins.vcs.git import UNCOMMITTED, Git, GitRepository, commands as git
 from piloop.plugins.vcs.git.commands import pin as git_pin
-from piloop.plugins.verdict_rule.contract import VERDICT_RULES, Outcome
+from piloop.plugins.verdict_rule.contract import VERDICT_RULES, Branch, Outcome, Trunk
 from piloop.scoring.evaluate import CHANGED_INPUTS
 from piloop.scoring.ledger import (
-    Branch,
     CandidateJudged,
     MeasurementRecorded,
     Rebased,
-    Trunk,
     current_evaluator,
     due,
     head,
@@ -2437,7 +2435,7 @@ def test_a_branch_run_is_judged_against_its_own_base_and_its_keep_never_moves_th
         assert trunk is not None and trunk.id == 1, 'a branch keep never moves the head, however it scores'
         assert [(line.lineage, line.latest.summary, line.keeps) for line in lineages(s, proj)] == [
             (Trunk(), 'baseline', 1),
-            (Branch(s.get_one(Candidate, reference)), 'second', 2),
+            (Branch(reference), 'second', 2),
         ], "two lineages: the trunk first, then the reference's branch"
 
 
@@ -2548,7 +2546,7 @@ def test_a_run_pinned_to_a_non_keep_is_judged_against_its_nearest_keep_on_every_
         trunk = head(s, s.get_one(Campaign, campaign.id))
         assert trunk is not None and trunk.parent_id == lead, 'a trunk run: its keep is the new head'
         brief = brief_of(db, run_id)
-    assert f'- candidate#{lead} is no keep: your versions are judged against candidate#1, its nearest keep' in brief
+    assert f'- candidate#{lead} is not your bar: your versions are judged against candidate#1 (' in brief
 
 
 def test_a_keep_that_lost_the_race_to_the_head_is_merged_onto_it_and_judged_there_again_and_again(

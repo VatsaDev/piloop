@@ -9,8 +9,9 @@ from piloop.config import CampaignConfig
 from piloop.db.models import FINISHED_RUNS, Campaign, Candidate, Cause, Run, campaign_runs, count
 from piloop.ids import EvaluatorId
 from piloop.plugins.section.contract import Rendering, Section, Surface
+from piloop.plugins.verdict_rule.contract import Branch, Trunk
 from piloop.reports.overview import known, num
-from piloop.scoring.ledger import Branch, Trunk, baseline, lineages, score, track_of, trunk_keeps
+from piloop.scoring.ledger import baseline, lineages, score, track_of, trunk_keeps
 from piloop.scoring.verdict import label
 from piloop.text import age, cell, metric
 
@@ -31,7 +32,7 @@ class Trajectory(Section):
         s, campaign = r.s, r.campaign
         cfg = campaign.config
         evaluator_id = campaign.evaluator_id
-        steps = s.scalars(trunk_keeps(campaign).order_by(Candidate.id)).all()
+        steps = trunk_keeps(s, campaign)
         if not steps:
             lines = ["- No trunk keep: the baseline's verdict was overridden and nothing was kept since."]
             return Rendered(title='Trajectory', blocks=(Lines(lines=tuple(lines)),))
@@ -83,7 +84,8 @@ def _branches(s: Session, campaign: Campaign, cfg: CampaignConfig) -> list[str]:
                 case Trunk():
                     root = baseline(s, campaign)
                     start = f'trunk from candidate#{root.id} ({label(root)})'
-                case Branch(root=root):
+                case Branch(root=root_id):
+                    root = s.get_one(Candidate, root_id)
                     start = f'branch from candidate#{root.id} ({label(root)})'
                 case _:
                     assert_never(line.lineage)

@@ -11,7 +11,7 @@ into a ``note`` on the row. An operation emits the events of the changes that no
 """
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Annotated, Literal, assert_never
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -54,16 +54,18 @@ from piloop.ids import (
 )
 from piloop.plugins.role.contract import Files
 from piloop.plugins.vcs.contract import VcsError
-from piloop.plugins.verdict_rule.contract import Outcome
+from piloop.plugins.verdict_rule.contract import Outcome, Trunk
 from piloop.scoring.ledger import (
     MOVED,
     Rebased,
     RejudgeRequested,
     follow_up,
     head,
-    rebase,
+    node,
+    on_moved,
     record,
     track_of,
+    verdict_rule,
 )
 from piloop.scoring.verdict import Refusal, label, override, pending, refusal, rejudgeable, write
 
@@ -206,9 +208,10 @@ def set_verdict(
     The verdict is ``actor``'s now, so the daemon never changes it. The ``candidate.verdict`` event (a trigger) has the
     reason. A keep of a trunk run that does not build on the head (``missing_head``) goes the way of the daemon's
     keep against a bar that is no longer the head: the head is the newest trunk keep, and a keep that lacks the
-    head's changes would drop them from the trunk. So the candidate is ``interesting`` (``Cause.MOVED``), and its merge
-    onto the head (``ledger.rebase``) is a pending candidate that the daemon measures and judges against the head
-    (``ledger.unjudged``). A merge that conflicts files a seed to compose it. A keep of a branch run never moves the
+    head's changes would drop them from the trunk. So the candidate is ``interesting`` (``Cause.MOVED``), and the
+    verdict rule says what follows (``ledger.on_moved``). By default its merge onto the head is a pending candidate that
+    the daemon measures and judges against the head (``ledger.unjudged``), and a merge that conflicts files a seed to
+    compose it. A keep of a branch run never moves the
     head. With ``Cause.NOTE``, it keeps a regressed result in view as a lead: an ``interesting`` verdict whose reason
     is followed by the one that it notes.
 
@@ -245,7 +248,7 @@ def set_verdict(
         reason = MOVED.format(head=trunk.id) + f'kept by hand: {why}'
         write(candidate, Outcome.INTERESTING, cause=Cause.MOVED, reason=reason, by=actor)
         campaign = s.get_one(Campaign, candidate.campaign_id)
-        return Overridden(old, rebase(s, campaign.config, repository(campaign), candidate, trunk))
+        return Overridden(old, on_moved(s, campaign.config, repository(campaign), candidate, trunk))
     override(candidate, to, cause=cause, reason=why, by=actor)
     return Overridden(old)
 
@@ -255,14 +258,16 @@ def missing_head(s: Session, candidate: Candidate) -> Candidate | None:
 
     A candidate builds on the head when the head is among its ancestors (``parent_id``): a commit of a run that
     started from it. Else the vcs decides (``Repository.contains``): a merge onto the head, or a compose that took it.
-    A candidate of a branch run is a branch keep, which never moves the head.
+    A keep that would not raise the trunk's bar (``VerdictRule.raises_bar``), such as a branch run's, never moves the
+    head.
 
     Raises:
         Refused: the vcs cannot tell, for example because the campaign repo is gone.
     """
-    if candidate.run is not None and candidate.run.branch:
-        return None
     campaign = s.get_one(Campaign, candidate.campaign_id)
+    kept = replace(node(s, candidate), verdict=Outcome.KEEP)
+    if not verdict_rule(campaign.config).raises_bar(kept, Trunk()):
+        return None
     trunk = head(s, campaign)
     ancestor: Candidate | None = candidate
     while trunk is not None and ancestor is not None and ancestor.id != trunk.id:

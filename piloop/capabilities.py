@@ -70,6 +70,8 @@ from piloop.plugins.verdict_rule.contract import VERDICT_RULES, VerdictRule, Cas
 from piloop.plugins.verdict_rule.contract import Criterion, Side
 from piloop.plugins.metric import Direction
 from piloop.plugins.verdict_rule.contract import Judgement, Outcome
+from piloop.plugins.verdict_rule.contract import Node, Trunk, Branch, Imported
+from piloop.plugins.verdict_rule.contract import Moved, Rebase, Seed, Leave
 from piloop.plugins.metric import number
 from piloop.plugins.verdict_rule.bootstrap import Bootstrap
 

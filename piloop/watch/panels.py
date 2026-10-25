@@ -325,7 +325,7 @@ def kept_scores(s: Session, campaign: Campaign, cfg: CampaignConfig) -> dict[str
 
     Each trunk keep was the head in turn. A branch keep never was the head, so it does not move the line.
     """
-    kept = s.scalars(trunk_keeps(campaign).order_by(Candidate.id)).all()[-SPARK_POINTS:]
+    kept = trunk_keeps(s, campaign)[-SPARK_POINTS:]
     evaluator_id = campaign.evaluator_id
     return {t.name: [v for c in kept if (v := score(c, evaluator_id, t.primary)) is not None] for t in cfg.all_tracks}
 

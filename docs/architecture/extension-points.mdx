@@ -307,7 +307,7 @@ min_gain = 100
 
 ### The contract
 
-A verdict rule is a [pure](#pure-plugins) provider, a subclass of `VerdictRule` with one method:
+A verdict rule is a [pure](#pure-plugins) provider, a subclass of `VerdictRule` that implements
 `decide(case: Case) -> Judgement`. Import the types from `piloop.capabilities`.
 
 - `Case.primary`: the primary metric of the candidate's track, as a `Criterion` (name, direction, margin, floor).
@@ -315,18 +315,23 @@ A verdict rule is a [pure](#pure-plugins) provider, a subclass of `VerdictRule` 
 - `Case.candidate` and `Case.bar`: each a `Side`. A `Side` has a name for the reason (`candidate#73`), the mean of
   each metric, the per-unit results of the metrics that have them, and the samples that ran in pairs with the other
   side's.
+- `Case.parent`: the candidate's parent, as a `Side`, or `None`.
 - `Judgement.verdict`: `keep`, `interesting`, `discard` or `crash`.
 - `Judgement.reason`: the text that piloop stores and shows with the verdict.
 
 A rule has no error case: it returns a verdict for every case.
 
-The rule decides only the verdict. piloop does the rest, whatever the rule:
+The rule also decides the lineage. Each of these methods reads `Node`s: a candidate's id, verdict, where it was made
+(`Trunk`, `Branch` or `Imported`) and its means. Each has the built-in behaviour as its default:
 
-- It chooses the bar.
-- It moves the head to a keep.
-- It merges a keep onto the head when the head moved during the run.
-- It adds `no-op` to the reason when the metrics equal those of the parent.
-- It applies the `Piloop-Note` of a commit.
+| Method | Returns | Default |
+|---|---|---|
+| `bar(ancestry)` | the bar of a run that starts from `ancestry[0]`, from the base to its root | the nearest keep or reference, else the root |
+| `raises_bar(node, lineage)` | whether a run's commit becomes the bar of its next commits, on the `Trunk` or a `Branch` | a keep; on the trunk, not a branch run's |
+| `head(trunk)` | the head among the trunk keeps (the keeps that raise the trunk's bar), oldest first | the latest |
+| `on_moved(moved)` | for a trunk keep that lacks the head: `Rebase(conflicts=Seed() \| Leave())` or `Leave()` | `Rebase()`: merge onto the head, and a compose seed on a conflict |
+
+piloop applies the answers: it moves the head, merges, files the seed, and applies the `Piloop-Note` of a commit.
 
 ### Built in
 

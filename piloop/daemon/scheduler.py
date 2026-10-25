@@ -1307,7 +1307,7 @@ class Scheduler:
             return None
         pinned = s.scalars(query.where(Idea.base_candidate_id.is_not(None)).order_by(Idea.priority, Idea.id))
         trunk = head(s, campaign)
-        return next((i for i in pinned if branches(campaign, s.get(Candidate, i.base_candidate_id), trunk)), None)
+        return next((i for i in pinned if branches(s, campaign, s.get(Candidate, i.base_candidate_id), trunk)), None)
 
     def _enqueue(
         self,
@@ -1323,10 +1323,10 @@ class Scheduler:
         """Queue one run of ``idea`` by ``role`` on its pinned candidate if it has one, else on the current head.
 
         A pin is a deliberate branch. ``run.queued`` then records ``pinned_base`` and ``computed_base``, so a wrong pin
-        is easy to find. If the pin's bar (``ledger.bar_of``: the pin, or the nearest keep of a non-keep) is not the
-        head, the run is a branch run (``runs.branch``) and is judged against that bar. ``run.queued`` also records
-        ``track``, and ``priority_pick`` if the share rule took a different idea than priority order alone
-        (``by_priority``). This shows how often the share rule changes the pick.
+        is easy to find. If the pin's bar (``ledger.bar_of``) is not the head, the run is a branch run (``runs.branch``)
+        and is judged against that bar. ``run.queued`` also records ``track``, and ``priority_pick`` if the share rule
+        took a different idea than priority order alone (``by_priority``). This shows how often the share rule changes
+        the pick.
 
         Returns False, and queues nothing, if the idea pins no harness and every harness of the rotation is ``full``.
         """
@@ -1351,7 +1351,7 @@ class Scheduler:
             role=role,
             attempt=attempt,
             base_candidate_id=base.id,
-            branch=branches(campaign, pinned, computed),
+            branch=branches(s, campaign, pinned, computed),
             harness=harness,
             model=model,
         )

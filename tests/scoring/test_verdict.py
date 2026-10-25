@@ -23,7 +23,7 @@ from piloop.plugins.verdict_rule.bootstrap import Bootstrap, compare, lower_boun
 from piloop.plugins.verdict_rule.contract import VERDICT_RULES, Outcome, Side, VerdictRule
 from piloop.scoring import ledger
 from piloop.scoring.evaluate import Units
-from piloop.scoring.ledger import criterion, same
+from piloop.scoring.ledger import criterion
 from piloop.scoring.verdict import PENDING, Refusal, daemon_owned, judgeable, label, override, refusal, write
 
 BAR = 'candidate#73'
@@ -305,6 +305,13 @@ def test_a_lower_is_better_metric_that_did_not_move_reads_plus_zero() -> None:
     assert compare(criterion(loss), 3, 3, same_units, same_units, 0.95).text(0.95) == (
         'loss 3 vs 3 (+0; 95% worst case +0 over 3 units)'
     )
+
+
+def same(track: Track, mine: dict[str, float], parent: dict[str, float]) -> bool:
+    """Whether the built-in rule's reason says that the candidate is a no-op on its ``parent``, the bar too here."""
+    sides = Side('candidate#74', mine, {}), Side(BAR, parent, {})
+    reason = ledger.decide(Bootstrap(), track, *sides, parent=Side('candidate#70', parent, {}))[1]
+    return reason.startswith('no-op: ')
 
 
 def test_same_means_every_deciding_metric_equal_and_ignores_watch_metrics() -> None:

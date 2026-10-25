@@ -13,7 +13,7 @@ from statistics import fmean
 from pydantic import Field
 
 from piloop.plugins.metric import Direction, number
-from piloop.plugins.verdict_rule.contract import Case, Criterion, Judgement, Outcome, VerdictRule
+from piloop.plugins.verdict_rule.contract import Case, Criterion, Judgement, Outcome, Side, VerdictRule
 
 RESAMPLES = 4000
 """Bootstrap resamples per comparison. With 4000, the 5% quantile changes by much less than one unit between seeds."""
@@ -120,7 +120,20 @@ class Bootstrap(VerdictRule):
     primary's gain must be above zero at this level. A guardrail's margin is tested on the bound at this level too."""
 
     def decide(self, case: Case) -> Judgement:
-        """Return the verdict on the candidate, and the reason.
+        """Return the verdict on the candidate (``_verdict``), and the reason.
+
+        When the deciding metrics equal the parent's (``same``), the reason says so first: the change did not affect
+        what the evaluation measures, whatever the verdict against the bar.
+        """
+        judged = self._verdict(case)
+        parent = case.parent
+        if parent is None or not same(case, parent):
+            return judged
+        which = 'primary and guardrails' if case.guardrails else case.primary.name
+        return Judgement(judged.verdict, f'no-op: {which} identical to parent {parent.name}; {judged.reason}')
+
+    def _verdict(self, case: Case) -> Judgement:
+        """Return the verdict on the candidate against the bar, and the reason.
 
         The rules apply in this order:
 
@@ -162,6 +175,17 @@ class Bootstrap(VerdictRule):
         if guards:
             reason += '; guardrails: ' + '; '.join(text for _, text, _ in guards)
         return Judgement(Outcome.INTERESTING if any(held for _, _, held in guards) else Outcome.KEEP, reason)
+
+
+def same(case: Case, parent: Side) -> bool:
+    """Return whether the candidate has a primary value and equals ``parent`` on the primary and every guardrail.
+
+    Watch metrics are left out. A timing metric (``eval_seconds``) differs on every evaluation, and a metric that does
+    not decide a verdict cannot make a change matter.
+    """
+    mine, theirs = case.candidate.means, parent.means
+    deciding = (case.primary, *case.guardrails)
+    return case.primary.name in mine and all(mine.get(m.name) == theirs.get(m.name) for m in deciding)
 
 
 def _compare(case: Case, criterion: Criterion, confidence: float) -> Comparison:
