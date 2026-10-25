@@ -5,8 +5,9 @@ The harnesses differ only in where the file is, how its folder is named after th
 have the numbers. These are the reader's parameters (``UsageSpec.file``, ``cwd``, ``tally``). The encoders and
 tallies are registries, so this module names no harness.
 
-While the agent runs, the same file holds what it wrote. ``said`` reads the last line of the agent's text for
-``piloop status`` and ``piloop watch``, through a second registry with the same format names.
+The same file holds what the agent wrote. ``said`` reads the last lines of the agent's text, from its snapshot in the
+CAS, for ``piloop status``, ``piloop watch`` and ``piloop attach``, through a second registry with the same format
+names.
 """
 
 import glob
@@ -14,7 +15,6 @@ import json
 import re
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
 from typing import Protocol
 
@@ -62,7 +62,7 @@ SAID: dict[str, Said] = {}
 """How to find the agent's text in each file format, by tally name. A format without an entry shows no text."""
 TAIL_BYTES = 1024 * 1024
 """How many bytes at the end of a session file ``said`` reads. Tool results fill most of a file, so the agent's last
-text can be far from the end. Reading 1 MiB takes about 10 ms, once for each change of the file."""
+text can be far from the end."""
 
 
 def cwd_encoder[E: CwdEncoder](name: str) -> Callable[[E], E]:
@@ -164,25 +164,28 @@ class JsonlReader:
             cache_write=counts.cache_write,
             total=counts.total,
             turns=turns,
-            source=str(path),
         )
 
-    def said(self, session_id: str | None, lines: int = 1) -> list[str]:
-        """The last ``lines`` non-empty lines of text that the agent wrote in its session so far, oldest first.
+    def said(self, session: bytes, lines: int = 1) -> list[str]:
+        """The last ``lines`` non-empty lines of text that the agent wrote in ``session``, oldest first.
 
-        Empty when there is no session, no file or no text yet. The file is found by a search of every cwd folder,
-        because the row of a running agent does not have its cwd. That is one glob per call, a few milliseconds.
+        Reads the newest record first, in the last ``TAIL_BYTES``, and stops when it has enough lines. Empty when there
+        is no text.
         """
-        if self.words is None or session_id is None:
+        if self.words is None:
             return []
-        path = self.session_file(session_id, None)
-        if path is None:
-            return []
-        try:
-            stat = path.stat()
-            return list(last_said(path, stat.st_mtime_ns, stat.st_size, self.words, lines))
-        except OSError:  # the file was removed between the glob and the read: show nothing this time
-            return []
+        tail = session[-TAIL_BYTES:].decode(errors='replace').splitlines()
+        kept: list[str] = []
+        for line in reversed(tail[1:] if len(session) > TAIL_BYTES else tail):  # the cut goes through the first line
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            text = self.words(rec) if isinstance(rec, dict) else None
+            kept[:0] = [part.rstrip() for part in (text or '').splitlines() if part.strip()]
+            if len(kept) >= lines:
+                break
+        return kept[-lines:]
 
     def session_file(self, session_id: str, cwd: Path | None) -> Path | None:
         """Find the file with the encoded cwd, or else with ``*`` for ``{cwd}``: one level of folders, not deeper.
@@ -217,29 +220,6 @@ def records(path: Path) -> Iterator[Record]:
             continue
         if isinstance(rec, dict):
             yield rec
-
-
-@lru_cache(maxsize=64)
-def last_said(path: Path, mtime_ns: int, size: int, words: Said, count: int) -> tuple[str, ...]:
-    """The last ``count`` non-empty lines of the text that ``words`` finds in the last ``TAIL_BYTES`` of the file.
-
-    Reads the newest record first, and stops when it has enough lines. ``mtime_ns`` and ``size`` are part of the cache
-    key, so a redraw reads again only the files that changed since the last redraw.
-    """
-    with path.open('rb') as f:
-        f.seek(max(0, size - TAIL_BYTES))
-        records = f.read().decode(errors='replace').splitlines()
-    kept: list[str] = []
-    for line in reversed(records[1:] if size > TAIL_BYTES else records):  # the seek cuts the first line
-        try:
-            rec = json.loads(line)
-        except ValueError:
-            continue
-        text = words(rec) if isinstance(rec, dict) else None
-        kept[:0] = [part.rstrip() for part in (text or '').splitlines() if part.strip()]
-        if len(kept) >= count:
-            break
-    return tuple(kept[-count:])
 
 
 def texts(content: object, kind: str) -> str | None:

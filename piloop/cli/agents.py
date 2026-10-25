@@ -10,7 +10,7 @@ from piloop.campaign.stop import CANCELLABLE, request_cancel
 from piloop.cli import common, local
 from piloop.cli.common import HARNESS_HELP, CampaignRef
 from piloop.db.events import has, latest
-from piloop.db.models import LIVE, OPEN_RUNS, AgentSession, Event, Run, TargetKind
+from piloop.db.models import OPEN_RUNS, AgentSession, Event, Run, TargetKind
 from piloop.db.session import Database
 from piloop.harnesses import MessageFormat, render_messages
 from piloop.ids import AgentSessionId, CommentId, Ending, RoleName, RunId, TargetRef
@@ -122,17 +122,13 @@ def attach(agent_session_id: Annotated[AgentSessionId, cyclopts.Parameter(help='
     """Print the last lines that an agent wrote, running or ended.
 
     An agent is a background process, with no terminal to type into: `piloop prompt` sends it a message.
-    An agent on a worker elsewhere writes there until it ends: the command names the worker.
+    A running agent's lines come from the latest snapshot of its session, on any machine: a few seconds old, 30 at most.
     """
     with local.session() as s:
         agent_session = s.get(AgentSession, agent_session_id)
         if agent_session is None:
             raise SystemExit(f'no agent_session#{agent_session_id}')
-        if (machine := agent_session.machine) is not None and agent_session.state in LIVE:
-            raise SystemExit(
-                f'agent_session#{agent_session_id} runs on the worker {machine}: what it writes is there until it ends'
-            )
-        output, state = agent_output(s, agent_session, ATTACH_LINES), agent_session.state
+        output, state = agent_output(s, agent_session, ATTACH_LINES, local.cas()), agent_session.state
     if not output:
         raise SystemExit(f'agent_session#{agent_session_id} is {state} and has written nothing yet')
     common.console.print('\n'.join(output), markup=False, highlight=False, soft_wrap=True)

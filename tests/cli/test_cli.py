@@ -17,6 +17,7 @@ import cyclopts
 import pytest
 from alembic import command
 from alembic.script import ScriptDirectory
+from covalence import Cid
 from git import Repo
 from pytest_mock import MockerFixture
 from rich.console import Console
@@ -37,6 +38,7 @@ from piloop.cli import (
     campaign as campaign_cli,
     common,
     install,
+    local,
     main as cli,
     views,
 )
@@ -79,16 +81,19 @@ from piloop.ids import (
     TargetRef,
 )
 from piloop.plugins import host
+from piloop.plugins.cas.disk import DiskCas
 from piloop.plugins.executor.kit.capacity import GB, HostSample
 from piloop.plugins.executor.kit.leases import Leases
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring.ledger import CandidateImported, RemeasureRequested
 from piloop.settings import Settings
+from piloop.store.chunks import Chunked
 from piloop.version import direct_url, installed
 from tests.conftest import RESEARCH, WATCHDOG, at_head, disk, example, hold_lock, wait_until
 from tests.daemon.test_serve import alive
 from tests.db.test_migrations import TOO_OLD, alembic
 from tests.test_lease import Recorder
+from tests.usage.test_usage import SAID_SESSIONS
 
 HEAD = ScriptDirectory.from_config(alembic(Path('unused.db'))).get_current_head()
 """The schema revision every command migrates to; the migrations, not this file, say which."""
@@ -2038,27 +2043,42 @@ def test_serve_and_migrate_refuse_under_a_daemon_that_a_service_manager_started(
         run_cli(['campaign', 'tree'])  # at head: a daemon of the same piloop is no reason to refuse
 
 
-def test_attach_names_the_worker_of_an_agent_that_runs_elsewhere(campaign_path: Path) -> None:
-    """What it writes is on that worker until it ends."""
+def test_attach_prints_what_an_agent_on_another_machine_wrote_from_its_stored_session(
+    campaign_path: Path, out, mocker: MockerFixture
+) -> None:
+    """The latest snapshot of its session file is in the CAS, whatever machine runs it."""
     run_cli(['init', str(campaign_path)])
+    session = (SAID_SESSIONS / 'pi.jsonl').read_bytes() + b'{"written for this test":1}\n'
     db = Database(common.settings.database_url, actor=common.settings.actor)
     with db.session() as s:
         s.add(
             AgentSession(
                 kind='implementer',
                 campaign_id=1,
+                harness='pi',
                 runtime='subprocess',
                 state=AgentSessionState.RUNNING,
                 log_dir='/tmp/x',
                 machine='gpu1',
+                session_id='s1',
+                session_file=local.cas().put(session),
             )
         )
+        s.add(AgentSession(kind='implementer', campaign_id=1, harness='pi', session_file=Cid.of(b'never put')))
+        broken = Chunked(chunks=(Cid.of(b'a part never put'),)).put(local.cas())
+        s.add(AgentSession(kind='implementer', campaign_id=1, harness='pi', session_file=broken))
         s.commit()
     db.close()
-    with pytest.raises(
-        SystemExit, match='agent_session#1 runs on the worker gpu1: what it writes is there until it ends'
-    ):
+    out()
+    read = mocker.spy(DiskCas, 'get')
+    for _ in range(2):
         run_cli(['attach', '1'])
+        assert out().splitlines()[-1] == "I'll launch sweeps when there's something new to read."
+    assert read.call_count == 1, 'a snapshot is read from the CAS once'
+    with pytest.raises(SystemExit, match='agent_session#2 is requested and has written nothing yet'):
+        run_cli(['attach', '2'])  # a snapshot that the CAS lacks shows nothing
+    with pytest.raises(SystemExit, match='agent_session#3 is requested and has written nothing yet'):
+        run_cli(['attach', '3'])  # nor does one that lacks a part
 
 
 def test_a_table_piped_to_a_program_never_wraps_a_cell(monkeypatch: pytest.MonkeyPatch) -> None:

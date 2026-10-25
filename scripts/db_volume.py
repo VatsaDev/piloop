@@ -317,7 +317,10 @@ class HotPaths:
             'scheduler.pass': each(pass_over),
             'stop.check': each(lambda p, _cfg: check(s, p, stopping)),
             'status.sections': each(
-                lambda p, cfg: rendered(cfg.status.shown(), Rendering(s, utcnow(), p, workspace_dir(self._home, p.id)))
+                lambda p, cfg: rendered(
+                    cfg.status.shown(),
+                    Rendering(s, utcnow(), p, workspace_dir(self._home, p.id), self._scheduler._controller.cas),
+                )
             ),
             'history.renderables': each(lambda p, cfg: history.renderables(s, p, cfg, table_box=box.SIMPLE)),
             'inbox.news': lambda: inbox.news(s, 0, me=System.ORCHESTRATOR),

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, ClassVar
 
 from piloop.api.views import Rendered
+from piloop.plugins.cas.contract import Cas
 from piloop.plugins.host import Capability, Parameters
 
 if TYPE_CHECKING:  # piloop.db.models types campaigns.config with the sections: only the annotations name the rows
@@ -43,6 +44,8 @@ class Rendering:
     """The campaign, with its config (``campaign.config``)."""
     workspace: Path
     """The campaign's shared workspace, where agents leave notes and artifacts for each other."""
+    cas: Cas
+    """The home's CAS: the agents' sessions are there (``agent_sessions.session_file``)."""
     given: tuple[str, ...] = ()
     """The anomaly lines that the agent who reads got to investigate, in order. Empty for every other reader."""
 

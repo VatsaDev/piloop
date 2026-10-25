@@ -25,7 +25,7 @@ class Agents(Section):
         ).all()
         live = [
             f'  - {w.kind}#{w.id} {w.harness or NONE}/{w.model or NONE} {age(w.started_at, now)}, on {on(s, w)}: '
-            + (cell(output[-1]) if (output := agent_output(s, w, 1)) else NONE)
+            + (cell(output[-1]) if (output := agent_output(s, w, 1, r.cas)) else NONE)
             for w in rows
             if w.state in LIVE
         ]

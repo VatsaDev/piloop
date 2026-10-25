@@ -35,6 +35,7 @@ from piloop.plugins.executor.contract import (
     EvaluationJob,
     EvaluationKey,
     EvaluationReport,
+    HarnessSession,
     MissingBlobs,
     RepoId,
     Sample,
@@ -267,9 +268,9 @@ def test_a_reported_session_id_is_identified_once_whatever_repeats_it(
     key = AgentKey(research)
     results.started(key, {}, None)
     assert identified(db, research) == []
-    results.session(key, 'first')
-    results.session(key, 'first')
-    results.session(key, 'second')
+    results.session(key, HarnessSession(id='first'))
+    results.session(key, HarnessSession(id='first'))
+    results.session(key, HarnessSession(id='second'))
     report = AgentFinished(process=AgentExit(ExitStatus.EXITED, 200, 0), session_id='second')
     results.finished(agent_job(campaign, research, tmp_path), report)
     found = identified(db, research)
@@ -321,7 +322,9 @@ def test_the_proposer_is_an_agent_only(
     implementer, _, _ = implementer_of(
         db, campaign, created_by.format(research=research), harness='script', state=AgentSessionState.RUNNING
     )
-    CampaignResults(db, Tracer(None), tmp_path, disk(tmp_path), lambda: False).session(AgentKey(implementer), 'x')
+    CampaignResults(db, Tracer(None), tmp_path, disk(tmp_path), lambda: False).session(
+        AgentKey(implementer), HarnessSession(id='x')
+    )
     [event] = identified(db, implementer)
     expected = (
         None if proposed_by is None else {**proposed_by, 'actor': str(proposed_by['actor']).format(research=research)}

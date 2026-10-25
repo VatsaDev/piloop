@@ -41,8 +41,6 @@ class Usage(BaseModel):
     """What the harness counts as the session's tokens."""
     turns: int
     """The number of model responses (API calls) in the session."""
-    source: str
-    """Where the numbers came from: the session file that was read."""
 
 
 class UsageError(RuntimeError):
@@ -109,11 +107,15 @@ class UsageReader(Protocol):
         """
         ...
 
-    def said(self, session_id: str | None, lines: int = 1) -> list[str]:
-        """The last ``lines`` lines of text that the agent wrote so far, while it runs. Empty when there are none.
+    def said(self, session: bytes, lines: int = 1) -> list[str]:
+        """The last ``lines`` lines of text that the agent wrote in ``session``, the bytes of its session file.
 
-        Never raises.
+        Empty when there are none. Never raises.
         """
+        ...
+
+    def session_file(self, session_id: str, cwd: Path | None) -> Path | None:
+        """The session's own file on this machine, which piloop puts in the CAS. None when there is none (yet)."""
         ...
 
 

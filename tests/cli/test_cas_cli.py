@@ -9,16 +9,18 @@ from pathlib import Path
 import httpx2 as httpx
 import pytest
 import uvicorn
+from covalence import Cid, IntegrityError
 from pytest_mock import MockerFixture
 from rich.console import Console
 
 from piloop.cli import common
 from piloop.plugins.cas.cached import Cached, CachedCas
-from piloop.plugins.cas.disk import Disk
+from piloop.plugins.cas.disk import Disk, DiskCas
 from piloop.plugins.cas.http import Http, HttpCas
 from piloop.plugins.cas.kit.conformance import check_cas
 from piloop.plugins.network.https import TOKEN_ENV
 from piloop.settings import Settings
+from piloop.store.chunks import Chunked
 from tests.cli.test_cli import run_cli
 from tests.conftest import at_head
 from tests.daemon.test_serve import env_for
@@ -94,3 +96,25 @@ def test_cas_serve_is_its_own_process_that_keeps_the_contract_for_a_worker(
             assert served.wait(timeout=30) == -signal.SIGTERM
         finally:
             served.kill()  # a no-op once it has stopped; else `with` would wait for it
+
+
+def test_cas_get_prints_a_blob_or_a_chunked_file_and_names_what_the_cas_lacks(
+    out, tmp_path: Path, capsysbinary: pytest.CaptureFixture[bytes], mocker: MockerFixture
+) -> None:
+    cas = Disk().open(tmp_path)
+    cid = cas.put(b'{"type":"user"}\n')
+    run_cli(['cas', 'get', str(cid)])
+    assert capsysbinary.readouterr().out == b'{"type":"user"}\n'
+    run_cli(['cas', 'get', str(Chunked(chunks=(cid, cas.put(b'{"type":"assistant"}\n'))).put(cas))])
+    assert capsysbinary.readouterr().out == b'{"type":"user"}\n{"type":"assistant"}\n', 'a chunked file, whole'
+    gone = Chunked(chunks=(Cid.of(b'a part never put'),)).put(cas)
+    with pytest.raises(SystemExit, match=f'{gone} is not a file that the CAS holds whole'):
+        run_cli(['cas', 'get', str(gone)])
+    missing = Cid.of(b'never put')
+    with pytest.raises(SystemExit, match=f'the CAS has no blob {missing}'):
+        run_cli(['cas', 'get', str(missing)])
+    with pytest.raises(SystemExit, match='not-a-cid is not a blob address'):
+        run_cli(['cas', 'get', 'not-a-cid'])
+    mocker.patch.object(DiskCas, 'get', side_effect=IntegrityError('changed under the store'))
+    with pytest.raises(SystemExit, match=f'{cid}: the bytes in the CAS do not match it'):
+        run_cli(['cas', 'get', str(cid)])

@@ -27,7 +27,7 @@ from piloop.net import tokens
 from piloop.net.server import Server, app
 from piloop.net.tokens import Tokens
 from piloop.otel import Tracer
-from piloop.plugins.executor.contract import AgentJob, AgentKey, MissingBlobs, Prompt, RepoId
+from piloop.plugins.executor.contract import AgentJob, AgentKey, HarnessSession, MissingBlobs, Prompt, RepoId
 from piloop.plugins.executor.kit import remote as remote_module
 from piloop.plugins.executor.kit.client import Dismissed, LeaseClient, Local, WorkerInfo
 from piloop.plugins.executor.kit.clones import NotSent
@@ -178,14 +178,14 @@ def test_a_lease_is_renewed_revoked_and_reported_once_with_its_receipt(
     grant = w1.acquire(uuid4().hex, HOST)
     assert isinstance(grant, Grant)
     w1.started(lease, HANDLE, None)
-    assert w1.heartbeat({lease: 'session-1'}, HOST) == {lease: Answer.RENEWED}
+    assert w1.heartbeat({lease: HarnessSession(id='session-1')}, HOST) == {lease: Answer.RENEWED}
     leases.revoke(AgentKey(job.agent_session))
-    assert w1.heartbeat({lease: 'session-1'}, HOST) == {lease: Answer.REVOKED}
+    assert w1.heartbeat({lease: HarnessSession(id='session-1')}, HOST) == {lease: Answer.REVOKED}
     request = uuid4().hex
     assert w1.report(lease, request, DONE) == RECEIPT
     assert w1.report(lease, request, DONE) == RECEIPT, 'sent again: the same receipt'
     assert events(db, StaleReport) == []
-    assert w1.heartbeat({lease: None}, HOST) == {lease: Answer.STALE}
+    assert w1.heartbeat({lease: HarnessSession()}, HOST) == {lease: Answer.STALE}
 
 
 def test_a_worker_cannot_act_on_another_workers_lease(
@@ -199,7 +199,7 @@ def test_a_worker_cannot_act_on_another_workers_lease(
     assert isinstance(w1.acquire(uuid4().hex, HOST), Grant)
     with pytest.raises(StaleLease):
         w2.started(lease, HANDLE, None)
-    assert w2.heartbeat({lease: None}, HOST) == {lease: Answer.STALE}
+    assert w2.heartbeat({lease: HarnessSession()}, HOST) == {lease: Answer.STALE}
     with pytest.raises(StaleLease):
         w2.lost(lease, 'not mine')
     with pytest.raises(StaleLease):
@@ -356,7 +356,7 @@ def test_a_revoked_token_and_the_servers_own_name_are_dismissed(remote: Callable
 
 def test_a_worker_of_another_protocol_is_dismissed_with_the_servers_version(remote: Callable[..., Remote]) -> None:
     with pytest.raises(
-        Dismissed, match=r'\(426\): the server runs piloop .+, with protocol 7, and the worker protocol 1'
+        Dismissed, match=r'\(426\): the server runs piloop .+, with protocol 8, and the worker protocol 1'
     ):
         remote().register(INFO.model_copy(update={'protocol': 1}))
 

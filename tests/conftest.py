@@ -23,6 +23,7 @@ from git import Repo
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from piloop.actor import System
 from piloop.campaign import archive as archive_module, campaigns as campaign_module
@@ -136,7 +137,7 @@ SCOUT = RoleName('scout')
 
 def spent(total: int, turns: int = 1) -> Usage:
     """The usage of a test's agent that spent ``total`` tokens in ``turns`` turns."""
-    return Usage(input=0, output=0, cache_read=0, cache_write=0, total=total, turns=turns, source='/x.jsonl')
+    return Usage(input=0, output=0, cache_read=0, cache_write=0, total=total, turns=turns)
 
 
 def end_of(status: RunStatus) -> RunEnd | None:
@@ -543,6 +544,11 @@ def home_cas(db: Database) -> Cas:
     return disk(Path(db.engine.url.database or '').parent)
 
 
+def cas_of(s: Session) -> Cas:
+    """The default CAS of the home of the database that ``s`` reads."""
+    return disk(Path(s.get_bind().engine.url.database or '').parent)
+
+
 def factory(rt: Runtime) -> RuntimeFactory:
     def make(_kind: str) -> Runtime:
         return rt
@@ -595,7 +601,7 @@ def serving_api(
     network = config.open(NetworkHost(tokens, HomeSecrets(db, LocalSecrets())))
     listener = network.listener()
     listeners = [local_listener(cfg.socket_file), *([] if listener is None else [listener])]
-    api = Handlers(db, cfg, daemon_state(iso(utcnow()), None if listener is None else url(listener)))
+    api = Handlers(db, cfg, daemon_state(iso(utcnow()), None if listener is None else url(listener)), disk(cfg.home))
     servers = [Server(with_api(app(tokens, network, ()), api), each) for each in listeners]
     for server in servers:
         server.start()

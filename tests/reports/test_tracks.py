@@ -11,7 +11,7 @@ from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.reports.history import history
 from piloop.reports.pack import pack
 from piloop.watch.panels import PANELS, Context, campaigns, header
-from tests.conftest import reconfigured
+from tests.conftest import home_cas, reconfigured
 from tests.reports.test_overview import NOW, candidate, live_campaign, render
 
 TRACKS = {
@@ -121,7 +121,7 @@ run 3 · 1.9h\
 """)
         [row] = campaigns(s, NOW, System.ORCHESTRATOR)
         assert row.cells[2:4] == snapshot(('3 score, 8 size', '+2, -4'))
-        ctx = Context(p, cfg, NOW, System.ORCHESTRATOR)
+        ctx = Context(p, cfg, NOW, System.ORCHESTRATOR, home_cas(db))
         panel = PANELS['candidates']
         items = panel.items(s, ctx)
         assert panel.title(s, ctx, items) == snapshot('Candidates score ▁██ 1 → 3 · size █▅▁ 12 → 8')

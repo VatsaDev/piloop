@@ -1211,7 +1211,7 @@ class RunController:
             lines += ['', '### Plan', idea.plan.rstrip()]
         if comments:
             lines += ['', '## Comments on this idea and its runs', *(_comment_line(c) for c in comments)]
-        rendering = Rendering(s, utcnow(), idea.campaign, workspace_dir(self._home, idea.campaign.id))
+        rendering = Rendering(s, utcnow(), idea.campaign, workspace_dir(self._home, idea.campaign.id), self.cas)
         return '\n'.join([*lines, '', markdown(cfg.role(run.role).shown(), rendering)])
 
 

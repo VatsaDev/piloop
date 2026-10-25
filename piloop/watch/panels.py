@@ -23,6 +23,7 @@ from piloop.campaign.ideas import links, superseded_by
 from piloop.config import CampaignConfig
 from piloop.db.models import AgentSession, Campaign, Candidate, Comment, Idea, Origin
 from piloop.ids import CampaignId, CampaignStatus, IdeaStatus, TargetKind, TargetRef
+from piloop.plugins.cas.contract import Cas
 from piloop.reports.overview import (
     agent_output,
     head_scores,
@@ -73,6 +74,8 @@ class Context:
     now: datetime
     me: Actor
     """The watcher's actor. The inbox leaves out what it wrote: a reply waits for the orchestrator, not its author."""
+    cas: Cas
+    """Where the agents' sessions are, whose last lines the agents panel shows."""
 
 
 class Panel(Protocol):
@@ -198,7 +201,7 @@ class AgentsPanel:
         ]
         if w.reason:
             facts.append(f'why: {cell(w.reason)}')
-        output = agent_output(s, w, AGENT_LINES)
+        output = agent_output(s, w, AGENT_LINES, ctx.cas)
         return Group(
             Text(facts[0], style='bold'),
             lines(*facts[1:]),

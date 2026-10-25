@@ -47,6 +47,7 @@ from piloop.agents.results import (
     Identified,
     JobEnded,
     PromptOutcome,
+    SessionSaved,
     StartupAnomaly,
     WorkspaceConflict,
     WrapUp,
@@ -321,6 +322,7 @@ IGNORED: Kinds = frozenset(
         CommentAcked,
         CommentDeleted,
         Identified,
+        SessionSaved,
         JobEnded,
         AgentEnded,
         WorkspaceConflict,
@@ -1589,7 +1591,7 @@ class Scheduler:
             sweep = SweepPass(
                 **vars(self._pass(s, campaign, cfg, agent_session.kind, table, now)), agent_session=agent_session
             )
-            rendering = Rendering(s, now, campaign, workspace_dir(self._home, campaign.id), given)
+            rendering = Rendering(s, now, campaign, workspace_dir(self._home, campaign.id), self._controller.cas, given)
             lines = [
                 f'- Your cwd is a detached checkout of candidate#{base.id}, the head ({values}): read and run the'
                 ' code, try things. Nothing you commit here is scored or kept; it goes with the checkout when you end.',

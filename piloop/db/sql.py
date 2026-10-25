@@ -127,9 +127,10 @@ OPTIMIZE = 'PRAGMA optimize'
 connection queried and whose statistics are missing or out of date, limited by ``analysis_limit`` (SQLite 3.46 and
 later set it). Otherwise it does nothing."""
 ROW_LIMIT = 500
-DAEMON_COLUMNS = frozenset({('agent_sessions', 'usage')})
+DAEMON_COLUMNS = frozenset({('agent_sessions', 'usage'), ('agent_sessions', 'session_file')})
 """Columns that only the daemon writes: an agent's UPDATE of one is denied. ``agent_sessions.usage`` loads as a
-``Usage``, so a value of another shape would fail every load of its row, also the daemon's."""
+``Usage`` and ``session_file`` as a CID, so a value of another shape would fail every load of its row, also the
+daemon's."""
 
 
 def _authorize(action: int, arg1: str | None, arg2: str | None, _db: str | None, source: str | None) -> int:

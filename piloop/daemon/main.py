@@ -245,7 +245,7 @@ class Daemon:
             raise SystemExit(f'the daemon does not listen: {e}') from e
         listeners = [local] if listener is None else [local, listener]
         listen = None if listener is None else url(listener)
-        api = Handlers(self.db, self._cfg, daemon_state(iso(utcnow()), listen))
+        api = Handlers(self.db, self._cfg, daemon_state(iso(utcnow()), listen), self.controller.cas)
         routes = self.controller.executor.routes()
         # one app for each server: a server's shutdown ends the long-polls of its own app
         self._servers = [Server(with_api(app(self._tokens, self.network, routes), api), each) for each in listeners]

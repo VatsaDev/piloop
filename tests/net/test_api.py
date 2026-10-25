@@ -65,7 +65,7 @@ from piloop.plugins.secrets.contract import HomeSecrets
 from piloop.plugins.secrets.local import LocalSecrets
 from piloop.settings import Settings
 from piloop.watch.panels import Context, InboxPanel
-from tests.conftest import serving_api
+from tests.conftest import disk, home_cas, serving_api
 
 
 @pytest.fixture
@@ -182,7 +182,7 @@ def test_a_route_that_crashes_is_an_answer_that_says_so(db: Database, cfg: Setti
     tokens_ = Tokens(db)
     server = app(tokens_, Https().open(NetworkHost(tokens_, HomeSecrets(db, LocalSecrets()))), ())
     server.add_api_route('/v1/status', crash)
-    api = with_api(server, Handlers(db, cfg, daemon_state('now', None)))
+    api = with_api(server, Handlers(db, cfg, daemon_state('now', None), disk(cfg.home)))
     with closing(Server(api, local_listener(cfg.socket_file))) as running:
         running.start()
         with (
@@ -336,7 +336,7 @@ def test_a_proxy_caller_s_ack_reply_and_pause_sign_as_the_person_it_names(
         row = s.get_one(Campaign, campaign.id)
         assert (row.updated_by, s.get_one(Comment, 1).acked_by) == (me, me)
         signed = {(e.kind, e.actor) for e in s.scalars(select(Event).where(Event.id > 1))}
-        rows = InboxPanel().items(s, Context(row, row.config, utcnow(), System.HUMAN))
+        rows = InboxPanel().items(s, Context(row, row.config, utcnow(), System.HUMAN, home_cas(db)))
     assert signed == {
         ('campaign.paused', me),
         ('comment.acked_at', me),

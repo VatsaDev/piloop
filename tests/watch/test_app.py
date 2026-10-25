@@ -45,7 +45,7 @@ from piloop.settings import Settings
 from piloop.watch.app import CampaignScreen, CampaignsScreen, CandidatesTable, Watch
 from piloop.watch.panels import PANELS, Context, kept_scores
 from tests.campaign.test_inbox import news_lines
-from tests.conftest import RESEARCH, WATCHDOG, reconfigured, serving_api, spent, wait_until
+from tests.conftest import RESEARCH, WATCHDOG, home_cas, reconfigured, serving_api, spent, wait_until
 from tests.reports.test_history import idea
 
 
@@ -75,7 +75,7 @@ def drive(
 ) -> Watch:
     """Run the app headless on the fixture database and play ``scenario`` against it."""
     mine = Database(str(db.engine.url), actor=actor)
-    app = Watch(mine, Path(str(db.engine.url.database)), ref, actor)
+    app = Watch(mine, Path(str(db.engine.url.database)), ref, actor, home_cas(db))
 
     async def run() -> None:
         async with app.run_test(size=SIZE) as pilot:
@@ -727,7 +727,7 @@ def test_the_screen_follows_the_database_and_a_dialog_holds_it_still(
 def test_details_of_rows_gone_or_bare(db: Database, live_campaign: Campaign) -> None:
     with db.session() as s:
         other = s.get_one(Campaign, 2)
-        ctx = Context(other, CampaignConfig.model_validate(other.config), utcnow(), System.HUMAN)
+        ctx = Context(other, CampaignConfig.model_validate(other.config), utcnow(), System.HUMAN, home_cas(db))
         s.add(
             Idea(
                 track='score',

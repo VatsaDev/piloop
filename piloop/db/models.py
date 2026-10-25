@@ -1350,13 +1350,17 @@ class AgentSession(Tracked, Base):
     (``{session_id}``), or the runtime reports it after the agent starts."""
     machine: Mapped[str | None]
     """The machine that runs the agent, as its executor names it (a worker of ``piloop worker``). NULL: the daemon's."""
+    session_file: Mapped[Cid | None] = mapped_column(CidText)
+    """The harness's own session file, as a chunked file in the CAS (``piloop cas get``): a snapshot a few seconds after
+    the agent writes, at least every 30 s while it runs, and the whole file once it ended. NULL until the first
+    snapshot, and for a harness without a usage spec."""
     usage: Mapped[Usage | None]
     """The tokens the agent spent, added up from the harness's own session file when the agent ended:
-    ``{"input", "output", "cache_read", "cache_write", "total", "turns", "source"}``. ``total`` is what the harness
-    itself counts as the session's tokens (sum ``json_extract(usage, '$.total')`` for the spend). ``turns`` is the
-    number of model responses, and ``source`` is the file that was read. For every harness, ``input`` is the uncached
-    input, and ``cache_read`` and ``cache_write`` the input read from and written to the prompt cache. NULL while the
-    agent runs, or when no session file was found (``agent_session.usage_unknown``)."""
+    ``{"input", "output", "cache_read", "cache_write", "total", "turns"}``. ``total`` is what the harness itself counts
+    as the session's tokens (sum ``json_extract(usage, '$.total')`` for the spend). ``turns`` is the number of model
+    responses. For every harness, ``input`` is the uncached input, and ``cache_read`` and ``cache_write`` the input
+    read from and written to the prompt cache. NULL while the agent runs, or when no session file was found
+    (``agent_session.usage_unknown``)."""
 
 
 class Event(Base):

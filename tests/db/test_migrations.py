@@ -53,6 +53,7 @@ from piloop.plugins.role.watchdog import WatchdogRole
 from piloop.plugins.trigger.contract import TRIGGERS
 from piloop.plugins.trigger.low_water import LowWaterTrigger
 from piloop.plugins.trigger.seed import SeedTrigger
+from piloop.store.chunks import read
 from piloop.version import Version, installed
 from tests.conftest import bare_config, disk, role_of
 from tests.test_deprecated import piloop_version
@@ -2229,3 +2230,38 @@ def test_0052_keys_the_current_evaluator_of_each_campaign_by_its_judging_metrics
         restored = [(i, k, loads(d)) for i, _, k, d in con.execute(rows)]
         assert restored[1][2] == old
         assert restored[1][1] == sha256(dumps(old, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def test_0054_puts_each_session_file_still_on_this_machine_in_the_cas_drops_every_path_and_downgrades(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0053')
+    here, gone = tmp_path / 'sessions' / 'a.jsonl', tmp_path / 'sessions' / 'gone.jsonl'
+    here.parent.mkdir()
+    here.write_bytes(b'{"type":"user"}\n{"type":"assistant"}\n{"type":"ass')
+    usage = {'input': 1, 'output': 2, 'cache_read': 0, 'cache_write': 0, 'total': 3, 'turns': 1}
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute('INSERT INTO campaigns (name, path, config) VALUES (?, ?, ?)', ('p', '/p', '{"roles": {"w": {}}}'))
+        for source in (here, gone, None):
+            con.execute(
+                "INSERT INTO agent_sessions (kind, campaign_id, usage, updated_at) VALUES ('w', 1, ?, '2026-01-01')",
+                (None if source is None else dumps(usage | {'source': str(source)}),),
+            )
+    command.upgrade(cfg, '0054')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        rows = con.execute('SELECT session_file, usage, updated_at FROM agent_sessions ORDER BY id').fetchall()
+    stored = read(disk(tmp_path), Cid(rows[0][0]))
+    assert stored == b'{"type":"user"}\n{"type":"assistant"}\n', 'its whole lines, as a chunked file'
+    assert [(loads(u) if u else None, at) for _, u, at in rows] == [
+        (usage, '2026-01-01'),
+        (usage, '2026-01-01'),
+        (None, '2026-01-01'),
+    ], 'no path is left, also of a file on another machine; the move is not an update of a row'
+    assert [c for c, _, _ in rows[1:]] == [None, None]
+    command.downgrade(cfg, '0053')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert 'session_file' not in [c[1] for c in con.execute('PRAGMA table_info(agent_sessions)')]
+        sources = [loads(u)['source'] if u else None for (u,) in con.execute('SELECT usage FROM agent_sessions')]
+    assert sources == [rows[0][0], '', None], 'the older piloop reads a source on every usage'

@@ -540,8 +540,9 @@ Only the daemon starts implementers, because an implementer needs a run.
 piloop attach AGENT_SESSION_ID
 ```
 
-Prints the last 40 lines that an agent wrote, running or ended. An agent has no terminal to type into: use
-`piloop prompt` to send it a message.
+Prints the last 40 lines that an agent wrote, running or ended, on any machine. A running agent's lines come from the
+latest snapshot of its session, a few seconds old and at most 30. An agent has no terminal to type into: use `piloop prompt` to
+send it a message.
 
 ### piloop prompt
 
@@ -650,3 +651,12 @@ piloop store verify [REF]
 
 Checks that the store holds every blob of every archive: local copies are hashed again, evicted ones are looked up on
 the remote. Exits non-zero when one is missing or corrupt.
+
+### piloop cas get
+
+```text
+piloop cas get CID
+```
+
+Prints the file `CID` of the CAS to stdout: a blob as it was put, or a chunked file such as an agent's session file
+(`agent_sessions.session_file`) whole. Exits non-zero when the CAS does not have it.

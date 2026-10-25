@@ -109,6 +109,10 @@ documents are always strict JSON.
 `executable`, `role`, `model`, `campaign`, `run`, `idea` and `proposed_by` (the agent that proposed the idea, with
 its `actor`, `harness`, `executable` and `session_id`).
 
+`agent_session.session_saved` comes for each new snapshot of an agent's session file in the CAS, with `session_file`,
+its address, and `session_id`. A snapshot holds whole lines, and each starts with the bytes of the one before, so a
+reader that ships lines takes only those that it has not shipped (`piloop cas get <session_file>`).
+
 An event kind that this version of piloop does not know, such as a plugin's, comes in the same envelope with its
 payload as opaque JSON. A reader that does not need it skips it and moves its cursor on.
 

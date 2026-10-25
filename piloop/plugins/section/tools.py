@@ -12,8 +12,8 @@ TOOLS = [
     ' `error IS NULL AND evaluator_id = campaigns.evaluator_id`.'
     f' `piloop history` prints the latest {IDEAS_IN_HISTORY} ideas with their outcomes.',
     f'- Transcripts: `<runs.log_dir>/{TRANSCRIPT}` (an implementer), `<agent_sessions.log_dir>/{TRANSCRIPT}` and'
-    " `brief.md` beside it (any agent); the whole session: the harness's own file,"
-    " `json_extract(agent_sessions.usage, '$.source')`.",
+    " `brief.md` beside it (any agent); the whole session, the harness's own file:"
+    ' `piloop cas get <agent_sessions.session_file>`.',
     '{vcs:code}',
     "- Who changed what: `SELECT at, actor, kind, payload FROM events WHERE target_kind='idea' AND target_id=12`.",
     '- Full-text search: `ideas_fts` (title, hypothesis, plan), `comments_fts` (body); see the procedures above.',

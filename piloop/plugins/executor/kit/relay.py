@@ -50,6 +50,7 @@ RELAYED: frozenset[tuple[str, ...]] = frozenset(
         ('idea', 'status'),
         ('candidate', 'import'),
         ('restore',),
+        ('cas', 'get'),
     }
 )
 """The commands that an agent on a worker elsewhere may run: those that the role prompts name."""

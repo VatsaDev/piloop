@@ -54,10 +54,11 @@ git diff --stat <baseline-sha> <head-sha> -- evaluate.py data/
   a new evaluator. Check the diffs of the kept candidates.
 </Warning>
 
-Read the [session](/concepts/research-memory#sessions) of an agent in its harness's own file:
+Read the [session](/concepts/research-memory#sessions) of an agent, its harness's own file:
 
 ```bash
-piloop sql "SELECT id, kind, usage->>'$.source' FROM agent_sessions WHERE campaign_id = 1"
+piloop sql "SELECT id, kind, session_file FROM agent_sessions WHERE campaign_id = 1"
+piloop cas get <session_file> > session.jsonl
 ```
 
 Tokens and time for each role and harness:

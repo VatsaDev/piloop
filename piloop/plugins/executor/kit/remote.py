@@ -42,7 +42,14 @@ from piloop.net import Changed, Refusal, Route
 from piloop.net.tokens import Caller
 from piloop.otel import Tracer
 from piloop.plugins.cas.contract import BlobAddress, Cas
-from piloop.plugins.executor.contract import AgentReport, EvaluationReport, MissingBlobs, RepoId, Report
+from piloop.plugins.executor.contract import (
+    AgentReport,
+    EvaluationReport,
+    HarnessSession,
+    MissingBlobs,
+    RepoId,
+    Report,
+)
 from piloop.plugins.executor.kit.capacity import HostSample
 from piloop.plugins.executor.kit.client import PROTOCOL, Dismissed, Local, Registration, WorkerInfo
 from piloop.plugins.executor.kit.clones import NotSent
@@ -123,7 +130,7 @@ class Started(BaseModel):
 class Heartbeat(BaseModel):
     """The body of ``heartbeat``."""
 
-    leases: dict[int, str | None]
+    leases: dict[int, HarnessSession]
     sample: HostSample
 
 
@@ -347,7 +354,7 @@ class Remote:
     def started(self, lease: int, handle: JobHandle, session_id: str | None) -> None:
         self._post('started', Started(lease=lease, handle=handle, session_id=session_id))
 
-    def heartbeat(self, leases: Mapping[int, str | None], sample: HostSample) -> dict[int, Answer]:
+    def heartbeat(self, leases: Mapping[int, HarnessSession], sample: HostSample) -> dict[int, Answer]:
         return Answers.model_validate_json(self._post('heartbeat', Heartbeat(leases=dict(leases), sample=sample))).root
 
     def report(self, lease: int, request_id: str, report: AgentReport | EvaluationReport) -> dict[str, object]:

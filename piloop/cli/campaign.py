@@ -134,7 +134,7 @@ def watch_cmd(
         local.known(ref)
     db = Database(common.settings.database_url, actor=common.settings.actor)
     try:
-        Watch(db, common.settings.home / 'piloop.db', ref, common.settings.actor).run(mouse=mouse)
+        Watch(db, common.settings.home / 'piloop.db', ref, common.settings.actor, local.cas()).run(mouse=mouse)
     finally:
         db.close()
 

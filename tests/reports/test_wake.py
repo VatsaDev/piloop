@@ -22,13 +22,18 @@ from piloop.reports.wake import (
     fitted,
     orchestrator_overview,
 )
+from tests.conftest import cas_of
 
 NOW = datetime(2026, 10, 12, 21, 0, tzinfo=UTC)
 
 
 def lessons_overview(s: Session, campaign: Campaign, budget: int) -> str:
     """The ``lessons`` section in ``budget`` tokens, as a brief shows it. A budget of 0 is no section."""
-    return markdown([Lessons(budget=budget)], Rendering(s, NOW, campaign, Path('/no/workspace'))) if budget else ''
+    return (
+        markdown([Lessons(budget=budget)], Rendering(s, NOW, campaign, Path('/no/workspace'), cas_of(s)))
+        if budget
+        else ''
+    )
 
 
 def lesson(

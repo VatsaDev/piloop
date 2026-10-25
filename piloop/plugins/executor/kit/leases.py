@@ -84,6 +84,7 @@ from piloop.plugins.executor.contract import (
     EvaluationKey,
     EvaluationReport,
     Guard,
+    HarnessSession,
     JobKey,
     LeftJob,
     Prompt,
@@ -642,19 +643,19 @@ class Leases:
                     mark(s)
                     s.commit()
 
-    def heartbeat(self, worker: str, sessions: dict[int, str | None], host: HostSample) -> dict[int, Answer]:
-        """Renew the leases of ``worker`` that it still runs, by id, with the session id each agent reported.
+    def heartbeat(self, worker: str, sessions: dict[int, HarnessSession], host: HostSample) -> dict[int, Answer]:
+        """Renew the leases of ``worker`` that it still runs, by id, with what it knows of each agent's session.
 
         The answer for each says go on, stop (``REVOKED``, and report), or the lease is no longer yours (``STALE``).
         ``host`` is the worker's sample now: it goes on its row.
         """
         answers: dict[int, Answer] = {}
-        reported: list[tuple[int, AgentSessionId, str]] = []
+        reported: list[tuple[int, AgentSessionId, HarnessSession]] = []
         now = utcnow()
         with self._db.session() as s:
             write_transaction(s)
             self._heard(s, s.get_one(LeaseWorker, worker), host)
-            for lease_id, session_id in sessions.items():
+            for lease_id, session in sessions.items():
                 try:
                     lease = self._live(s, lease_id, worker)
                 except StaleLease:
@@ -662,14 +663,14 @@ class Leases:
                     continue
                 lease.renewed_at = now
                 lease.expires_at = now + timedelta(seconds=self.timing.toleration)
-                if session_id is not None and lease.agent_session_id is not None:
-                    reported.append((lease_id, lease.agent_session_id, session_id))
+                if session != HarnessSession() and lease.agent_session_id is not None:
+                    reported.append((lease_id, lease.agent_session_id, session))
                 answers[lease_id] = Answer.REVOKED if lease.revoked_at is not None else Answer.RENEWED
             s.commit()
-        for lease_id, agent_session, session_id in reported:
+        for lease_id, agent_session, session in reported:
             # a row that closed, or a lease that went, meanwhile: the next heartbeat's answer says so
             with contextlib.suppress(Settled, StaleLease):
-                self._results.session(AgentKey(agent_session), session_id, guard=self._fence(lease_id, worker))
+                self._results.session(AgentKey(agent_session), session, guard=self._fence(lease_id, worker))
         return answers
 
     def relayed(self, lease_id: int, worker: str) -> AgentJob:

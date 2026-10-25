@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import threading
 import time
 import tomllib
 from pathlib import Path
@@ -28,6 +29,7 @@ from piloop.agents.results import (
     JobEnded,
     NotStarted,
     Ran,
+    SessionSaved,
     StartupAnomaly,
     WrapUp,
 )
@@ -43,15 +45,18 @@ from piloop.ids import IMPLEMENTER, AgentSessionId, CampaignId, RoleName, Target
 from piloop.mcp import MCP
 from piloop.otel import Tracer
 from piloop.plugins.cas.contract import CAS
-from piloop.plugins.executor.contract import AgentJob, RepoId, Source
+from piloop.plugins.executor.contract import AgentJob, HarnessSession, RepoId, Source
+from piloop.plugins.executor.kit import jobs, sessions
 from piloop.plugins.executor.kit.capacity import HostSample
 from piloop.plugins.executor.kit.leases import SERVE, Answer, LeaseQueued, Leases, LeaseWorkerJoined, read_job
+from piloop.plugins.executor.kit.sessions import SessionFile
 from piloop.plugins.executor.workers import Workers
 from piloop.plugins.role.watchdog import WatchdogRole
 from piloop.plugins.runtime.contract import AgentExit, AgentSpec, ExitStatus
 from piloop.plugins.secrets.contract import SECRETS, set_secret
 from piloop.plugins.vcs.contract import Part
 from piloop.plugins.vcs.git import Git
+from piloop.store.chunks import read
 from piloop.usage import Usage
 from piloop.usage.jsonl import CWD_ENCODERS
 from tests.conftest import (
@@ -67,6 +72,7 @@ from tests.conftest import (
     home_cas,
     role_timeout,
     serving,
+    wait_until,
     write_toml,
 )
 from tests.test_vcs import ALLOWED_WORDS, git_words
@@ -603,9 +609,9 @@ def test_a_session_reported_late_goes_back_in_the_report_not_only_in_a_heartbeat
     heartbeat = Leases.heartbeat
 
     def no_session_ids(
-        self: Leases, worker: str, sessions: dict[int, str | None], host: HostSample
+        self: Leases, worker: str, sessions: dict[int, HarnessSession], host: HostSample
     ) -> dict[int, Answer]:
-        return heartbeat(self, worker, dict.fromkeys(sessions), host)
+        return heartbeat(self, worker, dict.fromkeys(sessions, HarnessSession()), host)
 
     mocker.patch.object(Leases, 'heartbeat', no_session_ids)
     mocker.patch.object(runtime, 'session_id', side_effect=[None, CODEX_ID])
@@ -614,7 +620,7 @@ def test_a_session_reported_late_goes_back_in_the_report_not_only_in_a_heartbeat
     assert agent_session(db, late).session_id == CODEX_ID
 
 
-def test_the_agents_token_usage_is_summed_from_its_session_file_when_it_ends(
+def test_the_agents_session_file_goes_into_the_cas_and_its_usage_is_summed_from_it_when_it_ends(
     campaign: Campaign,
     db: Database,
     runtime: ScriptRuntime,
@@ -643,8 +649,12 @@ def test_the_agents_token_usage_is_summed_from_its_session_file_when_it_ends(
         cache_write=8718,
         total=16478,
         turns=2,
-        source=str(folder / f'2026-09-09T05-48-14-300Z_{w.session_id}.jsonl'),
     ), "pi's store is keyed by the agent's cwd, the worktree; read before the caller removes it"
+    left = (SESSIONS / 'pi.jsonl').read_bytes()
+    assert w.session_file is not None and read(home_cas(db), w.session_file) == left, 'the whole file, as it was left'
+    with db.session() as s:
+        saved = s.scalars(select(Event.payload).where(Event.kind == 'agent_session.session_saved')).all()
+    assert saved == [SessionSaved(session_file=w.session_file, session_id=w.session_id)]
     assert span_attributes(spans, 'piloop.job', agent_session_id)['tokens'] == 16478
     assert events(spans, 'agent_session.usage_unknown') == []
     assert anomalies(db) == [], 'it spent tokens: it started, however fast it ended'
@@ -653,7 +663,9 @@ def test_the_agents_token_usage_is_summed_from_its_session_file_when_it_ends(
     silent = request(db, campaign)
     launch(db, runtime, tmp_path, silent, tracer)
     w = agent_session(db, silent)
-    assert (w.state, w.error, w.usage) == (AgentSessionState.EXITED, None, None), 'the row is fine'
+    assert (w.state, w.error, w.usage, w.session_file) == (AgentSessionState.EXITED, None, None, None), (
+        'the row is fine'
+    )
     assert events(spans, 'agent_session.usage_unknown') == [
         {
             'agent_session': silent,
@@ -672,6 +684,72 @@ def test_the_agents_token_usage_is_summed_from_its_session_file_when_it_ends(
     launch(db, runtime, tmp_path, broken, tracer)
     assert (agent_session(db, broken).state, agent_session(db, broken).usage) == (AgentSessionState.KILLED, None)
     assert len(events(spans, 'agent_session.usage_unknown')) == 1, 'an agent that never ran has no session to read'
+
+
+def test_a_running_agents_session_file_is_snapshotted_onto_its_row_and_the_last_snapshot_is_the_whole_file(
+    campaign: Campaign, db: Database, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home, hold = tmp_path / 'home', tmp_path / 'hold'
+    monkeypatch.setenv('HOME', str(home))
+    monkeypatch.setattr(jobs, 'POLL_SECONDS', 0.05)
+    monkeypatch.setattr(sessions, 'QUIET_SECONDS', 0.1)
+    folder = home / '.pi' / 'agent' / 'sessions' / CWD_ENCODERS['dash_separators_wrapped'](Path(campaign.path))
+    whole = (SESSIONS / 'pi.jsonl').read_bytes()
+    first = whole[: whole.index(b'\n') + 1]
+    (tmp_path / 'started.jsonl').write_bytes(first + b'{"type":"mess')
+    hold.touch()
+    session = f'"{folder}/2026-09-09T05-48-14-300Z_$2.jsonl"'
+    writes_then_waits = (
+        f'#!/bin/sh\nmkdir -p {folder}\ncp {tmp_path / "started.jsonl"} {session}\n'
+        f'while [ -f {hold} ]; do sleep 0.05; done\ncp {SESSIONS / "pi.jsonl"} {session}\n'
+    )
+    use_harness(db, campaign, writes_then_waits, headless=['--session-id', '{session_id}', '{prompt}'], usage=PI_SPEC)
+    agent = request(db, campaign)
+    launching = threading.Thread(target=launch, args=(db, runtime, tmp_path, agent))
+    launching.start()
+    cas = home_cas(db)
+
+    def stored() -> bytes | None:
+        session_file = agent_session(db, agent).session_file
+        return None if session_file is None else read(cas, session_file)
+
+    wait_until(lambda: stored() == first, 'a snapshot of its whole lines, once the file was quiet')
+    hold.unlink()
+    launching.join(30)
+    assert stored() == whole, 'the last one, when it ended'
+    with db.session() as s:
+        saved = s.scalars(select(Event.payload).where(Event.kind == 'agent_session.session_saved')).all()
+    assert [read(cas, e.session_file) for e in saved if isinstance(e, SessionSaved)] == [first, whole], (
+        'one event for each new snapshot: an unchanged file is not saved again'
+    )
+
+
+def test_a_snapshot_that_fails_is_tried_again_and_a_late_session_id_is_asked_for_before_each(
+    campaign: Campaign,
+    db: Database,
+    runtime: ScriptRuntime,
+    tmp_path: Path,
+    tracer: Tracer,
+    spans: InMemorySpanExporter,
+    monkeypatch: pytest.MonkeyPatch,
+    mocker: MockerFixture,
+) -> None:
+    monkeypatch.setattr(jobs, 'POLL_SECONDS', 0.05)
+    codex = DEFAULT_HARNESSES['codex']
+    use_harness(db, campaign, CODEX_LIKE, usage=NO_USAGE_FILE, session_id_pattern=codex.session_id_pattern)
+    asked = mocker.patch.object(runtime, 'session_id', side_effect=[None, CODEX_ID])
+    mocker.patch.object(SessionFile, 'due', return_value=True)
+    mocker.patch.object(SessionFile, 'snapshot', side_effect=OSError('the file went'))
+    late = request(db, campaign)
+    launch(db, runtime, tmp_path, late, tracer)
+    w = agent_session(db, late)
+    assert (w.session_id, w.session_file, asked.call_count) == (CODEX_ID, None, 2), (
+        'a timed snapshot found the id: the end asks no more'
+    )
+    unsaved = events(spans, 'agent_session.session_unsaved')
+    assert len(unsaved) >= 2 and unsaved[-1] == {'agent_session': late, 'error': 'OSError: the file went'}, (
+        'each timed one and the last one: the report goes without it'
+    )
 
 
 def test_a_killed_agents_usage_is_read_too(

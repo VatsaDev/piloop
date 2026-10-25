@@ -47,6 +47,7 @@ from piloop.plugins.executor.contract import (
     EvaluationKey,
     EvaluationReport,
     Guard,
+    HarnessSession,
     JobKey,
     Prompt,
     RepoId,
@@ -135,8 +136,8 @@ class Recorder:
     ) -> None:
         self._apply(guard, ('started', key.agent_session, handle), lambda s: None)
 
-    def session(self, key: AgentKey, session_id: str, *, guard: Guard | None = None) -> None:
-        self._apply(guard, ('session', key.agent_session, session_id), lambda s: None)
+    def session(self, key: AgentKey, session: HarnessSession, *, guard: Guard | None = None) -> None:
+        self._apply(guard, ('session', key.agent_session, session.id), lambda s: None)
 
     def finished(
         self, job: AgentJob | EvaluationJob, report: AgentReport | EvaluationReport, *, guard: Guard | None = None
@@ -277,7 +278,7 @@ def test_a_lease_is_acquired_started_renewed_and_reported_once_with_its_receipt(
     assert take(leases, 'w2', ['process']) is None, 'a job goes to one worker'
     handle = AgentHandle(runtime='subprocess', data={'pid': 7})
     Local(leases, 'w1').started(lease_id, handle, None)
-    assert Local(leases, 'w1').heartbeat({lease_id: 'sid'}, HOST) == {lease_id: Answer.RENEWED}
+    assert Local(leases, 'w1').heartbeat({lease_id: HarnessSession(id='sid')}, HOST) == {lease_id: Answer.RENEWED}
     assert Local(leases, 'w1').report(lease_id, 'r1', DONE) == RECEIPT
     assert Local(leases, 'w1').report(lease_id, 'r1', DONE) == RECEIPT, 'a resent report gets its receipt'
     assert recorder.calls == [
@@ -310,7 +311,7 @@ def test_a_report_with_an_old_fencing_token_is_refused_and_kept_as_a_stale_repor
     assert second is not None and second.lease > first, 'the fencing token grows with each lease of the job'
     with pytest.raises(StaleLease, match=f'stale_lease: lease#{first} is expired'):
         Local(leases, 'w1').report(first, 'late', MEASURED)
-    assert Local(leases, 'w1').heartbeat({first: None}, HOST) == {first: Answer.STALE}
+    assert Local(leases, 'w1').heartbeat({first: HarnessSession()}, HOST) == {first: Answer.STALE}
     assert [c[0] for c in recorder.calls] == ['lost'], 'nothing of the late report applied'
     [(kind, target, payload)] = events(db, StaleReport)
     assert (kind, target, payload.lease, payload.worker) == (TargetKind.CANDIDATE, job.candidate, first, 'w1')
@@ -351,7 +352,7 @@ def test_a_silent_worker_is_unreachable_after_the_grace_period_and_its_leases_ex
         (TargetKind.AGENT_SESSION, job.agent_session, LeaseUnreachable(lease=lease_id, worker='w1'))
     ], 'once per silence'
     assert worker_row(db, 'w1').no_lease == NoLease.UNREACHABLE
-    Local(leases, 'w1').heartbeat({lease_id: None}, HOST)
+    Local(leases, 'w1').heartbeat({lease_id: HarnessSession()}, HOST)
     assert worker_row(db, 'w1').no_lease is None, 'heard again'
     heard = utcnow()
     leases.expire(heard + timedelta(seconds=51))  # unreachable again: a due of its own, not an absence
@@ -383,7 +384,7 @@ def test_a_revoked_lease_is_answered_revoked_and_still_reports(
     with db.session() as s:
         revoke(s, home_cas(db), s.get_one(Lease, lease_id))
         s.commit()
-    assert Local(leases, 'w1').heartbeat({lease_id: None}, HOST) == {lease_id: Answer.REVOKED}
+    assert Local(leases, 'w1').heartbeat({lease_id: HarnessSession()}, HOST) == {lease_id: Answer.REVOKED}
     assert Local(leases, 'w1').report(lease_id, 'r', DONE) == RECEIPT
 
 
@@ -523,7 +524,7 @@ def test_an_unreachable_worker_counts_no_slot_until_it_is_heard_again(
         s.get_one(LeaseWorker, 'w1').seen_at = utcnow() - timedelta(seconds=51)
         s.commit()
     assert leases.capacity() == Capacity(0, 0), 'unreachable'
-    Local(leases, 'w1').heartbeat({held: None}, HOST)
+    Local(leases, 'w1').heartbeat({held: HarnessSession()}, HOST)
     assert leases.capacity() == Capacity(None, 99)
 
 
@@ -568,7 +569,7 @@ def test_a_job_whose_row_is_settled_is_refused_as_stale_and_its_lease_ends_all_t
     take(leases, 'w1', [])
     with pytest.raises(StaleLease, match='stale_lease: agent_session#1 is closed'):
         Local(leases, 'w1').started(lease_id, AgentHandle(runtime='subprocess', data={'pid': 1}), None)
-    assert Local(leases, 'w1').heartbeat({lease_id: 'sid'}, HOST) == {lease_id: Answer.RENEWED}, (
+    assert Local(leases, 'w1').heartbeat({lease_id: HarnessSession(id='sid')}, HOST) == {lease_id: Answer.RENEWED}, (
         'the session id waits for the end'
     )
     with pytest.raises(StaleLease, match='stale_lease: agent_session#1 is closed'):

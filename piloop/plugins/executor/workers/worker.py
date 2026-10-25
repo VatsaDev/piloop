@@ -30,6 +30,7 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import assert_never
 
+from covalence import Cid
 from pydantic import BaseModel, ConfigDict, SecretStr
 
 from piloop.db.models import NoLease
@@ -40,6 +41,7 @@ from piloop.plugins.executor.contract import (
     AgentReport,
     EvaluationJob,
     EvaluationReport,
+    HarnessSession,
     MissingBlobs,
     Prompt,
     Report,
@@ -120,7 +122,8 @@ class Running:
     kill: Callable[[], None] | None
     """How to stop its process. None while it starts, and after its evaluator ended: nothing to kill yet, or any more."""
     evaluation: bool = False
-    session_id: str | None = None
+    session: HarnessSession = HarnessSession()
+    """What its heartbeat says of its agent's harness session."""
     asked: bool = False
     """The worker asked it to stop: a revoke, the worker's own stop. An evaluation it stopped is not run again."""
     killed: bool = False
@@ -465,7 +468,7 @@ class Worker:
         try:
             with self._lock:  # every lease it holds, a job that is still starting too
                 sessions = {
-                    lease_id: running.session_id if (running := self._jobs.get(lease_id)) is not None else None
+                    lease_id: running.session if (running := self._jobs.get(lease_id)) is not None else HarnessSession()
                     for lease_id in self._threads
                 }
             sent = time.monotonic()
@@ -618,7 +621,7 @@ class Worker:
         elapsed = time.time() - grant.started_at.timestamp()
         with self._lock:
             running = self._register(grant.lease, partial(runtime.kill, handle))
-            running.session_id, running.steer = job.session_id, partial(runtime.prompt, handle)
+            running.session, running.steer = HarnessSession(id=job.session_id), partial(runtime.prompt, handle)
             self._recovered.notify_all()
         with self._tracer.span('piloop.job', lease=grant.lease, agent_session=job.agent_session) as span:
             span.set(reattached=True)
@@ -735,7 +738,15 @@ class _Control:
     def session(self, session_id: str) -> None:
         w = self._worker
         with w._lock:
-            w._jobs[self._lease].session_id = session_id
+            running = w._jobs[self._lease]
+            running.session = running.session.model_copy(update={'id': session_id})
+        w._wake()  # the next heartbeat carries it to the agent's row
+
+    def saved(self, session_file: Cid) -> None:
+        w = self._worker
+        with w._lock:
+            running = w._jobs[self._lease]
+            running.session = running.session.model_copy(update={'file': session_file})
         w._wake()  # the next heartbeat carries it to the agent's row
 
     def asked(self) -> bool:

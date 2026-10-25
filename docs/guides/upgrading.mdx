@@ -148,6 +148,22 @@ Each use shows a `PiloopDeprecationWarning` with the file, the line, the new key
 one. The [changelog](https://github.com/hiloopai/piloop/blob/main/CHANGELOG.md) lists every deprecation, and
 [Deprecated keys and variables](#deprecated-keys-and-variables) lists those of 0.2.0.
 
+## Upgrading to 0.4.0
+
+### Agent sessions are in the CAS
+
+piloop keeps each agent's session, the harness's own file, in the CAS: `agent_sessions.session_file`. Print it with
+`piloop cas get <session_file>` ([Sessions](/concepts/research-memory#sessions)).
+
+- `usage->>'$.source'`, the file's path on the machine that ran the agent, is gone. The upgrade puts each file that is
+  still on this machine into the CAS, and drops every path.
+- Upgrade `piloop worker` on every machine with the server: the server refuses a worker of the older protocol.
+
+### Network plugins name the actor
+
+A network plugin implements `actor(headers)`: whom a request asks to act as. Its `client(server, actor)` sends that
+ask. A person whom the network names signs as `human:<name>`, not `human`. `piloop pause` prints `paused (all)`.
+
 ## Upgrading to 0.3.0
 
 ### First, piloop 0.2.1
@@ -200,7 +216,7 @@ it at the upgrade, and an agent that worked in the campaign checkout when you up
 ### Entire
 
 piloop no longer attaches agent sessions to Entire. The harness's own file holds each session: find it by
-`agent_sessions.session_id`, or read its path in `usage->>'$.source'` ([Sessions](/concepts/research-memory#sessions)).
+`agent_sessions.session_id` ([Sessions](/concepts/research-memory#sessions)).
 
 - `agent_sessions.checkpoint_id` and the `checkpoint` column of the kept lineage are gone.
 - Delete `entire_agent` from each `[harness.<name>]` table. A `piloop.toml` that still has it fails at `piloop init`,

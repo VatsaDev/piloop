@@ -12,6 +12,7 @@ from pathlib import Path
 
 from piloop.actor import System
 from piloop.db.session import Database
+from piloop.plugins.cas.disk import Disk
 from piloop.watch.app import Watch
 
 SIZE = (160, 46)
@@ -25,7 +26,7 @@ SHOTS: tuple[tuple[str, tuple[str, ...]], ...] = (
 async def shoot(db: Database, db_file: Path, campaign: str, out: Path) -> None:
     """Open the campaign once per shot, press its keys, and save the screen."""
     for name, keys in SHOTS:
-        app = Watch(db, db_file, campaign, System.HUMAN)
+        app = Watch(db, db_file, campaign, System.HUMAN, Disk().open(db_file.parent))
         async with app.run_test(size=SIZE) as pilot:
             await pilot.pause(0.5)
             for key in keys:

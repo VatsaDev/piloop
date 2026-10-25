@@ -313,7 +313,8 @@ writer gave it a priority.
 1. **Read** the thread and the target.
    - `piloop inbox show <id>`.
    - For a run: `SELECT status, end, error, log_dir FROM runs WHERE id = <t>`, and the end of `<log_dir>/transcript.txt`.
-   - The agent's own session: `SELECT usage->>'$.source' FROM agent_sessions WHERE run_id = <t>`, the harness's file.
+   - The agent's own session, the harness's file: `SELECT session_file FROM agent_sessions WHERE run_id = <t>`, then
+     `piloop cas get <session_file>`.
    - Verify before you build on a theory: the agent's own transcript, `ps`, a new query. Do not guess the mechanism.
 2. **Decide.**
    - If the human is talking to you now, give them the one decision, with the evidence and your recommendation.
@@ -391,8 +392,9 @@ without a priority), out of the inbox.
   - `git diff <parent revision> <revision>` compares it with its parent (`candidates.parent_id`).
   - `git cherry-pick <revision>` takes it.
   - The kept lineage in `piloop history` lists the commit of each candidate.
-- Why it was made: read the session of the agent that made it, the harness's own file. `agent_sessions.usage->>'$.source'`
-  names it, for any agent, sweeps included. It is long: read it only for a specific question.
+- Why it was made: read the session of the agent that made it, the harness's own file:
+  `piloop cas get <agent_sessions.session_file>`, for any agent, sweeps included. It is long: read it only for a
+  specific question.
 
 ## Past research
 

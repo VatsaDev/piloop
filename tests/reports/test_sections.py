@@ -14,6 +14,7 @@ from piloop.db.session import Database
 from piloop.ids import CampaignStatus
 from piloop.plugins.role.contract import ImplementerRole
 from piloop.plugins.section.contract import SECTIONS, Rendering, Section, Surface, defaults, markdown
+from tests.conftest import cas_of
 from tests.daemon.test_roles import forget_loaded, installed
 from tests.reports.test_overview import NOW
 
@@ -54,8 +55,10 @@ def sections(*names: str) -> list[Section]:
 def test_the_incidents_and_the_pack_depend_on_what_the_agent_got(db: Database, campaign: Campaign) -> None:
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
-        routine = markdown(sections('incidents', 'pack'), Rendering(s, NOW, p, Path('/no/workspace')))
-        incident = markdown(sections('incidents', 'pack'), Rendering(s, NOW, p, Path('/no/workspace'), ('- run#1',)))
+        routine = markdown(sections('incidents', 'pack'), Rendering(s, NOW, p, Path('/no/workspace'), cas_of(s)))
+        incident = markdown(
+            sections('incidents', 'pack'), Rendering(s, NOW, p, Path('/no/workspace'), cas_of(s), ('- run#1',))
+        )
     assert routine.startswith('## Research pack\n\n### Research pack: metrics'), 'no incidents: the pack'
     assert incident == '## Incidents to investigate\n\n- run#1', 'an incident sweep reads its incidents alone'
 
@@ -65,7 +68,7 @@ def test_the_headline_says_why_the_campaign_is_held(db: Database, campaign: Camp
         p = s.get_one(Campaign, campaign.id)
         p.status, p.stopped_reason = CampaignStatus.STOPPED, 'plateau'
         p.paused, p.paused_reason = Pause.ALL, 'new data'
-        text = markdown(sections('headline'), Rendering(s, NOW, p, Path('/no/workspace')))
+        text = markdown(sections('headline'), Rendering(s, NOW, p, Path('/no/workspace'), cas_of(s)))
     assert text.endswith('stopped because: plateau · paused: launches and evaluations · paused because: new data')
 
 

@@ -72,14 +72,16 @@ The `piloop-operate` skill runs `piloop wake` first, and writes to the journal a
 ## Sessions
 
 The candidates show what the code was. The **sessions** show what the agents did: their prompts, tool calls and
-reasoning. Each harness keeps its sessions in its own store, such as `~/.claude/projects/`. piloop records the id of
-each agent's session, and the file that it read the agent's tokens from.
+reasoning. piloop keeps each agent's session, the harness's own file, in the [artifact store](/concepts/artifact-store),
+on whatever machine the agent runs: a snapshot a few seconds after the agent writes, at least every 30 seconds, and the
+whole file when it ends.
+`agent_sessions.session_file` is the address of the latest one.
 
-To find the session that made candidate 2:
+To read the session that made candidate 2:
 
 ```bash
-piloop sql "SELECT s.session_id, s.usage->>'$.source' FROM agent_sessions s JOIN candidates c ON c.run_id = s.run_id WHERE c.id = 2"
+piloop sql "SELECT s.id, s.session_file FROM agent_sessions s JOIN candidates c ON c.run_id = s.run_id WHERE c.id = 2"
+piloop cas get <session_file> > session.jsonl
 ```
 
-The file is the session's transcript, one JSON record for each prompt, tool call and answer. The harness keeps it for as
-long as its own settings say.
+The file has one JSON record for each prompt, tool call and answer.

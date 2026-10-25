@@ -61,6 +61,7 @@ from piloop.plugins.executor.contract import (
     EvaluationKey,
     EvaluationReport,
     Guard,
+    HarnessSession,
     JobKey,
     MissingBlobs,
     Sample,
@@ -295,6 +296,20 @@ class Identified(EventModel):
     without a run."""
 
 
+class SessionSaved(EventModel):
+    """A snapshot of an agent's harness session file is in the CAS (``saved``): while the agent runs, and when it ends.
+
+    A snapshot holds the whole lines of the file. A harness appends to its file, so each snapshot starts with the bytes
+    of the one before.
+    """
+
+    kind: Literal['agent_session.session_saved'] = 'agent_session.session_saved'
+    session_file: BlobAddress
+    """The snapshot: the row's ``session_file`` now."""
+    session_id: str
+    """The harness's own session id, whose file it is."""
+
+
 SIGNED: TypeAdapter[SignedAgent] = TypeAdapter(SignedAgent)
 """Reads an agent from its signature, such as an ``ideas.created_by``."""
 
@@ -345,9 +360,11 @@ class CampaignResults:
 
         self._apply(guard, change)
 
-    def session(self, key: AgentKey, session_id: str, *, guard: Guard | None = None) -> None:
+    def session(self, key: AgentKey, session: HarnessSession, *, guard: Guard | None = None) -> None:
         def change(s: Session) -> None:
-            learn(s, _open(s, key), session_id)
+            w = _open(s, key)
+            learn(s, w, session.id)
+            saved(s, w, session.file)
 
         self._apply(guard, change)
 
@@ -428,6 +445,7 @@ class CampaignResults:
                 ended: Ran | NotStarted = NotStarted(reason)
             case AgentFinished(process=process):
                 learn(s, w, report.session_id)
+                saved(s, w, report.session_file)
                 for comment in report.read:
                     _record(s, w.id, PromptOutcome(kind='comment.delivered', comment=comment))
                 for comment in report.unread:
@@ -562,6 +580,20 @@ def learn(s: Session, w: AgentSession, session_id: str | None) -> None:
         proposed_by=None if idea is None else _proposer(s, idea.created_by),
     )
     emit(s, identified, TargetRef(TargetKind.AGENT_SESSION, w.id), System.DAEMON)
+
+
+def saved(s: Session, w: AgentSession, session_file: Cid | None) -> None:
+    """Put ``session_file`` on the row. When the row did not have it, emit ``SessionSaved``. The caller commits.
+
+    Each write of an agent's session file goes through here: the snapshots in its heartbeats, and the last one in its
+    report.
+    """
+    if session_file is None or session_file == w.session_file:
+        return
+    assert w.session_id is not None  # the worker finds the file by the session id, which ``learn`` put on the row
+    w.session_file = session_file
+    event = SessionSaved(session_file=session_file, session_id=w.session_id)
+    emit(s, event, TargetRef(TargetKind.AGENT_SESSION, w.id), System.DAEMON)
 
 
 def _proposer(s: Session, created_by: str) -> Proposer | None:

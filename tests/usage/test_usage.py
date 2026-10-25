@@ -28,7 +28,7 @@ from piloop.usage import (
     read_usage,
     reader,
 )
-from piloop.usage.jsonl import CWD_ENCODERS, SAID, TALLIES, JsonlReader, last_said
+from piloop.usage.jsonl import CWD_ENCODERS, SAID, TALLIES, JsonlReader
 from tests.conftest import WATCHDOG, bare_config
 
 SESSIONS = Path(__file__).parent.parent / 'fixtures' / 'sessions'
@@ -130,19 +130,17 @@ def test_cwd_encoders_match_the_stores_on_disk() -> None:
 
 
 def test_pi_tally_sums_every_assistant_message(home: Path) -> None:
-    path = store(home, 'pi', PI_ID)
+    store(home, 'pi', PI_ID)
     assert read_usage(spec_of('pi'), PI_ID, CWD, None) == snapshot(
-        Usage(input=4, output=993, cache_read=6763, cache_write=8718, total=16478, turns=2, source=str(path))
+        Usage(input=4, output=993, cache_read=6763, cache_write=8718, total=16478, turns=2)
     ), "totalTokens is pi's own sum: input + output + cacheRead + cacheWrite"
 
 
 def test_claude_tally_counts_each_api_response_once(home: Path) -> None:
     """Streaming writes one assistant line per content block, each repeating the response's usage."""
-    path = store(home, 'claude', CLAUDE_ID)
+    store(home, 'claude', CLAUDE_ID)
     usage = read_usage(spec_of('claude'), CLAUDE_ID, CWD, None)
-    assert usage == snapshot(
-        Usage(input=4, output=1750, cache_read=89160, cache_write=20075, total=110989, turns=2, source=str(path))
-    )
+    assert usage == snapshot(Usage(input=4, output=1750, cache_read=89160, cache_write=20075, total=110989, turns=2))
     assert usage is not None and usage.total == usage.input + usage.output + usage.cache_read + usage.cache_write, (
         'Anthropic reports uncached input, cache reads and cache writes apart; the total is the four summed'
     )
@@ -160,14 +158,14 @@ def test_sessions_are_found_under_the_home_that_the_harness_variable_names(
         read_usage(spec_of(harness), session_id, CWD, None)
     path = store(home, harness, session_id)
     assert path.is_relative_to(moved)
-    usage = read_usage(spec_of(harness), session_id, CWD, None)
-    assert usage is not None and usage.source == str(path)
+    assert read_usage(spec_of(harness), session_id, CWD, None) is not None
+    assert spec_of(harness).resolved.session_file(session_id, CWD) == path
 
 
 def test_codex_tally_takes_the_last_cumulative_token_count(home: Path) -> None:
-    path = store(home, 'codex', CODEX_ID)
+    store(home, 'codex', CODEX_ID)
     assert read_usage(spec_of('codex'), CODEX_ID, CWD, None) == snapshot(
-        Usage(input=16173, output=372, cache_read=23808, cache_write=0, total=40353, turns=2, source=str(path))
+        Usage(input=16173, output=372, cache_read=23808, cache_write=0, total=40353, turns=2)
     ), (
         "input_tokens includes the cached part, which input leaves out as for every harness; total_tokens is Codex's"
         ' own input + output; a null info is not a turn'
@@ -207,7 +205,7 @@ def test_a_campaign_spells_a_spec_in_toml_for_an_override_or_a_custom_harness(ho
         home, 'claude', CLAUDE_ID, name=f'claude-work/campaigns/{CWD_ENCODERS["dash_non_alnum"](CWD)}/{CLAUDE_ID}.jsonl'
     )
     usage = read_usage(moved, CLAUDE_ID, CWD, None)
-    assert usage is not None and (usage.total, usage.source) == (110989, str(path))
+    assert usage is not None and usage.total == 110989 and moved.resolved.session_file(CLAUDE_ID, CWD) == path
     local = cfg.harness_for('local').usage
     assert local == UsageSpec(file='{home}/.local-agent/{session_id}.jsonl', cwd='none', tally='pi'), (
         'a custom harness gets a whole spec: a pi-shaped file wherever it keeps it'
@@ -248,56 +246,44 @@ def test_spec_names_are_checked_against_the_registries() -> None:
         ('pi', "I'll launch sweeps when there's something new to read."),
     ],
 )
-def test_said_is_the_last_line_of_the_agents_last_text(home: Path, harness: str, words: str) -> None:
+def test_said_is_the_last_line_of_the_agents_last_text(harness: str, words: str) -> None:
     """Past the tool calls and results written after it; thinking, tool output and the brief are not the agent's words."""
-    store(home, harness, CLAUDE_ID, cwd=None, fixtures=SAID_SESSIONS)
-    assert spec_of(harness).resolved.said(CLAUDE_ID) == [words]
+    assert spec_of(harness).resolved.said((SAID_SESSIONS / f'{harness}.jsonl').read_bytes()) == [words]
 
 
-def test_said_takes_as_many_lines_as_asked_across_messages(home: Path) -> None:
-    path = store(home, 'claude', CLAUDE_ID, fixtures=SAID_SESSIONS)
-    with path.open('a') as f:
-        f.write('{"type":"assistant","message":{"content":[{"type":"text","text":"cut short')  # a killed agent
+def test_said_takes_as_many_lines_as_asked_across_messages() -> None:
+    cut = b'{"type":"assistant","message":{"content":[{"type":"text","text":"cut short'  # a killed agent
+    session = (SAID_SESSIONS / 'claude.jsonl').read_bytes() + cut
     claude = spec_of('claude').resolved
-    assert claude.said(CLAUDE_ID, 3) == [
+    assert claude.said(session, 3) == [
         'Reading the evaluator first.',
         'The smoke test passed (2 examples).',
         'Starting both training runs (16 processes each).',
     ], 'blank lines dropped, oldest first'
-    assert claude.said(CLAUDE_ID, 60) == claude.said(CLAUDE_ID, 3), 'all there is'
+    assert claude.said(session, 60) == claude.said(session, 3), 'all there is'
 
 
-def test_said_reads_the_end_of_the_file_once_per_change(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    pi = spec_of('pi').resolved
-    path = store(home, 'pi', PI_ID, fixtures=SAID_SESSIONS)
-    last_said.cache_clear()
-    assert pi.said(PI_ID) == pi.said(PI_ID) == ["I'll launch sweeps when there's something new to read."]
-    assert last_said.cache_info().hits == 1, 'an unchanged file is not read again'
+def test_said_reads_only_the_end_of_the_session(monkeypatch: pytest.MonkeyPatch) -> None:
     record = '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Sweep %d done."}]}}\n'
-    with path.open('a') as f:
-        f.write(record % 1)
-    assert pi.said(PI_ID) == ['Sweep 1 done.'], 'a file that grew is read again'
     silent = '{"type":"message","message":{"role":"assistant","content":[]}}\n'
     monkeypatch.setattr(jsonl_module, 'TAIL_BYTES', len(record) + len(silent) + 5)
-    with path.open('a') as f:
-        f.write(record % 2 + silent)
-    assert pi.said(PI_ID) == ['Sweep 2 done.'], 'only the end is read; the line the seek cut into is skipped'
+    session = (SAID_SESSIONS / 'pi.jsonl').read_text() + record % 1 + record % 2 + silent
+    assert spec_of('pi').resolved.said(session.encode()) == ['Sweep 2 done.'], (
+        'only the end is read; the line the cut goes through is skipped'
+    )
+    assert spec_of('pi').resolved.said(session.encode(), 2) == ['Sweep 2 done.'], 'nothing before the cut'
 
 
-def test_said_is_none_when_there_is_nothing_to_say(home: Path, mocker: MockerFixture) -> None:
+def test_said_is_none_when_there_is_nothing_to_say() -> None:
     claude = spec_of('claude').resolved
-    assert claude.said(None) == [], 'no session id yet'
-    assert claude.said(CLAUDE_ID) == [], 'no session file yet'
-    path = store(home, 'claude', CLAUDE_ID, fixtures=SAID_SESSIONS)
-    path.write_text('\n'.join(line for line in path.read_text().splitlines() if '"type":"text"' not in line))
-    assert claude.said(CLAUDE_ID) == [], 'nothing but thinking and tool calls: the screen tells more'
-    store(home, 'claude', CLAUDE_ID, fixtures=SAID_SESSIONS)
-    mocker.patch.object(jsonl_module, 'last_said', side_effect=FileNotFoundError('rotated'))
-    assert claude.said(CLAUDE_ID) == [], 'a file gone between the glob and the read says nothing this frame'
+    assert claude.said(b'') == [], 'an empty session'
+    session = (SAID_SESSIONS / 'claude.jsonl').read_text()
+    no_text = '\n'.join(line for line in session.splitlines() if '"type":"text"' not in line)
+    assert claude.said(no_text.encode()) == [], 'nothing but thinking and tool calls: the screen tells more'
     TALLIES['test-silent'] = TALLIES['pi']
     try:
         silent = JsonlReader(UsageSpec(file='{home}/x/{session_id}.jsonl', tally='test-silent'))
-        assert silent.said(PI_ID) == [], 'a format without words registered says nothing'
+        assert silent.said((SAID_SESSIONS / 'pi.jsonl').read_bytes()) == [], 'a format without words says nothing'
     finally:
         del TALLIES['test-silent']
 
@@ -315,17 +301,19 @@ def test_a_new_kind_of_source_is_one_reader_registered_by_name() -> None:
                 cache_write=0,
                 total=3,
                 turns=1,
-                source=f'{log_dir}/agent_session.stdout',
             )
 
-        def said(self, session_id: str | None, lines: int = 1) -> list[str]:
+        def said(self, session: bytes, lines: int = 1) -> list[str]:
             return []
+
+        def session_file(self, session_id: str, cwd: Path | None) -> Path | None:
+            return None
 
     reader('test-stdout')(FromStdout)
     try:
         spec = UsageSpec(reader='test-stdout')
         assert read_usage(spec, None, None, Path('/logs/7')) == Usage(
-            input=1, output=2, cache_read=0, cache_write=0, total=3, turns=1, source='/logs/7/agent_session.stdout'
+            input=1, output=2, cache_read=0, cache_write=0, total=3, turns=1
         ), 'no session id, no cwd: a reader decides what it needs'
     finally:
         del READERS['test-stdout']
@@ -352,7 +340,7 @@ def test_what_cannot_be_read_is_a_usage_error_or_nothing(home: Path) -> None:
         '{"type":"message","message":{"role":"assistant","usage":{"input":100,"out'
     )
     assert read_usage(pi, PI_ID, CWD, None) == Usage(
-        input=2, output=4, cache_read=0, cache_write=0, total=3, turns=2, source=str(path)
+        input=2, output=4, cache_read=0, cache_write=0, total=3, turns=2
     ), 'a message without usage is not a turn; a non-numeric field counts nothing; the cut last line is skipped'
 
 
@@ -388,7 +376,7 @@ def test_human_tokens() -> None:
 def test_the_usage_column_holds_a_usage_and_an_unknown_usage_is_null(db: Database) -> None:
     """``agent_sessions.usage`` loads as a ``Usage`` and saves its JSON. None is SQL NULL, so ``usage IS NULL`` finds
     the agents whose usage is unknown. A stored value of another shape fails the load of its row."""
-    usage = Usage(input=1, output=2, cache_read=3, cache_write=4, total=10, turns=1, source='s.jsonl')
+    usage = Usage(input=1, output=2, cache_read=3, cache_write=4, total=10, turns=1)
     with db.session() as s:
         s.add(Campaign(name='p', path='/p', config=bare_config('p')))
         s.flush()

@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, SecretStr
 from piloop.db.models import NoLease
 from piloop.mcp import EnvName
 from piloop.plugins.cas.contract import BlobAddress
-from piloop.plugins.executor.contract import AgentJob, AgentReport, EvaluationReport
+from piloop.plugins.executor.contract import AgentJob, AgentReport, EvaluationReport, HarnessSession
 from piloop.plugins.executor.kit.capacity import HostSample
 from piloop.plugins.executor.kit.leases import (
     Answer,
@@ -29,7 +29,7 @@ from piloop.plugins.executor.kit.leases import (
     Work,
 )
 
-PROTOCOL = 7
+PROTOCOL = 8
 """The version of the ``LeaseClient`` calls on the wire."""
 
 
@@ -92,8 +92,8 @@ class LeaseClient(Protocol):
         """The job started, and runs at ``handle``."""
         ...
 
-    def heartbeat(self, leases: Mapping[int, str | None], sample: HostSample) -> dict[int, Answer]:
-        """Renew the leases that the worker runs, each with the session id that its agent reported."""
+    def heartbeat(self, leases: Mapping[int, HarnessSession], sample: HostSample) -> dict[int, Answer]:
+        """Renew the leases that the worker runs, each with what it knows of its agent's harness session."""
         ...
 
     def report(self, lease: int, request_id: str, report: AgentReport | EvaluationReport) -> dict[str, object]:
@@ -140,7 +140,7 @@ class Local:
     def started(self, lease: int, handle: JobHandle, session_id: str | None) -> None:
         self._leases.started(lease, self._worker, handle, session_id)
 
-    def heartbeat(self, leases: Mapping[int, str | None], sample: HostSample) -> dict[int, Answer]:
+    def heartbeat(self, leases: Mapping[int, HarnessSession], sample: HostSample) -> dict[int, Answer]:
         return self._leases.heartbeat(self._worker, dict(leases), sample)
 
     def report(self, lease: int, request_id: str, report: AgentReport | EvaluationReport) -> dict[str, object]:

@@ -69,6 +69,7 @@ from piloop.ids import CampaignId, CommentId, IdeaId, LinkKind
 from piloop.net import Refusal
 from piloop.net.server import OWNER, App, asked, authorized, changed
 from piloop.net.tokens import Caller
+from piloop.plugins.cas.contract import Cas
 from piloop.plugins.limits import Origin, live_keys
 from piloop.plugins.section.contract import Rendering, rendered
 from piloop.reports import feed
@@ -77,11 +78,12 @@ from piloop.settings import Settings
 
 @dataclass(frozen=True)
 class Handlers:
-    """What the routes read with: the daemon's database and settings, and the daemon itself."""
+    """What the routes read with: the daemon's database, settings and CAS, and the daemon itself."""
 
     db: Database
     cfg: Settings
     daemon: DaemonState
+    cas: Cas
 
 
 def handlers(request: Request) -> Handlers:
@@ -239,7 +241,9 @@ def overview(api: Api, s: Reading, campaigns: Selected) -> Overview:
                 name=c.name,
                 path=c.path,
                 parent=feed.parent_of(s, c),
-                sections=rendered(c.config.status.shown(), Rendering(s, now, c, workspace_dir(api.cfg.home, c.id))),
+                sections=rendered(
+                    c.config.status.shown(), Rendering(s, now, c, workspace_dir(api.cfg.home, c.id), api.cas)
+                ),
             )
             for c in campaigns
         ],

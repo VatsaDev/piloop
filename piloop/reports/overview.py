@@ -11,11 +11,13 @@ watchdog requests an incident sweep. An ``anomaly.reported`` event on the row of
 
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import assert_never
 
+from covalence import Cid
 from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
@@ -44,6 +46,7 @@ from piloop.db.models import (
     count,
 )
 from piloop.ids import AgentSessionId, CampaignId, CampaignStatus, EvaluatorId, IdeaStatus, TargetKind, TargetRef
+from piloop.plugins.cas.contract import Cas
 from piloop.plugins.metric import Direction
 from piloop.plugins.role.contract import Files
 from piloop.plugins.stop_rule.contract import Fact
@@ -57,8 +60,10 @@ from piloop.scoring.ledger import (
     score,
     track_of,
 )
+from piloop.store import chunks
+from piloop.store.tree import Missing
 from piloop.text import NONE, age, cell, metric
-from piloop.usage import human
+from piloop.usage import UsageReader, human
 from piloop.usage.totals import campaign_tokens
 
 DETAIL_CHARS = 160
@@ -245,16 +250,43 @@ def on(s: Session, w: AgentSession) -> str:
     return cell(w.reason or NONE)
 
 
-def agent_output(s: Session, w: AgentSession, lines: int) -> list[str]:
+def agent_output(s: Session, w: AgentSession, lines: int, cas: Cas) -> list[str]:
     """Return the last ``lines`` non-empty lines of output of the agent.
 
-    The first choice is the text in the session file of the harness, found in the same way as its usage
-    (``UsageSpec``). If the harness has no usage spec, or the agent has written no text yet, the output that the
-    runtime reads is used. The last choice is the transcript saved when the agent ended.
+    The first choice is the text in the latest snapshot of its session file in ``cas`` (``session_file``), on any
+    machine. If there is none, or no text in it, the output that the runtime reads is used. The last choice is the
+    transcript saved when the agent ended.
     """
     definition = harness_of(s, w)
-    said = definition.usage.resolved.said(w.session_id, lines) if definition and definition.usage else []
+    reader = definition.usage.resolved if definition and definition.usage else None
+    said = (
+        list(_said_in(_Snapshot(w.session_file, reader, cas), lines))
+        if reader is not None and w.session_file is not None
+        else []
+    )
     return said or _filled(_live_output(w, lines))[-lines:] or _filled(_transcript(w.log_dir))[-lines:]
+
+
+@dataclass(frozen=True)
+class _Snapshot:
+    """A snapshot of a session file, known by its address alone: where it is read from does not change its bytes."""
+
+    session_file: Cid
+    reader: UsageReader = field(compare=False)
+    cas: Cas = field(compare=False)
+
+
+@lru_cache(maxsize=256)
+def _said_in(snapshot: _Snapshot, lines: int) -> tuple[str, ...]:
+    """The last ``lines`` of the agent's text in a snapshot.
+
+    Read from the CAS once for each snapshot: a watch draws the same snapshot many times.
+    """
+    try:
+        session = chunks.read(snapshot.cas, snapshot.session_file)
+    except Missing:  # a part is gone from the store: the screen or the transcript tells more
+        return ()
+    return () if session is None else tuple(snapshot.reader.said(session, lines))
 
 
 def _live_output(w: AgentSession, lines: int) -> str:

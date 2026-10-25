@@ -44,7 +44,7 @@ from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.reports import overview as overview_module
 from piloop.reports.overview import anomalies
 from piloop.text import LINKED_CHARS, block
-from tests.conftest import RESEARCH, WATCHDOG, end_of, reconfigured, spent
+from tests.conftest import RESEARCH, WATCHDOG, cas_of, end_of, home_cas, reconfigured, spent
 
 T = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
 NOW = T + timedelta(hours=2)
@@ -205,7 +205,7 @@ SWEEP = [*defaults(Surface.STATUS), SECTIONS.validated({'provider': 'tools'})]
 
 def overview(s: Session, campaign: Campaign, now: datetime = NOW) -> str:
     """The campaign's overview and tools as a sweep reads them."""
-    return markdown(SWEEP, Rendering(s, now, campaign, Path('/no/workspace')))
+    return markdown(SWEEP, Rendering(s, now, campaign, Path('/no/workspace'), cas_of(s)))
 
 
 def render(db: Database, campaign: Campaign, cfg: CampaignConfig | None = None, now: datetime = NOW) -> str:
@@ -608,23 +608,19 @@ def test_age_floors_to_the_largest_unit() -> None:
 SESSION_ID = 'd96a2121-355c-4608-b2f7-8bfc85bba1b5'
 
 
-def test_live_agents_say_their_last_words_from_the_session_file_else_their_output_else_their_transcript(
-    db: Database, campaign: Campaign, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_live_agents_say_their_last_words_from_the_stored_session_else_their_output_else_their_transcript(
+    db: Database, campaign: Campaign, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv('HOME', str(tmp_path))
-    monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(tmp_path / '.claude'))
-    session = tmp_path / '.claude' / 'projects' / '-somewhere' / f'{SESSION_ID}.jsonl'
-    session.parent.mkdir(parents=True)
-    session.write_text((Path(__file__).parent.parent / 'fixtures' / 'said' / 'claude.jsonl').read_text())
+    stored = home_cas(db).put((Path(__file__).parent.parent / 'fixtures' / 'said' / 'claude.jsonl').read_bytes())
     writing, saved, silent = tmp_path / 'writing', tmp_path / 'saved', tmp_path / 'silent'
     for log_dir in (writing, saved, silent):
         log_dir.mkdir()
     (writing / 'agent_session.stdout').write_text('{"type":"turn.started"}\n\n{"type":"item.completed"}\n')
     (saved / 'transcript.txt').write_text('Ran the evaluation; measurement pending.\n')
     with db.session() as s:
-        for harness, session_id, log_dir in (
-            ('claude', SESSION_ID, silent),
-            ('claude', 'no-file-yet', writing),
+        for harness, session_file, log_dir in (
+            ('claude', stored, silent),
+            ('claude', None, writing),
             ('codex', None, saved),
             ('script', None, silent),
         ):
@@ -635,7 +631,8 @@ def test_live_agents_say_their_last_words_from_the_session_file_else_their_outpu
                     state=AgentSessionState.RUNNING,
                     harness=harness,
                     model='m',
-                    session_id=session_id,
+                    session_id=SESSION_ID if session_file is not None else None,
+                    session_file=session_file,
                     runtime='subprocess',
                     handle={'pid': 1, 'start_time': 0, 'log_dir': str(log_dir)},
                     log_dir=str(log_dir),

@@ -33,7 +33,7 @@ GROUPS = (
     ('run', 'agents:run_app', 'Act on one run.'),
     ('worker', 'worker:app', 'The workers that run jobs on leases.'),
     ('limits', 'limits:app', 'Change a live key of a provider of the home while the daemon runs.'),
-    ('cas', 'cas:app', 'The CAS that workers on other machines read and write, in a process of its own.'),
+    ('cas', 'cas:app', "This home's CAS: print a blob, or serve the CAS to workers on other machines."),
     ('secret', 'secret:app', 'The secrets that agents get in their environment. No command shows a value.'),
 )
 """Each group of commands: its name, its ``App`` in this package, and its help."""

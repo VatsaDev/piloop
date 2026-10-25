@@ -7,7 +7,7 @@ whichever executor placed it.
 
 The steps of an agent's job: make its place and its artifact (a checkout, ``Clones``), write the brief, put the values
 of its secrets in its environment, render the MCP servers, start the agent, watch it to its end, save its transcript,
-read its usage, and bring its versions back. What it made goes back by address: the report names
+put its session file in the CAS, read its usage, and bring its versions back. What it made goes back by address: the report names
 its versions, its log files (``Site.files``) and what it wrote in the shared workspace in the CAS. The checkout stays:
 the executor removes it (``remove``) once the report is out, so a worker that restarts in between finds the ended agent
 there.
@@ -16,6 +16,7 @@ there.
 import os
 import shlex
 import subprocess
+import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
@@ -48,6 +49,7 @@ from piloop.plugins.executor.contract import (
 )
 from piloop.plugins.executor.kit.clones import Clones, Fetch, of_record, own_clone
 from piloop.plugins.executor.kit.relay import RELAY_ARGV
+from piloop.plugins.executor.kit.sessions import POLL_SECONDS, SessionFile
 from piloop.plugins.executor.kit.transfers import send_of_record
 from piloop.plugins.runtime.contract import AgentExit, AgentSpec, ExitStatus, Handle, Runtime, taken
 from piloop.plugins.vcs.contract import Repository
@@ -76,6 +78,8 @@ INPUTS_REBUILT = 'inputs.rebuilt'
 """An event: a shared copy of a linked input no longer held its blob (a job changed it), and was made again."""
 INPUTS_CHANGED = 'inputs.changed'
 """An event: an evaluation changed a linked input that it read, so what it measured is a crash, not a measurement."""
+SESSION_UNSAVED = 'agent_session.session_unsaved'
+"""An event: a snapshot of an agent's session file did not go into the CAS. The next one tries again."""
 SHOWN = 10
 """How many paths or blobs an event or an error names."""
 CLI_SHIM = '#!/bin/sh\nPILOOP_HOME={home} exec {argv} "$@"\n'
@@ -192,6 +196,10 @@ class Control(Protocol):
         """The runtime reported the agent's session id."""
         ...
 
+    def saved(self, session_file: Cid) -> None:
+        """A new snapshot of the agent's session file is in the CAS (``SessionFile``)."""
+        ...
+
     def asked(self) -> bool:
         """Whether the executor asked the job to stop: an evaluator that it killed is not run again."""
         ...
@@ -268,10 +276,11 @@ def watch_agent(
 
     None after a hand-over: the next daemon re-attaches, and the job and its worktree stay.
     """
-    outcome, session_id = _watch(job, runtime, handle, max(job.timeout - elapsed, 0), control, site, span)
+    file = None if job.usage is None else SessionFile(job.usage.resolved, site.cas, site.cwd(job), job.session_id)
+    outcome, session_id = _watch(job, runtime, handle, max(job.timeout - elapsed, 0), control, site, file, span)
     if control.handing_over():
         return None
-    return _finish(job, replace(outcome, seconds=elapsed + outcome.seconds), session_id, control, site, span)
+    return _finish(job, replace(outcome, seconds=elapsed + outcome.seconds), session_id, control, site, file, span)
 
 
 def _killer(runtime: Runtime, handle: Handle) -> Callable[[], None]:
@@ -285,25 +294,48 @@ def _unstarted(job: AgentJob, site: Site, error: str, started_at: float) -> Agen
 
 
 def _watch(
-    job: AgentJob, runtime: Runtime, handle: Handle, timeout: float, control: Control, site: Site, span: Span
+    job: AgentJob,
+    runtime: Runtime,
+    handle: Handle,
+    timeout: float,
+    control: Control,
+    site: Site,
+    file: SessionFile | None,
+    span: Span,
 ) -> tuple[AgentExit, str | None]:
     """Wait for a started agent to end, save its transcript and release it. Return how, and its session id.
 
-    When the harness reports its session id, record it: asked before the wait and again before the agent is released,
-    because a harness that is slow to start reports its session late.
+    When the harness reports its session id, record it: asked before the wait, again before each snapshot of its
+    session file while it runs (``_snapshots``), and again before the agent is released, because a harness that is
+    slow to start reports its session late.
     """
     session_id = job.session_id
     reported = not job.needs_session_id or session_id is not None
     started_at = time.monotonic()
+    stop, snapshots = threading.Event(), None
     try:
         if not reported:
             session_id = _session(runtime, handle, control, span)
             reported = session_id is not None
+        if file is not None:
+            file.session_id = session_id
+            snapshots = threading.Thread(
+                target=_snapshots,
+                args=(job, runtime, handle, control, file, span, stop),
+                name=f'snapshots-{job.agent_session}',
+                daemon=True,
+            )
+            snapshots.start()
         outcome = runtime.wait(handle, timeout)
     except Exception as e:  # a pane or a server that is gone: the agent ended for the worker
         span.error(e)
         outcome = AgentExit(ExitStatus.EXITED, time.monotonic() - started_at, error=f'{type(e).__name__}: {e}')
     finally:
+        stop.set()
+        if snapshots is not None:  # a snapshot that is being put ends first: the last one comes after it
+            snapshots.join()
+        if not reported and file is not None and file.session_id is not None:  # a snapshot asked for it
+            session_id, reported = file.session_id, True
         if not reported:
             try:
                 if (session_id := _session(runtime, handle, control, span)) is None:
@@ -324,6 +356,30 @@ def _watch(
     return outcome, session_id  # after the last ask: a session reported late goes in the report
 
 
+def _snapshots(
+    job: AgentJob,
+    runtime: Runtime,
+    handle: Handle,
+    control: Control,
+    file: SessionFile,
+    span: Span,
+    stop: threading.Event,
+) -> None:
+    """Look at the agent's session file every ``POLL_SECONDS`` until ``stop``, and record each new snapshot.
+
+    A snapshot is due as ``SessionFile.due`` says. One that fails is tried again at the next look.
+    """
+    while not stop.wait(POLL_SECONDS):
+        try:
+            if file.session_id is None:
+                file.session_id = _session(runtime, handle, control, span)
+            now, before = time.monotonic(), file.latest
+            if file.due(now) and (latest := file.snapshot(now)) is not None and latest != before:
+                control.saved(latest)
+        except Exception as e:  # a file gone, a CAS that does not answer
+            span.event(SESSION_UNSAVED, agent_session=job.agent_session, error=f'{type(e).__name__}: {e}')
+
+
 def _session(runtime: Runtime, handle: Handle, control: Control, span: Span) -> str | None:
     session_id = runtime.session_id(handle)
     if session_id is not None:
@@ -333,12 +389,25 @@ def _session(runtime: Runtime, handle: Handle, control: Control, span: Span) -> 
 
 
 def _finish(
-    job: AgentJob, outcome: AgentExit, session_id: str | None, control: Control, site: Site, span: Span
+    job: AgentJob,
+    outcome: AgentExit,
+    session_id: str | None,
+    control: Control,
+    site: Site,
+    file: SessionFile | None,
+    span: Span,
 ) -> AgentFinished:
-    """Read the usage, bring the versions back, and return the report with its log files."""
+    """Take the last snapshot of the session file, read the usage, bring the versions back, and return the report."""
     report = AgentFinished(process=outcome, session_id=session_id)
     span.set(session_id=session_id)
     log_dir, cwd = site.log_dir(job), site.cwd(job)
+    if file is not None:
+        file.session_id = session_id
+        try:
+            file.snapshot(time.monotonic())
+        except Exception as e:  # a file gone, a CAS that does not answer: the report names the snapshot before
+            span.event(SESSION_UNSAVED, agent_session=job.agent_session, error=f'{type(e).__name__}: {e}')
+        report.session_file = file.latest
     if job.usage is not None:
         try:
             usage = read_usage(job.usage, session_id, cwd, log_dir)

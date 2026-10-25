@@ -52,6 +52,7 @@ from piloop.plugins.executor.contract import (
     AgentReport,
     EvaluationJob,
     EvaluationReport,
+    HarnessSession,
     MissingBlobs,
     Prompt,
     Source,
@@ -736,7 +737,7 @@ def test_a_worker_whose_heartbeat_hangs_stops_its_job_when_its_self_stop_passes(
     healed = threading.Event()
     heartbeat = worker.client.heartbeat
 
-    def unanswered(sessions: dict[int, str | None], host: HostSample) -> dict[int, Answer]:
+    def unanswered(sessions: dict[int, HarnessSession], host: HostSample) -> dict[int, Answer]:
         healed.wait()  # no answer and no error, until the partition heals
         return heartbeat(sessions, host)
 
@@ -1116,7 +1117,7 @@ class Refusing(Local):
         if call in self.refused:
             raise Dismissed(f'{call}: the token is unknown or revoked')
 
-    def heartbeat(self, leases: Mapping[int, str | None], sample: HostSample) -> dict[int, Answer]:
+    def heartbeat(self, leases: Mapping[int, HarnessSession], sample: HostSample) -> dict[int, Answer]:
         self._check('heartbeat')
         return super().heartbeat(leases, sample)
 
@@ -1328,7 +1329,7 @@ def test_a_worker_drained_before_it_starts_takes_no_job_and_ends(
 class ServerGone(Local):
     """``Local``, whose server stops answering once the worker registered."""
 
-    def heartbeat(self, leases: Mapping[int, str | None], sample: HostSample) -> dict[int, Answer]:
+    def heartbeat(self, leases: Mapping[int, HarnessSession], sample: HostSample) -> dict[int, Answer]:
         raise ConnectionError('connection refused')
 
 

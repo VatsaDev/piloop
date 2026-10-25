@@ -79,7 +79,7 @@ from piloop.plugins.executor.contract import EXECUTORS, Executor, ExecutorConfig
 from piloop.plugins.executor.contract import Results, Settled
 from piloop.plugins.executor.contract import AgentJob, EvaluationJob, LeftJob
 from piloop.plugins.executor.contract import AgentReport, EvaluationReport, Sample
-from piloop.plugins.executor.contract import AgentFinished, AgentNotStarted
+from piloop.plugins.executor.contract import AgentFinished, AgentNotStarted, HarnessSession
 from piloop.plugins.executor.contract import AgentKey, EvaluationKey, JobKey
 from piloop.plugins.executor.contract import key_of, Capacity, Prompt
 from piloop.plugins.executor.contract import Source, Bar, RepoId, MissingBlobs, Workspace

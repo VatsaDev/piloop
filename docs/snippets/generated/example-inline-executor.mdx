@@ -20,6 +20,7 @@ from contextlib import suppress
 from datetime import datetime, timedelta
 from functools import partial
 
+from covalence import Cid
 from pydantic import SecretStr
 
 from piloop.capabilities import (
@@ -32,6 +33,7 @@ from piloop.capabilities import (
     EventModel,
     ExecutorConfig,
     Handle,
+    HarnessSession,
     Host,
     JobKey,
     LeftJob,
@@ -211,7 +213,12 @@ class _Job:
     def session(self, session_id: str) -> None:
         assert isinstance(self.key, AgentKey)
         with suppress(Settled):
-            self._executor.host.results.session(self.key, session_id)
+            self._executor.host.results.session(self.key, HarnessSession(id=session_id))
+
+    def saved(self, session_file: Cid) -> None:
+        assert isinstance(self.key, AgentKey)
+        with suppress(Settled):
+            self._executor.host.results.session(self.key, HarnessSession(file=session_file))
 
     def asked(self) -> bool:
         return self._asked

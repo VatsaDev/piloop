@@ -36,6 +36,7 @@ from piloop.campaign.ideas import reprioritise
 from piloop.db.models import Idea, utcnow
 from piloop.db.session import Database
 from piloop.ids import AgentSessionId, CommentId, IdeaId, IdeaStatus
+from piloop.plugins.cas.contract import Cas
 from piloop.watch.panels import CAMPAIGN_COLUMNS, PANELS, Cell, Context, Item, Panel, campaigns, header
 
 POLL_SECONDS = 0.5
@@ -401,7 +402,7 @@ class CampaignScreen(Screen[None]):
         campaign = find(s, self.ref)
         if campaign is None:
             return None
-        return Context(campaign, campaign.config, utcnow(), self.actor)
+        return Context(campaign, campaign.config, utcnow(), self.actor, self.main_app.cas)
 
     def focused_table(self) -> PanelTable:
         focused = self.focused
@@ -484,9 +485,9 @@ class Watch(App[None]):
         Binding('question_mark', 'keys', 'keys'),
     ]
 
-    def __init__(self, db: Database, db_file: Path, ref: str | None, actor: Actor) -> None:
+    def __init__(self, db: Database, db_file: Path, ref: str | None, actor: Actor, cas: Cas) -> None:
         super().__init__()
-        self.db, self.db_file, self.ref, self.actor = db, db_file, ref, actor
+        self.db, self.db_file, self.ref, self.actor, self.cas = db, db_file, ref, actor, cas
         self._stamp: tuple[int, ...] | None = None
         self._read = monotonic()
 

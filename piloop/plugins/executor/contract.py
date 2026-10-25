@@ -191,12 +191,25 @@ type Job = Annotated[AgentJob | EvaluationJob, Field(discriminator='kind')]
 JOB: TypeAdapter[AgentJob | EvaluationJob] = TypeAdapter(Job)
 
 
+class HarnessSession(BaseModel):
+    """An agent's harness session as its executor knows it while the agent runs: what of it the agent's row gets."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str | None = None
+    """The harness's session id, once the runtime reported it."""
+    file: BlobAddress | None = None
+    """The latest snapshot of its session file in the CAS."""
+
+
 class AgentFinished(BaseModel):
     """An agent's process ended, as its executor saw it. Core decides the rest (``Results.finished``)."""
 
     kind: Literal['agent_finished'] = 'agent_finished'
     process: AgentExit
     session_id: str | None = None
+    session_file: BlobAddress | None = None
+    """The harness's session file in the CAS, as it was when the agent ended: the last snapshot (``SessionFile``)."""
     usage: Usage | None = None
     changed: bool = True
     """Whether the agent changed its checkout: a saved version, or an unsaved change outside the links."""
@@ -214,7 +227,8 @@ class AgentFinished(BaseModel):
     def blobs(self) -> list[Cid]:
         """Every blob that it names: what the CAS holds before core applies it."""
         work = [self.work.blob] if self.work is not None else []
-        return [*self.files.values(), *(blob for blob in self.workspace.values() if blob is not None), *work]
+        session = [self.session_file] if self.session_file is not None else []
+        return [*self.files.values(), *(blob for blob in self.workspace.values() if blob is not None), *work, *session]
 
 
 class AgentNotStarted(BaseModel):
@@ -344,8 +358,11 @@ class Results(Protocol):
         """
         ...
 
-    def session(self, key: AgentKey, session_id: str, *, guard: Guard | None = None) -> None:
-        """The runtime reported the agent's session id: the usage needs it. Raises ``Settled``."""
+    def session(self, key: AgentKey, session: HarnessSession, *, guard: Guard | None = None) -> None:
+        """The agent's harness session as the executor knows it now: its id and its file's latest snapshot.
+
+        The usage needs the id. Raises ``Settled``.
+        """
         ...
 
     def finished(
