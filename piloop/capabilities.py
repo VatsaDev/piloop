@@ -35,9 +35,29 @@ from piloop.plugins.trigger.sql import SqlTrigger
 from piloop.plugins.trigger.stalled import StalledTrigger
 from piloop.plugins.trigger.stopped import StoppedTrigger
 
+from piloop.plugins.section.contract import SECTIONS, Section, SectionEntry, Rendering, Surface
+from piloop.api.views import Rendered, Block, Text, Lines, Figures, Figure, Table, Value
+from piloop.plugins.section.headline import Headline
+from piloop.plugins.section.goal import Goal
+from piloop.plugins.section.tracks import Tracks
+from piloop.plugins.section.trajectory import Trajectory
+from piloop.plugins.section.runs import Runs
+from piloop.plugins.section.queue import Queue
+from piloop.plugins.section.agents import Agents
+from piloop.plugins.section.evaluations import Evaluations
+from piloop.plugins.section.candidates import Candidates
+from piloop.plugins.section.anomalies import Anomalies
+from piloop.plugins.section.inbox import Inbox
+from piloop.plugins.section.events import Events
+from piloop.plugins.section.tools import Tools
+from piloop.plugins.section.incidents import Incidents
+from piloop.plugins.section.pack import Pack
+from piloop.plugins.section.history import History
+from piloop.plugins.section.lessons import Lessons
+
 from piloop.plugins.role.contract import ROLES, ImplementerRole, SweepRole
 from piloop.plugins.role.contract import Files
-from piloop.plugins.role.contract import RoleConfig
+from piloop.plugins.role.contract import RoleConfig, Sweep, Stall
 from piloop.plugins.role.research import ResearchRole
 from piloop.plugins.role.scout import ScoutRole
 from piloop.plugins.role.watchdog import WatchdogRole

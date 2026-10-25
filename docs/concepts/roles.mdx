@@ -4,6 +4,7 @@ description: Every agent that piloop starts has a role, which says what it does 
 ---
 
 import Triggers from '/snippets/generated/triggers.mdx';
+import Sections from '/snippets/generated/sections.mdx';
 import Runtimes from '/snippets/generated/runtimes.mdx';
 
 Every agent that piloop starts has a **role**, which says what the agent does and when it starts. The agent is a
@@ -66,6 +67,27 @@ An empty list turns the triggers off. The role then starts only when you ask, wi
 A `sql` trigger can use two parameters: `:campaign`, the campaign's id, and `:since`, when the role's last agent
 started. `piloop init` refuses a query that is not one statement that only reads.
 
+## Sections
+
+A **section** is one titled part of what a reader sees of a campaign: the goal, the queue, the lessons. `piloop status`
+shows the sections of `[status] sections`, and a brief shows the sections of its role, after the role's own context.
+Without the key, each one shows every installed section that declares it, in the sections' order, as the table below
+says. A section with nothing to show is left out. Set the key to choose and order them yourself. This research role
+reads the lessons in a larger budget, the overview without the events, and the research pack:
+
+```toml
+[roles.research]
+sections = [
+  { provider = "lessons", budget = 800 },
+  { provider = "headline" }, { provider = "goal" }, { provider = "trajectory" }, { provider = "queue" },
+  { provider = "candidates" }, { provider = "inbox" }, { provider = "tools" }, { provider = "pack" },
+]
+```
+
+A plugin can add sections, which then show where they declare. See [Extension points](/architecture/extension-points#sections).
+
+<Sections />
+
 ## Define a role
 
 A table with a new name defines a sweep role. It needs `prompt`, the file that starts its brief, and `triggers`. This
@@ -83,7 +105,7 @@ files = "seeds"
 writes = ["comments(finding) on a candidate", "seeds via idea seed"]
 ```
 
-Its brief is your prompt, then `brief.md`, the database procedures, the reason that it started, and the research pack.
+Its brief is your prompt, then `brief.md`, the database procedures, the reason that it started, and the sections of a sweep.
 Run `piloop init` after you change the table. `piloop launch enwik8 reviewer` asks for one more reviewer.
 
 A role name has at most 20 characters: lowercase letters, digits, `_` and `-`, with a letter first. `run`,

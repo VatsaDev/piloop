@@ -1,9 +1,12 @@
 from importlib.resources import files
 
 from pydantic import Field
+from sqlalchemy import select
 
-from piloop.plugins.role.contract import Files, SweepRole
+from piloop.db.models import Idea, IdeaStatus, count
+from piloop.plugins.role.contract import Files, Sweep, SweepRole
 from piloop.plugins.trigger.contract import TriggerEntry
+from piloop.plugins.trigger.low_water import LowWaterTrigger
 
 
 class ResearchRole(SweepRole):
@@ -33,3 +36,34 @@ class ResearchRole(SweepRole):
     """The maximum number of sweeps that run at the same time, each on the next harness of the rotation. The default
     is 1: sweeps that run at the same time read the same evidence and often duplicate each other, and two of them can
     race to develop the same seed."""
+
+    def context(self, sweep: Sweep) -> list[str]:
+        """The seeds to develop, this sweep's share of the backlog, the tracks short of their share, and the stall.
+
+        The backlog's target has the ``buffer`` of the role's first ``low_water`` trigger, or none without one.
+        """
+        buffer = next((t.buffer for t in self.triggers if isinstance(t, LowWaterTrigger)), 0)
+        backlog = sweep.backlog(buffer)
+        most = self.max_ideas
+        stall = sweep.stall()
+        pivot = min(most, 1) if stall.runs >= stall.mark else 0  # A stall gets its pivot whatever the backlog holds.
+        own = max(min(backlog.short + most, most), pivot)  # This sweep's share of the shortfall.
+        campaign = sweep.campaign
+        seeds = count(sweep.s, select(Idea).where(Idea.campaign_id == campaign.id, Idea.status == IdeaStatus.SEED))
+        stalled = ': stalled, so one of your own ideas pivots (section 3)' if pivot else ''
+        short = ', '.join(
+            f'{t.name} {t.gap} ({t.runnable} of {t.target} runnable)' for t in backlog.tracks if t.gap > 0
+        )
+        tracks = [
+            f'- Tracks short of their share of the backlog: {short or "none"}. Give every idea and every developed seed'
+            ' the track it serves (`--track`); fill the short ones first.'
+        ]
+        return [
+            f'- Seeds to develop first: {seeds}, listed in the research pack oldest first.',
+            f'- Ideas of your own after the seeds: propose {own} (the backlog holds {backlog.held()};'
+            ' developed seeds do not count against it). Fewer only when what is left duplicates queued work;'
+            ' name that work in your finding.',
+            *(tracks if campaign.config.multitrack else []),
+            f'- Measured runs since the last keep: {stall.runs}, of the {stall.mark} that mark a stall ({stall.why})'
+            f'{stalled}.',
+        ]

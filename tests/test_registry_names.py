@@ -108,6 +108,7 @@ HOST_CONTRACTS = {
     'runtime': 'starts, watches, steers and stops agent processes',
     'CAS provider': 'opens a store that reads and writes files, a directory or a bucket',
     'trigger': 'fire(tick) reads the database through the session of a Tick',
+    'section': 'render(r) reads the database through the session of a Rendering',
     'role': 'a role holds trigger objects and names a runtime',
     'executor': 'runs jobs on machines, and applies their results to the database through Results',
     'network': 'binds a socket, and makes HTTP clients',

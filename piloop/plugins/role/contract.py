@@ -9,14 +9,18 @@ from collections.abc import Mapping
 from enum import StrEnum
 from importlib.resources import files
 from importlib.resources.abc import Traversable
-from typing import ClassVar, Literal, Self
+from typing import TYPE_CHECKING, ClassVar, Literal, NamedTuple, Protocol, Self
 
 from pydantic import Field, model_validator
 
 from piloop import deprecated
 from piloop.plugins.host import Capability, Parameters
 from piloop.plugins.runtime.contract import RuntimeName
-from piloop.plugins.trigger.contract import TriggerEntry
+from piloop.plugins.section.contract import Section, SectionEntry, Surface, chosen
+from piloop.plugins.trigger.contract import Pass, TriggerEntry
+
+if TYPE_CHECKING:  # piloop.db.models types campaigns.config with the roles: only the annotations name the rows
+    from piloop.db.models import AgentSession
 
 
 class Files(StrEnum):
@@ -75,9 +79,17 @@ class RoleConfig(Parameters):
     files: Files = Files.SEEDS
     """What the agents of this role may file with ``piloop idea``: ``nothing``, ``seeds`` or ``ideas``. The CLI
     refuses the rest."""
-    wake_budget: int | None = Field(default=None, ge=0)
-    """The size in tokens of the lessons overview that opens this role's briefs. When unset, ``[memory]
-    wake_budget``. 0 turns it off for this role."""
+    sections: list[SectionEntry] | None = None
+    """What the briefs of this role show after the role's context: a list of ``{ provider = "<section>", ... }``
+    entries, in order. When unset, every installed section that a brief of this kind of role shows by default, in
+    their order (``Section.SHOWN_IN``, ``Section.ORDER``)."""
+
+    SURFACE: ClassVar[Surface]
+    """Where the briefs of this kind of role show sections: the default of ``sections``."""
+
+    def shown(self) -> list[Section]:
+        """The sections of this role's briefs: its ``sections``, else the defaults of its surface."""
+        return chosen(self.sections, self.SURFACE)
 
 
 class ImplementerRole(RoleConfig):
@@ -106,6 +118,7 @@ class ImplementerRole(RoleConfig):
     """What an implementer may write, as its brief states it."""
     files: Files = Files.NOTHING
     """An implementer files no ideas and no seeds. Its hunches go in its finding, which research reads."""
+    SURFACE: ClassVar[Surface] = Surface.RUN
     recovery_requeues: int = Field(default=2, ge=0)
     """How many times one idea goes back to the queue from the last version of a run that did not succeed: a new
     implementer then starts from that version to finish the work, also when the idea has no attempts left. When the
@@ -122,6 +135,30 @@ class ImplementerRole(RoleConfig):
 def ideas_taken(takes: str) -> str:
     """Return the query that selects the ids of the ideas that ``[roles.<name>] takes`` selects."""
     return f'SELECT id FROM ideas WHERE {takes}'
+
+
+class Stall(NamedTuple):
+    """How close the campaign is to a stall (``piloop.campaign.stop.stall``)."""
+
+    runs: int
+    """The measured runs since the last keep."""
+    mark: int
+    """The runs without a keep that mark a stall."""
+    why: str
+    """How the mark was derived, for the brief."""
+
+
+class Sweep(Pass, Protocol):
+    """What a sweeping role reads to give its agent its context: its trigger's ``Pass``, and the agent's row."""
+
+    @property
+    def agent_session(self) -> AgentSession:
+        """The row of the agent that the brief is for."""
+        ...
+
+    def stall(self) -> Stall:
+        """The runs without a keep against the stall mark."""
+        ...
 
 
 class SweepRole(RoleConfig):
@@ -157,6 +194,17 @@ class SweepRole(RoleConfig):
     routine_prompt: str | None = None
     """A file that follows ``prompt`` in the brief of every other sweep. When unset, the role's own (the watchdog's
     ``watchdog_progress.md``), else nothing."""
+    SURFACE: ClassVar[Surface] = Surface.SWEEP
+
+    def context(self, sweep: Sweep) -> list[str]:
+        """The lines that the role adds to its agent's context, after the daemon's own and before the sections.
+
+        By default, a role that defines ideas (``files = "ideas"``) is told its ``max_ideas``, which ``low_water``
+        counts on, and any other role adds nothing.
+        """
+        if self.files is Files.IDEAS:
+            return [f'- New ideas of your own in this sweep: at most {self.max_ideas} (`max_ideas`).']
+        return []
 
     @model_validator(mode='after')
     def _check(self) -> Self:

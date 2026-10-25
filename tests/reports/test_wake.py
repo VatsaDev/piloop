@@ -1,4 +1,4 @@
-"""Wake overviews: the current lessons that open a brief, and what ``piloop wake`` prints, each in its budget."""
+"""Wake overviews: the current lessons of a brief (the ``lessons`` section), and what ``piloop wake`` prints, each in its budget."""
 
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,6 +11,8 @@ from piloop.config import load_campaign_config
 from piloop.db.models import Campaign, CampaignStatus, Comment, Journal, Lesson, LessonStatus
 from piloop.db.session import Database
 from piloop.ids import CommentKind, TargetKind, TargetRef
+from piloop.plugins.section.contract import Rendering, markdown
+from piloop.plugins.section.lessons import Lessons
 from piloop.reports.wake import (
     LESSONS_MORE,
     Relevance,
@@ -18,11 +20,15 @@ from piloop.reports.wake import (
     cost,
     fit,
     fitted,
-    lessons_overview,
     orchestrator_overview,
 )
 
 NOW = datetime(2026, 10, 12, 21, 0, tzinfo=UTC)
+
+
+def lessons_overview(s: Session, campaign: Campaign, budget: int) -> str:
+    """The ``lessons`` section in ``budget`` tokens, as a brief shows it. A budget of 0 is no section."""
+    return markdown([Lessons(budget=budget)], Rendering(s, NOW, campaign, Path('/no/workspace'))) if budget else ''
 
 
 def lesson(
@@ -69,8 +75,7 @@ def test_a_brief_opens_with_one_line_per_family_on_the_repo_from_the_newest_camp
             f'- [sibling] Voting | promising | +1 score (lesson#{newer})',
             f'- [demo] calibration | dead | +1 score (lesson#{mine})',
         ], 'the newest lesson of the newest campaign per family, whatever the case; never another repo'
-        assert text.startswith('# What past campaigns on this repo concluded')
-        assert lessons_overview(s, s.get_one(Campaign, campaign.id), 0) == '', '0 turns it off'
+        assert text.startswith('## What past campaigns on this repo concluded')
         whole = lessons_overview(s, s.get_one(Campaign, campaign.id), 400)
         short = lessons_overview(s, s.get_one(Campaign, campaign.id), cost(whole.splitlines()) - 1).splitlines()
         assert short[-1] == f'… 2 more: {LESSONS_MORE}', 'the notice takes the place of the line it cannot fit beside'

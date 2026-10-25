@@ -81,6 +81,9 @@ HELPERS: set[object] = {
     capabilities.WorkersExecutor,  # what a built-in provider's open makes, which a plugin's may wrap
     capabilities.SubprocessRuntime,
     capabilities.TriggerEntry,  # the type of a role's triggers, which a plugin's role declares
+    capabilities.SectionEntry,  # the type of a list of sections, which a plugin's role declares
+    capabilities.Block,  # type aliases of the blocks that a section returns
+    capabilities.Value,
     capabilities.HttpsNetwork,
     capabilities.Revision,  # a NewType
     capabilities.Fetch,  # type aliases

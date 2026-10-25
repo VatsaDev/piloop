@@ -46,7 +46,7 @@ def history(s: Session, campaign: Campaign, cfg: CampaignConfig) -> str:
     """Render the history as markdown for an agent's brief, with markdown tables and no colour."""
     out = io.StringIO()
     console = Console(file=out, width=BRIEF_WIDTH, color_system=None, force_terminal=False, legacy_windows=False)
-    console.print(Group(*renderables(s, campaign, cfg, table_box=box.MARKDOWN, heading='## ')))
+    console.print(Group(*renderables(s, campaign, cfg, table_box=box.MARKDOWN, heading='### ')))
     text = out.getvalue()
     return '\n'.join(line.rstrip() for line in text.splitlines()).strip() + '\n'
 
@@ -56,7 +56,7 @@ def renderables(
 ) -> list[RenderableType]:
     """Build the ideas table, the kept lineage, the starting points and the last findings on the campaign.
 
-    The agent brief (``history``, with ``heading='## '``) and ``piloop history`` use the same renderables.
+    The agent brief (``history``, with ``heading='### '``) and ``piloop history`` use the same renderables.
 
     The findings are those on the campaign of every agent, whatever its role (an author ``<role>#<id>``), each by its id
     and its first line. The findings of the orchestrator and the human are in the pack's digests, and the latest

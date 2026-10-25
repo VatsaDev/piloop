@@ -1725,6 +1725,50 @@ def test_0039_moves_the_stop_keys_the_spend_limit_and_the_confidence_into_the_ru
         }
 
 
+def test_0053_makes_wake_budgets_the_lessons_of_the_roles_sections_and_downgrades(tmp_path: Path) -> None:
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0052')
+    roles = {
+        'implementer': {'runs': True},
+        'watchdog': {'wake_budget': 100},
+        'research': {'wake_budget': 0},
+        'scout': {},
+        'quick': {'runs': True, 'wake_budget': None},
+    }
+    old = {'memory': {'documents': [], 'wake_budget': 200}, 'roles': roles}
+    plain = {'memory': {'documents': [], 'wake_budget': 400}, 'roles': {'watchdog': {}, 'research': {}}}
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        for name, config in (('a', old), ('b', plain)):
+            con.execute(
+                'INSERT INTO campaigns (name, path, config) VALUES (?, ?, ?)', (name, f'/{name}', dumps(config))
+            )
+    command.upgrade(cfg, '0053')
+    configs = 'SELECT config FROM campaigns ORDER BY id'
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        upgraded, untouched = [loads(c) for (c,) in con.execute(configs)]
+    assert untouched == {'memory': {'documents': []}, 'roles': {'watchdog': {}, 'research': {}}}, 'the defaults'
+    sections = {name: [e['provider'] for e in t.get('sections', [])][:2] for name, t in upgraded['roles'].items()}
+    assert sections == {
+        'implementer': ['lessons', 'history'],
+        'watchdog': ['lessons', 'incidents'],
+        'research': ['incidents', 'headline'],
+        'scout': ['lessons', 'incidents'],
+        'quick': ['lessons', 'history'],
+    }, '[memory] counts for the roles without their own budget, and the watchdog only had its own'
+    assert upgraded['roles']['implementer']['sections'][0] == {'provider': 'lessons', 'budget': 200}
+    command.downgrade(cfg, '0052')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        downgraded, _ = [loads(c) for (c,) in con.execute(configs)]
+    assert {n: t.get('wake_budget') for n, t in downgraded['roles'].items()} == {
+        'implementer': 200,
+        'watchdog': 100,
+        'research': 0,
+        'scout': 200,
+        'quick': 200,
+    }
+
+
 def test_0040_checks_the_role_of_a_row_against_its_campaign_config_alone_and_downgrades(tmp_path: Path) -> None:
     path = tmp_path / 'piloop.db'
     cfg = alembic(path)

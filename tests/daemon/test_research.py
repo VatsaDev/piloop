@@ -214,4 +214,4 @@ def test_with_several_tracks_research_reads_them_and_which_are_short_of_their_sh
         '- Tracks short of their share of the backlog: accuracy 2 (0 of 2 runnable), cost 2 (0 of 2 runnable).'
     ) in brief
     assert '- Tracks: accuracy (primary score, higher is better; share 0.5); cost (primary size, lower' in brief
-    assert '### Tracks\n- accuracy: score 1 at the head (+0 on the start); 0 trunk keeps;' in brief
+    assert '## Tracks\n\n- accuracy: score 1 at the head (+0 on the start); 0 trunk keeps;' in brief

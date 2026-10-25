@@ -95,7 +95,7 @@
     "/v1/overview": {
       "get": {
         "summary": "Overview",
-        "description": "The overview of each campaign, as text, and the live keys that config.toml or a limit sets.",
+        "description": "The sections of each campaign's ``[status] sections``, and the live keys that config.toml or a limit sets.",
         "operationId": "overview",
         "parameters": [
           {
@@ -468,6 +468,31 @@
         "title": "Batch",
         "description": "The result of a read."
       },
+      "Block": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/Text"
+          },
+          {
+            "$ref": "#/components/schemas/Lines"
+          },
+          {
+            "$ref": "#/components/schemas/Figures"
+          },
+          {
+            "$ref": "#/components/schemas/Table"
+          }
+        ],
+        "discriminator": {
+          "propertyName": "kind",
+          "mapping": {
+            "figures": "#/components/schemas/Figures",
+            "lines": "#/components/schemas/Lines",
+            "table": "#/components/schemas/Table",
+            "text": "#/components/schemas/Text"
+          }
+        }
+      },
       "CampaignOverview": {
         "properties": {
           "id": {
@@ -492,9 +517,12 @@
               }
             ]
           },
-          "text": {
-            "type": "string",
-            "title": "Text"
+          "sections": {
+            "items": {
+              "$ref": "#/components/schemas/Rendered"
+            },
+            "type": "array",
+            "title": "Sections"
           }
         },
         "type": "object",
@@ -503,10 +531,10 @@
           "name",
           "path",
           "parent",
-          "text"
+          "sections"
         ],
         "title": "CampaignOverview",
-        "description": "A campaign's overview: the text that a sweep reads in its brief."
+        "description": "A campaign's overview: the sections of its ``[status] sections``, in order."
       },
       "CampaignState": {
         "properties": {
@@ -770,6 +798,59 @@
         "title": "Envelope",
         "description": "One event, as every reader sees it."
       },
+      "Figure": {
+        "properties": {
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "value": {
+            "$ref": "#/components/schemas/Value"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit",
+            "description": "What the value counts, after it: ``h``, ``tokens``, ``USD``."
+          }
+        },
+        "type": "object",
+        "required": [
+          "label",
+          "value"
+        ],
+        "title": "Figure",
+        "description": "One named value."
+      },
+      "Figures": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "figures",
+            "title": "Kind",
+            "default": "figures"
+          },
+          "figures": {
+            "items": {
+              "$ref": "#/components/schemas/Figure"
+            },
+            "type": "array",
+            "title": "Figures"
+          }
+        },
+        "type": "object",
+        "required": [
+          "figures"
+        ],
+        "title": "Figures",
+        "description": "Named values, in order."
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -935,6 +1016,30 @@
         "description": "An inbox item: a comment with a priority."
       },
       "JsonValue": {},
+      "Lines": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "lines",
+            "title": "Kind",
+            "default": "lines"
+          },
+          "lines": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Lines",
+            "description": "Markdown list items, ``- \u2026``, with ``  - \u2026`` for an item under the one before."
+          }
+        },
+        "type": "object",
+        "required": [
+          "lines"
+        ],
+        "title": "Lines",
+        "description": "A list: one item per line."
+      },
       "LiveAgent": {
         "properties": {
           "id": {
@@ -1157,6 +1262,28 @@
         "title": "ProblemDetail",
         "description": "Why a route refuses a request, with its status: a ``Problem``, and what to do."
       },
+      "Rendered": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "blocks": {
+            "items": {
+              "$ref": "#/components/schemas/Block"
+            },
+            "type": "array",
+            "title": "Blocks"
+          }
+        },
+        "type": "object",
+        "required": [
+          "title",
+          "blocks"
+        ],
+        "title": "Rendered",
+        "description": "One section of what a reader sees: a title and its blocks (``piloop.plugins.section``).\n\nA section provider returns it, the API answers it, and ``piloop status``, a brief and a UI render it."
+      },
       "Seed": {
         "properties": {
           "idea": {
@@ -1262,6 +1389,41 @@
         "title": "Subject",
         "description": "The row that an event is about."
       },
+      "Table": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "table",
+            "title": "Kind",
+            "default": "table"
+          },
+          "columns": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Columns"
+          },
+          "rows": {
+            "items": {
+              "items": {
+                "$ref": "#/components/schemas/Value"
+              },
+              "type": "array"
+            },
+            "type": "array",
+            "title": "Rows",
+            "description": "Each row has one value per column."
+          }
+        },
+        "type": "object",
+        "required": [
+          "columns",
+          "rows"
+        ],
+        "title": "Table",
+        "description": "Rows under named columns."
+      },
       "Target": {
         "properties": {
           "kind": {
@@ -1280,6 +1442,26 @@
         ],
         "title": "Target",
         "description": "The row that a comment is about."
+      },
+      "Text": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "text",
+            "title": "Kind",
+            "default": "text"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          }
+        },
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "title": "Text",
+        "description": "Markdown text: a paragraph, or a document with headings and tables of its own."
       },
       "TrackScore": {
         "properties": {
@@ -1366,6 +1548,22 @@
           "type"
         ],
         "title": "ValidationError"
+      },
+      "Value": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "number"
+          },
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
       }
     }
   }

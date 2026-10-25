@@ -64,6 +64,7 @@ executor = "piloop.plugins.executor.contract:EXECUTORS"
 network = "piloop.plugins.network.contract:NETWORKS"
 vcs = "piloop.plugins.vcs.contract:VCS"
 secrets = "piloop.plugins.secrets.contract:SECRETS"
+section = "piloop.plugins.section.contract:SECTIONS"
 
 [project.entry-points."piloop.runtimes"]
 subprocess = "piloop.plugins.runtime.subprocess:Subprocess"
@@ -105,6 +106,25 @@ git = "piloop.plugins.vcs.git:Git"
 
 [project.entry-points."piloop.secrets"]
 local = "piloop.plugins.secrets.local:LocalSecrets"
+
+[project.entry-points."piloop.sections"]
+headline = "piloop.plugins.section.headline:Headline"
+goal = "piloop.plugins.section.goal:Goal"
+tracks = "piloop.plugins.section.tracks:Tracks"
+trajectory = "piloop.plugins.section.trajectory:Trajectory"
+runs = "piloop.plugins.section.runs:Runs"
+queue = "piloop.plugins.section.queue:Queue"
+agents = "piloop.plugins.section.agents:Agents"
+evaluations = "piloop.plugins.section.evaluations:Evaluations"
+candidates = "piloop.plugins.section.candidates:Candidates"
+anomalies = "piloop.plugins.section.anomalies:Anomalies"
+inbox = "piloop.plugins.section.inbox:Inbox"
+events = "piloop.plugins.section.events:Events"
+tools = "piloop.plugins.section.tools:Tools"
+incidents = "piloop.plugins.section.incidents:Incidents"
+pack = "piloop.plugins.section.pack:Pack"
+history = "piloop.plugins.section.history:History"
+lessons = "piloop.plugins.section.lessons:Lessons"
 
 [project.entry-points."piloop.roles"]
 implementer = "piloop.plugins.role.implementer:ImplementerRole"

@@ -144,9 +144,9 @@ def test_campaign_and_idea_lifecycle(campaign_path: Path, out) -> None:
 
     run_cli(['status'])
     text = re.sub(r'\b\d+s (old|ago)\b', r'Ns \1', out())  # the second may tick over since init
-    assert 'demo · head score 1 (candidate#1) · 1 kept / 1 candidates · evaluator #1, Ns old' in text
+    assert 'head: candidate#1 · score: 1 · kept: 1 · candidates: 1 · evaluator: #1, Ns old' in text
     assert '- Ideas: 1 runnable, 1 blocked (idea#3 on idea#1 (ready), idea#2 (proposed));' in text
-    assert '  - idea#1 p1 "more lines" by human, Ns ago\n- Agents live: none' in text
+    assert '  - idea#1 p1 "more lines" by human, Ns ago\n\n## Agents\n\n- Agents live: none' in text
     assert '### Tools' not in text, 'the cheat sheet is for agents'
 
     run_cli(['init', str(campaign_path)])
@@ -335,9 +335,9 @@ def test_status_shows_why_a_campaign_stopped_and_init_resumes_it_when_the_stop_t
     out()
     run_cli(['status', 'demo'])
     lines = out().splitlines()
-    assert f' demo #1  {campaign_path} ' in lines[1] and lines[3].endswith(' · stopped: target: score 3.0000 ≥ 3'), (
-        'in the headline'
-    )
+    assert f' demo #1  {campaign_path} ' in lines[1] and lines[4].endswith(
+        ' · stopped because: target: score 3.0000 ≥ 3'
+    ), 'in the headline'
     run_cli(['init', str(campaign_path)])
     assert out().strip() == 'campaign demo #1 already registered; config re-read from piloop.toml'
     assert state() == (CampaignStatus.STOPPED, 'target: score 3.0000 ≥ 3'), 'the same conditions: still stopped'
@@ -775,10 +775,8 @@ def test_candidate_import_registers_a_reference_shown_apart_and_refuses_a_bad_re
 
     run_cli(['status'])
     text = out()
-    assert 'demo · head score 1 (candidate#1) · 1 kept / 1 candidates · 1 starting point ·' in text
-    assert '### Recent candidates (1 of 1; score, vs parent)' in text, (
-        'a starting point is no candidate of the campaign'
-    )
+    assert 'head: candidate#1 · score: 1 · kept: 1 · candidates: 1 · starting points: 1 ·' in text
+    assert '## Recent candidates (1 of 1; score)' in text, 'a starting point is no candidate of the campaign'
     run_cli(['history'])
     text = out()
     assert 'History: starting points (pin one with' in text
@@ -1436,7 +1434,7 @@ def test_status_without_results(campaign_path: Path, out, mocker: MockerFixture)
     out()
     run_cli(['status', 'demo'])
     text = out()
-    assert 'demo · no trunk keep · 0 kept / 1 candidates' in text
+    assert 'head: no trunk keep · kept: 0 · candidates: 1' in text
     # the agent's age is wall-clock time since its row was added: 0s, or 1s on a loaded machine
     assert re.search(r'^  - implementer#1 script/m \ds, on idea#1 x: —$', text, re.M), 'a headless agent has no tab'
     assert 'silent' not in text, 'a one-shot process tracks no jobs; a row not launched yet has no runtime to ask'
@@ -1570,7 +1568,7 @@ def test_upgrade_reinstalls_migrates_and_restarts_the_daemon(
         cli_check(),
         f'ok    daemon: pid {pid} runs the installed {installed()}',
         f'ok    database: {common.settings.home}/piloop.db at schema {HEAD}, current',
-        'ok    plugins: 5 CAS providers, 1 executor, 2 networks, 1 provisioner, 4 roles, 1 runtime, 1 secrets provider, 1 stop rule, 7 triggers, 1 vcs provider, 1 verdict rule; all built in',
+        'ok    plugins: 5 CAS providers, 1 executor, 2 networks, 1 provisioner, 4 roles, 1 runtime, 1 secrets provider, 17 sections, 1 stop rule, 7 triggers, 1 vcs provider, 1 verdict rule; all built in',
         'ok    secrets: from `piloop secret set` (PILOOP_SECRETS_COMMAND unset)',
         f'ok    skills (pi): current in {common.settings.agent_skills_dir}',
         'ok    harnesses: on PATH: none configured',
@@ -1598,7 +1596,7 @@ def test_upgrade_of_a_checkout_install_without_a_daemon_creates_the_schema(fake_
         cli_check(),
         'ok    daemon: not running',
         f'ok    database: {common.settings.home}/piloop.db at schema {HEAD}, current',
-        'ok    plugins: 5 CAS providers, 1 executor, 2 networks, 1 provisioner, 4 roles, 1 runtime, 1 secrets provider, 1 stop rule, 7 triggers, 1 vcs provider, 1 verdict rule; all built in',
+        'ok    plugins: 5 CAS providers, 1 executor, 2 networks, 1 provisioner, 4 roles, 1 runtime, 1 secrets provider, 17 sections, 1 stop rule, 7 triggers, 1 vcs provider, 1 verdict rule; all built in',
         'ok    secrets: from `piloop secret set` (PILOOP_SECRETS_COMMAND unset)',
         'ok    skills: none of claude, codex, pi, gemini, cursor-agent is on PATH: nothing to check',
         'ok    harnesses: on PATH: none configured',

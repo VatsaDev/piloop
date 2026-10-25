@@ -40,10 +40,10 @@ def api() -> Generator[Client]:
 def status(ref: CampaignRef | None = None, /, *, json_: JsonFlag = False) -> None:
     """Print the state of the daemon and the live keys that `config.toml` or a limit sets, then each campaign.
 
-    The overview is what a sweep reads in its brief, without the tool guide. It shows the head, the tracks, the
-    trajectory, the progress against [stop], the open runs, the queue, the live agents with their last line, the
-    recent candidates, the anomalies, the inbox, the latest decisions and the recent events. Without a campaign, it
-    uses the campaign that the current directory is in, else the only active campaign, else every campaign.
+    Each campaign shows the sections of its [status] sections: by default the head, the goal and the progress against
+    the stop rule, the tracks, the trajectory, the open runs, the queue, the live agents with their last line, the
+    evaluations, the recent candidates, the anomalies, the inbox and the recent events. Without a campaign, it uses
+    the campaign that the current directory is in, else the only active campaign, else every campaign.
 
     With --json, it prints the daemon's pid and the URL it listens on, and the main facts of each campaign, read at one
     cursor: follow them with `piloop events --after <cursor>`.
@@ -62,7 +62,8 @@ def status(ref: CampaignRef | None = None, /, *, json_: JsonFlag = False) -> Non
         parent = campaign.parent
         under = '' if parent is None else f'  under {parent.name} #{parent.id}'
         common.heading(f'[bold]{campaign.name}[/] #{campaign.id}  {campaign.path}{under}')
-        common.console.print(campaign.text, markup=False, highlight=False, soft_wrap=True)
+        for section in campaign.sections:
+            common.console.print(section.markdown() + '\n', markup=False, highlight=False, soft_wrap=True)
 
 
 def daemon_line(state: DaemonState) -> str:

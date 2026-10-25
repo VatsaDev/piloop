@@ -32,7 +32,16 @@ from piloop.agents.results import (
     record,
 )
 from piloop.agents.roles import compose_brief, read_brief, role
-from piloop.campaign.campaigns import WORKSPACE, Sources, campaign_dir, checkout_of, record_of, repository, vcs_of
+from piloop.campaign.campaigns import (
+    WORKSPACE,
+    Sources,
+    campaign_dir,
+    checkout_of,
+    record_of,
+    repository,
+    vcs_of,
+    workspace_dir,
+)
 from piloop.campaign.stop import attempts, park_cancelled, run_cancel, timeout as agent_timeout
 from piloop.config import TRANSCRIPT, CampaignConfig, Track
 from piloop.db.events import emit, has, in_order, latest
@@ -91,10 +100,9 @@ from piloop.plugins.executor.contract import (
 from piloop.plugins.network.contract import NETWORKS, Network, NetworkHost
 from piloop.plugins.runtime.contract import ExitStatus
 from piloop.plugins.secrets.contract import SECRETS, HomeSecrets, SecretsProvider
+from piloop.plugins.section.contract import Rendering, markdown
 from piloop.plugins.vcs.contract import Repository, RunVersion, Transfer, Version
 from piloop.plugins.verdict_rule.contract import Outcome
-from piloop.reports.history import history
-from piloop.reports.wake import lessons_overview
 from piloop.runtime.factory import RuntimeFactory, make_runtime
 from piloop.scoring import queue
 from piloop.scoring.ledger import (
@@ -391,13 +399,12 @@ class RunController:
                         context=self._context(
                             s,
                             cfg,
-                            idea,
+                            run,
                             base,
                             Agent(role=run.role, session=agent_session_id).signature,
                             agent_timeout(s, campaign, cfg, cfg.role(run.role).timeout, utcnow()),
                         ),
                         track=cfg.track(idea.track),
-                        wake=lessons_overview(s, campaign, cfg.wake_budget(run.role)),
                     )
                     run.brief_cid = self.cas.put(composed.encode())
                 brief = run.brief_cid
@@ -1137,16 +1144,15 @@ class RunController:
                         idea.status = IdeaStatus.DONE
                 s.commit()
 
-    def _context(
-        self, s: Session, cfg: CampaignConfig, idea: Idea, base: Candidate, author: str, timeout: float
-    ) -> str:
-        """Return the implementer's context: its worktree, its time, the idea, its base, and the comments on the idea and its runs.
+    def _context(self, s: Session, cfg: CampaignConfig, run: Run, base: Candidate, author: str, timeout: float) -> str:
+        """Return the implementer's context: its worktree, its time, the idea, its base, the comments on the idea and its runs, and its role's sections.
 
         A comment on a run is about the idea too. Examples are a human's decision during attempt 1, or a watchdog's
         finding on why it failed. The next attempt is a new run, so without these comments it would start with no
         context. All runs of the idea are included: the earlier attempts and this run, which can get comments while
         it is queued.
         """
+        idea = run.idea
         track = cfg.track(idea.track)
         evaluator_id = idea.campaign.evaluator_id
         on_idea = Comment.target == TargetRef(TargetKind.IDEA, idea.id)
@@ -1205,7 +1211,8 @@ class RunController:
             lines += ['', '### Plan', idea.plan.rstrip()]
         if comments:
             lines += ['', '## Comments on this idea and its runs', *(_comment_line(c) for c in comments)]
-        return '\n'.join([*lines, '', history(s, idea.campaign, cfg)])
+        rendering = Rendering(s, utcnow(), idea.campaign, workspace_dir(self._home, idea.campaign.id))
+        return '\n'.join([*lines, '', markdown(cfg.role(run.role).shown(), rendering)])
 
 
 @dataclass(frozen=True)

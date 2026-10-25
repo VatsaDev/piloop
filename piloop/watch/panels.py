@@ -35,7 +35,6 @@ from piloop.reports.overview import (
     scored,
     stopped,
     summary,
-    tracks_lines,
 )
 from piloop.scoring.ledger import metrics, references, score, track_of, trunk_keeps
 from piloop.scoring.verdict import label
@@ -93,11 +92,9 @@ class Panel(Protocol):
 
 
 def header(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime) -> Text:
-    """Return the summary line (head, kept, stopped), the progress line against ``[stop]`` (with the spend), and one per track."""
+    """Return the summary line (head, kept, stopped) and the progress line against the stop rule (with the spend)."""
     text = Text(f'{summary(s, campaign, cfg)}{stopped(campaign)}\n', style='bold')
     text.append(progress(s, campaign, cfg, now), style='dim')
-    if cfg.multitrack:
-        text.append('\n' + '\n'.join(tracks_lines(s, campaign, cfg, now)), style='dim')
     return text
 
 

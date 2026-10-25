@@ -31,7 +31,7 @@ from tests.conftest import at_head
 HOT_PATHS = {
     'scheduler.pass',
     'stop.check',
-    'overview.overview',
+    'status.sections',
     'history.renderables',
     'sql_procedures.md #1',
     'inbox.news',

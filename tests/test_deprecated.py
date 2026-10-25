@@ -20,6 +20,7 @@ from piloop import deprecated
 from piloop.config import ConfigError, load_campaign_config
 from piloop.deprecated import PiloopDeprecationWarning
 from piloop.plugins.role.research import ResearchRole
+from piloop.plugins.section.lessons import Lessons
 from piloop.plugins.stop_rule.contract import STOP_RULES
 from piloop.plugins.stop_rule.limits import Limits
 from piloop.plugins.trigger.contract import TRIGGERS
@@ -122,6 +123,23 @@ def test_kind_in_a_trigger_entry_is_provider_and_warns_at_the_line_of_its_role(c
     assert [TRIGGERS.name_of(t) for t in role_of(cfg, ResearchRole).triggers] == ['low_water', 'seed']
     lines = toml.read_text().splitlines()
     assert [w.lineno for w in record] == [lines.index('[roles.research]') + 2], 'research, not the watchdog'
+
+
+def test_wake_budget_is_the_budget_of_the_lessons_section_of_each_role(campaign_path: Path) -> None:
+    write_toml(campaign_path, HARNESS_APPEND)
+    toml = campaign_path / 'piloop.toml'
+    text = toml.read_text().replace('[roles.research]\n', '[roles.research]\nwake_budget = 0\n')
+    toml.write_text(text + '\n[memory]\nwake_budget = 200\n')
+    with pytest.warns(PiloopDeprecationWarning, match='wake_budget is deprecated') as record:
+        cfg = load_campaign_config(campaign_path)
+    assert len(record) == 2
+    lessons = {
+        name: next((s.budget for s in role.shown() if isinstance(s, Lessons)), None)
+        for name, role in cfg.roles.all().items()
+    }
+    assert lessons == {'implementer': 200, 'watchdog': 400, 'research': None, 'scout': 200}, (
+        "[memory]'s budget for every role but the watchdog, whose old default was its own; 0 leaves them out"
+    )
 
 
 @dataclass(frozen=True)

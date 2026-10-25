@@ -1132,14 +1132,14 @@ def test_an_implementer_brief_names_its_checkout_as_the_place_to_work_and_the_ca
     assert git_words(brief) == []
 
 
-@pytest.mark.parametrize('budget', [400, 0])
-def test_an_implementer_brief_opens_with_the_current_lessons_of_the_repo_within_its_budget(
-    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, budget: int
+@pytest.mark.parametrize('sections', [[{'provider': 'lessons'}, {'provider': 'history'}], [{'provider': 'history'}]])
+def test_an_implementer_brief_ends_with_its_roles_sections(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, sections: list[dict[str, str]]
 ) -> None:
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
         p.repo = 'github.com/o/r'
-        p.config = load_campaign_config(Path(campaign.path), roles={'implementer': {'wake_budget': budget}})
+        p.config = load_campaign_config(Path(campaign.path), roles={'implementer': {'sections': sections}})
         s.add(
             Lesson(
                 campaign_id=campaign.id,
@@ -1156,14 +1156,13 @@ def test_an_implementer_brief_opens_with_the_current_lessons_of_the_repo_within_
     execute(controller(db, runtime, tmp_path), db, run_id)
     brief = brief_of(db, run_id)
     line = '- [demo] voting | dead | +0 score (lesson#1)'
-    if budget:
-        assert brief.index('# Implementer') < brief.index(line) < brief.index('# Demo'), (
-            'after the role, before the campaign'
+    if len(sections) == 2:
+        assert brief.index('## Your idea') < brief.index(line) < brief.index('## History'), (
+            'after the context, in the order of the list'
         )
     else:
-        assert line not in brief and 'What past campaigns' not in brief, (
-            '[roles.implementer] wake_budget = 0 turns it off'
-        )
+        assert line not in brief and 'What past campaigns' not in brief, 'a list without the lessons'
+        assert '## History' in brief
 
 
 def test_pre_written_brief_is_used_verbatim(

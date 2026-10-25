@@ -10,6 +10,7 @@ import ExampleStopAfterKeeps from '/snippets/generated/example-stop-after-keeps.
 import Capabilities from '/snippets/generated/capabilities.mdx';
 import Roles from '/snippets/generated/roles.mdx';
 import Triggers from '/snippets/generated/triggers.mdx';
+import Sections from '/snippets/generated/sections.mdx';
 import RuntimeProtocol from '/snippets/generated/runtime-protocol.mdx';
 import Runtimes from '/snippets/generated/runtimes.mdx';
 import CasProviders from '/snippets/generated/cas-providers.mdx';
@@ -68,6 +69,7 @@ A plugin can also do two more things:
 | [Verdict rules](#verdict-rules) | `[plugins.verdict_rule] provider` | a plugin: `piloop.verdict_rules` |
 | [Roles](#roles) | `[roles.<name>]` | configuration, or a plugin: `piloop.roles` |
 | [Triggers](#triggers) | `[roles.<name>] triggers` | a `sql` trigger, or a plugin: `piloop.triggers` |
+| [Sections](#sections) | `[status] sections`, `[roles.<name>] sections` | a plugin: `piloop.sections` |
 | [Harnesses](#harnesses) | `harnesses` | configuration: `[harness.<name>]` |
 | [MCP servers](#mcp-servers) | `[roles.<name>] mcp` | configuration: `[mcp.<name>]` |
 | [The evaluate command](#the-evaluate-command) | `evaluate` | your command |
@@ -490,6 +492,50 @@ campaign's last runs are judged.
 ### Built in
 
 <Triggers />
+
+## Sections
+
+### Example: the keeps per hour
+
+```python
+from sqlalchemy import func, select
+
+from piloop.capabilities import Figure, Figures, Rendered, Rendering, Section, Surface
+from piloop.db.models import Candidate
+
+
+class KeepRate(Section):
+    """The keeps per hour since the campaign started."""
+
+    SHOWN_IN = frozenset({Surface.STATUS})
+    ORDER = 175  # after the evaluations
+
+    def render(self, r: Rendering) -> Rendered | None:
+        mine = (Candidate.campaign_id == r.campaign.id) & (Candidate.verdict == 'keep')
+        kept = r.s.scalar(select(func.count()).select_from(Candidate).where(mine)) or 0
+        hours = (r.now - r.campaign.created_at).total_seconds() / 3600
+        if not kept or hours <= 0:
+            return None
+        rate = Figure(label='keeps per hour', value=round(kept / hours, 2))
+        return Rendered(title='Keep rate', blocks=(Figures(figures=(rate,)),))
+```
+
+Declare it with an entry point in `piloop.sections`. `piloop status` then shows it after the evaluations, wherever
+`[status] sections` is not set.
+
+### The contract
+
+A section is an entry of a list of sections: `{ provider = "<section>", <parameter> = <value> }`. A plugin's section is
+a subclass of `Section`: its fields are its parameters. `SHOWN_IN` names the surfaces whose list shows it when the list
+is not set (`STATUS`, `SWEEP`, `RUN`), and `ORDER` places it there: a lower number first. `render(r)` reads with `r` (a `Rendering`: the session, the
+time, the campaign, its workspace, and the anomalies that the reading agent got) and writes nothing. It returns a
+`Rendered`, a title and its blocks, or None to be left out. A block is one of four kinds: `Text`, `Lines`, `Figures`
+(named values, a number with its unit) and `Table`. `piloop status`, a brief, the API and a UI render each kind their
+own way, so a section never formats for one reader.
+
+### Built in
+
+<Sections />
 
 ## Harnesses
 

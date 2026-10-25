@@ -65,7 +65,7 @@ def pack(s: Session, campaign: Campaign, cfg: CampaignConfig, *, workspace: Path
     """Render the pack as markdown for the brief of a sweep, with markdown tables and no colour."""
     out = io.StringIO()
     console = Console(file=out, width=BRIEF_WIDTH, color_system=None, force_terminal=False, legacy_windows=False)
-    console.print(Group(*renderables(s, campaign, cfg, table_box=box.MARKDOWN, heading='## ', workspace=workspace)))
+    console.print(Group(*renderables(s, campaign, cfg, table_box=box.MARKDOWN, heading='### ', workspace=workspace)))
     return '\n'.join(line.rstrip() for line in out.getvalue().splitlines()).strip() + '\n'
 
 
@@ -78,7 +78,7 @@ def renderables(
     heading: str = '',
     workspace: Path | None,
 ) -> list[RenderableType]:
-    """Build every section in reading order. ``heading='## '`` makes the titles markdown headings."""
+    """Build every section in reading order. ``heading='### '`` makes the titles markdown headings."""
     return [
         _metrics(s, campaign, cfg, table_box, heading),
         Text(),

@@ -43,6 +43,7 @@ from piloop.plugins.host import Plugins, PluginTables, Scope
 from piloop.plugins.metric import Direction
 from piloop.plugins.role.contract import ROLES, ImplementerRole, RoleConfig, SweepRole, new_role
 from piloop.plugins.runtime.contract import RuntimeName
+from piloop.plugins.section.contract import Section, SectionEntry, Surface, chosen
 from piloop.plugins.stop_rule.contract import STOP_RULES, Fact
 
 CONFIG_FILE = 'piloop.toml'
@@ -215,14 +216,6 @@ class Memory(BaseModel):
     logs, design notes. ``piloop init`` and the stop of the campaign copy them into the ``documents`` table, where
     every agent of every campaign can search them. Never name a document that is derived from validation or test
     data."""
-    wake_budget: int = Field(default=400, ge=0)
-    """The size in tokens (about 4 characters each) of the overview that opens the briefs of implementers and research
-    sweeps: the current lesson of each mechanism family on the same repo, from the newest campaign that tried it, one
-    line each. Lessons in the campaign's own metrics come first (``lessons.metric``), then
-    lessons in related metrics, then the rest. Within those, dead or promising come before untested, then the larger
-    effects of each metric, then newer campaigns: effects in different metrics are never compared by size. The brief
-    then says how to read more. A role can change it with ``[roles.<kind>] wake_budget``. 0
-    turns it off."""
 
     @field_validator('documents')
     @classmethod
@@ -232,6 +225,21 @@ class Memory(BaseModel):
             if not path.parts or path.is_absolute() or '..' in path.parts:
                 raise ValueError(f'{pattern!r} is not a glob inside the repo: name files relative to its root, no ..')
         return globs
+
+
+class StatusConfig(BaseModel):
+    """``[status]``: what ``piloop status``, the API and a UI show of the campaign."""
+
+    model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
+
+    sections: list[SectionEntry] | None = None
+    """The sections, in order: a list of ``{ provider = "<section>", ... }`` entries. When unset, every installed
+    section that status shows by default, in their order (``Section.SHOWN_IN``, ``Section.ORDER``): the campaign
+    overview."""
+
+    def shown(self) -> list[Section]:
+        """The sections that status shows: ``sections``, else the defaults of status."""
+        return chosen(self.sections, Surface.STATUS)
 
 
 class Roles(RootModel[dict[str, RoleConfig]]):
@@ -327,7 +335,9 @@ class CampaignConfig(BaseModel):
     spend: Spend | None = None
     """``[spend]``: how the daemon reads what the campaign spends outside piloop. None by default."""
     memory: Memory = Memory()
-    """``[memory]``: documents to search and the lessons overview in briefs."""
+    """``[memory]``: documents for every agent to search."""
+    status: StatusConfig = StatusConfig()
+    """``[status]``: the sections that ``piloop status``, the API and a UI show."""
     plugins: Annotated[Plugins, PluginTables(Scope.CAMPAIGN)] = {}
     """``[plugins.<capability>]``: the provider of each capability of the campaign, by its name (``provider``), and its
     parameters, the other keys of the table. A capability without a table, or a table without ``provider``,
@@ -441,11 +451,6 @@ class CampaignConfig(BaseModel):
             KeyError: ``piloop.toml`` has no such role.
         """
         return self.roles.all()[name]
-
-    def wake_budget(self, name: RoleName) -> int:
-        """The tokens of the lessons overview in a brief of this role: its own ``wake_budget``, or else ``[memory]``'s."""
-        own = self.role(name).wake_budget
-        return self.memory.wake_budget if own is None else own
 
     def role_harnesses(self, name: RoleName) -> list[str]:
         """The rotation a role uses: its own list, or else the campaign's."""

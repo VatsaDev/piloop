@@ -19,6 +19,7 @@ from pydantic_settings import BaseSettings
 from piloop.harnesses import DEFAULT_HARNESSES
 from piloop.mcp import RENDERERS
 from piloop.plugins.runtime.contract import RUNTIMES
+from piloop.plugins.section.contract import SECTIONS
 from piloop.plugins.trigger.contract import TRIGGERS
 from piloop.usage import READERS
 from piloop.usage.jsonl import TALLIES
@@ -28,6 +29,8 @@ BUILT_IN: dict[tuple[str, str], Iterable[str]] = {
     ('RoleConfig', 'runtime'): RUNTIMES.builtins(),
     ('CampaignConfig', 'harnesses'): DEFAULT_HARNESSES,
     ('SweepRole', 'triggers'): TRIGGERS.builtins(),
+    ('RoleConfig', 'sections'): SECTIONS.builtins(),
+    ('StatusConfig', 'sections'): SECTIONS.builtins(),
     ('Harness', 'mcp'): RENDERERS,
     ('UsageSpec', 'reader'): READERS,
     ('UsageSpec', 'tally'): TALLIES,

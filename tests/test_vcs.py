@@ -8,9 +8,9 @@ import pytest
 
 import piloop
 from piloop.agents.roles import PROMPTS
+from piloop.plugins.section.tools import TOOLS
 from piloop.plugins.vcs.contract import PART, VCS, Part, prompted
 from piloop.plugins.vcs.git import PROMPTS as GIT_PROMPTS
-from piloop.reports.overview import TOOLS
 
 ROOT = Path(piloop.__file__).parent
 PROVIDER = ROOT / 'plugins' / 'vcs' / 'git'

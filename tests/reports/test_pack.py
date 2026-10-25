@@ -91,10 +91,10 @@ def live_campaign(db: Database, campaign: Campaign, tmp_path: Path) -> Path:
 def test_the_pack_of_a_campaign(db: Database, campaign: Campaign, tmp_path: Path) -> None:
     workspace = live_campaign(db, campaign, tmp_path)
     text = render(db, campaign, workspace)
-    head, rest = text.split('## History: ideas', 1)
-    _, tail = rest.split('## History: findings on the campaign (last 10)\n', 1)
+    head, rest = text.split('### History: ideas', 1)
+    _, tail = rest.split('### History: findings on the campaign (last 10)\n', 1)
     assert head == snapshot("""\
-## Research pack: metrics (verdict rule bootstrap, confidence = 0.95; start candidate#1, head candidate#2)
+### Research pack: metrics (verdict rule bootstrap, confidence = 0.95; start candidate#1, head candidate#2)
 
 | metric | role | better | margin | floor | start | head | gain |
 |---|---|---|---|---|---|---|---|
@@ -102,7 +102,7 @@ def test_the_pack_of_a_campaign(db: Database, campaign: Campaign, tmp_path: Path
 | size | watch | lower | — | — | 5 | 12 | -7 |
 
 
-## Research pack: analysis artifacts (read before proposing; newest first)
+### Research pack: analysis artifacts (read before proposing; newest first)
 - <repo>/docs/eval.json (8 bytes, modified 2026-01-01 00:03 UTC)
 - <repo>/docs/losses.md (6 lines, modified 2026-01-01 00:02 UTC)
   # Where we lose · ## By slice
@@ -110,11 +110,11 @@ def test_the_pack_of_a_campaign(db: Database, campaign: Campaign, tmp_path: Path
   (no headings)
 - reports/*.md: matches no file in <repo>
 
-## Research pack: shared workspace (what agents left in ./workspace/; newest first)
+### Research pack: shared workspace (what agents left in ./workspace/; newest first)
 - ./workspace/research/losses-c2.md (1 lines, modified 2026-01-01 00:05 UTC)
   # Losses of candidate#2
 
-## Research pack: what was tried, by mechanism family (ideas.family)
+### Research pack: what was tried, by mechanism family (ideas.family)
 
 | family | ideas | keep | interesting | discard/crash | not run |
 |---|---|---|---|---|---|
@@ -123,17 +123,17 @@ def test_the_pack_of_a_campaign(db: Database, campaign: Campaign, tmp_path: Path
 | — | 2 | 0 | 1 | 0 | 1 |
 
 
-## Research pack: seeds to develop (oldest first)
+### Research pack: seeds to develop (oldest first)
 - idea#4 by watchdog#7: pad lines — pointers: run#1
 
 """)
     assert tail == snapshot("""\
 - comment#4 research#4: batch 1: rejected deleting
 
-## Research pack: latest implementer findings (newest first)
+### Research pack: latest implementer findings (newest first)
 - comment#1 implementer#1 on idea#2: NEGATIVE: fewer lines lose score (+1 lines)
 
-## Research pack: orchestrator and human digests and decisions (newest first)
+### Research pack: orchestrator and human digests and decisions (newest first)
 - comment#3 decision by human on campaign#1: no external data
 - comment#2 finding by orchestrator on campaign#1: digest: best #2 +2 over the start (+1 lines)
 """)
@@ -159,7 +159,7 @@ def test_an_empty_pack_says_what_is_missing(db: Database, campaign: Campaign, tm
     text = render(db, campaign, tmp_path / 'no-such-dir')
     assert '- None configured: `context` in piloop.toml lists them.' in text
     assert 'shared workspace' not in text, 'no section without a workspace directory'
-    assert '## Research pack: seeds to develop (oldest first)\n- None.' in text
+    assert '### Research pack: seeds to develop (oldest first)\n- None.' in text
     for title in ('latest implementer findings', 'digests and decisions'):
         assert f'{title} (newest first)\n- None yet.' in text
     (tmp_path / 'workspace').mkdir()
@@ -191,7 +191,7 @@ def test_the_pack_is_bounded(db: Database, campaign: Campaign, tmp_path: Path) -
     assert text.count(' implementer#1 on idea#') == FINDINGS_SHOWN
     assert text.count(' finding by orchestrator on campaign#') == DIGESTS_SHOWN
     pack_only = (
-        text.split('## History: ideas', 1)[0] + text.split('## History: findings on the campaign (last 10)', 1)[1]
+        text.split('### History: ideas', 1)[0] + text.split('### History: findings on the campaign (last 10)', 1)[1]
     )
     assert len(pack_only) < 40_000, 'the module docstring promises about 40 KB on top of the history'
 

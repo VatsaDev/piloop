@@ -1,7 +1,7 @@
 """Record the SELECTs of piloop's hot paths on a populated database, for ``tests/test_plans.py``.
 
 The hot paths are the real functions: the triggers and the take of a scheduler pass, the stop conditions, the
-overview and history renderers, and the orchestrator's inbox wait. They run under a listener that records every
+status sections and the history renderers, and the orchestrator's inbox wait. They run under a listener that records every
 SELECT that the ORM sends. The example queries of the procedures (``piloop schema``) are added too. The test
 runs ``EXPLAIN QUERY PLAN`` on each statement against a small populated file, and fails on a SCAN of a table that
 grows. So the rule "index what the pass and the status filter on" is checked by a test.
@@ -23,7 +23,7 @@ from sqlalchemy.engine import Connection
 from piloop.actor import System
 from piloop.agents.roles import PROCEDURES, PROMPTS
 from piloop.campaign import inbox
-from piloop.campaign.campaigns import BLANK
+from piloop.campaign.campaigns import BLANK, workspace_dir
 from piloop.campaign.stop import check
 from piloop.cli.database import ORCHESTRATOR_PROCEDURES
 from piloop.config import CampaignConfig, load_campaign_config
@@ -33,8 +33,9 @@ from piloop.db.models import Campaign, utcnow
 from piloop.db.session import Database
 from piloop.otel import Tracer
 from piloop.plugins.executor.workers import Workers
+from piloop.plugins.section.contract import Rendering, rendered
 from piloop.plugins.stop_rule.contract import Hold
-from piloop.reports import history, overview
+from piloop.reports import history
 
 ROOT = Path(__file__).resolve().parent.parent
 HOT_INDEXES = (
@@ -291,6 +292,7 @@ class HotPaths:
         tracer = Tracer(None)
         self._scheduler = Scheduler(db, RunController(db, tracer, home, executor=Workers()), tracer, home)
         self._session = db.session()
+        self._home = home
 
     def __enter__(self) -> dict[str, Callable[[], object]]:
         s = self._session
@@ -314,7 +316,9 @@ class HotPaths:
         return {
             'scheduler.pass': each(pass_over),
             'stop.check': each(lambda p, _cfg: check(s, p, stopping)),
-            'overview.overview': each(lambda p, cfg: overview.overview(s, p, cfg, utcnow())),
+            'status.sections': each(
+                lambda p, cfg: rendered(cfg.status.shown(), Rendering(s, utcnow(), p, workspace_dir(self._home, p.id)))
+            ),
             'history.renderables': each(lambda p, cfg: history.renderables(s, p, cfg, table_box=box.SIMPLE)),
             'inbox.news': lambda: inbox.news(s, 0, me=System.ORCHESTRATOR),
         }

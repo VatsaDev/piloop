@@ -59,7 +59,7 @@ def test_pause_and_resume_hold_the_campaign_say_so_in_status_and_refuse_twice(ca
     text = out()
     assert text.count('evaluator v2 lands at 14:00') == 1, 'the reason is in the headline only'
     assert (
-        ' · paused (launches): evaluator v2 lands at 14:00\n' in text
+        ' · paused: launches · paused because: evaluator v2 lands at 14:00\n' in text
         and '- Campaign: active, paused. Progress:' in text
     )
     with pytest.raises(SystemExit, match=r'campaign demo is paused already \(launches\)'):

@@ -1,9 +1,9 @@
 """Wake overviews: the most important memory, in a fixed reading budget, at the start of a session.
 
 A session reads a short overview first and queries for more only when it needs it (the idea of OptMem's
-``memo wake``). Two overviews use it. An implementer's or research sweep's brief opens with the current lessons of the
-repo (``lessons_overview``). The orchestrator runs ``piloop wake`` (``orchestrator_overview``): its latest journal
-lines, the open inbox, the head of each active campaign and the current lessons. A budget is in tokens, counted as
+``memo wake``). Two readers use it. A brief shows the current lessons of the repo (the ``lessons`` section). The
+orchestrator runs ``piloop wake`` (``orchestrator_overview``): its latest journal lines, the open inbox, the head of
+each active campaign and the current lessons. A budget is in tokens, counted as
 ``CHARS_PER_TOKEN`` characters each. It covers every line printed: the headings, and the last line of a list that
 counts what did not fit and says how to read it.
 """
@@ -171,25 +171,6 @@ def lesson_line(lesson: Lesson, campaign: str) -> str:
     """One line of an overview: the campaign, the family, the status, the best effect and the id to read it by."""
     best = 'none measured' if lesson.effect is None else f'{number(lesson.effect, signed=True)} {lesson.metric}'
     return f'- [{campaign}] {lesson.family} | {lesson.status} | {best} (lesson#{lesson.id})'
-
-
-def lessons_overview(s: Session, campaign: Campaign, budget: int) -> str:
-    """The block that opens a brief: the current lessons on the campaign's repo, in ``budget``, heading included.
-
-    Empty when the budget is 0, when there are no lessons, or when not one line fits after the heading.
-    """
-    lessons = current_lessons(s, [campaign.repo], Relevance([campaign.config])) if budget else []
-    head = [
-        '# What past campaigns on this repo concluded',
-        '',
-        "The current lesson of each mechanism family, from the newest campaign that tried it; those in this campaign's"
-        ' metrics first, then related metrics; within them, dead or promising first, then the largest effects of each'
-        ' metric. Before you propose or build a mechanism, read more with the queries under "Remember past campaigns"'
-        ' in the procedures.',
-        '',
-    ]
-    lines = fitted([lesson_line(lesson, name) for lesson, name in lessons], budget - cost(head), LESSONS_MORE)
-    return '\n'.join([*head, *lines]) if lines else ''
 
 
 def orchestrator_overview(s: Session, budget: int, now: datetime) -> str:

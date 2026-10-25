@@ -8,7 +8,6 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from piloop.agents.scout import MIN_WINDOW, WATCH_RUNS, WINDOW, sources, watch_list, window
 from piloop.campaign.ideas import yields
 from piloop.config import load_campaign_config
 from piloop.db.models import (
@@ -27,13 +26,13 @@ from piloop.db.models import (
 )
 from piloop.db.session import Database
 from piloop.ids import AgentSessionId, CommentKind
-from piloop.plugins.role.scout import ScoutRole
+from piloop.plugins.role.scout import MIN_WINDOW, WATCH_RUNS, WINDOW, ScoutRole, sources, watch_list, window
 from piloop.plugins.trigger.cron import CronTrigger
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.reports.history import history
-from piloop.reports.overview import overview
 from tests.conftest import RESEARCH, SCOUT, ScriptRuntime, role_of, write_toml
 from tests.daemon.test_triggers import add_ideas, agent_sessions, backdate, configure, occupy, scheduler
+from tests.reports.test_overview import overview
 
 PYTHON = shlex.quote(sys.executable)
 FAKE_SCOUT = f"""#!/bin/sh
@@ -119,7 +118,7 @@ def test_a_scout_sweep_reads_its_context_signs_as_a_scout_and_files_only_seeds_a
         campaign_row = s.get_one(Campaign, campaign.id)
         cfg = load_campaign_config(Path(campaign.path))
         assert '0 research, 1 scout, 0 watchdog; 0 of 0 ended research sweeps defined no idea' in overview(
-            s, campaign_row, cfg, utcnow()
+            s, campaign_row, utcnow()
         )
         assert 'scout#1: Problem statement: digits' in history(s, campaign_row, cfg)
 

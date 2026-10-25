@@ -87,12 +87,18 @@ def test_items_scope_to_the_campaign_through_every_target(db: Database, campaign
         everything = inbox.items(s)
         assert len(everything) == 11, 'unfiltered, the reply to a reply is in it too'
         assert [p.name if p else None for _, p in everything][-3:] == ['demo', 'other', None]
-        lines = [render(db, p).split('### Recent events\n')[1].splitlines()[0] for p in (campaign, other)]
-        recent = [re.sub(r' \d+[smhd] ago', '', line) for line in lines]
+        lines = [render(db, p).split('## Recent events\n\n')[1].split('\n\n')[0] for p in (campaign, other)]
+        recent = [re.sub(r' \d+[smhd] ago', '', line).splitlines() for line in lines]
         assert recent == snapshot(
             [
-                '- comment.decision comment#10 · comment.finding comment#9 · comment.escalation comment#6 · comment.escalation comment#5 · comment.escalation comment#4',
-                '- comment.escalation comment#8 · comment.escalation comment#7 · idea.created idea#2',
+                [
+                    '- comment.decision comment#10',
+                    '- comment.finding comment#9',
+                    '- comment.escalation comment#6',
+                    '- comment.escalation comment#5',
+                    '- comment.escalation comment#4',
+                ],
+                ['- comment.escalation comment#8', '- comment.escalation comment#7', '- idea.created idea#2'],
             ]
         ), "each campaign's escalation events and none of the other's (campaign_of serves events too)"
 

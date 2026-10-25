@@ -231,6 +231,15 @@ were converted when you upgraded to 0.2.0. While a `PILOOP_PROJECT_<KEY>` variab
 
 `PILOOP_SECRETS_COMMAND` works until 0.5.0. [Secrets](/guides/secrets#piloop_secrets_command) says how to move its keys.
 
+`[memory] wake_budget` and `[roles.<name>] wake_budget` work until 0.5.0. They are the `budget` of the `lessons` entry
+of a role's [sections](/concepts/roles#sections), and 0 is a list without that entry. The watchdog now reads the
+lessons too.
+
+### Status and briefs are sections
+
+`piloop status` and the briefs show [sections](/concepts/roles#sections). `GET /v1/overview` answers each campaign's
+`sections`, typed blocks, in place of its `text`. The lessons in a brief come after the context, not before `brief.md`.
+
 ### Harness tables
 
 A `[harness.<name>]` table for a built-in harness keeps the built-in's keys that it does not set. Before, it replaced

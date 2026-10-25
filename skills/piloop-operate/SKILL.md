@@ -412,8 +412,8 @@ session that worked a past idea.
 - Documents: the reports and logs that `[memory] documents` in `piloop.toml` names, copied in on `piloop init` and
   when the campaign stops. Search them with `documents_fts MATCH '<words>'`. Point the globs at reports, never at
   anything derived from validation or test data.
-- Briefs of implementers and research sweeps open with the current lessons of the repo, in `[memory] wake_budget` tokens
-  (0 turns it off; `[roles.<kind>] wake_budget` changes it for one role).
+- Briefs of implementers, research and the scout show the current lessons of the repo: the `lessons` section of
+  `[roles.<kind>] sections`, in its `budget` of tokens. Leave the entry out to turn it off for a role.
 
 ## Judge candidates
 

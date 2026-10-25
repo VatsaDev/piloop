@@ -37,7 +37,6 @@ from sqlalchemy.orm import Session
 
 from piloop import deprecated
 from piloop.actor import Agent, System
-from piloop.agents import scout
 from piloop.agents.launcher import rotate
 from piloop.agents.refill import usage_of
 from piloop.agents.results import (
@@ -166,16 +165,12 @@ from piloop.ids import (
 )
 from piloop.otel import Tracer
 from piloop.plugins.executor.contract import AgentKey, LeftJob, Prompt
-from piloop.plugins.role.contract import Files, ImplementerRole, SweepRole, ideas_taken
-from piloop.plugins.role.research import ResearchRole
-from piloop.plugins.role.scout import ScoutRole
+from piloop.plugins.role.contract import ImplementerRole, Stall, SweepRole, ideas_taken
+from piloop.plugins.section.contract import Rendering, markdown
 from piloop.plugins.stop_rule.contract import GO, Fact, Go, Hold, Stop
 from piloop.plugins.trigger.contract import TRIGGERS, Backlog, Fire, Incident, TrackBacklog
-from piloop.plugins.trigger.low_water import LowWaterTrigger
 from piloop.plugins.vcs.contract import NotARepository
-from piloop.reports.overview import anomalies, assigned, overview, reported
-from piloop.reports.pack import pack
-from piloop.reports.wake import lessons_overview
+from piloop.reports.overview import anomalies, assigned, reported
 from piloop.runtime.factory import RuntimeFactory, handle_for, make_runtime, runtime_for
 from piloop.scoring.ledger import (
     CandidateImported,
@@ -1570,57 +1565,49 @@ class Scheduler:
     def _sweep(self, agent_session_id: AgentSessionId) -> None:
         """Run a sweep, an agent without a run, in a worktree at the head, with a brief made from its row.
 
-        Every sweep gets the campaign overview (``piloop.reports.overview``) in its context. A sweep that got anomalies
-        is an incident sweep: the anomalies come first, the research pack is left out (``piloop history`` prints it),
-        and the brief adds the role's incident prompt. Every other sweep reads the research pack
-        (``piloop.reports.pack``), and its brief adds the role's routine prompt. The watchdog's are its incident sweep
-        and its progress review.
-
-        A built-in role's sweep also gets the context of its role (``_context``). Research gets the number of waiting
-        seeds, its share of the backlog's shortfall, the runs since the last keep against the stall mark
-        (``piloop.campaign.stop.stall``), and the time the pack was read. With that time, it can query for ideas that
-        parallel sweeps inserted later. The scout gets its seed cap, its search window, the watch list and the
-        technique library (``piloop.agents.scout``). Nothing that a sweep commits is scored. In a worktree at the
-        head, the commits are removed with the worktree when the agent ends.
+        The context of the brief has the daemon's lines (the checkout, the workspace), then the role's own
+        (``SweepRole.context``), then the role's sections (``[roles.<name>] sections``). A sweep that got anomalies is
+        an incident sweep: its sections read them (``Rendering.given``), and the brief adds the role's incident prompt.
+        Every other sweep's brief adds the role's routine prompt. The watchdog's are its incident sweep and its
+        progress review. Nothing that a sweep commits is scored. In a worktree at the head, the commits are removed
+        with the worktree when the agent ends.
         """
         with self._db.session() as s:
             agent_session = s.get_one(AgentSession, agent_session_id)
             campaign = s.get_one(Campaign, agent_session.campaign_id)
             cfg = campaign.config
             role = role_of(s, agent_session)
-            timeout = agent_timeout(s, campaign, cfg, cfg.role(agent_session.kind).timeout, utcnow())
+            table = cfg.roles.sweeping()[agent_session.kind]
+            timeout = agent_timeout(s, campaign, cfg, table.timeout, utcnow())
             base = checkout_candidate(s, campaign)
             values = ', '.join(
                 f'{t.primary.name}={"unmeasured" if (v := score(base, campaign.evaluator_id, t.primary)) is None else v}'
                 for t in cfg.all_tracks
             )
             now = utcnow()
-            cwd = (
-                f'- Your cwd is a detached checkout of candidate#{base.id}, the head ({values}): read and run the'
-                ' code, try things. Nothing you commit here is scored or kept; it goes with the checkout when you end.'
+            given = tuple(assigned(s, agent_session_id))
+            sweep = SweepPass(
+                **vars(self._pass(s, campaign, cfg, agent_session.kind, table, now)), agent_session=agent_session
             )
+            rendering = Rendering(s, now, campaign, workspace_dir(self._home, campaign.id), given)
             lines = [
-                cwd,
+                f'- Your cwd is a detached checkout of candidate#{base.id}, the head ({values}): read and run the'
+                ' code, try things. Nothing you commit here is scored or kept; it goes with the checkout when you end.',
                 f'- Shared workspace for notes and artifacts to other agents: `./{WORKSPACE}/` (not committed). The files'
                 ' of a done idea are archived, and removed from it after some days or when the disk is short; `piloop'
                 f' restore {campaign.name} <idea id>|<workspace path>` writes them back.',
+                *table.context(sweep),
+                f'- Sweep started at: {now:%Y-%m-%d %H:%M:%S} (UTC; the sections below are as of then).',
+                '',
+                markdown(table.shown(), rendering),
             ]
-            lines += self._context(s, campaign, cfg, agent_session, now)
-            incidents = assigned(s, agent_session_id)
-            sections = [*lines, '']
-            if incidents:
-                sections += ['## Incidents to investigate', *incidents, '']
-            sections.append(overview(s, campaign, cfg, now))
-            if not incidents:
-                sections.append(pack(s, campaign, cfg, workspace=workspace_dir(self._home, campaign.id)))
             brief = compose_brief(
                 role,
                 campaign,
                 Agent(role=agent_session.kind, session=agent_session_id),
                 reason=agent_session.reason or 'requested',
-                context='\n'.join(sections),
-                incident=bool(incidents),
-                wake=lessons_overview(s, campaign, cfg.wake_budget(role.kind)),
+                context='\n'.join(lines),
+                incident=bool(given),
             )
         sources = self._controller.sources  # outside the session: it puts the linked inputs into the CAS
         artifact = sources.agent(campaign, base.revision)
@@ -1632,59 +1619,6 @@ class Scheduler:
             artifact=artifact,
             timeout=timeout,
         )
-
-    def _context(
-        self, s: Session, campaign: Campaign, cfg: CampaignConfig, agent_session: AgentSession, now: datetime
-    ) -> list[str]:
-        """Return the context lines of a sweep: a built-in role's own, by the class of its table.
-
-        Another role that defines ideas (``files = "ideas"``) is told its ``max_ideas``, which ``low_water`` counts on.
-        Research's context says it with the backlog.
-        """
-        match cfg.roles.sweeping()[agent_session.kind]:
-            case ResearchRole() as research:
-                return self._research_context(s, campaign, cfg, agent_session.kind, research, now)
-            case ScoutRole(seeds=seeds):
-                return scout.context(s, campaign.id, agent_session.kind, agent_session.id, seeds, now)
-            case SweepRole(files=Files.IDEAS, max_ideas=most):
-                return [f'- New ideas of your own in this sweep: at most {most} (`max_ideas`).']
-            case _:
-                return []
-
-    def _research_context(
-        self, s: Session, campaign: Campaign, cfg: CampaignConfig, name: RoleName, role: ResearchRole, now: datetime
-    ) -> list[str]:
-        """Return the context lines of a research sweep: the seeds, its share of the backlog, the stall mark.
-
-        The backlog's target has the ``buffer`` of the role's first ``low_water`` trigger, or none without one.
-        """
-        buffer = next((t.buffer for t in role.triggers if isinstance(t, LowWaterTrigger)), 0)
-        backlog = self._backlog(s, campaign, cfg, name, buffer)
-        most = role.max_ideas
-        without, (mark, why) = runs_without_keep(s, campaign), stall(cfg)
-        pivot = min(most, 1) if without >= mark else 0  # A stall gets its pivot whatever the backlog holds.
-        own = max(min(backlog.short + most, most), pivot)  # This sweep's share of the shortfall.
-        seeds = count(s, select(Idea).where(Idea.campaign_id == campaign.id, Idea.status == IdeaStatus.SEED))
-        stalled = ': stalled, so one of your own ideas pivots (section 3)' if pivot else ''
-        short = [
-            '- Tracks short of their share of the backlog: '
-            + (
-                ', '.join(
-                    f'{t.name} {t.gap} ({t.runnable} of {t.target} runnable)' for t in backlog.tracks if t.gap > 0
-                )
-                or 'none'
-            )
-            + '. Give every idea and every developed seed the track it serves (`--track`); fill the short ones first.'
-        ]
-        return [
-            f'- Seeds to develop first: {seeds}, listed in the research pack oldest first.',
-            f'- Ideas of your own after the seeds: propose {own} (the backlog holds {backlog.held()};'
-            ' developed seeds do not count against it). Fewer only when what is left duplicates queued work;'
-            ' name that work in your finding.',
-            *(short if cfg.multitrack else []),
-            f'- Measured runs since the last keep: {without}, of the {mark} that mark a stall ({why}){stalled}.',
-            f'- Sweep started at: {now.strftime("%Y-%m-%d %H:%M:%S")} (UTC; the research pack below is as of then).',
-        ]
 
     def _reattach_sweep(self, agent_session_id: AgentSessionId) -> None:
         """Wait for the agent of a sweep that a previous daemon process started, until it ends."""
@@ -1822,6 +1756,17 @@ class RolePass:
             has(AnomalyReported), Event.target_kind == TargetKind.AGENT_SESSION, Event.target_id == AgentSession.id
         )
         return self.s.scalars(self._mine().where(~given).order_by(AgentSession.id.desc()).limit(1)).first()
+
+
+@dataclass(frozen=True)
+class SweepPass(RolePass):
+    """The ``Sweep`` of one agent of a sweeping role: its role's ``Pass``, and its row."""
+
+    agent_session: AgentSession
+
+    def stall(self) -> Stall:
+        mark, why = stall(self.campaign.config)
+        return Stall(runs_without_keep(self.s, self.campaign), mark, why)
 
 
 def sweep_place(agent_session_id: AgentSessionId) -> str:

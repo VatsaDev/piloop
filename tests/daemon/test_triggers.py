@@ -228,12 +228,12 @@ def test_an_anomaly_takes_the_tick_and_does_not_reset_the_timer(
 
     incident = (tmp_path / 'agent_sessions' / '1' / 'brief.md').read_text()
     assert incident.index('# Watchdog') < incident.index('## This sweep: an incident') < incident.index('# Demo')
-    assert '## Incidents to investigate\n- [incident] run#1 failed' in incident
-    assert '## Campaign overview' in incident and '## History' not in incident
+    assert '## Incidents to investigate\n\n- [incident] run#1 failed' in incident
+    assert '## Goal' in incident and '## Research pack' not in incident
     progress = (tmp_path / 'agent_sessions' / '2' / 'brief.md').read_text()
     assert '## This sweep: a progress review' in progress and '## This sweep: an incident' not in progress
     assert '## Incidents to investigate' not in progress
-    assert progress.index('## Campaign overview') < progress.index('## History: ideas')
+    assert progress.index('## Goal') < progress.index('### History: ideas')
     sched.stop(timeout=5)
 
 

@@ -10,6 +10,7 @@ flowchart TB
     config["config.py"]
     daemon["daemon/"]
     db["db/"]
+    deprecated["deprecated.py"]
     harnesses["harnesses.py"]
     mcp["mcp/"]
     net["net/"]
@@ -24,21 +25,16 @@ flowchart TB
     watch["watch/"]
     cli --> daemon
     cli --> watch
-    daemon --> reports
-    harnesses --> usage
+    deprecated --> plugins
     otel --> settings
-    reports --> campaign
-    settings --> plugins
-    store --> plugins
-    watch --> reports
 ```
 
-The graph leaves out the shared modules `actor.py`, `deprecated.py`, `ids.py`, `proc.py`, `text.py`, `version.py`. Every layer may import them.
+The graph leaves out the shared modules `actor.py`, `ids.py`, `proc.py`, `text.py`, `version.py`. Every layer may import them.
 
 | Subpackage or module | Imports directly |
 |---|---|
 | `actor.py` | `ids.py` |
-| `agents/` | `actor.py`, `config.py`, `db/`, `deprecated.py`, `harnesses.py`, `ids.py`, `otel.py`, `plugins/`, `scoring/`, `settings.py`, `store/`, `text.py`, `usage/` |
+| `agents/` | `actor.py`, `config.py`, `db/`, `deprecated.py`, `harnesses.py`, `ids.py`, `otel.py`, `plugins/`, `scoring/`, `settings.py`, `store/`, `usage/` |
 | `api/` | `ids.py`, `text.py` |
 | `campaign/` | `actor.py`, `agents/`, `api/`, `config.py`, `db/`, `deprecated.py`, `ids.py`, `plugins/`, `proc.py`, `scoring/`, `settings.py`, `store/`, `text.py`, `usage/` |
 | `capabilities.py` | `api/`, `db/`, `ids.py`, `mcp/`, `net/`, `otel.py`, `plugins/`, `proc.py`, `runtime/`, `usage/` |
@@ -46,13 +42,13 @@ The graph leaves out the shared modules `actor.py`, `deprecated.py`, `ids.py`, `
 | `config.py` | `deprecated.py`, `harnesses.py`, `ids.py`, `mcp/`, `plugins/` |
 | `daemon/` | `actor.py`, `agents/`, `api/`, `campaign/`, `config.py`, `db/`, `deprecated.py`, `harnesses.py`, `ids.py`, `net/`, `otel.py`, `plugins/`, `proc.py`, `reports/`, `runtime/`, `scoring/`, `settings.py`, `store/`, `usage/`, `version.py` |
 | `db/` | `actor.py`, `api/`, `config.py`, `deprecated.py`, `ids.py`, `plugins/`, `proc.py`, `usage/`, `version.py` |
-| `deprecated.py` | `version.py` |
+| `deprecated.py` | `plugins/`, `version.py` |
 | `harnesses.py` | `deprecated.py`, `mcp/`, `usage/` |
 | `ids.py` | nothing |
 | `mcp/` | nothing |
 | `net/` | `api/`, `db/`, `plugins/` |
 | `otel.py` | `settings.py` |
-| `plugins/` | `actor.py`, `agents/`, `api/`, `config.py`, `db/`, `deprecated.py`, `harnesses.py`, `ids.py`, `mcp/`, `net/`, `otel.py`, `proc.py`, `runtime/`, `scoring/`, `settings.py`, `store/`, `usage/` |
+| `plugins/` | `actor.py`, `agents/`, `api/`, `campaign/`, `config.py`, `db/`, `deprecated.py`, `harnesses.py`, `ids.py`, `mcp/`, `net/`, `otel.py`, `proc.py`, `reports/`, `runtime/`, `scoring/`, `settings.py`, `store/`, `text.py`, `usage/` |
 | `proc.py` | nothing |
 | `reports/` | `agents/`, `api/`, `campaign/`, `config.py`, `db/`, `ids.py`, `plugins/`, `runtime/`, `scoring/`, `text.py`, `usage/` |
 | `runtime/` | `db/`, `plugins/`, `settings.py` |

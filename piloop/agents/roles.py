@@ -155,13 +155,12 @@ def compose_brief(
     context: str,
     incident: bool = False,
     track: Track | None = None,
-    wake: str = '',
 ) -> str:
     """Compose a brief: the role prompt, the campaign brief, the role's addendum, the database procedures, the context.
 
     A sweep also gets its role's incident or routine prompt after the role prompt: the incident prompt when it got
-    anomalies (``incident``). ``wake``, the lessons overview of the repo (``piloop.reports.wake``), follows them. An
-    implementer also gets its track's addendum after the role's addendum. With several tracks, the context lists them.
+    anomalies (``incident``). An implementer also gets its track's addendum after the role's addendum. With several
+    tracks, the context lists them. ``context`` ends with the role's sections.
     """
     author = agent.signature
     repo = Path(campaign.path)
@@ -172,7 +171,6 @@ def compose_brief(
     parts = [
         prompted(role.prompt.read_text().rstrip(), vcs),
         prompted(follows.read_text().rstrip(), vcs) if follows is not None else '',
-        wake.rstrip(),
         (repo / BRIEF_FILE).read_text().rstrip(),
         (repo / addendum).read_text().rstrip() if addendum else '',
         (repo / track.addendum).read_text().rstrip() if track is not None and track.addendum else '',

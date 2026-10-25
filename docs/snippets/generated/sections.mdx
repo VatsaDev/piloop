@@ -1,0 +1,21 @@
+{/* WARNING: This file is auto-generated (uv run -m scripts.generate_all). Update the docstrings of the sections of the `piloop.sections` entry points in `pyproject.toml`, `piloop/plugins/section/` if you want to change anything here. */}
+
+| Section | Shows | Shown by default in | Order | Parameters |
+|---|---|---|---|---|
+| `lessons` | The current lessons of the campaign's repo, most relevant first, in a reading budget. | sweep, run | 10 | `budget` |
+| `incidents` | The anomalies that the agent who reads got to investigate. Nothing for every other reader. | sweep | 20 | none |
+| `headline` | The head and its scores, the keeps, the candidates, the tokens, the evaluator, and why the campaign is held. | status, sweep | 100 | none |
+| `goal` | The goal: the primary metric of each track, the other metrics, the state, and the progress against the stop rule. | status, sweep | 110 | none |
+| `tracks` | One line per track. Nothing with one track. | status, sweep | 120 | none |
+| `trajectory` | The trunk: the start, the head, the gain of each track between them, and the latest trunk keeps. | status, sweep | 130 | none |
+| `runs` | The busy implementer slots, and each open run. | status, sweep | 140 | none |
+| `queue` | The ideas by status, what blocks the blocked ones, and the runnable ideas in queue order. | status, sweep | 150 | none |
+| `agents` | The agents: the live ones with their last line, the count of each role, the yield of each source, the tokens. | status, sweep | 160 | none |
+| `evaluations` | The evaluations under the current evaluator: how many crashed, their minutes, and the candidates without a verdict. | status, sweep | 170 | none |
+| `candidates` | The latest candidates, oldest first, each with its verdict and its primary score against its parent's. | status, sweep | 180 | none |
+| `anomalies` | The anomalies that the daemon detected. | status, sweep | 190 | none |
+| `inbox` | The unacknowledged inbox items and the latest decisions and escalations, newest first. | status, sweep | 200 | none |
+| `events` | The latest events of the campaign, newest first. | status, sweep | 210 | none |
+| `tools` | How an agent queries the database, the transcripts and the history, with every table and its columns. | sweep | 900 | none |
+| `pack` | The research pack, which `piloop history` prints: what a sweep needs to propose work. | sweep | 910 | none |
+| `history` | What was tried: the ideas and their outcomes, the kept lineage, the starting points and the latest findings. | run | 920 | none |

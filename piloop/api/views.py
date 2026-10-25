@@ -7,6 +7,8 @@ A snapshot (``Status``, ``Inbox``) carries the cursor that it was read at: a cli
 (``Batch``) and so joins the two without a gap. The fields are on the "Event feed" page of the docs.
 """
 
+from typing import Annotated, Literal
+
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from piloop.ids import (
@@ -20,7 +22,7 @@ from piloop.ids import (
     RunId,
     TrackName,
 )
-from piloop.text import cell
+from piloop.text import CELL_CHARS, NONE, cell, metric
 
 PROTOCOL = 1
 """The version of the documents and of the event envelope. A field may be added within a version, and readers ignore
@@ -237,14 +239,110 @@ class LiveKey(View):
     reason: str | None
 
 
+class Text(View):
+    """Markdown text: a paragraph, or a document with headings and tables of its own."""
+
+    kind: Literal['text'] = 'text'
+    text: str
+
+    def markdown(self) -> str:
+        return self.text
+
+
+class Lines(View):
+    """A list: one item per line."""
+
+    kind: Literal['lines'] = 'lines'
+    lines: tuple[str, ...]
+    """Markdown list items, ``- …``, with ``  - …`` for an item under the one before."""
+
+    def markdown(self) -> str:
+        return '\n'.join(self.lines)
+
+
+type Value = int | float | str | None
+"""A value of a figure or a table cell: a number for a reader to format, a text, or None when it is unknown."""
+
+
+def shown(value: Value) -> str:
+    """A value for people: a number as ``piloop.text.metric`` writes it, None as ``—``."""
+    if value is None:
+        return NONE
+    return value if isinstance(value, str) else metric(value)
+
+
+class Figure(View):
+    """One named value."""
+
+    label: str
+    value: Value
+    unit: str | None = None
+    """What the value counts, after it: ``h``, ``tokens``, ``USD``."""
+
+    def markdown(self) -> str:
+        unit = '' if self.unit is None else f' {self.unit}'
+        return f'{self.label}: {shown(self.value)}{unit}'
+
+
+class Figures(View):
+    """Named values, in order."""
+
+    kind: Literal['figures'] = 'figures'
+    figures: tuple[Figure, ...]
+
+    def markdown(self) -> str:
+        """The figures on one line: ``head: candidate#4 · score: 3 · kept: 3``."""
+        return ' · '.join(f.markdown() for f in self.figures)
+
+
+class Table(View):
+    """Rows under named columns."""
+
+    kind: Literal['table'] = 'table'
+    columns: tuple[str, ...]
+    rows: tuple[tuple[Value, ...], ...]
+    """Each row has one value per column."""
+
+    def markdown(self) -> str:
+        def row(values: tuple[str, ...]) -> str:
+            return '| ' + ' | '.join(cell(v, CELL_CHARS) if v else '' for v in values) + ' |'
+
+        return '\n'.join(
+            [
+                row(self.columns),
+                '|' + '|'.join('---' for _ in self.columns) + '|',
+                *(row(tuple(shown(v) for v in r)) for r in self.rows),
+            ]
+        )
+
+
+type Block = Annotated[Text | Lines | Figures | Table, Field(discriminator='kind')]
+"""One block of a section. The kinds are fixed: a section composes them, and every reader renders each kind its own
+way."""
+
+
+class Rendered(View):
+    """One section of what a reader sees: a title and its blocks (``piloop.plugins.section``).
+
+    A section provider returns it, the API answers it, and ``piloop status``, a brief and a UI render it.
+    """
+
+    title: str
+    blocks: tuple[Block, ...]
+
+    def markdown(self) -> str:
+        """The section as markdown: ``## <title>``, then each block, a blank line between two."""
+        return '\n\n'.join([f'## {self.title}', *(b.markdown() for b in self.blocks)])
+
+
 class CampaignOverview(View):
-    """A campaign's overview: the text that a sweep reads in its brief."""
+    """A campaign's overview: the sections of its ``[status] sections``, in order."""
 
     id: CampaignId
     name: str
     path: str
     parent: Named | None
-    text: str
+    sections: list[Rendered]
 
 
 class Overview(View):

@@ -44,7 +44,7 @@ runs = true                               # its agents do runs; a sweeping role 
 # runtime = "subprocess"                  # if not set: the campaign's runtime
 # writes = ["commits"]                    # what the brief says the role may write; default: what piloop expects of it
 # files = "nothing"                       # what its agents may file with `piloop idea`: nothing, seeds or ideas
-# wake_budget = 400                       # tokens of the lessons overview that opens the brief; if not set: [memory]'s
+# sections = [{ provider = "lessons", budget = 400 }, …]  # if not set: the installed sections of its briefs; see the sections
 timeout = 1800                            # seconds one implementer may run
 max_concurrent = 4                        # the most runs at the same time, on all workers together
 explore_every = 4                         # at least 1 run in 4 starts from a pinned idea, when one is ready; 0 = off
@@ -62,7 +62,7 @@ recovery_requeues = 2                     # times an idea is requeued from the l
 # files = "seeds"                         # what its agents may file with `piloop idea`: nothing, seeds or ideas
 runs = false                              # a sweeping role: its triggers start it and nothing it commits is scored
 triggers = [{ provider = "anomaly" }, { provider = "cron" }, { provider = "stopped" }]  # an anomaly, the timer below, the stop
-wake_budget = 0                           # the lessons overview is off: the closing review reads the lessons itself
+# sections = [{ provider = "lessons", budget = 400 }, …]  # if not set: the installed sections of its briefs; see the sections
 interval = 1800                           # seconds between two progress reviews of the cron trigger; 0 turns it off
 # incident_prompt = "briefs/incident.md"  # follows the prompt in a sweep that got anomalies; default: watchdog_incident.md
 # routine_prompt = "briefs/review.md"     # follows the prompt in every other sweep; default: watchdog_progress.md
@@ -83,7 +83,7 @@ max_concurrent = 1
 runs = false                              # a sweeping role
 triggers = [{ provider = "low_water", buffer = 2 }, { provider = "seed" }, { provider = "stalled" }]  # a short backlog (buffer: ideas beyond one per run slot), a new seed, a stall
 # interval = 0                            # seconds between two sweeps of a cron trigger, if you add one
-# wake_budget = 400                       # tokens of the lessons overview that opens the brief; if not set: [memory]'s
+# sections = [{ provider = "lessons", budget = 400 }, …]  # if not set: the installed sections of its briefs; see the sections
 # incident_prompt = "briefs/incident.md"  # follows the prompt in a sweep that got anomalies, if you add that trigger
 # routine_prompt = "briefs/routine.md"    # follows the prompt in every other sweep; none by default
 max_ideas = 1                             # new ideas per sweep, after the seeds; 0 pauses them (proposed)
@@ -106,7 +106,7 @@ interval = 0                              # seconds between two scout sweeps; 0 
 # incident_prompt = "briefs/incident.md"  # follows the prompt in a sweep that got anomalies, if you add that trigger
 # routine_prompt = "briefs/routine.md"    # follows the prompt in every other sweep; none by default
 seeds = 3                                 # the most seeds one scout sweep may file
-# wake_budget = 400                       # tokens of the lessons overview that opens the brief; if not set: [memory]'s
+# sections = [{ provider = "lessons", budget = 400 }, …]  # if not set: the installed sections of its briefs; see the sections
 max_ideas = 1                             # new ideas per sweep for a low_water trigger; the scout files only seeds
 timeout = 900
 max_concurrent = 1
@@ -121,6 +121,9 @@ max_concurrent = 1
 # takes = "priority >= 3"                 # the ideas it takes; its slots fill before the implementer's
 # timeout = 300
 # max_concurrent = 2
+
+# [status]                                # what `piloop status`, the API and a UI show
+# sections = [{ provider = "headline" }, { provider = "goal" }, …]  # if not set: the installed sections of status; see the sections
 
 # [plugins.<name>]                        # the provider of a capability that a plugin package adds, by its name
 # provider = "<name>"                     # the other keys of the table are its parameters; `piloop plugins` lists them
@@ -138,7 +141,6 @@ max_concurrent = 1
 
 # [memory]                                # what past campaigns leave for the next ones; see the research memory page
 # documents = ["docs/evidence/**/*.md"]   # repo files that `piloop init` and the stop copy into `documents`; default none
-# wake_budget = 400                       # tokens of the current lessons that open implementer and research briefs; 0 = off
 
 # [spend]                                 # what the campaign costs outside piloop (GPUs, APIs), in USD; its limit is max_spend
 # command = ["uv", "run", "scripts/spend.py"]  # prints the spend so far in USD; it gets secrets from the daemon's environment

@@ -30,9 +30,12 @@ from piloop.db.models import (
 )
 from piloop.db.session import Database
 from piloop.ids import IMPLEMENTER, CommentKind, RoleName, RunId, TargetKind, TargetRef
+from piloop.plugins.section.anomalies import ANOMALIES_SHOWN, REFS_SHOWN
+from piloop.plugins.section.contract import SECTIONS, Rendering, Surface, defaults, markdown
+from piloop.plugins.section.queue import BLOCKED_SHOWN
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.reports import overview as overview_module
-from piloop.reports.overview import LINKED_CHARS, anomalies, block, overview
+from piloop.reports.overview import LINKED_CHARS, anomalies, block
 from tests.conftest import RESEARCH, WATCHDOG, end_of, reconfigured, spent
 
 T = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
@@ -188,51 +191,93 @@ def live_campaign(db: Database, campaign: Campaign) -> None:
         s.commit()
 
 
+SWEEP = [*defaults(Surface.STATUS), SECTIONS.validated({'provider': 'tools'})]
+"""A sweep's sections without the lessons and the pack."""
+
+
+def overview(s: Session, campaign: Campaign, now: datetime = NOW) -> str:
+    """The campaign's overview and tools as a sweep reads them."""
+    return markdown(SWEEP, Rendering(s, now, campaign, Path('/no/workspace')))
+
+
 def render(db: Database, campaign: Campaign, cfg: CampaignConfig | None = None, now: datetime = NOW) -> str:
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
-        return overview(s, p, cfg or CampaignConfig.model_validate(p.config), now)
+        if cfg is not None:
+            p.config = cfg  # rolled back with the session
+        return overview(s, p, now)
 
 
 def test_the_overview_of_a_campaign(db: Database, campaign: Campaign) -> None:
     live_campaign(db, campaign)
     text = render(db, campaign)
-    lay, tools = text.split('### Tools\n')
+    lay, tools = text.split('## Tools\n\n')
     assert lay == snapshot("""\
-## Campaign overview (computed at 2026-10-01 14:00 UTC)
-demo · head score 3 (candidate#2, +2 vs baseline) · 2 kept / 3 candidates · 4k tok · evaluator #1, 0s old
-### Goal
+## Campaign
+
+head: candidate#2 · score: 3 · score vs baseline: 2 · kept: 2 · candidates: 3 · tokens: 3500 · evaluator: #1, 0s old
+
+## Goal
+
 - Primary metric: score, higher is better; also measured: size (lower, watch)
 - Campaign: active. Progress: run 2 · 1.9h (no limit stops it: open-ended).
 - The goal in words is the campaign's brief.md: weigh the metric against it.
-### Trajectory
+
+## Trajectory
+
 - Start candidate#1, head candidate#2: score 1 → 3 (+2, +200.0%); 1 trunk keeps.
 - Last trunk keep 1h ago; 2 runs finished since.
 - Trunk keeps (latest 8; when first measured, the gain on its track over the head before it):
   - 10-01 12:00 candidate#1 1 (start): baseline
   - 10-01 12:18 candidate#2 3 (+2) idea#1: score 3
-### Now
+
+## Runs
+
 - Implementer slots: 1 of 1 busy.
   - run#3 idea#3 "build on longer lines" (script): running 1h, agent_session#3 ended 1h ago
+
+## Queue
+
 - Ideas: 0 runnable, 1 blocked (idea#4 on idea#2 (rejected)); 0 seed, 0 proposed, 1 scheduled, 1 done, 0 parked, 1 rejected.
+
+## Agents
+
 - Agents live: none
 - Agents so far: 3 implementer (1 killed), 1 research, 0 scout, 0 watchdog; 0 of 1 ended research sweeps defined no idea.
 - Ideas by source: research 4 ideas, 3 ran → 1 keep, 0 interesting.
 - Tokens: 4k (implementer 3k, research 500, scout 0, watchdog 0); 500 by agents that ended in the last hour.
-- Evaluations: 3 (0 crashed); median 3.0 min, first 5 3.0 min, latest 5 3.0 min; 6.0 min in all; 0 candidates waiting for a verdict.
-### Recent candidates (3 of 3; score, vs parent)
-- candidate#1 keep 1 (—), no run, 0s ago: baseline
-- candidate#2 keep 3 (+2), run#1, 0s ago: score 3
-- candidate#3 discard 3 (+0), run#1, 0s ago: score 3
-### Anomalies the daemon detected
+
+## Evaluations
+
+evaluations: 3 · crashed: 0 · median: 3 min · first 5: 3 min · latest 5: 3 min · in all: 6 min · waiting for a verdict: 0 candidates
+
+## Recent candidates (3 of 3; score)
+
+| candidate | verdict | score | vs parent | run | age | summary |
+|---|---|---|---|---|---|---|
+| candidate#1 | keep | 1 | — | no run | 0s | baseline |
+| candidate#2 | keep | 3 | 2 | run#1 | 0s | score 3 |
+| candidate#3 | discard | 3 | 0 | run#1 | 0s | score 3 |
+
+## Anomalies the daemon detected
+
 - [incident] run#2 failed, 1h ago: failed on script (idea#2): boom
 - [incident] agent_session#2 dead at startup, 1h ago: implementer on script failed to start (5.0s): dialog
 - candidate#3 scored exactly its parent, 1h ago: scored what candidate#2 did on score and on 1 of 1 other metrics; 3.0 min of evaluation
-### Inbox (1 unacknowledged; 1 escalation, the oldest comment#1 1h old), decisions and escalations
+
+## Inbox (1 unacknowledged; 1 escalation, the oldest comment#1 1h old), decisions and escalations
+
 - comment#2 decision on campaign#1 by pi, 1h ago: keep going
 - comment#1 escalation (p1, unacknowledged) on run#2 by watchdog#9, 1h ago: run#2 died in a dialog
-### Recent events
-- comment.note comment#3 0s ago · comment.decision comment#2 0s ago · comment.escalation comment#1 0s ago · idea.linked idea#4 0s ago · idea.created idea#4 0s ago
+
+## Recent events
+
+- comment.note comment#3 0s ago
+- comment.decision comment#2 0s ago
+- comment.escalation comment#1 0s ago
+- idea.linked idea#4 0s ago
+- idea.created idea#4 0s ago
+
 """)
     assert tools.startswith('- `piloop sql "<one statement>"`')
     assert '  - agent_sessions(id, kind, campaign_id, run_id,' in tools, (
@@ -268,19 +313,19 @@ def test_a_fresh_campaign_has_little_to_say(db: Database, campaign: Campaign) ->
     text = render(db, campaign, cfg)
     assert '- Campaign: active. Progress: run 0 · 0.0h/4h · 0/2 runs without a keep.' in text
     assert "- No trunk keep: the baseline's verdict was overridden and nothing was kept since." in text
-    assert '- Evaluations: 1 (0 crashed); median' not in text, 'the baseline has no recorded seconds'
-    assert '- Evaluations: 1 (0 crashed); 1 candidates waiting for a verdict.' in text
+    assert 'median:' not in text, 'the baseline has no recorded seconds'
+    assert 'evaluations: 1 · crashed: 0 · waiting for a verdict: 1 candidates' in text
     assert (
         '- campaign#1 idle, 2h ago: 1 free implementer slots and no runnable idea; no research sweep pending' in text
     ), 'not tagged: an idle queue is a cost for the progress review, not an incident'
-    assert '### Inbox (0 unacknowledged), decisions and escalations\n- None.\n' in text
+    assert '## Inbox (0 unacknowledged), decisions and escalations\n\n- None.' in text
 
 
 def test_no_anomaly_reads_none(db: Database, campaign: Campaign) -> None:
     with db.session() as s:
         s.add(Idea(track='score', campaign_id=campaign.id, title='t', hypothesis='h', created_by='human'))
         s.commit()
-    assert '### Anomalies the daemon detected\n- None.\n' in render(db, campaign)
+    assert '## Anomalies the daemon detected\n\n- None.' in render(db, campaign)
 
 
 def test_the_idle_queue_counts_from_the_last_run_and_names_pending_research(db: Database, campaign: Campaign) -> None:
@@ -380,7 +425,7 @@ def test_a_crashed_measurement_or_an_unmeasured_parent_is_not_same_as_parent(db:
 def test_the_anomaly_list_shows_the_latest_and_counts_the_rest(db: Database, campaign: Campaign) -> None:
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
-        for n in range(overview_module.ANOMALIES_SHOWN + 2):
+        for n in range(ANOMALIES_SHOWN + 2):
             run(s, idea(s, p, f'idea {n}', IdeaStatus.DONE), RunStatus.TIMED_OUT, 1, n, n + 1)
         idea(s, p, 'next', IdeaStatus.READY)
         s.commit()
@@ -394,7 +439,7 @@ def test_costs_of_one_kind_share_a_line(db: Database, campaign: Campaign) -> Non
     live_campaign(db, campaign)
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
-        for n in range(overview_module.REFS_SHOWN):
+        for n in range(REFS_SHOWN):
             candidate(s, p, 2, Outcome.DISCARD, 3, 30 + n, run_id=1)
         s.commit()
     [line] = [x for x in render(db, campaign).splitlines() if 'scored exactly its parent' in x]
@@ -407,7 +452,7 @@ def test_blocked_ideas_beyond_the_shown_few_are_counted(db: Database, campaign: 
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
         gate = idea(s, p, 'gate', IdeaStatus.PARKED)
-        for n in range(overview_module.BLOCKED_SHOWN + 1):
+        for n in range(BLOCKED_SHOWN + 1):
             idea(s, p, f'waits {n}', IdeaStatus.READY, after=(gate.id,))
         s.commit()
     assert ', 1 more); 0 seed, 0 proposed' in render(db, campaign)
@@ -445,7 +490,7 @@ def test_branches_and_notes_say_where_else_a_run_may_start(db: Database, campaig
         noted.cause, noted.verdict_reason = Cause.NOTE, 'halves the eval time; against candidate#1: score 0.5 vs 1'
         s.add(Candidate(campaign_id=p.id, tree_sha='unmeasured', revision='u', verdict=Outcome.KEEP, run_id=branch.id))
         s.commit()
-    trajectory = render(db, campaign).split('### Trajectory\n')[1].split('### Now')[0]
+    trajectory = render(db, campaign).split('## Trajectory\n\n')[1].split('## Runs')[0]
     assert trajectory == snapshot("""\
 - Start candidate#1, head candidate#2: score 1 → 3 (+2, +200.0%); 1 trunk keeps.
 - Last trunk keep 1h ago; 3 runs finished since.
@@ -457,11 +502,12 @@ def test_branches_and_notes_say_where_else_a_run_may_start(db: Database, campaig
   - branch from candidate#1 (keep): latest candidate#6 —, 2 kept
 - Notes (regressed, kept in view as leads; pin one with base_candidate_id):
   - candidate#5 0.5 by run#4: halves the eval time; against candidate#1: score 0.5 vs 1
+
 """)
 
 
 def test_the_queue_the_live_agents_the_inbox_and_the_events(db: Database, campaign: Campaign, tmp_path: Path) -> None:
-    """The Now, Inbox and Recent events sections show every row with its age."""
+    """The runs, queue, agents, inbox and recent events sections show every row with its age."""
     live_campaign(db, campaign)
     log_dir = tmp_path / 'research-6'
     log_dir.mkdir()
@@ -490,32 +536,55 @@ def test_the_queue_the_live_agents_the_inbox_and_the_events(db: Database, campai
         )
         s.commit()
     text = render(db, campaign)
-    now = text[text.index('### Now') : text.index('### Anomalies')]
+    now = text[text.index('## Runs') : text.index('## Anomalies')]
     assert now == snapshot("""\
-### Now
+## Runs
+
 - Implementer slots: 1 of 1 busy.
   - run#3 idea#3 "build on longer lines" (script): running 1h, agent_session#3 ended 1h ago
+
+## Queue
+
 - Ideas: 3 runnable, 0 blocked; 0 seed, 0 proposed, 1 scheduled, 2 done, 0 parked, 0 rejected.
   - idea#5 p0 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa…" by research#4, 20m ago
   - idea#6 p1 "even longer lines" by research#4, 10m ago; supersedes idea#4
   - idea#4 p2 "after the crash" by research#4, 0s ago; after idea#2; superseded by idea#6
+
+## Agents
+
 - Agents live: 1; requested: watchdog#6
   - research#5 script/m 5m, on low_water: 2 ready < 10: ran evaluate.py: METRIC score=3
 - Agents so far: 3 implementer (1 killed), 2 research, 0 scout, 1 watchdog; 0 of 1 ended research sweeps defined no idea.
 - Ideas by source: research 6 ideas, 3 ran → 1 keep, 0 interesting.
 - Tokens: 4k (implementer 3k, research 500, scout 0, watchdog 0); 500 by agents that ended in the last hour.
-- Evaluations: 3 (0 crashed); median 3.0 min, first 5 3.0 min, latest 5 3.0 min; 6.0 min in all; 0 candidates waiting for a verdict.
-### Recent candidates (3 of 3; score, vs parent)
-- candidate#1 keep 1 (—), no run, 0s ago: baseline
-- candidate#2 keep 3 (+2), run#1, 0s ago: score 3
-- candidate#3 discard 3 (+0), run#1, 0s ago: score 3
+
+## Evaluations
+
+evaluations: 3 · crashed: 0 · median: 3 min · first 5: 3 min · latest 5: 3 min · in all: 6 min · waiting for a verdict: 0 candidates
+
+## Recent candidates (3 of 3; score)
+
+| candidate | verdict | score | vs parent | run | age | summary |
+|---|---|---|---|---|---|---|
+| candidate#1 | keep | 1 | — | no run | 0s | baseline |
+| candidate#2 | keep | 3 | 2 | run#1 | 0s | score 3 |
+| candidate#3 | discard | 3 | 0 | run#1 | 0s | score 3 |
+
 """)
-    assert text[text.index('### Inbox') :].split('### Tools')[0] == snapshot("""\
-### Inbox (1 unacknowledged; 1 escalation, the oldest comment#1 1h old), decisions and escalations
+    assert text[text.index('## Inbox') :].split('## Tools')[0] == snapshot("""\
+## Inbox (1 unacknowledged; 1 escalation, the oldest comment#1 1h old), decisions and escalations
+
 - comment#2 decision on campaign#1 by pi, 1h ago: keep going
 - comment#1 escalation (p1, unacknowledged) on run#2 by watchdog#9, 1h ago: run#2 died in a dialog
-### Recent events
-- idea.linked idea#6 0s ago · agent_session.requested agent_session#6 0s ago · idea.created idea#6 0s ago · idea.created idea#5 0s ago · idea.status idea#2 0s ago
+
+## Recent events
+
+- idea.linked idea#6 0s ago
+- agent_session.requested agent_session#6 0s ago
+- idea.created idea#6 0s ago
+- idea.created idea#5 0s ago
+- idea.status idea#2 0s ago
+
 """)
 
 

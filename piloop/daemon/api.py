@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from piloop.api.contract import Access, EventsQuery, InboxQuery, Located, Problem, Selection
 from piloop.api.views import Batch, CampaignOverview, DaemonState, Inbox, Overview, ProblemDetail, Status
-from piloop.campaign.campaigns import UnknownCampaign, named, selected
+from piloop.campaign.campaigns import UnknownCampaign, named, selected, workspace_dir
 from piloop.db import feed as db_feed
 from piloop.db.models import Campaign, utcnow
 from piloop.db.session import Database
@@ -27,8 +27,8 @@ from piloop.ids import CampaignId
 from piloop.net import Refusal
 from piloop.net.server import App, authorized, changed
 from piloop.plugins.limits import Origin, live_keys
+from piloop.plugins.section.contract import Rendering, rendered
 from piloop.reports import feed
-from piloop.reports.overview import overview as overview_text
 from piloop.settings import Settings
 
 
@@ -98,7 +98,7 @@ def status(api: Api, s: Reading, campaigns: Selected) -> Status:
 
 @router.get('/overview', operation_id='overview')
 def overview(api: Api, s: Reading, campaigns: Selected) -> Overview:
-    """The overview of each campaign, as text, and the live keys that config.toml or a limit sets."""
+    """The sections of each campaign's ``[status] sections``, and the live keys that config.toml or a limit sets."""
     now = utcnow()
     return Overview(
         daemon=api.daemon,
@@ -109,7 +109,7 @@ def overview(api: Api, s: Reading, campaigns: Selected) -> Overview:
                 name=c.name,
                 path=c.path,
                 parent=feed.parent_of(s, c),
-                text=overview_text(s, c, c.config, now, tools=False),
+                sections=rendered(c.config.status.shown(), Rendering(s, now, c, workspace_dir(api.cfg.home, c.id))),
             )
             for c in campaigns
         ],

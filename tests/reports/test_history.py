@@ -151,7 +151,7 @@ def test_history_lists_every_idea_with_its_outcome_the_lineage_and_the_findings(
         comment(s, TargetKind.CAMPAIGN, campaign.id, 'digest: on track', author='orchestrator')
         s.commit()
     assert render(db, campaign) == snapshot("""\
-## History: ideas (8 of 8)
+### History: ideas (8 of 8)
 
 | id | status | by | family | links | prio | title | best candidate (score) |
 |---|---|---|---|---|---|---|---|
@@ -165,7 +165,7 @@ def test_history_lists_every_idea_with_its_outcome_the_lineage_and_the_findings(
 | 8 | ready | t | — | supersedes idea#2, idea#3 | 2 | no lines at all | — |
 
 
-## History: kept lineage
+### History: kept lineage
 
 | candidate | parent | score | vs parent | idea (by) | revision | tokens | summary |
 |---|---|---|---|---|---|---|---|
@@ -174,7 +174,7 @@ def test_history_lists_every_idea_with_its_outcome_the_lineage_and_the_findings(
 | #6 | #5 | 4 | — | idea#4 (t) | 4410000 | — | two commits commit |
 
 
-## History: findings on the campaign (last 10)
+### History: findings on the campaign (last 10)
 - comment#4 research#1: batch 1: extend appending (+1 lines)
 - comment#5 watchdog#2: idle: best is #2; try longer lines
 - comment#6 research#3: batch 2: nothing new worth proposing
@@ -191,7 +191,7 @@ def test_history_is_bounded_and_counts_what_it_omits(db: Database, campaign: Cam
         s.commit()
     rendered = render(db, campaign)
     rows = [line for line in rendered.splitlines() if line.startswith('| ') and line.split(' | ')[0][2:].isdigit()]
-    assert rendered.startswith(f'## History: ideas ({IDEAS_IN_HISTORY} of {IDEAS_IN_HISTORY + 3}; 3 older omitted)')
+    assert rendered.startswith(f'### History: ideas ({IDEAS_IN_HISTORY} of {IDEAS_IN_HISTORY + 3}; 3 older omitted)')
     assert [r.split(' | ')[0] for r in rows[:2]] == ['| 4', '| 5'], 'the newest ideas are kept, the oldest dropped'
     assert len(rows) == IDEAS_IN_HISTORY
     findings = [line for line in rendered.splitlines() if ' research#1: finding' in line]
