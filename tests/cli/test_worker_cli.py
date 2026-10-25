@@ -9,7 +9,7 @@ import pytest
 from covalence import Cid
 
 from piloop.api.contract import Access
-from piloop.cli import common
+from piloop.cli import common, worker as worker_cli
 from piloop.db.models import LeaseWorker
 from piloop.db.session import Database
 from piloop.ids import Revision
@@ -87,15 +87,16 @@ def test_a_worker_registers_with_its_tokens_name_and_stops_on_sigterm(
     server: str, as_worker: Callable[[], None], db: Database, tmp_path: Path
 ) -> None:
     as_worker()
-    default, main = signal.getsignal(signal.SIGTERM), threading.main_thread().ident
+    main = threading.main_thread().ident
     assert main is not None
 
     def stop_once_registered() -> None:
-        def registered() -> bool:
+        def ready() -> bool:
             with db.session() as s:
-                return s.get(LeaseWorker, 'gpu1') is not None
+                registered = s.get(LeaseWorker, 'gpu1') is not None
+            return registered and getattr(signal.getsignal(signal.SIGTERM), '__module__', None) == worker_cli.__name__
 
-        wait_until(lambda: signal.getsignal(signal.SIGTERM) is not default and registered())
+        wait_until(ready)  # the worker's own handler, not whatever handler this process had before
         # to the main thread, which runs the handler: a signal to the process may land on another thread
         signal.pthread_kill(main, signal.SIGTERM)
 
