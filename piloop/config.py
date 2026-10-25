@@ -15,6 +15,7 @@ import re
 import tomllib
 from dataclasses import dataclass
 from enum import StrEnum
+from operator import attrgetter
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Self, cast
 
@@ -501,13 +502,20 @@ class CampaignConfig(BaseModel):
 
     @property
     def evaluator_definition(self) -> dict[str, object]:
-        """What decides a score: the evaluate command, the names and directions of the metrics, and the linked inputs.
+        """What decides a verdict's numbers: the evaluate command, the linked inputs and the judging metrics.
 
-        Roles, margins, floors and the verdict rule are the policy of the verdict, not part of the score. A change to
-        them does not change a verdict already given and needs no new measurements.
+        ``judging`` has the name and direction of each primary and guardrail, by name.
+        A watch metric never decides a verdict, so adding, removing or redirecting one measures nothing again: the
+        older measurements just lack it. Promoting a watch metric to a guardrail, or demoting a guardrail, does. Roles
+        among the judging metrics, margins, floors and the verdict rule are the policy of the verdict, not part of the
+        score.
         """
-        include = {'evaluate': True, 'link': True, 'metrics': {'__all__': {'name', 'direction'}}}
-        return self.model_dump(mode='json', include=include)
+        judging = sorted((m for m in self.metrics if m.role is not MetricRole.WATCH), key=attrgetter('name'))
+        return {
+            'evaluate': list(self.evaluate),
+            'link': list(self.link),
+            'judging': [{'name': m.name, 'direction': m.direction.value} for m in judging],
+        }
 
     @property
     def evaluator_key(self) -> str:

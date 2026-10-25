@@ -82,8 +82,8 @@ def test_a_failed_or_incomplete_evaluation_gives_an_error(tmp_path: Path) -> Non
                 return failed.printed, failed.error
 
     assert evaluate('echo METRIC errors=3; echo METRIC seconds=2') == ({'errors': 3.0, 'seconds': 2.0}, None)
-    assert evaluate('echo METRIC errors=3; echo boom >&2; exit 1') == ({}, 'evaluate exit 1: boom'), (
-        'a non-zero exit discards every METRIC line'
+    assert evaluate('echo METRIC errors=3; echo boom >&2; exit 1') == ({'errors': 3.0}, 'evaluate exit 1: boom'), (
+        'a non-zero exit keeps its METRIC lines next to the error: a failed evaluation has a cost too'
     )
     assert evaluate('echo METRIC errors=3') == ({'errors': 3.0}, 'evaluate printed no METRIC line for: seconds')
 

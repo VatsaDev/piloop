@@ -629,7 +629,7 @@ class Campaign(Tracked, Base):
 
 
 class Evaluator(Base):
-    """One version of how a campaign is scored: the evaluate command, the metric definitions and the linked inputs.
+    """One version of how a campaign is scored: the evaluate command, the judging metrics and the linked inputs.
 
     ``piloop init`` copies it from ``piloop.toml``, and a change makes a new row. A measurement points at the
     evaluator that produced it, so a number always says what it means, and an old number is never taken for a new one.
@@ -643,7 +643,9 @@ class Evaluator(Base):
     key: Mapped[str]
     """A short hash of ``definition``, from ``CampaignConfig.evaluator_key``."""
     definition: Mapped[dict[str, object]]
-    """``evaluate``, ``metrics`` and ``link``, as configured."""
+    """``evaluate``, ``link``, and ``judging``: the name and direction of each primary and guardrail. A watch metric is
+    not part of it, so adding one measures nothing again. An older row that no current config names has ``metrics``,
+    every metric, instead."""
     runner: Mapped[str] = mapped_column(default=PROCESS, server_default=PROCESS)
     """The evaluator runner, by name: how piloop runs the evaluator to measure a candidate. ``process``, built in, runs
     the evaluate command as a process in a clean worktree of the candidate, and is the runner of every evaluator for

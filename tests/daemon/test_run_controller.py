@@ -3189,7 +3189,9 @@ def test_an_evaluation_that_changes_a_linked_input_is_a_crash_and_the_shared_cop
     ex.remeasure(candidate)
     with db.session() as s:
         measured = s.scalars(select(Measurement).where(Measurement.candidate_id == candidate)).all()[-1]
-    assert (measured.metrics, measured.error) == ({}, f'{CHANGED_INPUTS}: data/x.csv')
+    assert (measured.metrics, measured.error) == ({'score': 9.0, 'size': 1.0}, f'{CHANGED_INPUTS}: data/x.csv'), (
+        'what it printed stays next to the error, and a measurement with an error never scores'
+    )
     assert [e['paths'] for e in events(spans, INPUTS_CHANGED)] == ['data/x.csv']
     set_config(
         db,

@@ -110,8 +110,6 @@ class MissingMetrics:
     """The evaluate command printed no ``METRIC`` line for some metrics."""
 
     names: tuple[str, ...]
-    printed: dict[str, float]
-    """The metrics that it printed."""
 
 
 @dataclass(frozen=True)
@@ -119,7 +117,6 @@ class BadUnits:
     """The evaluate command wrote per-unit results that do not fit its ``METRIC`` lines (``read_units``)."""
 
     why: str
-    printed: dict[str, float]
 
 
 @dataclass(frozen=True)
@@ -145,6 +142,9 @@ class Failed:
 
     why: Why
     seconds: float
+    printed: dict[str, float] = field(default_factory=dict)
+    """What the evaluate command printed, whatever its exit: a failed evaluation has a cost too. The measurement keeps
+    it, next to the error, and a measurement with an error never scores."""
 
     @property
     def error(self) -> str:
@@ -167,18 +167,18 @@ class Failed:
             case _:
                 assert_never(self.why)
 
-    @property
-    def printed(self) -> dict[str, float]:
-        """What the evaluate command printed before it failed. The measurement keeps it, next to the error."""
-        match self.why:
-            case MissingMetrics(printed=printed) | BadUnits(printed=printed):
-                return printed
-            case _:
-                return {}
-
 
 type EvalResult = Measured | Failed
 """The result of one run of the evaluate command."""
+
+
+def printed(result: EvalResult) -> dict[str, float]:
+    """The metrics that one run of the evaluate command printed, whatever its exit."""
+    match result:
+        case Measured(metrics=metrics) | Failed(printed=metrics):
+            return metrics
+        case _:
+            assert_never(result)
 
 
 def run_evaluate(
@@ -191,7 +191,7 @@ def run_evaluate(
     track: Track = no_track,
     units_file: Path | None = None,
 ) -> EvalResult:
-    """Run the evaluate command and parse its ``METRIC name=value`` lines. A non-zero exit gives no metrics.
+    """Run the evaluate command and parse its ``METRIC name=value`` lines, whatever its exit.
 
     With ``units_file``, which must not exist yet, the command also gets ``UNITS_ENV`` set to that path. What it writes
     there is validated into ``Measured.units``. The file is then removed, so it never outlives the call.
@@ -199,23 +199,23 @@ def run_evaluate(
     env = child_env() | ({UNITS_ENV: str(units_file)} if units_file is not None else {})
     try:
         done = _run(cmd, cwd=cwd, log_dir=log_dir, prefix='eval', timeout=timeout, track=track, env=env)
+        metrics = parse_metrics((log_dir / 'eval.stdout').read_text(errors='replace'))
         match done.returncode:
             case None:
-                return Failed(TimedOut(timeout), done.seconds)
+                return Failed(TimedOut(timeout), done.seconds, metrics)
             case 0:
                 pass
             case code:
                 stderr = (log_dir / 'eval.stderr').read_text(errors='replace').strip()[-STDERR_IN_ERROR:]
-                return Failed(Exited(code, stderr) if code > 0 else Killed(-code, stderr), done.seconds)
-        metrics = parse_metrics((log_dir / 'eval.stdout').read_text(errors='replace'))
+                return Failed(Exited(code, stderr) if code > 0 else Killed(-code, stderr), done.seconds, metrics)
         if missing := required - metrics.keys():
-            return Failed(MissingMetrics(tuple(sorted(missing)), metrics), done.seconds)
+            return Failed(MissingMetrics(tuple(sorted(missing))), done.seconds, metrics)
         if units_file is None or not units_file.exists():
             return Measured(metrics, done.seconds)
         try:
             return Measured(metrics, done.seconds, read_units(units_file, metrics))
         except ValueError as e:
-            return Failed(BadUnits(str(e), metrics), done.seconds)
+            return Failed(BadUnits(str(e)), done.seconds, metrics)
     finally:
         if units_file is not None:
             units_file.unlink(missing_ok=True)

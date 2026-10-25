@@ -52,7 +52,16 @@ from piloop.plugins.executor.kit.transfers import send_of_record
 from piloop.plugins.runtime.contract import AgentExit, AgentSpec, ExitStatus, Handle, Runtime, taken
 from piloop.plugins.vcs.contract import Repository
 from piloop.proc import PILOOP_ARGV, child_env, kill_group
-from piloop.scoring.evaluate import EvalResult, Failed, InputsChanged, Killed, Measured, NotRun, run_evaluate
+from piloop.scoring.evaluate import (
+    EvalResult,
+    Failed,
+    InputsChanged,
+    Killed,
+    Measured,
+    NotRun,
+    printed,
+    run_evaluate,
+)
 from piloop.settings import INPUTS_DIR
 from piloop.store.tree import Materialised, Seen, evict_unlinked, put_tree
 from piloop.usage import UsageError, read_usage
@@ -457,7 +466,7 @@ def _evaluate_once(job: EvaluationJob, control: Control, site: Site, span: Span)
         )
         if changed := sorted(rel for rel, copy in links.copies.items() if not copy.holds(cwd / rel)):
             span.event(INPUTS_CHANGED, evaluation=job.evaluation, paths=', '.join(changed[:SHOWN]))
-            return Failed(InputsChanged(tuple(changed[:SHOWN])), result.seconds)
+            return Failed(InputsChanged(tuple(changed[:SHOWN])), result.seconds, printed(result))
         return result
     except Exception as e:
         span.error(e)

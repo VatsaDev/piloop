@@ -37,8 +37,8 @@ piloop idea status 12 parked --reason 'waits for idea#9, see comment#31'
   - `supersedes`: the idea is a sharper version of older ideas. The daemon rejects the older ones that never ran.
 - {vcs:versions}
 - The daemon scores each new candidate with the campaign's **evaluator** into a **measurement** (metrics, or an
-  error). The evaluator is the evaluate command and the metric definitions as of the last config sync. A change makes
-  a new evaluator row. A candidate can have many measurements: repeats, or a newer evaluator.
+  error). The evaluator is the evaluate command, the linked inputs and the judging metrics (primaries and
+  guardrails) as of the last config sync. A change makes a new evaluator row; a watch metric is not part of it. A candidate can have many measurements: repeats, or a newer evaluator.
 - A candidate's **verdict** (`keep`, `interesting`, `discard` or `crash`) is the daemon's judgement of its mean score
   against its bar. The bar is the run's last keep, starting at its base. The orchestrator or a human may override it.
   `verdict IS NULL` until the candidate is judged.

@@ -44,7 +44,8 @@ METRIC seconds=0.69
 ```
 
 piloop ignores the other output. A non-zero exit, a missing metric, or a run longer than `evaluate_timeout` seconds
-makes the commit a `crash`. Print the reason on stderr.
+makes the commit a `crash`. Print the reason on stderr. The measurement of a crash keeps the `METRIC` lines that it
+printed, and never scores.
 
 Make the command deterministic: fix the seeds and the data splits. In `brief.md`, tell the implementers not to edit
 the evaluate command or the data.
@@ -89,7 +90,7 @@ piloop never compares scores from two different evaluators. These words have one
 | Word | Meaning |
 |---|---|
 | evaluate command | Your program: the `evaluate` key. |
-| **evaluator** | The evaluate command, the names and directions of the metrics, and `link`. A change to one of these makes a new evaluator at the next `piloop init`. |
+| **evaluator** | The evaluate command, `link`, and the names and directions of the primaries and guardrails. A change to one of these makes a new evaluator at the next `piloop init`. |
 | **evaluation** | One run of the evaluator on a candidate. |
 | **measurement** | The metric values that one evaluation recorded. |
 
@@ -100,8 +101,9 @@ old scores. To measure one of them again, for example to compare the whole traje
 piloop candidate remeasure 2
 ```
 
-A change to a role, a margin, a floor or the verdict rule makes no new evaluator. It changes how the next candidates are
-judged.
+A change to a margin, a floor or the verdict rule makes no new evaluator, and neither does a watch metric that you add,
+remove or redirect: older measurements just lack it. These change how the next candidates are judged. Making a watch
+metric a guardrail or a primary, or the reverse, makes a new evaluator.
 
 ## Shared files
 

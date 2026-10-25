@@ -1,6 +1,7 @@
 import json
 import re
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -367,28 +368,52 @@ def test_tracks_are_primaries_each_with_a_margin_a_table_and_a_share(campaign_pa
             load_campaign_config(campaign_path, **overrides)
     one = load_campaign_config(campaign_path, tracks={'score': {'addendum': 'briefs/score.md'}})
     assert one.all_tracks[0].addendum == 'briefs/score.md', 'one track may still have its addendum'
+    guarded = [
+        {'name': 'score', 'direction': 'higher', 'role': 'primary'},
+        {**COST, 'role': 'guardrail', 'track': None},
+    ]
     assert load_campaign_config(campaign_path, metrics=[ACCURACY, COST], tracks=SHARES).evaluator_key == (
-        load_campaign_config(campaign_path).evaluator_key
+        load_campaign_config(campaign_path, metrics=guarded).evaluator_key
     ), 'tracks, margins and floors are verdict policy: they re-measure nothing'
 
 
-def test_the_evaluator_is_what_scores_not_how_the_verdict_reads_it(campaign_path: Path) -> None:
-    cfg = load_campaign_config(campaign_path)
-    assert cfg.evaluator_definition['metrics'] == [
-        {'name': 'score', 'direction': 'higher'},
-        {'name': 'size', 'direction': 'lower'},
-    ]
-    guarded = load_campaign_config(
-        campaign_path,
-        plugins={'verdict_rule': {'confidence': 0.9}},
-        metrics=[
-            {'name': 'score', 'direction': 'higher', 'role': 'primary'},
-            {'name': 'size', 'direction': 'lower', 'role': 'guardrail', 'margin': 3},
-        ],
-    )
-    assert guarded.evaluator_key == cfg.evaluator_key, 'a new margin re-measures nothing'
-    flipped = load_campaign_config(campaign_path, metrics=[{'name': 'score', 'direction': 'lower', 'role': 'primary'}])
-    assert flipped.evaluator_key != cfg.evaluator_key
+def test_the_evaluator_is_what_scores_the_judging_metrics_not_how_the_verdict_reads_them(campaign_path: Path) -> None:
+    primary = {'name': 'score', 'direction': 'higher', 'role': 'primary'}
+    size = {'name': 'size', 'direction': 'lower', 'role': 'guardrail', 'margin': 3}
+    cfg = load_campaign_config(campaign_path, metrics=[primary, size])
+    assert cfg.evaluator_definition == {
+        'evaluate': cfg.evaluate,
+        'link': ['data'],
+        'judging': [{'name': 'score', 'direction': 'higher'}, {'name': 'size', 'direction': 'lower'}],
+    }
+
+    def key(*metrics: Mapping[str, object], **overrides: object) -> str:
+        return load_campaign_config(campaign_path, metrics=list(metrics), **overrides).evaluator_key
+
+    unchanged = {
+        'a new margin': key(primary, {**size, 'margin': 9}),
+        'a primary that is a guardrail now': key(
+            {**primary, 'track': 'a', 'margin': 1},
+            {**size, 'role': 'primary', 'track': 'b'},
+            tracks={'a': {'share': 0.5}, 'b': {'share': 0.5}},
+        ),
+        'another order of the metrics': key(size, primary),
+        'a verdict rule': key(primary, size, plugins={'verdict_rule': {'confidence': 0.9}}),
+        'a new watch metric': key(primary, size, {'name': 'eval_cost_usd', 'direction': 'lower'}),
+    }
+    assert unchanged == dict.fromkeys(unchanged, cfg.evaluator_key), 'none changes a verdict already given'
+    changed = {
+        'a watch metric that judges now': key(primary, size, {**size, 'name': 'cost', 'margin': 1}),
+        'a guardrail that only watches now': key(primary, {'name': 'size', 'direction': 'lower'}),
+        'a new direction': key({**primary, 'direction': 'lower'}, size),
+        'a new evaluate command': key(primary, size, evaluate=['true']),
+        'a new linked input': key(primary, size, link=['data', 'more']),
+    }
+    assert len({cfg.evaluator_key, *changed.values()}) == len(changed) + 1, 'each can change a verdict'
+    assert (
+        load_campaign_config(campaign_path).evaluator_key
+        == load_campaign_config(campaign_path, metrics=[primary]).evaluator_key
+    ), 'a watch metric is no part of the evaluator'
 
 
 def test_repeats_marks_a_noisy_metric_and_a_track_pairs_with_the_largest_repeats_of_its_deciding_metrics(

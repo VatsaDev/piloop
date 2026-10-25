@@ -413,6 +413,13 @@ not change. `documents.commit_sha` is gone: no code read it.
 
 `candidates.commit_sha` is `candidates.revision`: the commit SHA under `git`. Rename it in your own SQL and triggers.
 
+### Evaluators
+
+A watch metric is no longer part of the [evaluator](/concepts/campaigns#evaluators): adding one measures nothing again.
+Making a watch metric a guardrail or a primary, or the reverse, now makes a new evaluator. The upgrade gives each
+campaign's current evaluator its new key, so it measures nothing again. A failed evaluation's measurement keeps the
+`METRIC` lines that it printed.
+
 ## Upgrading to 0.2.0
 
 Read this before you upgrade from 0.1.0.

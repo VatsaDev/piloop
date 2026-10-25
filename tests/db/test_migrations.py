@@ -10,6 +10,7 @@ import sqlite3
 import threading
 import time
 from contextlib import closing
+from hashlib import sha256
 from json import dumps, loads
 from pathlib import Path
 
@@ -2138,3 +2139,49 @@ def test_0051_renames_the_scope_of_a_token_its_access_admits_those_of_people_and
     command.downgrade(cfg, '0050')
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
         assert con.execute('SELECT name FROM tokens').fetchall() == [('gpu1',)], 'the older code reads only workers'
+
+
+def test_0052_keys_the_current_evaluator_of_each_campaign_by_its_judging_metrics_and_downgrades(tmp_path: Path) -> None:
+    """After the upgrade, the next ``piloop init`` of an unchanged config finds the current evaluator: nothing is
+    measured again. Older evaluators keep their rows and keys."""
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0051')
+    metrics = [
+        {'name': 'score', 'direction': 'higher', 'role': 'primary'},
+        {'name': 'seconds', 'direction': 'lower', 'role': 'guardrail', 'margin': 1},
+        {'name': 'eval_cost_usd', 'direction': 'lower', 'role': 'watch'},
+    ]
+    config = bare_config('p').model_copy(update={'link': ['data']}).model_dump(mode='json') | {'metrics': metrics}
+    old = {
+        'evaluate': ['true'],
+        'link': ['data'],
+        'metrics': [{'name': m['name'], 'direction': m['direction']} for m in metrics],
+    }
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute("INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', ?)", (dumps(config),))
+        con.execute("INSERT INTO campaigns (name, path, config) VALUES ('q', '/q', '{}')")
+        evaluators = [(1, 'older', {'evaluate': ['false']}), (1, 'current', old)]
+        for campaign, key, definition in evaluators:
+            con.execute(
+                'INSERT INTO evaluators (campaign_id, key, definition) VALUES (?, ?, ?)',
+                (campaign, key, dumps(definition)),
+            )
+        con.execute('UPDATE campaigns SET evaluator_id = 2 WHERE id = 1')
+    command.upgrade(cfg, '0052')
+    rows = 'SELECT id, campaign_id, key, definition FROM evaluators ORDER BY id'
+    today = CampaignConfig.model_validate(config)
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert [(i, c, k, loads(d)) for i, c, k, d in con.execute(rows)] == [
+            (1, 1, 'older', {'evaluate': ['false']}),
+            (2, 1, today.evaluator_key, today.evaluator_definition),
+        ], 'the key of today is the one the migration wrote'
+        assert today.evaluator_definition['judging'] == [
+            {'name': 'score', 'direction': 'higher'},
+            {'name': 'seconds', 'direction': 'lower'},
+        ]
+    command.downgrade(cfg, '0051')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        restored = [(i, k, loads(d)) for i, _, k, d in con.execute(rows)]
+        assert restored[1][2] == old
+        assert restored[1][1] == sha256(dumps(old, sort_keys=True).encode()).hexdigest()[:16]

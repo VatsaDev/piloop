@@ -33,7 +33,8 @@ def test_evaluate_ok(tmp_path: Path) -> None:
     assert (tmp_path / 'eval.stdout').read_text() == 'METRIC a=1\nMETRIC b=2\n'
 
 
-def test_evaluate_nonzero_exit_drops_metrics(tmp_path: Path) -> None:
+def test_evaluate_nonzero_exit_keeps_what_it_printed(tmp_path: Path) -> None:
+    """A failed evaluation costs money too: its METRIC lines, the cost among them, go into the measurement."""
     r = run_evaluate(
         ['sh', '-c', 'echo METRIC a=1; echo boom >&2; exit 2'],
         cwd=tmp_path,
@@ -42,7 +43,7 @@ def test_evaluate_nonzero_exit_drops_metrics(tmp_path: Path) -> None:
         required={'a'},
     )
     assert isinstance(r, Failed) and r.why == Exited(2, 'boom')
-    assert (r.error, r.printed) == (snapshot('evaluate exit 2: boom'), {})
+    assert (r.error, r.printed) == (snapshot('evaluate exit 2: boom'), {'a': 1.0})
 
 
 def test_evaluate_killed_by_a_signal_names_the_signal(tmp_path: Path) -> None:
@@ -57,6 +58,7 @@ def test_evaluate_killed_by_a_signal_names_the_signal(tmp_path: Path) -> None:
     assert isinstance(r, Failed) and r.why == Killed(signal.SIGTERM, 'boom')
     assert isinstance(r.why, Killed) and r.why.sent, 'another process sent it: the evaluate measured nothing'
     assert r.error == snapshot('evaluate killed by SIGTERM (exit -15), not by its own exit: boom')
+    assert r.printed == {'a': 1.0}
 
 
 @pytest.mark.skipif(not hasattr(signal, 'SIGRTMIN'), reason='macOS has no real-time signals: each signal has a name')
@@ -69,16 +71,16 @@ def test_evaluate_killed_by_a_signal_with_no_name_gives_its_number(tmp_path: Pat
 
 def test_evaluate_missing_metric(tmp_path: Path) -> None:
     r = run_evaluate(['sh', '-c', 'echo METRIC a=1'], cwd=tmp_path, log_dir=tmp_path, timeout=5, required={'a', 'b'})
-    assert isinstance(r, Failed) and r.why == MissingMetrics(('b',), {'a': 1.0})
+    assert isinstance(r, Failed) and r.why == MissingMetrics(('b',))
     assert (r.error, r.printed) == (snapshot('evaluate printed no METRIC line for: b'), {'a': 1.0})
 
 
 def test_evaluate_timeout_kills_grandchildren_and_keeps_logs(tmp_path: Path) -> None:
-    cmd = ['sh', '-c', 'echo partial; sleep 30 & echo $! > child.pid; wait']
+    cmd = ['sh', '-c', 'echo METRIC a=1; sleep 30 & echo $! > child.pid; wait']
     r = run_evaluate(cmd, cwd=tmp_path, log_dir=tmp_path, timeout=0.3, required=set())
     assert isinstance(r, Failed) and r.why == TimedOut(0.3)
-    assert r.error == snapshot('evaluate timeout after 0.3s')
-    assert (tmp_path / 'eval.stdout').read_text() == 'partial\n'
+    assert (r.error, r.printed) == (snapshot('evaluate timeout after 0.3s'), {'a': 1.0})
+    assert (tmp_path / 'eval.stdout').read_text() == 'METRIC a=1\n'
     assert_dead(int((tmp_path / 'child.pid').read_text()))
 
 
