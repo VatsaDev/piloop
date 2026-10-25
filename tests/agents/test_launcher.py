@@ -56,6 +56,7 @@ from tests.conftest import (
     ScriptRuntime,
     events,
     factory,
+    role_timeout,
     serving,
     write_toml,
 )
@@ -101,7 +102,13 @@ def launch(
             role_in(campaign), campaign, Agent(role='watchdog', session=agent_session_id), reason='test', context=''
         )
     ctl = controller(db, runtime, tmp_path, tracer)
-    ended = ctl.launcher.launch(agent_session_id, brief=brief, place='w', artifact=checkout(campaign))
+    ended = ctl.launcher.launch(
+        agent_session_id,
+        brief=brief,
+        place='w',
+        artifact=checkout(campaign),
+        timeout=role_timeout(db, agent_session_id),
+    )
     # its worker heartbeats until it stops: left running, it takes the next launch's job
     ctl.stop(5)
     return ended
@@ -442,7 +449,7 @@ def test_a_cwd_that_cannot_be_made_is_a_failed_start(
     mocker.patch('piloop.plugins.vcs.git.commands.add_worktree', side_effect=OSError(28, 'No space left on device'))
     lc = launcher(db, runtime, tmp_path)
     artifact = Source(vcs=Git(), repo=RepoId(campaign.id), revision=Repo(campaign.path).head.commit.hexsha)
-    outcome = lc.launch(agent_session_id, brief=brief, place='w', artifact=artifact)
+    outcome = lc.launch(agent_session_id, brief=brief, place='w', artifact=artifact, timeout=60)
     w = agent_session(db, agent_session_id)
     assert (isinstance(outcome, NotStarted), w.state, w.error) == (
         True,
@@ -456,7 +463,7 @@ def test_nothing_starts_after_cancel(campaign: Campaign, db: Database, runtime: 
     agent_session_id = request(db, campaign)
     lc = launcher(db, runtime, tmp_path)
     lc.cancel()
-    outcome = lc.launch(agent_session_id, brief='x', place='w', artifact=checkout(campaign))
+    outcome = lc.launch(agent_session_id, brief='x', place='w', artifact=checkout(campaign), timeout=60)
     w = agent_session(db, agent_session_id)
     assert (outcome, w.state, w.harness) == (DaemonStopped(), AgentSessionState.REQUESTED, None), 'stop() closes rows'
     assert not (tmp_path / 'w').exists()
@@ -690,7 +697,7 @@ def test_a_brief_past_the_limit_of_one_argument_reaches_the_agent_as_a_file(
     use_harness(db, campaign, RECORDS_ARGV_AND_ENV)
     brief = 'x' * 200 * 1024 + '\n'
     outcome = launcher(db, runtime, tmp_path).launch(
-        request(db, campaign), brief=brief, place='w', artifact=checkout(campaign)
+        request(db, campaign), brief=brief, place='w', artifact=checkout(campaign), timeout=60
     )
     assert (exit_of(outcome).status, exit_of(outcome).error) == (ExitStatus.EXITED, None)
     assert (tmp_path / 'w' / 'argv.txt').read_text().splitlines() == [PROMPT.format(path=tmp_path / 'w' / 'brief.md')]

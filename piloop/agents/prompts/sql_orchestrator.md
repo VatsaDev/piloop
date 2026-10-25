@@ -63,8 +63,8 @@ Each command takes `--reason '<why>'`, signs the change with your actor and reco
 ### Override a verdict
 
 A candidate can be `interesting` without winning: `piloop candidate verdict <c> interesting --reason '<why>'`. It signs
-the verdict with your actor. A keep must build on the head, unless its run is a branch run. The daemon never
-overwrites a verdict that is not its own.
+the verdict with your actor. A keep off the head is merged onto the head, and the daemon judges the merge there. The
+daemon never overwrites a verdict that is not its own.
 
 ### Note a lead
 

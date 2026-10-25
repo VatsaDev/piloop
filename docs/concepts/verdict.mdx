@@ -154,7 +154,8 @@ candidate of the same run, and the daemon measures and judges it against the new
 rebased copy of a head (the same tree under another commit) merges only its own changes. If the merge has conflicts,
 the daemon files a seed `Compose candidate#N onto the head` instead, once per candidate: a seed you rejected is not
 filed again when the candidate is judged again. The seed of a run's later commit supersedes the seeds of the run's
-earlier commits that it contains.
+earlier commits that it contains. The ideas that run after the run's idea, and have not started, then run after the
+seed: the change comes with it.
 
 ## Measure a candidate again
 
@@ -208,9 +209,10 @@ piloop candidate verdict 42 interesting --reason "lucky seed"
 ```
 
 The daemon never overwrites a verdict that it did not set. The `candidate.verdict` event records the change with the
-reason. Only a judgement (`keep`, `interesting`, `discard`, `crash`) is overridden, and a keep must build on the head
-unless its run is a branch run: the head is the newest trunk keep, so a keep from an older bar would drop what the head
-kept since.
+reason. Only a judgement (`keep`, `interesting`, `discard`, `crash`) is overridden. The head is the newest trunk keep,
+so a keep from an older bar would drop what the head kept since. Such a keep goes the way of the daemon's own (see
+[When the head moves during a run](#when-the-head-moves-during-a-run)): the candidate is `interesting`, and the daemon
+merges it onto the head, then measures and judges the merge there. A keep of a branch run never moves the head.
 
 ## Add a measurement by hand
 

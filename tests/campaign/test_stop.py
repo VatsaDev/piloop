@@ -27,6 +27,7 @@ from piloop.campaign.stop import (
     runs,
     runs_without_keep,
     stall,
+    timeout as agent_timeout,
 )
 from piloop.config import CampaignConfig, ConfigError, load_campaign_config
 from piloop.daemon.run_controller import SKIPPED_REASON, RunFinished
@@ -994,3 +995,33 @@ def test_a_stop_rule_from_a_plugin_replaces_the_built_in_one_through_piloop_toml
         assert STOP_RULES.sources()['after_keeps'].release == 'piloop-stop-after-keeps 0.1.0'
     finally:
         host.close()
+
+
+def test_an_agent_may_run_its_role_timeout_cut_at_the_time_that_the_campaign_stops(
+    db: Database, campaign: Campaign
+) -> None:
+    """A run that started minutes before a max_hours stop got its whole role timeout and outlived the stop."""
+    configure(db, campaign, max_runs=4)
+    with db.session() as s:
+        row = s.get_one(Campaign, campaign.id)
+        no_time = CampaignConfig.model_validate(row.config)
+        assert agent_timeout(s, row, no_time, 1800, utcnow()) == 1800, 'the rule limits no hours'
+    configure(db, campaign, max_hours=3)
+    with db.session() as s:
+        row = s.get_one(Campaign, campaign.id)
+        cfg = CampaignConfig.model_validate(row.config)
+        assert agent_timeout(s, row, cfg, 1800, utcnow()) == 1800, 'no run yet: three hours left'
+    add_run(db, campaign, started_at=timedelta(hours=2, minutes=55))
+    with db.session() as s:
+        row = s.get_one(Campaign, campaign.id)
+        now = utcnow()
+        assert 290 < agent_timeout(s, row, cfg, 1800, now) <= 300, 'five minutes left'
+        started = now - timedelta(minutes=2)
+        assert 410 < agent_timeout(s, row, cfg, 1800, started) <= 420, 'an agent that started 2 minutes ago'
+        row.status = CampaignStatus.STOPPED
+        assert agent_timeout(s, row, cfg, 1800, now) == 1800, 'a stopped campaign cuts nothing: its closing review'
+        row.status = CampaignStatus.ACTIVE
+    add_run(db, campaign, started_at=timedelta(hours=3, minutes=5))
+    with db.session() as s:
+        row = s.get_one(Campaign, campaign.id)
+        assert agent_timeout(s, row, cfg, 1800, utcnow()) == 0, 'past the stop: no time, never a negative one'

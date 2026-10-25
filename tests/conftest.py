@@ -443,6 +443,13 @@ def dial(monkeypatch: pytest.MonkeyPatch) -> Dial:
     return make
 
 
+def role_timeout(db: Database, agent_session_id: int) -> float:
+    """The role timeout of the agent: what the daemon launches it with while its campaign has no stop time."""
+    with db.session() as s:
+        agent_session = s.get_one(AgentSession, agent_session_id)
+        return s.get_one(Campaign, agent_session.campaign_id).config.role(agent_session.kind).timeout
+
+
 def wait_until(predicate: Callable[[], object], *, timeout: float = 30) -> None:
     """Poll ``predicate`` until it is true; fail the test once ``timeout`` passes.
 

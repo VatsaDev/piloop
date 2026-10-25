@@ -62,6 +62,7 @@ from tests.conftest import (
     example,
     factory,
     package,
+    role_timeout,
     serving,
     wait_until,
     write_toml,
@@ -97,7 +98,15 @@ def launch_in_thread(
     ended: list[Ended] = []
 
     def launch() -> None:
-        ended.append(ex.launcher.launch(agent_session_id, brief='b', place='w', artifact=source))
+        ended.append(
+            ex.launcher.launch(
+                agent_session_id,
+                brief='b',
+                place='w',
+                artifact=source,
+                timeout=role_timeout(ex.launcher.db, agent_session_id),
+            )
+        )
 
     threading.Thread(target=launch, daemon=True).start()
     return agent_session_id, ended

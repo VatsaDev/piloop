@@ -50,7 +50,7 @@ from piloop.plugins.vcs.contract import (
 )
 from piloop.plugins.verdict_rule.contract import VERDICT_RULES, Case, Criterion, Outcome, Side, VerdictRule
 from piloop.scoring.evaluate import UNITS, Units
-from piloop.scoring.verdict import judgeable, label, pending, rejudgeable
+from piloop.scoring.verdict import judgeable, label, pending, pending_clause, rejudgeable
 from piloop.text import metric
 
 type Samples = dict[str, list[float]]
@@ -173,7 +173,8 @@ def due(s: Session, campaign: Campaign) -> list[Candidate]:
     1. The head: an unpinned run starts from it and is judged against it, so the queue waits only for it
        (``head_unmeasured``).
     2. The bar of each open run (``bar_of`` its base), oldest run first: the run is judged against it.
-    3. Each candidate that someone asked to measure again (``requested``), oldest request first.
+    3. Each candidate that someone asked to measure again (``requested``), oldest request first, and each that waits
+       for a verdict that no run gives (``unjudged``).
     4. The bar of each ``ready`` idea pinned to a base.
     5. Each reference that no evaluator measured: a new import.
 
@@ -187,10 +188,11 @@ def due(s: Session, campaign: Campaign) -> list[Candidate]:
     new_references = select(Candidate).where(
         Candidate.campaign_id == campaign.id, Candidate.origin == Origin.REFERENCE, ~Candidate.measurements.any()
     )
+    waiting = select(Candidate).join(Run).where(Candidate.campaign_id == campaign.id, pending_clause())
     asked = requested(s, campaign)
     active = campaign.status is CampaignStatus.ACTIVE
     found = [head(s, campaign), *(bar_of(run.base) for run in s.scalars(open_runs.order_by(Run.id)))] if active else []
-    found += asked
+    found += asked + [c for c in s.scalars(waiting.order_by(Candidate.id)) if unjudged(c)]
     if active:
         ready = (Idea.campaign_id == campaign.id, Idea.status == IdeaStatus.READY)
         found += [bar_of(c) for c in s.scalars(pins.where(*ready).order_by(Idea.id))]
@@ -308,6 +310,16 @@ class IdeaCreated(EventModel):
     """An idea was added: by hand, by an agent, or as a follow-up seed."""
 
     kind: Literal['idea.created'] = 'idea.created'
+
+
+def unjudged(candidate: Candidate) -> bool:
+    """Return whether ``candidate`` waits for a verdict that no run gives: pending, and its run scores no more.
+
+    That is the merge onto the head of a keep that someone set off the head (``ops.set_verdict``). The daemon measures
+    it (``due``) and judges it against the head that it merged onto (``RunController.remeasure``).
+    """
+    run = candidate.run
+    return pending(candidate) and run is not None and run.status not in OPEN_RUNS and not run.scoring
 
 
 def rejudges(s: Session, campaign: Campaign) -> list[Candidate]:
@@ -521,10 +533,8 @@ MOVED = 'keeps against its own bar, but the head moved on to candidate#{head}: '
 the trunk."""
 
 
-def rebase(
-    s: Session, cfg: CampaignConfig, repo: Repository, candidate: Candidate, onto: Candidate
-) -> Candidate | None:
-    """Merge ``candidate``'s version onto the head ``onto``. Return the merged candidate to measure and judge, or None.
+def rebase(s: Session, cfg: CampaignConfig, repo: Repository, candidate: Candidate, onto: Candidate) -> Rebased:
+    """Merge ``candidate``'s version onto the head ``onto``. Return how: the merged candidate to measure and judge, if any.
 
     ``candidate`` kept against its own bar after the head moved on. So it is ``interesting`` (``Cause.MOVED``), and its
     reason ends with the result of the merge. The merge is a version made without a checkout (``Repository.merge``),
@@ -533,12 +543,12 @@ def rebase(
     compose the two by hand, unless the campaign stopped. The seed is not pinned, so it runs from the head
     (``follow_up``). It supersedes the compose seeds of the run's earlier candidates that ``candidate`` contains
     (``supersede_composed``). A merged tree that is already a candidate (the head had the change) gives no new
-    candidate. Emits ``Rebased``.
+    candidate. Emits ``Rebased``. The ideas that wait for the run's idea wait for the seed instead
+    (``wait_for_compose``).
     """
     subject = REBASED_SUFFIX.sub('', candidate.summary or '')
     message = f'{subject} (rebased onto candidate#{onto.id})'
     merged = repo.merge(Revision(onto.commit_sha), Revision(candidate.commit_sha), message)
-    found: Candidate | None = None
     if isinstance(merged, Conflicts):
         paths = ', '.join(merged.paths)
         why = (
@@ -562,6 +572,7 @@ def rebase(
         )
         for seed in seeds:
             supersede_composed(s, repo, candidate, seed)
+            wait_for_compose(s, candidate.run.idea, seed)
         filed = f': seed idea#{seeds[0].id} composes it by hand' if seeds else ''
         candidate.verdict_reason = f'{candidate.verdict_reason}; its merge onto the head conflicts in {paths}{filed}'
         rebased = Rebased(head=onto.id, conflicts=list(merged.paths))
@@ -578,9 +589,8 @@ def rebase(
                 f'{candidate.verdict_reason}; its merge onto the head is candidate#{found.id} already ({label(found)})'
             )
             rebased = Rebased(head=onto.id, known=found.id)
-            found = None
     emit(s, rebased, TargetRef(TargetKind.CANDIDATE, candidate.id), System.DAEMON)
-    return found
+    return rebased
 
 
 def supersede_composed(s: Session, repo: Repository, candidate: Candidate, seed: Idea) -> None:
@@ -601,6 +611,28 @@ def supersede_composed(s: Session, repo: Repository, candidate: Candidate, seed:
         assert old.provenance is not None  # the IN clause matched it
         if repo.contains(Revision(candidate.commit_sha), Revision(by_provenance[old.provenance].commit_sha)):
             s.add(IdeaLink(idea_id=seed.id, target_id=old.id, kind=LinkKind.SUPERSEDES))
+
+
+NEVER_RAN = (IdeaStatus.SEED, IdeaStatus.PROPOSED, IdeaStatus.READY)
+"""The statuses of an idea that has not started: the daemon can reject it when it is superseded and has no run
+(``ideas.supersede``), and move its ``after`` links (``wait_for_compose``).
+
+A failed attempt puts an idea back to ``ready`` if it has attempts left. The daemon does not cancel such an idea."""
+
+
+def wait_for_compose(s: Session, idea: Idea, seed: Idea) -> None:
+    """Move the ``after`` links to ``idea`` of the ideas that have not started to ``seed``, the compose of its change.
+
+    Its run's change did not land on the trunk: the merge conflicted. They would start from a head without it, or
+    be parked as stranded once ``idea`` is done. The change lands through the compose now, so they wait for it. A
+    started idea keeps its link: it began without the change. The link triggers log the move.
+    """
+    links = select(IdeaLink).join(Idea, Idea.id == IdeaLink.idea_id)
+    waiting = links.where(IdeaLink.target_id == idea.id, IdeaLink.kind == LinkKind.AFTER, Idea.status.in_(NEVER_RAN))
+    for link in s.scalars(waiting).all():
+        s.delete(link)
+        s.add(IdeaLink(idea_id=link.idea_id, target_id=seed.id, kind=LinkKind.AFTER))
+    s.flush()
 
 
 def reproposed(candidate: Candidate, run: Run) -> bool:

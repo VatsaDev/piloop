@@ -626,6 +626,9 @@ parameters. Import the types from `piloop.capabilities`.
   gets only these. By default, the facts of `limits()`.
 - `check(case: StopCase) -> Go | Hold | Stop`: the answer. `Hold` and `Stop` have a `reason`.
 
+piloop cuts each agent's timeout where the rule's limit on `hours` stops the campaign, so a run that starts just
+before the stop ends with it.
+
 The facts are:
 
 - `head`: the primary metric of the head.

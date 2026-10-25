@@ -236,6 +236,21 @@ def check(s: Session, campaign: Campaign, cfg: CampaignConfig) -> Go | Hold | St
     return rule.check(StopCase(primary.name, primary.direction, progress))
 
 
+def timeout(s: Session, campaign: Campaign, cfg: CampaignConfig, role_timeout: float, started_at: datetime) -> float:
+    """Return the seconds that an agent of ``campaign`` that started at ``started_at`` may run.
+
+    That is its ``role_timeout``, cut where the stop rule's limit on ``hours`` stops the active campaign
+    (``StopRule.limits``): a run that starts minutes before the stop ends with it. A stopped campaign cuts nothing, so
+    its closing review has its whole timeout.
+    """
+    limit = STOP_RULES.selected(cfg.plugins).limits().get(Fact.HOURS)
+    if campaign.status is not CampaignStatus.ACTIVE or limit is None:
+        return role_timeout
+    now = utcnow()
+    left = (limit - (hours(s, campaign, now) or 0.0)) * 3600
+    return max(0.0, min(role_timeout, (now - started_at).total_seconds() + left))
+
+
 def requested(s: Session, campaign: Campaign) -> Stop | None:
     """Return the stop that someone requested (``requested_stop``), or None. It wins over every answer of the rule."""
     if (request := requested_stop(s, campaign)) is None:

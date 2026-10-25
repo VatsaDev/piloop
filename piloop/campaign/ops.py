@@ -47,14 +47,17 @@ from piloop.plugins.role.contract import Files
 from piloop.plugins.vcs.contract import Revision, VcsError
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring.ledger import (
+    MOVED,
     IdeaCreated,
     MeasurementRecorded,
+    Rebased,
     RejudgeRequested,
     follow_up,
     head,
+    rebase,
     track_of,
 )
-from piloop.scoring.verdict import Refusal, label, override, pending, refusal, rejudgeable
+from piloop.scoring.verdict import Refusal, label, override, pending, refusal, rejudgeable, write
 
 
 class Refused(Exception):
@@ -158,6 +161,14 @@ def review_first(campaign: Campaign, actor: Actor, *, new: bool) -> str | None:
     return None
 
 
+@dataclass(frozen=True)
+class Overridden:
+    """What ``set_verdict`` did: the verdict that the candidate had, and its merge onto the head for a keep off it."""
+
+    old: str
+    rebased: Rebased | None = None
+
+
 def set_verdict(
     s: Session,
     candidate_id: CandidateId,
@@ -166,18 +177,21 @@ def set_verdict(
     cause: Literal[Cause.NOTE] | None = None,
     reason: str,
     actor: Actor,
-) -> str:
-    """Set ``actor``'s verdict on a candidate, and return the verdict it had. The one way to override a verdict.
+) -> Overridden:
+    """Set ``actor``'s verdict on a candidate, and return what that did. The one way to override a verdict.
 
     The verdict is ``actor``'s now, so the daemon never changes it. The ``candidate.verdict`` event (a trigger) has the
-    reason. A keep of a trunk run must build on the head (``missing_head``): the head is the newest trunk keep, and a
-    keep that lacks the head's changes would drop them from the trunk. A keep of a branch run never moves the head.
-    With ``Cause.NOTE``, it keeps a regressed result in view as a lead: an ``interesting`` verdict whose reason is
-    followed by the one that it notes.
+    reason. A keep of a trunk run that does not build on the head (``missing_head``) goes the way of the daemon's
+    keep against a bar that is no longer the head: the head is the newest trunk keep, and a keep that lacks the
+    head's changes would drop them from the trunk. So the candidate is ``interesting`` (``Cause.MOVED``), and its merge
+    onto the head (``ledger.rebase``) is a pending candidate that the daemon measures and judges against the head
+    (``ledger.unjudged``). A merge that conflicts files a seed to compose it. A keep of a branch run never moves the
+    head. With ``Cause.NOTE``, it keeps a regressed result in view as a lead: an ``interesting`` verdict whose reason
+    is followed by the one that it notes.
 
     Raises:
-        Refused: the reason is blank, ``verdict.refusal`` refuses it, or it would be a trunk keep that does not build
-            on the head.
+        Refused: the reason is blank, ``verdict.refusal`` refuses it, or it is a keep off the head of a candidate that
+            no run made, which no seed can compose.
     """
     candidate = _get(s, Candidate, candidate_id, 'candidate')
     why = _reason(reason)
@@ -198,14 +212,19 @@ def set_verdict(
             pass
         case _:
             assert_never(refused)
-    if to is Outcome.KEEP and (trunk := missing_head(s, candidate)) is not None:
-        raise Refused(
-            f'{name} does not build on the head candidate#{trunk.id}: as a keep it would drop what'
-            ' the head kept. Mark it interesting, or add an idea that merges it onto the head'
-        )
     old = label(candidate)
+    if to is Outcome.KEEP and (trunk := missing_head(s, candidate)) is not None:
+        if candidate.run is None:
+            raise Refused(
+                f'{name} does not build on the head candidate#{trunk.id}: as a keep it would drop what'
+                ' the head kept. Mark it interesting, or add an idea that merges it onto the head'
+            )
+        reason = MOVED.format(head=trunk.id) + f'kept by hand: {why}'
+        write(candidate, Outcome.INTERESTING, cause=Cause.MOVED, reason=reason, by=actor)
+        campaign = s.get_one(Campaign, candidate.campaign_id)
+        return Overridden(old, rebase(s, campaign.config, repository(campaign), candidate, trunk))
     override(candidate, to, cause=cause, reason=why, by=actor)
-    return old
+    return Overridden(old)
 
 
 def missing_head(s: Session, candidate: Candidate) -> Candidate | None:

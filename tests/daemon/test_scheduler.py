@@ -2597,6 +2597,38 @@ def test_an_implementer_is_told_once_to_wrap_up_before_its_timeout(
     scheduler.stop(timeout=5)
 
 
+def test_an_implementer_is_told_to_wrap_up_before_the_campaign_stops_when_that_comes_before_its_timeout(
+    db: Database, campaign: Campaign, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run that started minutes before a ``max_hours`` stop was cut by the stop, never told to wrap up."""
+    set_config(db, campaign, plugins={'stop_rule': {'max_hours': 0.25}}, roles={'implementer': {'timeout': 3600}})
+    runtime = PromptingRuntime()
+    running_agent_session(db, campaign, 'late')
+    lease_running(db)
+    scheduler = make_scheduler(db, runtime, tmp_path)
+    fake = prompted(db, scheduler, mocker)
+
+    def started(minutes: float) -> None:
+        with db.session() as s:
+            at = utcnow() - timedelta(minutes=minutes)
+            s.get_one(AgentSession, 1).started_at = s.get_one(Run, 1).started_at = at
+            s.commit()
+
+    started(10)  # the stop in 5 minutes: its timeout is 15 minutes, and the wrap-up comes 3.75 minutes before
+    scheduler.tick()
+    scheduler.tick()
+    assert fake.prompts == [], 'not yet'
+    started(12)
+    monkeypatch.setattr('piloop.daemon.scheduler.STOP_GRACE_SECONDS', 0)
+    for _ in range(2):  # the wrap-up is a note, which the next tick hands to the executor
+        scheduler.tick()
+    [(agent, prompt)] = fake.prompts
+    assert agent == 1 and prompt.text.startswith(
+        "[piloop] Your time is almost up (the campaign's stop, 900s after you started). Commit what you have now"
+    )
+    scheduler.stop(timeout=5)
+
+
 def test_an_implementer_is_ended_a_minute_after_its_finding(db: Database, campaign: Campaign, tmp_path: Path) -> None:
     """The finding is the implementer's report that it is done. A job that it left running must not hold its slot.
 

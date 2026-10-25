@@ -33,7 +33,7 @@ from piloop.agents.results import (
 )
 from piloop.agents.roles import compose_brief, role
 from piloop.campaign.campaigns import WORKSPACE, Sources, campaign_dir, checkout_of, record_of, repository, vcs_of
-from piloop.campaign.stop import attempts, park_cancelled, run_cancel
+from piloop.campaign.stop import attempts, park_cancelled, run_cancel, timeout as agent_timeout
 from piloop.config import TRANSCRIPT, CampaignConfig, Track
 from piloop.db.events import emit, has, in_order, latest
 from piloop.db.models import (
@@ -114,6 +114,7 @@ from piloop.scoring.ledger import (
     resolve,
     score,
     side,
+    unjudged,
 )
 from piloop.scoring.verdict import UNMEASURED, judgeable, label, override, pending, refusal, rejudgeable, write
 from piloop.settings import StorageSettings
@@ -388,7 +389,7 @@ class RunController:
                         idea,
                         base,
                         Agent(role=run.role, session=agent_session_id).signature,
-                        cfg.role(run.role).timeout,
+                        agent_timeout(s, campaign, cfg, cfg.role(run.role).timeout, utcnow()),
                     ),
                     track=cfg.track(idea.track),
                     wake=lessons_overview(s, campaign, cfg.wake_budget(run.role)),
@@ -418,6 +419,7 @@ class RunController:
             campaign = run.idea.campaign
             cfg = campaign.config
             base_sha = Revision(s.get_one(Candidate, run.base_candidate_id).commit_sha)
+            timeout = agent_timeout(s, campaign, cfg, cfg.role(run.role).timeout, utcnow())
             harness, model, idea_id, campaign_id = run.harness, run.model, run.idea_id, campaign.id
             vcs, campaign_path = vcs_of(campaign), Path(campaign.path)
         log_dir = self._runs_dir / str(run_id)
@@ -431,6 +433,7 @@ class RunController:
                 brief=brief,
                 place=run_place(run_id),
                 artifact=self.sources.agent(self._campaign(campaign_id), base_sha),
+                timeout=timeout,
                 commits=commits_of(run_id),
             )
         # a daemon stop owns the rows, also when it came just after the report applied
@@ -662,8 +665,10 @@ class RunController:
             s.commit()
             asked = remeasure_asked(s, campaign, candidate)
             parent = candidate.parent
-            bar = bar_of(parent).id if asked is not None and parent is not None else None
-            repeats = asked.repeats if asked is not None else 1
+            # a merge that no run judges is measured as its run would: paired with its head when the track repeats
+            paired = cfg.track(candidate.run.idea.track).repeats if unjudged(candidate) and candidate.run else None
+            bar = bar_of(parent).id if (asked is not None or paired) and parent is not None else None
+            repeats = asked.repeats if asked is not None else paired or 1
             campaign_id, sha = campaign.id, Revision(candidate.commit_sha)
             vcs, campaign_path = vcs_of(campaign), Path(campaign.path)
         eval_dir = campaign_dir(self._home, campaign_id) / 'measure' / f'{candidate_id}-e{evaluator_id}'
@@ -711,7 +716,7 @@ class RunController:
         with self._db.session() as s:
             candidate = s.get_one(Candidate, candidate_id)
             run = candidate.run
-            if run is None or not rejudgeable(candidate):
+            if run is None or not (rejudgeable(candidate) or unjudged(candidate)):
                 return
             assert candidate.parent is not None  # a run's candidate descends from the run's base
             cfg = run.idea.campaign.config
@@ -985,8 +990,7 @@ class RunController:
                         write(candidate, verdict, cause=cause, reason=reason, by=System.DAEMON)
                         if onto is not None:
                             moved = True
-                            found = rebase(s, scope.cfg, scope.repo, candidate, onto)
-                            merged = found.id if found is not None else None
+                            merged = rebase(s, scope.cfg, scope.repo, candidate, onto).rebased
                         judged = CandidateJudged(
                             verdict=verdict,
                             score=score(candidate, scope.evaluator_id, scope.track.primary),

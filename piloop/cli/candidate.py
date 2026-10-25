@@ -156,10 +156,20 @@ def candidate_verdict(
 
     The verdict is then yours, signed as PILOOP_ACTOR, so the daemon never changes it. The `candidate.verdict` event
     records the old and new verdict with the reason. Only a judgement is overridden: pending, reference, recovered and
-    skipped candidates are refused. A keep of a trunk run must build on the head, or it would drop what the head
-    kept.
+    skipped candidates are refused. A keep of a trunk run that does not build on the head would drop what the head
+    kept. So the candidate becomes `interesting`, and its merge onto the head is a new candidate that the daemon
+    measures and judges against the head, as for its own keeps. A merge that conflicts files a seed to compose it.
     """
     with common.refused(), common.session() as s:
-        old = ops.set_verdict(s, candidate_id, verdict, reason=reason, actor=common.settings.actor)
+        done = ops.set_verdict(s, candidate_id, verdict, reason=reason, actor=common.settings.actor)
         s.commit()
-        common.console.print(f'candidate#{candidate_id} {old} → {verdict}: {reason.strip()}', markup=False)
+        candidate = s.get_one(Candidate, candidate_id)
+        common.console.print(
+            f'candidate#{candidate_id} {done.old} → {candidate.verdict}: {candidate.verdict_reason}', markup=False
+        )
+        if done.rebased is not None and done.rebased.rebased is not None:
+            common.console.print(
+                f'candidate#{done.rebased.rebased}: the daemon measures it and judges it against the head'
+                f' candidate#{done.rebased.head}',
+                markup=False,
+            )

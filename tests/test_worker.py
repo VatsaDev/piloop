@@ -91,6 +91,7 @@ from tests.conftest import (
     baseline,
     disk,
     factory,
+    role_timeout,
     serving,
     timed,
     wait_until,
@@ -127,7 +128,13 @@ def head_of(ex: RunController, agent_session_id: AgentSessionId) -> Source:
 
 def launch(ex: RunController, agent_session_id: AgentSessionId, tmp_path: Path) -> Ended:
     """Launch the agent in ``logs`` under the home ``tmp_path``, its worktree in ``logs/worktree``."""
-    return ex.launcher.launch(agent_session_id, brief='b', place='logs', artifact=head_of(ex, agent_session_id))
+    return ex.launcher.launch(
+        agent_session_id,
+        brief='b',
+        place='logs',
+        artifact=head_of(ex, agent_session_id),
+        timeout=role_timeout(ex.launcher.db, agent_session_id),
+    )
 
 
 def lease_state(db: Database, agent_session_id: AgentSessionId) -> LeaseState | None:
@@ -384,6 +391,7 @@ def test_an_agent_that_removes_its_own_worktree_is_still_reported(
         brief='b',
         place='logs',
         artifact=head_of(ex, agent_session_id),
+        timeout=60,
         commits=Commits(summary='leftovers', run=RunId(1)),
     )
     assert isinstance(outcome, Ran) and outcome.process.error is not None and outcome.commits is None, (
@@ -516,7 +524,12 @@ def launching(
     thread = threading.Thread(
         target=ex.launcher.launch,
         args=(agent_session_id,),
-        kwargs={'brief': 'b', 'place': name, 'artifact': head_of(ex, agent_session_id)},
+        kwargs={
+            'brief': 'b',
+            'place': name,
+            'artifact': head_of(ex, agent_session_id),
+            'timeout': role_timeout(db, agent_session_id),
+        },
     )
     threads.append(thread)
     thread.start()

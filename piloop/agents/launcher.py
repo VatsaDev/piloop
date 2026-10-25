@@ -78,6 +78,7 @@ class Launcher:
         brief: str,
         place: str,
         artifact: Source,
+        timeout: float,
         commits: Commits | None = None,
     ) -> Ended:
         """Run agent session row ``agent_session_id`` to the end on the executor, and return how it ended.
@@ -85,14 +86,15 @@ class Launcher:
         The steps are: pick the harness and model, fill in the row, submit the agent's job, and wait for its result,
         which closes the row (``piloop.agents.results``). The executor makes the job's ``place`` (its log directory),
         materializes ``artifact`` in it (a worktree), starts the agent, and removes the worktree after. Its log files
-        come back into ``place`` under this home. With ``commits``, they come back too: ``Ended.commits``.
+        come back into ``place`` under this home. With ``commits``, they come back too: ``Ended.commits``. ``timeout``
+        is the seconds that the agent may run.
         """
         with self.tracer.span('piloop.agent', agent_session=agent_session_id) as span:
             with self.lock:
                 try:
                     if self.cancelled.is_set():
                         return DaemonStopped()
-                    job = self._prepare(agent_session_id, span, brief, place, artifact, commits)
+                    job = self._prepare(agent_session_id, span, brief, place, artifact, timeout, commits)
                     self.executor.submit(job)
                 except Exception as e:  # a harness or a runtime that piloop.toml no longer has, an executor's refusal
                     span.error(e)
@@ -140,6 +142,7 @@ class Launcher:
         brief: str,
         place: str,
         artifact: Source,
+        timeout: float,
         commits: Commits | None,
     ) -> AgentJob:
         """Fill in the row, mark it ``starting``, emit ``<kind>.started``, and return the agent's job.
@@ -185,7 +188,7 @@ class Launcher:
                 runtime=runtime_kind,
                 artifact=artifact,
                 place=place,
-                timeout=cfg.role(kind).timeout,
+                timeout=timeout,
                 brief=brief,
                 spec=spec,
                 mcp=definition.mcp,

@@ -22,12 +22,13 @@ from pytest_mock import MockerFixture
 from sqlalchemy import func, insert, select
 
 from piloop.actor import System
+from piloop.agents.launcher import Launcher
 from piloop.agents.results import NEVER_WORKED, Ended, Lost, NotStarted, PromptOutcome, StartupAnomaly
 from piloop.agents.roles import SQL_HINT
 from piloop.campaign import stop
 from piloop.campaign.campaigns import sync
-from piloop.campaign.ideas import supersede
-from piloop.campaign.ops import Report, add_measurement, set_verdict
+from piloop.campaign.ideas import park_stranded, runnable, supersede
+from piloop.campaign.ops import Overridden, Report, add_measurement, set_verdict
 from piloop.cli.plugins import selections
 from piloop.config import CampaignConfig, ConfigError, load_campaign_config
 from piloop.daemon.run_controller import (
@@ -54,9 +55,11 @@ from piloop.db.models import (
     Evaluator,
     Event,
     Idea,
+    IdeaLink,
     IdeaStatus,
     Lesson,
     LessonStatus,
+    LinkKind,
     Measurement,
     Origin,
     Run,
@@ -65,7 +68,7 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database
-from piloop.db.triggers.changelog import OriginChanged
+from piloop.db.triggers.changelog import IdeaLinked, OriginChanged
 from piloop.harnesses import SESSION_ENV
 from piloop.ids import (
     IMPLEMENTER,
@@ -2666,6 +2669,36 @@ def test_a_run_whose_chained_commits_each_conflict_on_the_head_leaves_one_compos
     assert live == [f'candidate#{second.id}']
 
 
+def test_the_ideas_that_wait_for_a_run_whose_merge_conflicts_wait_for_its_compose_seed_instead(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """An idea after the run's idea started from the old head before the compose landed, and missed the change.
+
+    The run's idea ends without a keep, so its dependents would be parked as stranded. The change lands through the
+    compose seed now: they wait for it instead.
+    """
+    run_id = make_run(db, campaign)
+    keep_elsewhere(db, campaign, 'other line', {'solve.txt': 'base\nother\n'}, {'score': 2.0, 'size': 11.0})
+    with db.session() as s:
+        first = run_row(db, run_id).idea_id
+        later = Idea(campaign_id=campaign.id, title='build on it', hypothesis='h', track='score', created_by='test')
+        later.links.append(IdeaLink(target_id=first, kind=LinkKind.AFTER))
+        s.add(later)
+        s.commit()
+        later_id = later.id
+    execute(controller(db, runtime, tmp_path), db, run_id)
+    with db.session() as s:
+        [seed] = s.scalars(select(Idea).where(Idea.status == IdeaStatus.SEED)).all()
+        assert [(lk.kind, lk.target_id) for lk in s.get_one(Idea, later_id).links] == [(LinkKind.AFTER, seed.id)]
+        assert park_stranded(s, campaign.id) == {}, 'not stranded: the change comes with the seed'
+        assert s.scalars(select(Idea.id).where(runnable())).all() == [], 'it waits until the compose is done'
+        moves = in_order(s, IdeaLinked, Event.target == TargetRef(TargetKind.IDEA, later_id))
+        assert {(e.actor, p.kind, p.target) for e, p in moves[1:]} == {
+            (System.DAEMON, 'idea.unlinked', first),
+            (System.DAEMON, 'idea.linked', seed.id),
+        }, 'the feed says that the daemon moved the link'
+
+
 def test_a_conflicting_merge_in_a_stopped_campaign_files_no_seed(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
@@ -2854,10 +2887,9 @@ def test_a_merge_commit_descends_from_its_first_parent_the_runs_base(
     assert (verdict, measurements, parent) == (Outcome.DISCARD, 1, trunk)
     with db.session() as s:
         [merge] = s.scalars(select(Candidate).where(Candidate.run_id == run_id)).all()
-        assert (
-            set_verdict(s, merge.id, Outcome.KEEP, reason='the notes are worth it', actor=System.HUMAN)
-            is Outcome.DISCARD
-        )
+        assert set_verdict(s, merge.id, Outcome.KEEP, reason='the notes are worth it', actor=System.HUMAN) == (
+            Overridden(Outcome.DISCARD)
+        ), 'it builds on the head: a keep, with no merge'
         assert len(s.get_one(Candidate, side).measurements) == 1, 'the merged line is not measured again'
 
 
@@ -3197,3 +3229,21 @@ def test_a_resumed_run_scores_the_versions_that_it_received(
     ex.resume(run_id)
     [scored] = candidates(db, run_id)
     assert scored.verdict is Outcome.KEEP
+
+
+def test_a_run_that_starts_near_the_campaigns_stop_is_told_it_ends_with_the_stop(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    """The brief, ``PILOOP_DEADLINE`` and the job's timeout all said the role timeout, past a ``max_hours`` stop."""
+    with db.session() as s:
+        s.get_one(Campaign, campaign.id).config = load_campaign_config(
+            Path(campaign.path), plugins={'stop_rule': {'max_hours': 0.002}}
+        )
+        s.commit()
+    run_id = make_run(db, campaign)
+    launched = mocker.spy(Launcher, 'launch')
+    execute(controller(db, runtime, tmp_path), db, run_id)
+    assert '- Your session ends 0.1 minutes after it starts' in (run_row(db, run_id).brief or ''), (
+        'the role timeout of 20s, cut at the stop 7.2s away'
+    )
+    assert launched.call_args.kwargs['timeout'] == pytest.approx(7.2, abs=1), 'from its launch to the stop'

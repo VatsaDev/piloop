@@ -441,8 +441,9 @@ PILOOP_ACTOR=orchestrator piloop candidate verdict <c> interesting --reason '<wh
 
 - The daemon never overwrites a verdict that it did not set.
 - `keep|interesting|discard|crash`, and only over a judgement: a pending candidate, and a `reference`, `skipped` or
-  `recovered` one, is refused. A keep must build on the head (unless its run is a branch run): a keep from an older bar
-  would drop what the head kept. To land such a result, add an idea that merges it onto the head.
+  `recovered` one, is refused. A keep from an older bar would drop what the head kept, so piloop merges it onto the head
+  instead: the candidate is `interesting`, and the merge is a new candidate that the daemon measures and judges against
+  the head. The output names it, or the seed that composes a merge that conflicts.
 - You measured it yourself (the daemon's evaluation timed out, say): `piloop measurement add <c> --report <file>`,
   with `{"metrics": {"<name>": <value>}, "seconds": <s>}` in the file. The daemon judges its `crash`, `discard` or
   `interesting` again with every measurement; the output says when. Never `INSERT INTO measurements`: nothing judges

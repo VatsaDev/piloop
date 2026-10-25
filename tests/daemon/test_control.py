@@ -19,7 +19,7 @@ from piloop.plugins.vcs.git import GitRepository
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring.ledger import RejudgeFailed, head, import_reference, rejudges, request_remeasure
 from tests.conftest import HARNESS_WORSE, Gate, ScriptRuntime, write_script
-from tests.daemon.test_run_controller import candidates, controller, execute, make_run
+from tests.daemon.test_run_controller import candidates, controller, execute, keep_elsewhere, make_run
 from tests.daemon.test_scheduler import add_ideas, make_scheduler, measured_by, request_watchdog, statuses
 
 
@@ -169,6 +169,34 @@ def test_a_skipped_commit_is_measured_on_request_and_judged(
         assert (again.origin, again.verdict, len(again.measurements)) == (Origin.RUN, Outcome.KEEP, 1), (
             'next to its bar, the baseline'
         )
+    sched.stop(timeout=5)
+
+
+def test_the_daemon_judges_the_merge_onto_the_head_of_a_hand_keep_off_the_head(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """A hand keep off the head was refused, and the orchestrator re-landed the change on the head by hand."""
+    write_script(Path(campaign.path).parent / 'harness.sh', HARNESS_WORSE)
+    run_id = make_run(db, campaign)
+    execute(controller(db, runtime, tmp_path), db, run_id)
+    [worse] = candidates(db, run_id)
+    trunk = keep_elsewhere(db, campaign, 'notes', {'notes.txt': 'n\n'}, {'score': 0.5, 'size': 5.0})
+    with db.session() as s:
+        done = ops.set_verdict(
+            s, worse.id, Outcome.KEEP, reason='the score misses what it fixes', actor=System.ORCHESTRATOR
+        )
+        s.commit()
+    assert done.rebased is not None and done.rebased.rebased is not None
+    merged = done.rebased.rebased
+    sched = make_scheduler(db, runtime, tmp_path)
+    sched.tick()
+    sched.wait()
+    with db.session() as s:
+        c = s.get_one(Candidate, merged)
+        assert (c.verdict, c.verdict_by, len(c.measurements)) == (Outcome.DISCARD, System.DAEMON, 1), (
+            'measured and judged'
+        )
+        assert c.verdict_reason is not None and c.verdict_reason.startswith(f'against candidate#{trunk}:')
     sched.stop(timeout=5)
 
 

@@ -27,11 +27,7 @@ from piloop.db.triggers import DAEMON_ACTOR
 from piloop.db.triggers.changelog import IdeaStatusChanged
 from piloop.ids import CampaignId, CandidateId, IdeaId, TargetKind, TargetRef
 from piloop.plugins.verdict_rule.contract import Outcome
-
-NEVER_RAN = (IdeaStatus.SEED, IdeaStatus.PROPOSED, IdeaStatus.READY)
-"""The statuses in which the daemon can reject a superseded idea. The idea must also have no run.
-
-A failed attempt puts an idea back to ``ready`` if it has attempts left. The daemon does not cancel such an idea."""
+from piloop.scoring.ledger import NEVER_RAN
 
 
 def unblocked() -> ColumnElement[bool]:

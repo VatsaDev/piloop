@@ -20,6 +20,7 @@ from piloop.db.models import (
     Campaign,
     CampaignStatus,
     Candidate,
+    Cause,
     Comment,
     CommentKind,
     Event,
@@ -32,6 +33,7 @@ from piloop.db.models import (
     Origin,
     Pause,
     Run,
+    RunEnd,
     RunStatus,
 )
 from piloop.db.session import Database
@@ -52,7 +54,9 @@ from piloop.scoring.ledger import (
     RejudgeRequested,
     head,
     rejudges,
+    unjudged,
 )
+from piloop.scoring.verdict import pending
 from tests.conftest import end_of, reconfigured
 
 ACTOR = System.ORCHESTRATOR
@@ -209,7 +213,7 @@ def test_only_a_sweeping_agent_files_its_ideas_for_review_while_the_campaign_is_
 def test_a_verdict_override_is_the_actors_with_the_reason_in_its_event(me: Database, campaign: Campaign) -> None:
     c = run_candidate(me, campaign, Outcome.DISCARD)
     with me.session() as s:
-        assert ops.set_verdict(s, c, Outcome.KEEP, reason=' measured by hand: +3 ', actor=ACTOR) is Outcome.DISCARD
+        assert ops.set_verdict(s, c, Outcome.KEEP, reason=' measured by hand: +3 ', actor=ACTOR).old == Outcome.DISCARD
         s.commit()
         candidate = s.get_one(Candidate, c)
         assert (candidate.verdict, candidate.verdict_by, candidate.verdict_reason) == (
@@ -252,8 +256,14 @@ def commit_on(campaign: Campaign, on: str, files: dict[str, str], *, merge: str 
     return sha
 
 
-def test_a_hand_keep_must_build_on_the_head_unless_its_run_is_a_branch(me: Database, campaign: Campaign) -> None:
-    """The head is the newest trunk keep, so a keep from an older bar would drop what the head kept since."""
+def test_a_hand_keep_off_the_head_is_merged_onto_the_head_for_the_daemon_to_judge(
+    me: Database, campaign: Campaign
+) -> None:
+    """The head is the newest trunk keep, so a keep from an older bar would drop what the head kept since.
+
+    The keep goes the way of the daemon's own keep against a bar that is no longer the head: the candidate is
+    ``interesting``, and its merge onto the head is a pending candidate that the daemon measures and judges there.
+    """
     base = Repo(campaign.path).head.commit.hexsha
     old_sha, trunk_sha = commit_on(campaign, base, {'old.txt': 'o\n'}), commit_on(campaign, base, {'t.txt': 't\n'})
     old = run_candidate(me, campaign, Outcome.DISCARD, commit=old_sha)
@@ -262,14 +272,39 @@ def test_a_hand_keep_must_build_on_the_head_unless_its_run_is_a_branch(me: Datab
     after_it = run_candidate(me, campaign, Outcome.INTERESTING, parent=on_head)
     branch = run_candidate(me, campaign, Outcome.DISCARD, branch=True)
     with me.session() as s:
-        with pytest.raises(ops.Refused, match=f'candidate#{old} does not build on the head candidate#{trunk}'):
-            ops.set_verdict(s, old, Outcome.KEEP, reason='measured by hand', actor=ACTOR)
-        ops.set_verdict(s, old, Outcome.INTERESTING, reason='a lead', actor=ACTOR)
+        kept = ops.set_verdict(s, old, Outcome.KEEP, reason='measured by hand', actor=ACTOR)
+        assert kept.old == Outcome.DISCARD and kept.rebased is not None and kept.rebased.head == trunk
+        merged = s.get_one(Candidate, kept.rebased.rebased)
+        assert (pending(merged), merged.parent_id, merged.run_id) == (True, trunk, s.get_one(Candidate, old).run_id)
+        c = s.get_one(Candidate, old)
+        assert (c.verdict, c.cause, c.verdict_by) == (Outcome.INTERESTING, Cause.MOVED, ACTOR.signature)
+        assert c.verdict_reason == (
+            f'keeps against its own bar, but the head moved on to candidate#{trunk}: kept by hand: measured by hand;'
+            f' rebased onto the head as candidate#{merged.id}'
+        )
+        assert not unjudged(merged), 'its run is still open: the run judges it'
+        run = s.get_one(Run, merged.run_id)
+        run.status, run.end = RunStatus.SUCCEEDED, RunEnd.FINISHED
+        assert unjudged(merged), 'the run is over: the daemon measures and judges it (ledger.due)'
         ops.set_verdict(s, after_it, Outcome.KEEP, reason='its parent builds on the head', actor=ACTOR)
         ops.set_verdict(s, branch, Outcome.KEEP, reason='a branch keep never moves the head', actor=ACTOR)
         s.commit()
         now = head(s, s.get_one(Campaign, 1))
         assert now is not None and now.id == after_it, 'the newest trunk keep'
+
+
+def test_a_hand_keep_off_the_head_whose_merge_conflicts_files_a_compose_seed(me: Database, campaign: Campaign) -> None:
+    base = Repo(campaign.path).head.commit.hexsha
+    old_sha, trunk_sha = commit_on(campaign, base, {'x.txt': 'o\n'}), commit_on(campaign, base, {'x.txt': 't\n'})
+    old = run_candidate(me, campaign, Outcome.DISCARD, commit=old_sha)
+    trunk = run_candidate(me, campaign, Outcome.KEEP, commit=trunk_sha)
+    with me.session() as s:
+        kept = ops.set_verdict(s, old, Outcome.KEEP, reason='measured by hand', actor=ACTOR)
+        assert kept.rebased is not None and (kept.rebased.head, kept.rebased.conflicts) == (trunk, ['x.txt'])
+        [seed] = s.scalars(select(Idea).where(Idea.status == IdeaStatus.SEED)).all()
+        assert seed.title == f'Compose candidate#{old} onto the head'
+        reason = s.get_one(Candidate, old).verdict_reason
+        assert reason is not None and reason.endswith(f'seed idea#{seed.id} composes it by hand')
 
 
 def test_a_hand_keep_builds_on_the_head_by_git_where_the_parent_links_miss_it(me: Database, campaign: Campaign) -> None:

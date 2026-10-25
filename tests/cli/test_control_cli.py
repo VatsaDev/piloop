@@ -7,6 +7,7 @@ from pathlib import Path
 
 import cyclopts
 import pytest
+from git import Repo
 from rich.console import Console
 from sqlalchemy import select
 
@@ -110,6 +111,55 @@ def test_candidate_verdict_overrides_with_the_reason_and_refuses_what_is_not_a_j
         run_cli(['candidate', 'verdict', '1', 'pending', '--reason', 'why'])
     with pytest.raises(SystemExit, match='no candidate#9'):
         run_cli(['candidate', 'verdict', '9', 'keep', '--reason', 'why'])
+
+
+def test_a_hand_keep_off_the_head_says_which_candidate_the_daemon_judges_on_the_head(campaign_path: Path, out) -> None:
+    run_cli(['init', str(campaign_path)])
+    run_cli(['idea', 'add', 'demo', 'tried'])
+    repo = Repo(campaign_path)
+    base, branch = repo.head.commit.hexsha, repo.active_branch.name
+    shas = []
+    for name in ('old.txt', 'head.txt'):
+        repo.git.checkout('-q', '--detach', base)
+        (campaign_path / name).write_text('x\n')
+        repo.git.add(name)
+        repo.git.commit('-qm', name)
+        shas.append(repo.head.commit.hexsha)
+    repo.git.checkout('-q', branch)
+    with database() as db, db.session() as s:
+        run = Run(idea_id=1, attempt=1, base_candidate_id=1, harness='script', model='m')
+        s.add(run)
+        s.flush()
+        for sha, verdict in zip(shas, (Outcome.DISCARD, Outcome.KEEP), strict=True):
+            tree = repo.commit(sha).tree.hexsha
+            s.add(Candidate(campaign_id=1, run_id=run.id, parent_id=1, commit_sha=sha, tree_sha=tree, verdict=verdict))
+        s.commit()
+    out()
+    run_cli(['candidate', 'verdict', '2', 'keep', '--reason', 'the score misses it'])
+    assert out().splitlines() == [
+        'candidate#2 discard → interesting: keeps against its own bar, but the head moved on to candidate#3: kept by'
+        ' hand: the score misses it; rebased onto the head as candidate#4',
+        'candidate#4: the daemon measures it and judges it against the head candidate#3',
+    ]
+
+
+def test_a_hand_keep_off_the_head_of_a_candidate_that_no_run_made_is_refused(campaign_path: Path) -> None:
+    """No seed can compose a reference onto the head: it has no run, and so no track."""
+    run_cli(['init', str(campaign_path)])
+    repo = Repo(campaign_path)
+    base, branch = repo.head.commit.hexsha, repo.active_branch.name
+    with database() as db, db.session() as s:
+        for name, verdict in (('head.txt', Outcome.KEEP), ('ref.txt', Outcome.DISCARD)):
+            repo.git.checkout('-q', '--detach', base)
+            (campaign_path / name).write_text('x\n')
+            repo.git.add(name)
+            repo.git.commit('-qm', name)
+            sha = repo.head.commit.hexsha
+            s.add(Candidate(campaign_id=1, commit_sha=sha, tree_sha=repo.commit(sha).tree.hexsha, verdict=verdict))
+        s.commit()
+    repo.git.checkout('-q', branch)
+    with pytest.raises(SystemExit, match='candidate#3 does not build on the head candidate#2'):
+        run_cli(['candidate', 'verdict', '3', 'keep', '--reason', 'why'])
 
 
 def crashed(campaign_path: Path) -> int:

@@ -24,6 +24,7 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from enum import StrEnum
 from functools import partial
 from pathlib import Path
 from queue import Empty, SimpleQueue
@@ -63,6 +64,7 @@ from piloop.campaign.stop import (
     runs_without_keep,
     settled,
     stall,
+    timeout as agent_timeout,
     unclosed,
 )
 from piloop.config import CampaignConfig, ClosingReview, Spend
@@ -194,12 +196,21 @@ class RunRerouted(EventModel):
     to: str
 
 
+class TimeCut(StrEnum):
+    """What set an implementer's timeout, as the wrap-up prompt says it."""
+
+    ROLE = 'the role timeout of {timeout:g}s'
+    STOP = "the campaign's stop, {timeout:.0f}s after you started"
+
+
 @dataclass(frozen=True)
 class TimeLeft:
-    """The time an implementer has left before its role ``timeout`` ends it, in ``minutes``."""
+    """The time an implementer has left before its ``timeout`` ends it, in ``minutes``."""
 
     timeout: float
     minutes: float
+    cut: TimeCut
+    """What set the timeout."""
 
 
 class Scheduler:
@@ -684,7 +695,7 @@ class Scheduler:
                     self._end(s, agent_session, reason, end)
             for agent_session in s.scalars(implementers.where(AgentSession.state == AgentSessionState.RUNNING)):
                 if (left := self._time_left(s, agent_session)) is not None:
-                    cause = f'the role timeout of {left.timeout:g}s'
+                    cause = left.cut.value.format(timeout=left.timeout)
                     text = WRAP_UP_PROMPT.format(what='Your time is almost up', cause=cause, minutes=left.minutes)
                     self._wrap_up(s, agent_session, TIMEOUT, text)
             s.commit()
@@ -698,13 +709,20 @@ class Scheduler:
 
     @staticmethod
     def _time_left(s: Session, implementer: AgentSession) -> TimeLeft | None:
-        """The time an implementer that was not told to wrap up has left, once it is ``wrap_up_lead`` or less."""
-        role = s.get_one(Campaign, implementer.campaign_id).config.roles.doing_runs().get(implementer.kind)
+        """The time an implementer that was not told to wrap up has left, once it is ``wrap_up_lead`` or less.
+
+        Its timeout is its role's, cut at the campaign's stop (``stop.timeout``), as when it started.
+        """
+        campaign = s.get_one(Campaign, implementer.campaign_id)
+        cfg = campaign.config
+        role = cfg.roles.doing_runs().get(implementer.kind)
         told = select(Event.id).where(Event.target == TargetRef(TargetKind.AGENT_SESSION, implementer.id), has(WrapUp))
         if role is None or implementer.started_at is None or s.scalar(told.limit(1)) is not None:
             return None
-        left = role.timeout - (utcnow() - implementer.started_at).total_seconds()
-        return TimeLeft(role.timeout, round(left / 60, 1)) if left <= wrap_up_lead(role.timeout) else None
+        timeout = agent_timeout(s, campaign, cfg, role.timeout, implementer.started_at)
+        left = timeout - (utcnow() - implementer.started_at).total_seconds()
+        cut = TimeCut.ROLE if timeout == role.timeout else TimeCut.STOP
+        return TimeLeft(timeout, round(left / 60, 1), cut) if left <= wrap_up_lead(timeout) else None
 
     def _wrap_up(self, s: Session, agent_session: AgentSession, reason: str, text: str) -> None:
         """Leave the wrap-up prompt as a note on the agent, which its executor delivers (``_push_comments``).
@@ -1303,6 +1321,7 @@ class Scheduler:
             campaign = s.get_one(Campaign, agent_session.campaign_id)
             cfg = campaign.config
             role = role_of(s, agent_session)
+            timeout = agent_timeout(s, campaign, cfg, cfg.role(agent_session.kind).timeout, utcnow())
             base = checkout_candidate(s, campaign)
             values = ', '.join(
                 f'{t.primary.name}={"unmeasured" if (v := score(base, campaign.evaluator_id, t.primary)) is None else v}'
@@ -1339,7 +1358,7 @@ class Scheduler:
         sources = self._controller.sources  # outside the session: it puts the linked inputs into the CAS
         artifact = sources.agent(campaign, Revision(base.commit_sha))
         place = sweep_place(agent_session_id)
-        self._controller.launcher.launch(agent_session_id, brief=brief, place=place, artifact=artifact)
+        self._controller.launcher.launch(agent_session_id, brief=brief, place=place, artifact=artifact, timeout=timeout)
 
     def _context(
         self, s: Session, campaign: Campaign, cfg: CampaignConfig, agent_session: AgentSession, now: datetime
