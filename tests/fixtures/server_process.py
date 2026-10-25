@@ -26,6 +26,8 @@ from piloop.plugins.executor.kit.remote import lease_routes
 from piloop.plugins.executor.workers import Workers
 from piloop.plugins.network.contract import NetworkHost
 from piloop.plugins.network.https import Https
+from piloop.plugins.secrets.contract import HomeSecrets
+from piloop.plugins.secrets.local import LocalSecrets
 
 
 def main() -> None:
@@ -36,7 +38,9 @@ def main() -> None:
     results = CampaignResults(db, Tracer(None), home, cas, lambda: False)
     leases = Leases(db, results, cas, Timing(p.renew_seconds, p.grace_seconds, p.toleration_seconds), p.pools)
     leases.renew_all()
-    network = Https.model_validate({'listen': '127.0.0.1:0'}).open(NetworkHost(Tokens(db)))
+    network = Https.model_validate({'listen': '127.0.0.1:0'}).open(
+        NetworkHost(Tokens(db), HomeSecrets(db, LocalSecrets()))
+    )
     listener = network.listener()
     assert listener is not None
     bundle = partial(send_of_record, cas, partial(record_of, db))

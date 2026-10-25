@@ -24,6 +24,8 @@ from piloop.net.server import OPENAPI, Server, app, local_listener
 from piloop.net.tokens import Tokens
 from piloop.plugins.network.contract import NetworkHost
 from piloop.plugins.network.https import Https
+from piloop.plugins.secrets.contract import HomeSecrets
+from piloop.plugins.secrets.local import LocalSecrets
 from piloop.settings import Settings
 from tests.conftest import serving_api
 
@@ -136,7 +138,7 @@ def test_a_route_that_crashes_is_an_answer_that_says_so(db: Database, cfg: Setti
         raise RuntimeError('a bug')
 
     tokens_ = Tokens(db)
-    server = app(tokens_, Https().open(NetworkHost(tokens_)), ())
+    server = app(tokens_, Https().open(NetworkHost(tokens_, HomeSecrets(db, LocalSecrets()))), ())
     server.add_api_route('/v1/status', crash)
     api = with_api(server, Handlers(db, cfg, daemon_state('now', None)))
     with closing(Server(api, local_listener(cfg.socket_file))) as running:

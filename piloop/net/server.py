@@ -53,6 +53,8 @@ def _identified(tokens: Tokens, network: Network, request: Request) -> Caller | 
     """The caller of a piloop token (``plt_``), on any network, or else whom the network knows."""
     scheme, _, secret = request.headers.get('authorization', '').partition(' ')
     if scheme.lower() == 'bearer' and secret.startswith(PREFIX):
+        if not network.takes_tokens:
+            return Refused('this server takes no piloop token: its network authenticates every caller')
         return tokens.verify(secret) or Refused('the token is unknown or revoked')
     if request.scope['state'].get(_LOCAL):
         return OWNER

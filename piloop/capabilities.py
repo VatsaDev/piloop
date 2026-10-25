@@ -82,6 +82,7 @@ from piloop.plugins.network.contract import Enrollment, NotEnrolled
 from piloop.net.tokens import Caller, Tokens
 from piloop.api.contract import Access
 from piloop.plugins.network.https import Https, HttpsNetwork
+from piloop.plugins.network.proxy import Proxy
 
 from piloop.ids import Revision
 from piloop.plugins.vcs.contract import VCS, Vcs, Repository, Version, Conflicts, Transfer, Fetch
@@ -96,5 +97,5 @@ from piloop.plugins.provisioner.contract import StartRefused
 from piloop.plugins.provisioner.kit.conformance import check_provisioning
 from piloop.plugins.provisioner.modal import Modal
 
-from piloop.plugins.secrets.contract import SECRETS, SecretsProvider, SecretKey, Owner, values
+from piloop.plugins.secrets.contract import SECRETS, SecretsProvider, SecretKey, Owner, values, HomeSecrets
 from piloop.plugins.secrets.local import LocalSecrets

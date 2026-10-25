@@ -56,6 +56,8 @@ from piloop.plugins.network.https import TOKEN_ENV, Https
 from piloop.plugins.role.contract import RoleConfig
 from piloop.plugins.runtime.contract import Handle, Runtime
 from piloop.plugins.runtime.subprocess import SubprocessRuntime
+from piloop.plugins.secrets.contract import HomeSecrets
+from piloop.plugins.secrets.local import LocalSecrets
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.reports.feed import iso
 from piloop.runtime.factory import RuntimeFactory
@@ -584,7 +586,7 @@ def serving_api(cfg: Settings, listen: str | None = None) -> Generator[list[Serv
     """Serve the API of ``cfg``'s home, as the daemon does: on its socket, and on ``listen`` with ``https``."""
     db = Database(cfg.database_url, actor=ACTOR)
     tokens = Tokens(db)
-    network = Https.model_validate({'listen': listen}).open(NetworkHost(tokens))
+    network = Https.model_validate({'listen': listen}).open(NetworkHost(tokens, HomeSecrets(db, LocalSecrets())))
     listener = network.listener()
     listeners = [local_listener(cfg.socket_file), *([] if listener is None else [listener])]
     api = Handlers(db, cfg, daemon_state(iso(utcnow()), None if listener is None else url(listener)))

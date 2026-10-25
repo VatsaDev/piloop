@@ -492,6 +492,27 @@ The server's certificate chain and its private key, as PEM files.
 | `cert` | string | required | The certificate, then the chain of its issuers. |
 | `key` | string | required | The certificate's private key, unencrypted. |
 
+With `provider = "proxy"`:
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `listen` | string \| null | `null` | Where the server listens, as `HOST:PORT`. None: no server. `piloop serve --listen` overrides it. |
+| `url` | string \| null | `null` | Where workers reach this server, through the proxy: what a provisioned worker dials. None: it starts none. |
+| `claims` | dict\[string, string\] | `{}` | Each claim, by name, and the header in which the proxy stamps it: `{ org = "x-org-id" }`. |
+| `rules` | list\[[Rule](#rule)\] | `[]` | Who gets which access, by their claims: the first rule that matches wins, and no match is refused. |
+| `name_claim` | string \| null | `null` | The claim that names a caller who is not a worker, such as its principal. Needed by any rule but `worker`. |
+| `worker_header` | string | `"x-piloop-worker"` | The header in which a worker names itself. The proxy passes it through. |
+| `worker_credential_secret` | string | `"PILOOP_WORKER_CREDENTIAL"` | The home's secret that holds the workers' credential, which `enroll` hands to a provisioned worker. |
+
+#### Rule
+
+A caller whose claims have these values gets `access`.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `when` | dict\[string, string \| list\[string\]\] | required | Each claim, by name, and the value that it must have, or one of several. Every claim must match. |
+| `access` | `read` \| `act` \| `admin` \| `worker` | required | What the caller may do: `read`, `act`, `admin`, or `worker` for the workers' credential. |
+
 #### `[plugins.secrets]`
 
 Selects the secrets provider.

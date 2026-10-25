@@ -14,13 +14,17 @@ from piloop.net.server import Server, app
 from piloop.net.tokens import Tokens
 from piloop.plugins.network.contract import NetworkHost
 from piloop.plugins.network.https import Https, HttpsNetwork
+from piloop.plugins.secrets.contract import HomeSecrets
+from piloop.plugins.secrets.local import LocalSecrets
 
 type Serving = Callable[..., AbstractContextManager[Server]]
 
 
 @pytest.fixture
 def network(db: Database) -> HttpsNetwork:
-    return Https.model_validate({'listen': '127.0.0.1:0'}).open(NetworkHost(Tokens(db)))
+    return Https.model_validate({'listen': '127.0.0.1:0'}).open(
+        NetworkHost(Tokens(db), HomeSecrets(db, LocalSecrets()))
+    )
 
 
 @pytest.fixture
@@ -29,7 +33,9 @@ def serving(db: Database) -> Serving:
 
     @contextmanager
     def serve(routes: Sequence[Route] = (), **keys: object) -> Generator[Server]:
-        network = Https.model_validate({'listen': '127.0.0.1:0', **keys}).open(NetworkHost(Tokens(db)))
+        network = Https.model_validate({'listen': '127.0.0.1:0', **keys}).open(
+            NetworkHost(Tokens(db), HomeSecrets(db, LocalSecrets()))
+        )
         listener = network.listener()
         assert listener is not None
         server = Server(app(Tokens(db), network, routes), listener)

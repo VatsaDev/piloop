@@ -23,6 +23,8 @@ from piloop.plugins.executor.kit.leases import Leases
 from piloop.plugins.executor.kit.remote import lease_routes
 from piloop.plugins.network.contract import NetworkHost
 from piloop.plugins.network.https import TOKEN_ENV, Https
+from piloop.plugins.secrets.contract import HomeSecrets
+from piloop.plugins.secrets.local import LocalSecrets
 from piloop.settings import Settings
 from tests.cli.test_cli import run_cli
 from tests.conftest import disk, home_cas, wait_until
@@ -40,7 +42,9 @@ def echoed(job: AgentJob, call: Call) -> Relayed:
 @pytest.fixture
 def server(db: Database, tmp_path: Path) -> Generator[str]:
     """The URL of a server whose only pool is ``gpu``, on the test's database, sharing the worker's CAS."""
-    network = Https.model_validate({'listen': '127.0.0.1:0'}).open(NetworkHost(Tokens(db)))
+    network = Https.model_validate({'listen': '127.0.0.1:0'}).open(
+        NetworkHost(Tokens(db), HomeSecrets(db, LocalSecrets()))
+    )
     listener = network.listener()
     assert listener is not None
     leases = Leases(db, Recorder(db), home_cas(db), pools={'gpu': Pool()})

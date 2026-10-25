@@ -46,7 +46,8 @@ from piloop.plugins.executor.kit.leases import (
 from piloop.plugins.executor.kit.remote import Remote, SendAsked, lease_routes
 from piloop.plugins.network.contract import NetworkHost
 from piloop.plugins.network.https import Https, HttpsNetwork
-from piloop.plugins.secrets.contract import SECRETS, set_secret
+from piloop.plugins.secrets.contract import SECRETS, HomeSecrets, set_secret
+from piloop.plugins.secrets.local import LocalSecrets
 from piloop.plugins.vcs.contract import MAX_HAVE
 from tests.conftest import Dial, disk, home_cas, wait_until
 from tests.fixtures.netfault import CutResponse, Proxy
@@ -96,7 +97,9 @@ def leases(db: Database, recorder: Recorder) -> Leases:
 
 @pytest.fixture
 def network(db: Database) -> HttpsNetwork:
-    return Https.model_validate({'listen': '127.0.0.1:0'}).open(NetworkHost(Tokens(db)))
+    return Https.model_validate({'listen': '127.0.0.1:0'}).open(
+        NetworkHost(Tokens(db), HomeSecrets(db, LocalSecrets()))
+    )
 
 
 @pytest.fixture

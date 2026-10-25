@@ -95,6 +95,7 @@ workers = "piloop.plugins.executor.workers:Workers"
 
 [project.entry-points."piloop.networks"]
 https = "piloop.plugins.network.https:Https"
+proxy = "piloop.plugins.network.proxy:Proxy"
 
 [project.entry-points."piloop.provisioners"]
 modal = "piloop.plugins.provisioner.modal:Modal"

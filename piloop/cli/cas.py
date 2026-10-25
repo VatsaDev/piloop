@@ -13,6 +13,7 @@ from piloop.net import cas_server
 from piloop.net.server import Server
 from piloop.net.tokens import Tokens
 from piloop.plugins.network.contract import NETWORKS, Address, NetworkHost
+from piloop.plugins.secrets.contract import SECRETS, HomeSecrets
 
 app = cyclopts.App(name='cas')  # its help is where piloop.cli.main registers it
 
@@ -34,7 +35,7 @@ def serve(
     db = Database(common.settings.database_url, actor=common.settings.actor)
     try:
         tokens = Tokens(db)
-        net = network.open(NetworkHost(tokens))
+        net = network.open(NetworkHost(tokens, HomeSecrets(db, SECRETS.selected(common.settings.providers))))
         try:
             listener = net.listener()
         except OSError as e:

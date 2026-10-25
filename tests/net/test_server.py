@@ -40,6 +40,8 @@ from piloop.plugins.network.contract import (
     Refused,
 )
 from piloop.plugins.network.https import Https
+from piloop.plugins.secrets.contract import HomeSecrets
+from piloop.plugins.secrets.local import LocalSecrets
 from piloop.settings import Settings
 from tests.conftest import Dial, package
 from tests.net.conftest import Serving
@@ -125,6 +127,8 @@ def test_tls_with_a_certificate_that_the_client_trusts_through_ssl_cert_file(
 
 class Recording:
     """A network that admits every caller as ``gpu1`` and records the peer of each request."""
+
+    takes_tokens = True
 
     def __init__(self, tls: ssl.SSLContext | None) -> None:
         self.tls = tls
@@ -335,9 +339,9 @@ def test_https_enrolls_a_machine_with_a_token_that_its_client_dials_with_until_i
     db: Database, serving: Serving, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with pytest.raises(NotEnrolled, match='set url'):
-        Https().open(NetworkHost(Tokens(db))).enroll('gpu-1', Access.WORKER)
+        Https().open(NetworkHost(Tokens(db), HomeSecrets(db, LocalSecrets()))).enroll('gpu-1', Access.WORKER)
     with serving([ECHO]) as server:
-        network = Https(url=server.url).open(NetworkHost(Tokens(db)))
+        network = Https(url=server.url).open(NetworkHost(Tokens(db), HomeSecrets(db, LocalSecrets())))
         enrolled = network.enroll('gpu-1', Access.WORKER)
         for name, value in enrolled.env.items():
             monkeypatch.setenv(name, value.get_secret_value())
@@ -351,7 +355,8 @@ def test_https_enrolls_a_machine_with_a_token_that_its_client_dials_with_until_i
 class TrustedHeaders:
     """A network behind an edge that checks its own keys and stamps who calls: ``x-user`` and ``x-access``."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, takes_tokens: bool = True) -> None:
+        self.takes_tokens = takes_tokens
         self.asked: list[str] = []
 
     def listener(self) -> Listener:
@@ -386,3 +391,16 @@ def test_a_bearer_that_is_not_a_piloop_token_reaches_the_network_which_identifie
     assert network.asked == ['Bearer hil_abc'] * 3, (
         'core verifies only a piloop token, and leaves every other call to the network'
     )
+
+
+def test_a_network_that_authenticates_every_caller_makes_core_refuse_piloop_tokens(db: Database) -> None:
+    network = TrustedHeaders(takes_tokens=False)
+    token = Tokens(db).mint('gpu1', Access.WORKER)
+    with closing(Server(app(Tokens(db), network, [ECHO]), network.listener())) as server:
+        server.start()
+        stamped = {'x-user': 'gpu7', 'x-access': 'worker'}
+        valid = httpx.post(server.url + ECHOED, json=HI, headers={**stamped, 'Authorization': f'Bearer {token}'})
+        assert valid.status_code == 401, 'a valid piloop token is no way around the network'
+        assert 'takes no piloop token' in valid.json()['detail']
+        assert httpx.post(server.url + ECHOED, json=HI, headers=stamped).status_code == 200
+    assert network.asked == [''], 'the refused token never reached the network'

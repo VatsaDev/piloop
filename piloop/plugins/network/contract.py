@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, WithJsonSchema, mo
 from piloop.api.contract import Access
 from piloop.net.tokens import Caller, Tokens
 from piloop.plugins.host import Capability, Choice, Parameters, Scope
+from piloop.plugins.secrets.contract import HomeSecrets
 
 
 class Address(BaseModel):
@@ -113,10 +114,16 @@ class NetworkHost:
 
     tokens: Tokens
     """The bearer tokens of ``piloop token``, which ``enroll`` mints and ``revoke`` deletes."""
+    secrets: HomeSecrets
+    """The home's secrets (``piloop secret set``), for a credential that ``enroll`` hands out."""
 
 
 class Network(Protocol):
     """How machines reach the server, and who a caller is. The daemon makes one when it starts."""
+
+    takes_tokens: bool
+    """Whether core admits piloop's own tokens (``plt_``) on this network. False: the network authenticates every caller
+    itself (``identify``), and core refuses a ``plt_`` bearer, so no token minted in the home opens a way around it."""
 
     def listener(self) -> Listener | None:
         """Bind ``listen``, or return None when it is None. The daemon calls it once."""

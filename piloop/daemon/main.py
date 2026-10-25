@@ -31,7 +31,7 @@ from piloop.plugins import host as plugins
 from piloop.plugins.cas import contract as cas
 from piloop.plugins.executor.contract import EXECUTORS
 from piloop.plugins.network import contract as network
-from piloop.plugins.secrets.contract import SECRETS
+from piloop.plugins.secrets.contract import SECRETS, HomeSecrets
 from piloop.proc import Inherited
 from piloop.reports.feed import iso
 from piloop.runtime.factory import make_runtime, runtimes
@@ -110,7 +110,9 @@ class Daemon:
         self._address = served.listen
         """Where the server listens, as asked."""
         self._tokens = Tokens(self.db)
-        self.network = served.open(network.NetworkHost(self._tokens))
+        self.network = served.open(
+            network.NetworkHost(self._tokens, HomeSecrets(self.db, SECRETS.selected(cfg.providers)))
+        )
         self._servers: list[Server] = []
         try:
             # Before the remote opens: its credentials can come from the secrets. And before the lock, because

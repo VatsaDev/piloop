@@ -23,6 +23,8 @@ from piloop.plugins.cas.http import Http, HttpCas
 from piloop.plugins.cas.kit.conformance import check_cas
 from piloop.plugins.network.contract import NetworkHost, NoCredential
 from piloop.plugins.network.https import TOKEN_ENV, Https
+from piloop.plugins.secrets.contract import HomeSecrets
+from piloop.plugins.secrets.local import LocalSecrets
 from tests.conftest import Dial
 from tests.fixtures.netfault import CutResponse, Latency, Proxy
 
@@ -39,7 +41,9 @@ def served(tmp_path: Path) -> DiskCas:
 @contextmanager
 def serving(db: Database, store: Cas, scratch: Path, **keys: object) -> Generator[Server]:
     """``piloop cas serve`` over ``store``, in a thread of the test, with ``https`` and the given keys."""
-    network = Https.model_validate({'listen': '127.0.0.1:0', **keys}).open(NetworkHost(Tokens(db)))
+    network = Https.model_validate({'listen': '127.0.0.1:0', **keys}).open(
+        NetworkHost(Tokens(db), HomeSecrets(db, LocalSecrets()))
+    )
     listener = network.listener()
     assert listener is not None
     server = Server(cas_server.app(Tokens(db), network, store, scratch), listener)

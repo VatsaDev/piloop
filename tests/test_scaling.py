@@ -45,6 +45,8 @@ from piloop.plugins.executor.workers import _worker_argv
 from piloop.plugins.network.contract import NetworkHost
 from piloop.plugins.network.https import TOKEN_ENV, Https
 from piloop.plugins.provisioner.contract import InstanceState, Launch
+from piloop.plugins.secrets.contract import HomeSecrets
+from piloop.plugins.secrets.local import LocalSecrets
 from piloop.plugins.vcs.git import Git
 from tests.conftest import ACTOR, at_head, baseline, home_cas, package
 from tests.fixtures.provisioner import PLATFORMS, Machine, Platform
@@ -100,7 +102,7 @@ class Server:
 
 
 def server(db: Database, home: Path, found: Mapping[str, Pool]) -> Server:
-    network = Https(url=URL).open(NetworkHost(Tokens(db)))
+    network = Https(url=URL).open(NetworkHost(Tokens(db), HomeSecrets(db, LocalSecrets())))
     leases = Leases(db, Recorder(db), home_cas(db), TIMING, found)
     return Server(db, leases, Scaler.of(db, lambda: leases.pools, network, Tracer(None), TIMING, home, _worker_argv))
 

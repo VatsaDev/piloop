@@ -117,6 +117,40 @@ piloop limits set executor.pools.gpu.provisioner.max=0 --reason "the GPU budget 
 
 `piloop worker list` shows each worker that the server started, until it ends.
 
+## Behind an authenticating proxy
+
+When a proxy in front of the server already authenticates every caller and stamps who it is in headers, such as an
+Envoy `ext_authz` or an oauth2-proxy, let it be the only check. Name the headers that it stamps as claims, and give
+each caller its access by the values of its claims:
+
+```toml
+[plugins.network]
+provider = "proxy"
+listen = "0.0.0.0:8443"
+url = "https://piloop.example.com"
+claims = { org = "x-org-id", principal = "x-principal-id" }
+name_claim = "principal"
+rules = [
+  { when = { org = "acme", principal = "key-0123" }, access = "worker" },
+  { when = { org = "acme" }, access = "act" },
+]
+```
+
+The first rule that matches wins, and a caller that no rule matches is refused. A worker names itself in
+`x-piloop-worker`; anyone else is named by `name_claim`. The proxy must remove any copy of these headers that a caller
+sends, and only the proxy may reach `listen`: whoever reaches it can claim anything. The server refuses piloop's own
+tokens (`plt_`) on this network: the proxy is the one authentication.
+
+Workers share one credential that the proxy accepts and that the `worker` rule matches. Store it as a secret, which
+each provisioned worker gets, with its name:
+
+```bash
+printf %s "$WORKER_KEY" | piloop secret set PILOOP_WORKER_CREDENTIAL
+```
+
+Give a provisioned worker the same network with `PILOOP_PLUGINS='{"network": {"provider": "proxy"}}'` in the
+provider's `env`.
+
 ## What an agent on a worker gets
 
 - The environment of the worker, and the [secrets](/guides/secrets) that its job names, which the server sends when

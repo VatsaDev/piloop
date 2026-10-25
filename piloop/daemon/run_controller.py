@@ -90,7 +90,7 @@ from piloop.plugins.executor.contract import (
 )
 from piloop.plugins.network.contract import NETWORKS, Network, NetworkHost
 from piloop.plugins.runtime.contract import ExitStatus
-from piloop.plugins.secrets.contract import SECRETS, SecretsProvider
+from piloop.plugins.secrets.contract import SECRETS, HomeSecrets, SecretsProvider
 from piloop.plugins.vcs.contract import Repository, RunVersion, Transfer, Version
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.reports.history import history
@@ -221,7 +221,9 @@ class RunController:
         self._limits: tuple[tuple[str, str, datetime], ...] = ()
         """The limits that the executor has, as read: ``configure`` hands it the parameters when they change."""
         results = CampaignResults(db, tracer, home, self.cas, lambda: self.launcher.cancelled.is_set())
-        network = network if network is not None else NETWORKS.selected({}).open(NetworkHost(Tokens(db)))
+        secrets = secrets if secrets is not None else SECRETS.selected({})
+        if network is None:
+            network = NETWORKS.selected({}).open(NetworkHost(Tokens(db), HomeSecrets(db, secrets)))
         host = Host(
             db,
             results,
@@ -233,7 +235,7 @@ class RunController:
             runtime_factory,
             reserve,
             network,
-            secrets if secrets is not None else SECRETS.selected({}),
+            secrets,
         )
         self.executor: Executor[ExecutorConfig] = self._config.open(host)
         self.launcher = Launcher(db, tracer, home, self.executor)

@@ -86,6 +86,8 @@ class Https(NetworkConfig):
 class HttpsNetwork:
     """``Network``: a TCP socket, with TLS when ``tls`` names a certificate, and a bearer token on every request."""
 
+    takes_tokens = True
+
     def __init__(self, host: NetworkHost, config: Https) -> None:
         self.host = host
         self.config = config

@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 from piloop.actor import Actor, Agent, System
 from piloop.db.events import emit, has, latest
 from piloop.db.models import AgentSession, Event, EventModel
+from piloop.db.session import Database
 from piloop.ids import HOME, AgentSessionId, CampaignId, TargetKind, TargetRef
 from piloop.mcp import EnvName
 from piloop.plugins.host import Capability, Choice, Parameters, Scope
@@ -70,6 +71,19 @@ SECRETS = Capability(
     noun='secrets provider',
 )
 """Every secrets provider by name. ``local``, built in and the default, keeps the values in the home's database."""
+
+
+@dataclass(frozen=True)
+class HomeSecrets:
+    """The home's secrets of a database, which a network provider reads the credential that it hands out from."""
+
+    db: Database
+    provider: SecretsProvider
+
+    def get(self, name: EnvName) -> SecretStr | None:
+        """The value of the home's secret ``name``, or None when the home has none."""
+        with self.db.session() as s:
+            return self.provider.get(s, None, {name}).get(name)
 
 
 class SecretSet(EventModel):

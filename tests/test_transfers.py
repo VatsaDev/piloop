@@ -26,6 +26,8 @@ from piloop.plugins.executor.kit.remote import Remote, lease_routes
 from piloop.plugins.executor.kit.transfers import FirstTransfers
 from piloop.plugins.network.contract import NetworkHost
 from piloop.plugins.network.https import Https
+from piloop.plugins.secrets.contract import HomeSecrets
+from piloop.plugins.secrets.local import LocalSecrets
 from piloop.plugins.vcs.contract import Repository
 from piloop.plugins.vcs.git import Git, GitRepository
 from tests.conftest import Dial, disk, wait_until
@@ -147,7 +149,9 @@ def test_a_first_transfer_that_the_cas_lost_is_built_again(
 @pytest.fixture
 def worker(db: Database, store: Cas, record: Counted, dial: Dial) -> Generator[Remote]:
     """A worker's client of a server whose ``send`` is ``FirstTransfers``, both on ``store``."""
-    network = Https.model_validate({'listen': '127.0.0.1:0'}).open(NetworkHost(Tokens(db)))
+    network = Https.model_validate({'listen': '127.0.0.1:0'}).open(
+        NetworkHost(Tokens(db), HomeSecrets(db, LocalSecrets()))
+    )
     listener = network.listener()
     assert listener is not None
     leases = Leases(db, Recorder(db), store, TIMING, POOLS)
