@@ -519,15 +519,30 @@ class Database:
     def _ring_on_events(self) -> None:
         """Start the doorbell, once: the first waiter of the process starts it. The caller holds ``_committed``.
 
-        Its connection comes from the pool here, under the lock, so a ``close`` after this waits for it to come back.
+        The doorbell takes its connection itself, without the lock: a connection that comes back to the pool takes the
+        lock (``_count_checkout``), so a waiter that waited for one under it could wait for the pool's whole timeout.
+        It counts as a read until it has it, so a ``close`` meanwhile waits for it. One that gets none wakes the waiters,
+        whose next pass starts it again.
         """
         if self._doorbell is None and not self._closed:
-            conn = self.engine.raw_connection()
-            self._doorbell = threading.Thread(target=self._ring, args=(conn,), name='doorbell', daemon=True)
+            self._reading += 1
+            self._doorbell = threading.Thread(target=self._ring, name='doorbell', daemon=True)
             self._doorbell.start()
 
-    def _ring(self, conn: PoolProxiedConnection) -> None:
-        """Wake the waiters when the newest event id moves, until ``close``. Then give ``conn`` back to the pool."""
+    def _ring(self) -> None:
+        """Wake the waiters when the newest event id moves, until ``close``. Then give the connection back to the pool."""
+        conn: PoolProxiedConnection | None = None
+        try:
+            conn = self.engine.raw_connection()
+        except DatabaseClosed:  # a close came first: there is nothing to ring for
+            return
+        finally:
+            with self._committed:
+                self._reading -= 1
+                if conn is None:  # wake the waiters: each one's next pass starts it again
+                    self._doorbell, self._wakes = None, self._wakes + 1
+                    self._resolve()
+                self._committed.notify_all()
         with closing(conn):
             head = _newest_event(conn)
             while True:

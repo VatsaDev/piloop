@@ -9,10 +9,12 @@ from collections.abc import Callable
 import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from sqlalchemy.pool import PoolProxiedConnection, QueuePool
 
 from piloop.actor import System
 from piloop.db.models import Campaign, Pause
 from piloop.db.session import Database, DatabaseClosed
+from tests.conftest import wait_until
 
 
 def rename(db: Database, campaign: Campaign) -> None:
@@ -206,3 +208,57 @@ def test_changed_waits_to_its_timeout_and_returns_at_once_once_closed(db: Databa
         assert await db.changed(seen, 30) == seen, 'once closed, at once'
 
     asyncio.run(waits())
+
+
+def test_a_waiter_that_starts_the_doorbell_when_the_pool_is_empty_blocks_no_connection_from_coming_back(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The first waiter took the doorbell's connection while it held the waiters' lock, and a connection that came back
+    to the pool needed that lock: with every connection out, both waited the pool's 30 s timeout. A server's
+    long-polls then held its threads, and a heartbeat waited as long."""
+    pool = db.engine.pool
+    assert isinstance(pool, QueuePool)
+    held = [db.engine.raw_connection() for _ in range(pool.size() + pool._max_overflow)]  # every connection is out
+    asked, connect = threading.Event(), db.engine.raw_connection
+
+    def doorbell_connects() -> PoolProxiedConnection:
+        asked.set()
+        return connect()
+
+    monkeypatch.setattr(db.engine, 'raw_connection', doorbell_connects)
+    waiter = threading.Thread(target=db.wait_until, args=(lambda _s: True,), daemon=True)
+    waiter.start()
+    assert asked.wait(5), 'the waiter starts the doorbell, which waits for a connection'
+    back = threading.Thread(target=held.pop().close, daemon=True)
+    back.start()
+    back.join(5)
+    assert not back.is_alive(), 'a connection came back to the pool while the doorbell waits for one'
+    for conn in held:
+        conn.close()
+    waiter.join(10)
+    assert not waiter.is_alive()
+
+
+def test_a_doorbell_that_got_no_connection_wakes_its_waiter_which_starts_it_again(
+    db: Database, campaign: Campaign, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The doorbell takes its connection in its own thread: one that gets none must not leave a waiter deaf."""
+    connect, refused = db.engine.raw_connection, threading.Event()
+
+    def refused_once() -> PoolProxiedConnection:
+        if threading.current_thread().name == 'doorbell' and not refused.is_set():
+            refused.set()
+            raise DatabaseClosed('the database is closed')
+        return connect()
+
+    monkeypatch.setattr(db.engine, 'raw_connection', refused_once)
+    other = Database(str(db.engine.url), actor=System.HUMAN)
+    seen: list[bool] = []
+    waiting = threading.Thread(target=lambda: seen.append(db.wait_until(paused(campaign))))
+    waiting.start()
+    assert refused.wait(5)
+    wait_until(lambda: any(t.name == 'doorbell' and t.is_alive() for t in threading.enumerate()))
+    pause(other, campaign)
+    other.close()
+    waiting.join(10)
+    assert seen == [True], 'the doorbell that the waiter started again rang'
