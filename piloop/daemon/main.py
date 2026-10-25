@@ -240,7 +240,9 @@ class Daemon:
         if self._address.port == 0:
             port = listener.socket.getsockname()[1]
             self._argv = serve_argv(self._address.model_copy(update={'port': port}))
-        self._cfg.listen_file.write_text(self._server.url)
+        written = self._cfg.listen_file.with_name(f'{self._cfg.listen_file.name}.new')
+        written.write_text(self._server.url)
+        written.replace(self._cfg.listen_file)  # a rename: ``piloop status`` never reads a file that is half written
         span.set(listen=self._server.url)
 
     def _on_sigterm(self, signum: int, frame: FrameType | None) -> None:

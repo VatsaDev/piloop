@@ -68,7 +68,7 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database, read_transaction, write_transaction
-from piloop.ids import AgentSessionId, CommentId, TargetKind, TargetRef
+from piloop.ids import HOME, AgentSessionId, CommentId, TargetKind, TargetRef
 from piloop.plugins.executor.contract import (
     JOB,
     AgentJob,
@@ -88,7 +88,7 @@ from piloop.plugins.executor.contract import (
     Results,
     Settled,
 )
-from piloop.plugins.executor.kit.capacity import HostSample, Pool, add, admits, less, slots, times
+from piloop.plugins.executor.kit.capacity import HostSample, Pool, add, admits, less, pressure, slots, times
 
 SERVE = 'serve'
 """The id of the worker inside ``piloop serve``, and its pool. The id is stable, so the next daemon's worker finds its
@@ -165,6 +165,23 @@ class WorkerDrained(EventModel):
 
     kind: Literal['worker.drained'] = 'worker.drained'
     worker: str
+
+
+class LeaseWorkerJoined(EventModel):
+    """On the home: a worker registered, or was heard again after it was unreachable. Its slots count again."""
+
+    kind: Literal['lease_worker.joined'] = 'lease_worker.joined'
+    worker: str
+    pool: str
+
+
+class LeaseWorkerRelieved(EventModel):
+    """On the home: a worker's host is no longer under pressure (``capacity.pressure``), so its slots count again."""
+
+    kind: Literal['lease_worker.relieved'] = 'lease_worker.relieved'
+    worker: str
+    was: NoLease
+    """The pressure that it was under."""
 
 
 def topics(worker: str) -> tuple[Topic, ...]:
@@ -446,8 +463,9 @@ class Leases:
             row = s.get(LeaseWorker, worker) or LeaseWorker(id=worker, cursor=newest)
             row.pool, row.version, row.runners, row.no_lease = pool, version, list(runners), None
             row.cursor = min(row.cursor, newest)
-            self._heard(row, host)
+            self._heard(s, row, host)
             s.add(row)
+            emit(s, LeaseWorkerJoined(worker=worker, pool=pool), HOME, System.DAEMON)
             rows = s.scalars(
                 select(Lease).where(Lease.worker == worker, Lease.state.in_(LIVE_LEASES)).order_by(Lease.id)
             ).all()
@@ -455,11 +473,16 @@ class Leases:
             s.commit()
         return held, cursor
 
-    @staticmethod
-    def _heard(row: LeaseWorker, host: HostSample) -> None:
+    def _heard(self, s: Session, row: LeaseWorker, host: HostSample) -> None:
+        """Record a call of the worker: its host sample and the time. Emit what makes its slots count again."""
+        pool = self.pools.get(row.pool)
+        was = pressure(pool, HostSample.model_validate(row.sample)) if pool is not None and row.sample else None
         row.sample, row.seen_at = host.model_dump(mode='json'), utcnow()
         if row.no_lease == NoLease.UNREACHABLE:
             row.no_lease = None
+            emit(s, LeaseWorkerJoined(worker=row.id, pool=row.pool), HOME, System.DAEMON)
+        elif was is not None and pool is not None and pressure(pool, host) is None:
+            emit(s, LeaseWorkerRelieved(worker=row.id, was=was), HOME, System.DAEMON)
 
     def acquire(self, worker: str, request_id: str, host: HostSample) -> Grant | NoLease:
         """Take the oldest queued job that ``worker`` can run and that its pool admits, or say why there is none.
@@ -472,7 +495,7 @@ class Leases:
         with self._db.session() as s:
             write_transaction(s)
             row = s.get_one(LeaseWorker, worker)  # ``register`` wrote it
-            self._heard(row, host)
+            self._heard(s, row, host)
             taken = select(Lease).where(Lease.worker == worker, Lease.acquire_request == request_id)
             if (lease := s.scalars(taken).first()) is not None:
                 s.commit()
@@ -609,7 +632,7 @@ class Leases:
         now = utcnow()
         with self._db.session() as s:
             write_transaction(s)
-            self._heard(s.get_one(LeaseWorker, worker), host)
+            self._heard(s, s.get_one(LeaseWorker, worker), host)
             for lease_id, session_id in sessions.items():
                 try:
                     lease = self._live(s, lease_id, worker)
@@ -818,7 +841,7 @@ class Leases:
         """Store ``after`` as the worker's cursor, and return its messages after it, waiting up to ``wait`` seconds.
 
         A long-poll, after the GitHub Actions runner: it returns at once when a message waits, and reads again on each
-        commit (``Database.wait_until``). A prompt whose comment has its outcome is left out: the worker answered it.
+        wake (``Database.wait_until``). A prompt whose comment has its outcome is left out: the worker answered it.
         A worker whose row went (``scaling`` ended its instance) gets none.
         """
         found: list[Work | PromptMessage | Revoke | Drain] = []

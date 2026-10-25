@@ -20,7 +20,7 @@ MAX_POLL_SECONDS = 25
 """The longest that the server holds a long-poll (``Polled.wait``), as the GitHub Actions runner's."""
 
 type Changed = Callable[[int, float], Awaitable[int]]
-"""``Database.changed``: the commit count once it passes the one seen, or at the timeout."""
+"""``Database.changed``: the count of wakes once it passes the one seen, or at the timeout."""
 
 
 class Polled(BaseModel):

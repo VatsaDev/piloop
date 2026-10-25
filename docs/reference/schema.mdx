@@ -71,7 +71,7 @@ CREATE TABLE events (
 	target_id INTEGER NOT NULL,
 	payload JSON NOT NULL,
 	PRIMARY KEY (id),
-	CONSTRAINT targetkind CHECK (target_kind IN ('campaign', 'idea', 'run', 'candidate', 'measurement', 'agent_session', 'comment', 'instance'))
+	CONSTRAINT targetkind CHECK (target_kind IN ('campaign', 'idea', 'run', 'candidate', 'measurement', 'agent_session', 'comment', 'instance', 'home'))
 );
 CREATE INDEX ix_events_kind ON events (kind, target_kind, target_id, id);
 CREATE INDEX ix_events_target ON events (target_kind, target_id, id);

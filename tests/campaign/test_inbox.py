@@ -26,14 +26,13 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database
-from piloop.db.triggers.changelog import CommentAcked
+from piloop.db.triggers.changelog import CommentAcked, IdeaCreated
 from piloop.ids import CommentId, TargetKind, TargetRef
 from piloop.plugins.verdict_rule.contract import Outcome
-from piloop.scoring.ledger import CandidateJudged, IdeaCreated
+from piloop.scoring.ledger import CandidateJudged
 from tests.conftest import WATCHDOG
 from tests.reports.test_history import idea
 from tests.reports.test_overview import render
-from tests.test_actor import ACTORS
 
 
 def bodies(rows: list[tuple[Comment, Campaign | None]]) -> list[str]:
@@ -94,7 +93,7 @@ def test_items_scope_to_the_campaign_through_every_target(db: Database, campaign
         assert recent == snapshot(
             [
                 '- comment.decision comment#10 · comment.finding comment#9 · comment.escalation comment#6 · comment.escalation comment#5 · comment.escalation comment#4',
-                '- comment.escalation comment#8 · comment.escalation comment#7',
+                '- comment.escalation comment#8 · comment.escalation comment#7 · idea.created idea#2',
             ]
         ), "each campaign's escalation events and none of the other's (campaign_of serves events too)"
 
@@ -219,10 +218,8 @@ def test_news_is_what_happened_since_the_cursor_that_the_orchestrator_did_not_wr
                 ]
             )
         ]
-        s.add_all(seeds)
+        s.add_all(seeds)  # each insert emits idea.created, signed by its creator
         s.flush()
-        for idea in seeds:
-            emit(s, IdeaCreated(), TargetRef(TargetKind.IDEA, idea.id), ACTORS.validate_python(idea.created_by))
         run3 = TargetRef(TargetKind.RUN, 3)
         reported = AnomalyReported(subject=run3, anomaly=AnomalyKind.RUN_FAILED, line='run#3 failed: boom')
         emit(s, reported, TargetRef(TargetKind.AGENT_SESSION, watchdog.id), System.DAEMON)

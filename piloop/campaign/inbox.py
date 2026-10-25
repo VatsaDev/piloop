@@ -35,9 +35,9 @@ from piloop.db.models import (
     Run,
     utcnow,
 )
-from piloop.db.triggers.changelog import CampaignStatusChanged, Commented
+from piloop.db.triggers.changelog import CampaignStatusChanged, Commented, IdeaCreated
 from piloop.ids import CampaignId, CommentId, TargetKind, TargetRef
-from piloop.scoring.ledger import CandidateJudged, IdeaCreated
+from piloop.scoring.ledger import CandidateJudged
 from piloop.text import cell
 
 CITATION = re.compile(r'comment#(\d+)')

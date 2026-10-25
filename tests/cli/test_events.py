@@ -18,7 +18,6 @@ from sqlalchemy import select, text
 
 from piloop.campaign import campaigns as campaign_module, ops
 from piloop.cli import common, main as cli
-from piloop.db import session as db_session
 from piloop.db.models import Campaign, Comment, CommentKind, Event, Idea, IdeaStatus
 from piloop.db.session import Database
 from piloop.ids import CampaignId, IdeaId, TargetKind, TargetRef
@@ -140,7 +139,7 @@ def test_status_and_inbox_print_one_json_document_with_the_cursor_they_were_read
 
 
 def test_events_reads_after_a_cursor_with_filters_and_says_how_to_read_on(
-    db: Database, campaign: Campaign, out, monkeypatch: pytest.MonkeyPatch
+    db: Database, campaign: Campaign, out
 ) -> None:
     first = add_idea(db, campaign.id, 'one')
     write(db, UNKNOWN)
@@ -148,27 +147,26 @@ def test_events_reads_after_a_cursor_with_filters_and_says_how_to_read_on(
     run_cli(['events', '--json'])
     batch = document(EventsDocument, out())
     kinds = [e['kind'] for e in batch['events']]
-    assert kinds == ['acme.observed', 'acme.raw'], 'an idea insert logs no event; unknown kinds pass through'
-    assert batch['events'][0]['payload'] == {'kind': 'acme.observed', 'latency_ms': 12.5, 'tags': ['a']}
-    assert batch['events'][1]['payload'] is None
-    assert batch['events'][1]['invalid'] == {'payload': '{"kind": "acme.raw", "v": NaN}'}
+    assert kinds == ['idea.created', 'acme.observed', 'acme.raw'], 'unknown kinds pass through'
+    assert batch['events'][1]['payload'] == {'kind': 'acme.observed', 'latency_ms': 12.5, 'tags': ['a']}
+    assert batch['events'][2]['payload'] is None
+    assert batch['events'][2]['invalid'] == {'payload': '{"kind": "acme.raw", "v": NaN}'}
     end = batch['next']
 
-    run_cli(['events', '--after', '0', '--limit', '1'])
+    run_cli(['events', '--after', '1', '--limit', '1'])
     lines = out().splitlines()
     assert (
-        lines[0].startswith('event#1 ')
+        lines[0].startswith('event#2 ')
         and ' acme.observed campaign#1 by acme: {"kind": "acme.observed", "latency_ms": 12.5' in lines[0]
     )
-    assert lines[1] == 'next: piloop events --after 1 (more now)'
-    run_cli(['events', '--after', '1', '--campaign', 'demo', '--kind', 'acme.raw', '--kind', 'idea.status'])
+    assert lines[1] == 'next: piloop events --after 2 (more now)'
+    run_cli(['events', '--after', '2', '--campaign', 'demo', '--kind', 'acme.raw', '--kind', 'idea.status'])
     lines = out().splitlines()
     assert lines[0].endswith('acme.raw campaign#1 by acme: "{\\"kind\\": \\"acme.raw\\", \\"v\\": NaN}"'), (
         'a payload that is not strict JSON prints as stored'
     )
     assert lines[1] == f'next: piloop events --after {end} --campaign demo --kind acme.raw --kind idea.status'
 
-    monkeypatch.setattr(db_session, 'WAIT_POLL_SECONDS', 0.01)  # the test's commits are another Database's
     threading.Timer(0.3, write, [db, f"UPDATE ideas SET status = 'parked' WHERE id = {first}"]).start()
     run_cli(['events', '--after', str(end), '--follow', '--timeout', '30', '--json', '--kind', 'idea.status'])
     [parked] = document(EventsDocument, out())['events']

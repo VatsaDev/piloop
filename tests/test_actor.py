@@ -9,8 +9,8 @@ from piloop.db import sql
 from piloop.db.events import emit
 from piloop.db.models import Event
 from piloop.db.session import Database
+from piloop.db.triggers.changelog import IdeaCreated
 from piloop.ids import TargetKind, TargetRef
-from piloop.scoring.ledger import IdeaCreated
 from tests.conftest import at_head
 
 ACTORS: TypeAdapter[Actor] = TypeAdapter(Actor)

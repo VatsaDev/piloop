@@ -56,6 +56,7 @@ TEMP: tuple[Trigger, ...] = (
     *changelog.CHANGES,
     *changelog.TOMBSTONES,
     *changelog.COMMENTS,
+    *changelog.OUTBOX,
     *ended.ENDED_AGENTS,
     *immutable.EVENTS,
 )
@@ -105,6 +106,9 @@ COMMENTS = """
 -- Every comment is an event, with the same shape as the event of the persistent escalation trigger. That trigger
 -- stays persistent, because `comment.escalation` must be logged whatever connection wrote the comment. The rest of
 -- the forum (`comment.note`, `comment.finding`, `comment.decision`) is what the daemon pushes to a running implementer."""
+OUTBOX = """
+-- The outbox: the writes that the daemon reacts to and that no decision above logs (a requested agent, a new idea, a
+-- campaign's config, a cancelled evaluation, a limit), so that it wakes on their events. A limit is on the home."""
 ENDED_AGENTS = """
 -- An agent whose session has ended leaves no finding. session_actor holds the agent session of an agent's connection,
 -- and the daemon sets the row ending in a commit before it kills the agent."""
@@ -120,6 +124,7 @@ def temp_sql() -> str:
         (CHANGE_LOG, changelog.CHANGES),
         (TOMBSTONES, changelog.TOMBSTONES),
         (COMMENTS, changelog.COMMENTS),
+        (OUTBOX, changelog.OUTBOX),
         (ENDED_AGENTS, ended.ENDED_AGENTS),
         (APPEND_ONLY, immutable.EVENTS),
     )

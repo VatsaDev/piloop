@@ -27,10 +27,10 @@ from piloop.db.models import (
     UnknownEvent,
 )
 from piloop.db.session import Database
+from piloop.db.triggers.changelog import IdeaCreated
 from piloop.ids import CampaignId, TargetKind, TargetRef
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.reports import feed
-from piloop.scoring.ledger import IdeaCreated
 
 RAW = (
     'INSERT INTO events (actor, target_kind, target_id, payload)'
@@ -232,6 +232,7 @@ def test_a_campaign_filter_follows_each_subject_to_its_campaign(
         s.commit()
         late = feed.read(s, batch['next'], campaign_id=other.id)
     assert [(e['kind'], e['subject']['campaign']) for e in late['events']] == [
+        ('idea.created', None),
         ('idea.status', None),
         ('idea.deleted', None),
     ], 'once its row is gone, an event has no campaign, and every campaign filter keeps it: nothing is lost'

@@ -67,9 +67,10 @@ class Launcher:
         next daemon process waits for them again (``reattach``)."""
 
     def cancel(self) -> None:
-        """Submit no more jobs."""
+        """Submit no more jobs, and wake the waits that give up on it."""
         with self.lock:
             self.cancelled.set()
+        self.db.notify()
 
     def launch(
         self,

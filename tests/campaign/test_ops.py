@@ -42,6 +42,7 @@ from piloop.db.triggers.changelog import (
     CampaignParentChanged,
     CampaignPausedChanged,
     IdeaBaseChanged,
+    IdeaCreated,
     IdeaLinked,
     IdeaTrackChanged,
     VerdictChanged,
@@ -76,6 +77,10 @@ def kinds(db: Database, target_kind: TargetKind, target_id: int) -> list[tuple[s
             select(Event).where(Event.target_kind == target_kind, Event.target_id == target_id).order_by(Event.id)
         )
         return [(e.kind, e.actor, e.payload) for e in rows]
+
+
+CREATED = ('idea.created', 't', IdeaCreated())
+"""The event of an idea that ``add_idea`` inserts."""
 
 
 def add_idea(db: Database, campaign_id: CampaignId, title: str, status: IdeaStatus = IdeaStatus.READY) -> IdeaId:
@@ -453,7 +458,9 @@ def test_an_idea_status_takes_a_reason_in_a_note_and_refuses_what_is_not_set_by_
             (seed, ACTOR.signature, CommentKind.NOTE, 'seed → rejected: dup of idea#1'),
             (running, ACTOR.signature, CommentKind.NOTE, 'scheduled → parked: redundant'),
         ]
-    assert [e[:2] for e in kinds(me, TargetKind.IDEA, idea)] == [('idea.status', ACTOR.signature)], 'the trigger, once'
+    assert [e[:2] for e in kinds(me, TargetKind.IDEA, idea)] == [CREATED[:2], ('idea.status', ACTOR.signature)], (
+        'the trigger, once'
+    )
     other = add_idea(me, CampaignId(1), 'other', IdeaStatus.SEED)
     busy = add_idea(me, CampaignId(1), 'busy', IdeaStatus.SCHEDULED)
     parked = run_idea(me, IdeaStatus.PARKED, RunStatus.RUNNING)
@@ -491,7 +498,8 @@ def test_links_are_validated_kept_acyclic_and_leave_events(me: Database, campaig
             (running, LinkKind.SUPERSEDES, c),
         ]
     assert kinds(me, TargetKind.IDEA, a) == [
-        ('idea.linked', ACTOR.signature, IdeaLinked(kind='idea.linked', target=b, link_kind=LinkKind.AFTER))
+        CREATED,
+        ('idea.linked', ACTOR.signature, IdeaLinked(kind='idea.linked', target=b, link_kind=LinkKind.AFTER)),
     ], 'a trigger'
     with me.session() as s:
         assert [c.body for c in s.scalars(select(Comment).where(Comment.target_id == a))] == [
@@ -538,6 +546,7 @@ def test_a_raw_sql_link_or_base_change_is_logged_like_the_commands(me: Database,
         s.execute(text(f'UPDATE ideas SET base_candidate_id = 1 WHERE id = {a}'))
         s.commit()
     assert kinds(me, TargetKind.IDEA, a) == [
+        CREATED,
         ('idea.linked', ACTOR.signature, IdeaLinked(kind='idea.linked', target=b, link_kind=LinkKind.AFTER)),
         ('idea.unlinked', ACTOR.signature, IdeaLinked(kind='idea.unlinked', target=b, link_kind=LinkKind.AFTER)),
         ('idea.base_candidate_id', ACTOR.signature, IdeaBaseChanged(old=None, new=CandidateId(1))),
@@ -562,6 +571,7 @@ def test_a_base_pins_a_candidate_of_the_campaign_or_clears_the_pin(me: Database,
         with pytest.raises(ops.Refused, match='a reason is required'):
             ops.set_base(s, idea, None, reason='', actor=ACTOR)
     assert kinds(me, TargetKind.IDEA, idea) == [
+        CREATED,
         ('idea.base_candidate_id', ACTOR.signature, IdeaBaseChanged(old=None, new=CandidateId(1))),
         ('idea.base_candidate_id', ACTOR.signature, IdeaBaseChanged(old=CandidateId(1), new=None)),
     ]

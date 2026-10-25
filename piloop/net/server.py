@@ -72,7 +72,7 @@ def _endpoint(
 ) -> Callable[[Request, Caller], Awaitable[Response]]:
     """The handler of ``route``: its body is read and validated here, and the route's handler runs in the thread pool.
 
-    A long-poll calls it again after each commit (``Route.changed``) while it answers None, until the body's wait ends
+    A long-poll calls it again after each wake (``Route.changed``) while it answers None, until the body's wait ends
     or the server closes.
     """
     scoped = authorized(network)

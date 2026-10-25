@@ -384,6 +384,7 @@ def test_a_daemon_killed_during_a_run_keeps_the_lease_and_the_next_daemon_finish
         os.kill(proc.pid, signal.SIGKILL)
         proc.wait()
     ex.launcher.handover.set()  # the killed daemon's control plane: its waiting thread goes with it
+    db.notify()
     thread.join(30)
     scheduler = next_daemon(db, tmp_path)
     scheduler.reap()

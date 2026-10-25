@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from piloop.actor import System
 from piloop.agents.results import PromptOutcome
-from piloop.db import feed, session as db_session
+from piloop.db import feed
 from piloop.db.events import emit, has, in_order
 from piloop.db.models import (
     AgentSession,
@@ -64,6 +64,8 @@ from piloop.plugins.executor.kit.leases import (
     LeaseRevoked,
     Leases,
     LeaseUnreachable,
+    LeaseWorkerJoined,
+    LeaseWorkerRelieved,
     PromptMessage,
     StaleLease,
     StaleReport,
@@ -652,10 +654,9 @@ def test_a_change_that_rolls_back_leaves_no_message(
     assert events(db, LeaseRevoked) == []
 
 
-def test_a_waiting_worker_wakes_on_a_commit_of_this_process_before_the_poll(
-    db: Database, campaign: Campaign, tmp_path: Path, leases: Leases, monkeypatch: pytest.MonkeyPatch
+def test_a_waiting_worker_wakes_on_a_commit_of_this_process(
+    db: Database, campaign: Campaign, tmp_path: Path, leases: Leases
 ) -> None:
-    monkeypatch.setattr(db_session, 'WAIT_POLL_SECONDS', 60)
     start = join(leases, 'w1', []).cursor
     threading.Timer(0.2, leases.submit, [agent_job(db, campaign, tmp_path)]).start()
     began = time.monotonic()
@@ -701,3 +702,24 @@ def test_a_report_sent_again_while_the_first_applies_gets_its_receipt_and_is_not
     assert w1.report(lease, 'r1', DONE) == RECEIPT
     assert events(db, StaleReport) == []
     assert [c[0] for c in recorder.calls] == ['finished'], 'applied once'
+
+
+def test_a_worker_whose_slots_count_again_says_so_on_the_home(
+    db: Database, campaign: Campaign, tmp_path: Path, recorder: Recorder
+) -> None:
+    """The daemon wakes on these: a worker that joins, one heard again after its silence, one whose host recovers."""
+    leases = Leases(db, recorder, TIMING, {'test': Pool(evaluations=99, max_load=1.0)})
+    join(leases, 'w1', [])
+    assert events(db, LeaseWorkerJoined) == [(TargetKind.HOME, 1, LeaseWorkerJoined(worker='w1', pool='test'))]
+    with db.session() as s:
+        s.get_one(LeaseWorker, 'w1').seen_at = utcnow() - timedelta(seconds=TIMING.grace + 1)
+        s.commit()
+    leases.expire()
+    Local(leases, 'w1').heartbeat({}, HOST)
+    assert len(events(db, LeaseWorkerJoined)) == 2, 'heard again'
+    Local(leases, 'w1').heartbeat({}, HOST.model_copy(update={'load1': 9.0}))
+    assert events(db, LeaseWorkerRelieved) == [], 'pressed: nothing counts again'
+    Local(leases, 'w1').heartbeat({}, HOST)
+    assert events(db, LeaseWorkerRelieved) == [(TargetKind.HOME, 1, LeaseWorkerRelieved(worker='w1', was=NoLease.LOAD))]
+    Local(leases, 'w1').heartbeat({}, HOST)
+    assert len(events(db, LeaseWorkerRelieved)) == 1, 'once, at the change'

@@ -2007,3 +2007,28 @@ def test_0046_answers_each_latest_ask_that_0_2_had_spent_and_indexes_the_asks_by
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
         assert con.execute(answers).fetchall() == []
         assert con.execute("SELECT name FROM sqlite_master WHERE name = 'ix_events_kind'").fetchall() == []
+
+
+def test_0047_admits_events_on_the_home_keeps_every_event_its_id_and_its_indexes_and_downgrades(tmp_path: Path) -> None:
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0046')
+    insert = "INSERT INTO events (id, actor, target_kind, target_id, payload) VALUES (?, 'human', ?, 1, ?)"
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute(insert, (7, 'campaign', '{"kind": "campaign.added"}'))
+        with pytest.raises(sqlite3.IntegrityError, match='targetkind'):
+            con.execute(insert, (8, 'home', '{"kind": "limit.unset", "key": "k"}'))
+    command.upgrade(cfg, '0047')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute(insert, (8, 'home', '{"kind": "limit.unset", "key": "k"}'))
+        assert con.execute('SELECT id, kind, target_kind FROM events ORDER BY id').fetchall() == [
+            (7, 'campaign.added', 'campaign'),
+            (8, 'limit.unset', 'home'),
+        ]
+        indexes = "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'events' ORDER BY name"
+        assert con.execute(indexes).fetchall() == [('ix_events_kind',), ('ix_events_target',)], 'the rebuild keeps them'
+        with pytest.raises(sqlite3.IntegrityError, match='targetkind'):
+            con.execute("INSERT INTO comments (target_kind, target_id, author, body) VALUES ('home', 1, 'human', 'no')")
+    command.downgrade(cfg, '0046')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute('SELECT id FROM events').fetchall() == [(7,)], 'the events on the home go'

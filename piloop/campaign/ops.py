@@ -48,7 +48,6 @@ from piloop.plugins.vcs.contract import VcsError
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring.ledger import (
     MOVED,
-    IdeaCreated,
     Rebased,
     RejudgeRequested,
     follow_up,
@@ -405,7 +404,8 @@ def add_idea(
         status=IdeaStatus.PROPOSED if proposed or held is not None else IdeaStatus.READY,
         created_by=actor.signature,
     )
-    _create(s, idea, actor)
+    s.add(idea)
+    s.flush()
     _link_all(s, idea, after, supersedes)
     return idea, held
 
@@ -440,7 +440,8 @@ def file_seed(
         status=IdeaStatus.SEED,
         created_by=actor.signature,
     )
-    _create(s, idea, actor)
+    s.add(idea)
+    s.flush()
     return idea
 
 
@@ -509,12 +510,6 @@ def note_candidate(
     set_verdict(s, candidate.id, Outcome.INTERESTING, cause=Cause.NOTE, reason=reason, actor=actor)
     on = track_for(campaign, track) if track is not None else track_of(campaign.config, candidate).name
     return candidate, follow_up(s, candidate, follow_ups, reason, actor, track=on)
-
-
-def _create(s: Session, idea: Idea, actor: Actor) -> None:
-    s.add(idea)
-    s.flush()
-    emit(s, IdeaCreated(), TargetRef(TargetKind.IDEA, idea.id), actor)
 
 
 def _link_all(s: Session, idea: Idea, after: Sequence[IdeaId], supersedes: Sequence[IdeaId]) -> None:

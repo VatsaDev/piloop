@@ -206,7 +206,7 @@ def test_a_worker_reads_work_for_every_worker_and_only_its_own_prompts_and_revok
     """The GitHub Actions runner's long-poll: it returns at once when a message waits. Each message is an event."""
     w1, w2 = connect('w1'), connect('w2')
     start = w1.register(INFO).cursor
-    assert w2.register(INFO).cursor == start, 'a new worker starts at the newest event'
+    assert w2.register(INFO).cursor == start + 1, 'a new worker starts at the newest event: the join of w1'
     assert w1.messages(start, 0.01) == [], 'nothing waits: it waits, then returns empty'
     job = agent_job(db, campaign, tmp_path)
     leases.submit(job)

@@ -45,6 +45,8 @@ class TargetKind(StrEnum):
     COMMENT = 'comment'
     INSTANCE = 'instance'
     """A worker that a provisioner started (``worker_instances``)."""
+    HOME = 'home'
+    """The whole home, for an event about no row: a limit, a worker. Its one id is 1 (``HOME``). No comment is on it."""
 
 
 @dataclass(frozen=True)
@@ -60,6 +62,9 @@ class TargetRef:
     def __str__(self) -> str:
         return f'{self.kind}#{self.id}'
 
+
+HOME: Final = TargetRef(TargetKind.HOME, 1)
+"""The target of an event about the whole home."""
 
 REF_PATTERN = re.compile(r'(?P<kind>[a-z_]+)#(?P<id>[0-9]+)')
 

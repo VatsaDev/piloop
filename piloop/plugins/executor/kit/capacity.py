@@ -118,18 +118,24 @@ def slots(capacity: Pool | Capacity, kind: LeaseKind) -> int | None:
     return {LeaseKind.AGENT: capacity.agents, LeaseKind.EVALUATION: capacity.evaluations}[kind]
 
 
-def admits(pool: Pool, host: HostSample, running: Capacity, kind: LeaseKind) -> NoLease | None:
-    """Return why a worker of ``pool`` takes no job of ``kind`` now, or None when it takes one.
-
-    ``running`` counts the worker's live leases of each kind. The first gate that refuses gives the reason.
-    """
-    bound = slots(pool, kind)
+def pressure(pool: Pool, host: HostSample) -> NoLease | None:
+    """Return why the host of a worker of ``pool`` takes no job of any kind now, or None. The first gate gives it."""
     gates = (
         (NoLease.MEMORY, pool.min_memory_gb is not None and host.memory_available < pool.min_memory_gb * GB),
         (NoLease.LOAD, pool.max_load is not None and host.load1 > pool.max_load * host.cpus),
-        (NoLease.SLOTS, bound is not None and (slots(running, kind) or 0) >= bound),
     )
     return next((reason for reason, refused in gates if refused), None)
+
+
+def admits(pool: Pool, host: HostSample, running: Capacity, kind: LeaseKind) -> NoLease | None:
+    """Return why a worker of ``pool`` takes no job of ``kind`` now, or None when it takes one.
+
+    ``running`` counts the worker's live leases of each kind. The host's ``pressure`` comes first, then the slots.
+    """
+    if (pressed := pressure(pool, host)) is not None:
+        return pressed
+    bound = slots(pool, kind)
+    return NoLease.SLOTS if bound is not None and (slots(running, kind) or 0) >= bound else None
 
 
 def add(a: int | None, b: int | None) -> int | None:

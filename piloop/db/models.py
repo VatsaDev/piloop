@@ -369,6 +369,25 @@ def _values[E: StrEnum](enum: type[E]) -> Enum:
     )
 
 
+class CommentTarget(TypeDecorator[TargetKind]):
+    """A comment's ``TargetKind``, stored by value. Its CHECK leaves out ``home``: no comment is on the whole home."""
+
+    impl = Enum(
+        *(k.value for k in TargetKind if k is not TargetKind.HOME),
+        name='targetkind',
+        native_enum=False,
+        length=16,
+        create_constraint=True,
+    )
+    cache_ok = True
+
+    def process_bind_param(self, value: TargetKind | None, dialect: Dialect) -> str | None:
+        return None if value is None else TargetKind(value).value
+
+    def process_result_value(self, value: str | None, dialect: Dialect) -> TargetKind | None:
+        return None if value is None else TargetKind(value)
+
+
 def _end_status() -> str:
     """``runs.status`` as a SQL expression of ``runs.end`` (``RunEnd.status``), for the CHECK that keeps them together."""
     cases = ' '.join(f"WHEN '{end}' THEN '{status}'" for end, status in END_STATUS.items())
@@ -1113,7 +1132,7 @@ class Comment(Tracked, Base):
     )
 
     id: Mapped[CommentId] = mapped_column(primary_key=True)
-    target_kind: Mapped[TargetKind]
+    target_kind: Mapped[TargetKind] = mapped_column(CommentTarget())
     target_id: Mapped[int]
     target: Mapped[TargetRef] = composite('target_kind', 'target_id')
     author: Mapped[str]

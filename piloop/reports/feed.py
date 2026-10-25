@@ -58,7 +58,8 @@ class Subject(TypedDict):
     """The row that an event is about."""
 
     kind: str
-    """A ``TargetKind``: ``campaign``, ``idea``, ``run``, ``candidate``, ``measurement``, ``agent_session`` or ``comment``."""
+    """A ``TargetKind``: ``campaign``, ``idea``, ``run``, ``candidate``, ``measurement``, ``agent_session``, ``comment``, or
+    ``home`` for an event about the whole home."""
     id: int
     campaign: CampaignId | None
     """The campaign of the row, resolved when the event is read. Null when the row is gone or has no campaign (a reply
@@ -160,7 +161,7 @@ def follow(
     limit: int = LIMIT,
     timeout: float,
 ) -> Batch:
-    """``read``, and while it returns no event, read again on each commit (``Database.wait_until``) until ``timeout``.
+    """``read``, and while it returns no event, read again on each wake (``Database.wait_until``) until ``timeout``.
 
     It returns the first batch with an event, or at the timeout the last empty batch, whose ``next`` has moved over
     what the filters left out. The wait blocks the caller: a streaming transport (server-sent events) loops over

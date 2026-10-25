@@ -85,7 +85,7 @@ Every event has the same fields, whatever its kind.
 |---|---|
 | `id` | The cursor. Ids grow in the order in which the events were committed: events are append-only, and a new event always takes the next id. |
 | `kind` | `<subject>.<what>`, for example `idea.status`, `candidate.judged` or `comment.escalation`. |
-| `subject` | The row that the event is about: its `kind` (`campaign`, `idea`, `run`, `candidate`, `measurement`, `agent_session` or `comment`), its `id` and its `campaign`. |
+| `subject` | The row that the event is about: its `kind` (`campaign`, `idea`, `run`, `candidate`, `measurement`, `agent_session` or `comment`), its `id` and its `campaign`. An event about the whole home, such as `limit.set`, is on `home` 1, with no campaign. |
 | `actor` | Who wrote it: `daemon`, `human`, `orchestrator`, or an agent such as `implementer#12`. |
 | `time` | When it was written, in UTC. |
 | `payload` | The details, as stored: a JSON object with the event's `kind`. |

@@ -295,20 +295,21 @@ def test_one_update_of_a_tracked_column_is_one_event_and_the_provenance_stamps_s
     (created,) = sql.run(con, 'SELECT updated_at FROM ideas').rows[0]
     sql.run(con, "UPDATE ideas SET status = 'parked' WHERE id = 1")
     assert events(con) == snapshot(
-        [('idea.status', 'human', 'idea', 1, '{"kind":"idea.status","old":"ready","new":"parked"}')]
+        [
+            ('idea.created', 'me', 'idea', 1, '{"kind":"idea.created"}'),
+            ('idea.status', 'human', 'idea', 1, '{"kind":"idea.status","old":"ready","new":"parked"}'),
+        ]
     )
     updated_at, updated_by = sql.run(con, 'SELECT updated_at, updated_by FROM ideas').rows[0]
     assert updated_at != created and updated_by == 'human'
     sql.run(con, "UPDATE ideas SET status = 'parked' WHERE id = 1")
     sql.run(con, "UPDATE ideas SET title = 'renamed' WHERE id = 1")
-    assert len(events(con)) == 1, 'the same value again, or an untracked column, is not a change of the tracked one'
+    assert len(events(con)) == 2, 'the same value again, or an untracked column, is not a change of the tracked one'
     sql.run(con, "UPDATE ideas SET priority = 0, status = 'ready' WHERE id = 1")
-    assert events(con, since=1) == snapshot(
-        [
-            ('idea.priority', 'human', 'idea', 1, '{"kind":"idea.priority","old":2,"new":0}'),
-            ('idea.status', 'human', 'idea', 1, '{"kind":"idea.status","old":"parked","new":"ready"}'),
-        ]
-    )
+    assert sorted(events(con, since=2)) == [  # one statement: SQLite fires its triggers in an order of its own
+        ('idea.priority', 'human', 'idea', 1, '{"kind":"idea.priority","old":2,"new":0}'),
+        ('idea.status', 'human', 'idea', 1, '{"kind":"idea.status","old":"parked","new":"ready"}'),
+    ]
 
 
 def test_verdict_brief_and_campaign_status_changes_carry_what_the_feed_needs(
@@ -329,6 +330,7 @@ def test_verdict_brief_and_campaign_status_changes_carry_what_the_feed_needs(
     sql.run(con, "UPDATE campaigns SET status = 'active', stopped_reason = NULL WHERE id = 1")
     assert events(con) == snapshot(
         [
+            ('idea.created', 'me', 'idea', 1, '{"kind":"idea.created"}'),
             (
                 'candidate.verdict',
                 'human',
@@ -356,11 +358,11 @@ def test_verdict_brief_and_campaign_status_changes_carry_what_the_feed_needs(
     with closing(sql.connect(tmp_path / 'piloop.db', actor=ACTOR)) as daemon:
         sql.run(daemon, 'UPDATE runs SET brief = NULL WHERE id = 1')
         sql.run(daemon, "UPDATE runs SET brief = 'the composed brief' WHERE id = 1")
-        assert events(daemon, since=4) == snapshot(
+        assert events(daemon, since=5) == snapshot(
             [('run.brief', 'daemon', 'run', 1, '{"kind":"run.brief","old_length":12,"new_length":null}')]
         ), 'the daemon composing a brief where there was none is the run starting, not a steer; replacing one is'
         sql.run(daemon, "UPDATE runs SET brief = 'the brief, revised' WHERE id = 1")
-        assert events(daemon, since=5) == snapshot(
+        assert events(daemon, since=6) == snapshot(
             [('run.brief', 'daemon', 'run', 1, '{"kind":"run.brief","old_length":18,"new_length":18}')]
         )
     assert f"= '{ACTOR}'" in sql.ACTOR_TRIGGERS, 'the SQL names the daemon by its actor string'
@@ -379,6 +381,7 @@ def test_deletes_leave_tombstones_and_cascades_too(con: sqlite3.Connection) -> N
     sql.run(con, 'DELETE FROM campaigns WHERE id = 1')
     assert events(con) == snapshot(
         [
+            ('idea.created', 'me', 'idea', 1, '{"kind":"idea.created"}'),
             ('comment.note', 'me', 'comment', 1, '{"kind":"comment.note","target_kind":"idea","target_id":1}'),
             (
                 'comment.deleted',

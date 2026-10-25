@@ -309,6 +309,9 @@ def test_successful_run_scores_the_commit(
         kinds = [ev.kind for ev in s.scalars(select(Event)).all()]
     assert kinds == snapshot(
         [
+            'idea.created',
+            'agent_session.requested',
+            'lease_worker.joined',
             'run.started',
             'agent_session.started',
             'lease.queued',

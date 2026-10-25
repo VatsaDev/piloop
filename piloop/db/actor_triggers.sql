@@ -158,6 +158,48 @@ BEGIN
   VALUES (strftime('%Y-%m-%d %H:%M:%f', 'now'), NEW.author, 'comment', NEW.id, json_object('kind', 'comment.' || NEW.kind, 'target_kind', NEW.target_kind, 'target_id', NEW.target_id));
 END;
 
+-- The outbox: the writes that the daemon reacts to and that no decision above logs (a requested agent, a new idea, a
+-- campaign's config, a cancelled evaluation, a limit), so that it wakes on their events. A limit is on the home.
+CREATE TEMP TRIGGER agent_sessions_requested_event AFTER INSERT ON agent_sessions
+WHEN NEW.state = 'requested'
+BEGIN
+  INSERT INTO events (at, actor, target_kind, target_id, payload)
+  VALUES (strftime('%Y-%m-%d %H:%M:%f', 'now'), (SELECT actor FROM temp.session_actor), 'agent_session', NEW.id, json_object('kind', 'agent_session.requested', 'role', NEW.kind, 'campaign', NEW.campaign_id, 'reason', NEW.reason));
+END;
+CREATE TEMP TRIGGER ideas_created_event AFTER INSERT ON ideas
+BEGIN
+  INSERT INTO events (at, actor, target_kind, target_id, payload)
+  VALUES (strftime('%Y-%m-%d %H:%M:%f', 'now'), NEW.created_by, 'idea', NEW.id, json_object('kind', 'idea.created'));
+END;
+CREATE TEMP TRIGGER campaigns_config_event AFTER UPDATE OF config ON campaigns
+WHEN OLD.config IS NOT NEW.config
+BEGIN
+  INSERT INTO events (at, actor, target_kind, target_id, payload)
+  VALUES (strftime('%Y-%m-%d %H:%M:%f', 'now'), (SELECT actor FROM temp.session_actor), 'campaign', NEW.id, json_object('kind', 'campaign.config'));
+END;
+CREATE TEMP TRIGGER evaluations_cancelled_event AFTER UPDATE OF cancelled_by ON evaluations
+WHEN OLD.cancelled_by IS NULL AND NEW.cancelled_by IS NOT NULL
+BEGIN
+  INSERT INTO events (at, actor, target_kind, target_id, payload)
+  VALUES (strftime('%Y-%m-%d %H:%M:%f', 'now'), (SELECT actor FROM temp.session_actor), 'candidate', NEW.candidate_id, json_object('kind', 'evaluation.cancelled', 'evaluation', NEW.id, 'by', NEW.cancelled_by));
+END;
+CREATE TEMP TRIGGER limits_set_event AFTER INSERT ON limits
+BEGIN
+  INSERT INTO events (at, actor, target_kind, target_id, payload)
+  VALUES (strftime('%Y-%m-%d %H:%M:%f', 'now'), (SELECT actor FROM temp.session_actor), 'home', 1, json_object('kind', 'limit.set', 'key', NEW.key, 'value', json(NEW.value)));
+END;
+CREATE TEMP TRIGGER limits_updated_event AFTER UPDATE OF value ON limits
+WHEN OLD.value IS NOT NEW.value
+BEGIN
+  INSERT INTO events (at, actor, target_kind, target_id, payload)
+  VALUES (strftime('%Y-%m-%d %H:%M:%f', 'now'), (SELECT actor FROM temp.session_actor), 'home', 1, json_object('kind', 'limit.set', 'key', NEW.key, 'value', json(NEW.value)));
+END;
+CREATE TEMP TRIGGER limits_unset_event AFTER DELETE ON limits
+BEGIN
+  INSERT INTO events (at, actor, target_kind, target_id, payload)
+  VALUES (strftime('%Y-%m-%d %H:%M:%f', 'now'), (SELECT actor FROM temp.session_actor), 'home', 1, json_object('kind', 'limit.unset', 'key', OLD.key));
+END;
+
 -- An agent whose session has ended leaves no finding. session_actor holds the agent session of an agent's connection,
 -- and the daemon sets the row ending in a commit before it kills the agent.
 CREATE TEMP TRIGGER comments_no_late_finding BEFORE INSERT ON comments

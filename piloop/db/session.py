@@ -31,7 +31,7 @@ from alembic.script import ScriptDirectory
 from sqlalchemy import Connection, Engine, create_engine, event, make_url
 from sqlalchemy.engine import ExceptionContext
 from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.pool import ConnectionPoolEntry
+from sqlalchemy.pool import ConnectionPoolEntry, PoolProxiedConnection
 
 from piloop import deprecated
 from piloop.actor import Actor, Agent, System
@@ -407,10 +407,13 @@ def read_transaction(s: Session) -> Generator[None]:
         s.rollback()
 
 
-WAIT_POLL_SECONDS = 1.0
-"""How often ``Database.wait_until`` reads again for a commit of another process (the CLI, an agent's ``piloop sql``).
+DOORBELL_SECONDS = 0.05
+"""How often a process that waits reads the newest event id, to wake on the events of other processes.
 
-It goes when the daemon wakes on the commits of every process: those then notify it, as this process's do."""
+SQLite tells no process of another's commits. The read costs about 10 µs, so a waiting process spends about 5 CPU
+seconds an hour on it. A commit that adds no event (a heartbeat, a lease renewal) rings nothing.
+
+Retirement: deleted when the feed moves to a server database that notifies its listeners (Postgres ``LISTEN``)."""
 
 
 CLOSE_WAIT_SECONDS = 5.0
@@ -426,6 +429,17 @@ def write_transaction(s: Session) -> None:
     must have no open transaction, and the caller commits or rolls back.
     """
     s.connection().exec_driver_sql('BEGIN IMMEDIATE')
+
+
+def _newest_event(conn: PoolProxiedConnection) -> int:
+    """The id of the newest event, read on a raw connection. 0 when there is none."""
+    cur = conn.cursor()
+    try:
+        cur.execute('SELECT max(id) FROM events')
+        row = cur.fetchone()
+    finally:
+        cur.close()
+    return (row[0] if row else None) or 0
 
 
 class DatabaseClosed(RuntimeError):
@@ -444,8 +458,11 @@ class Database:
         self.engine = make_engine(url, actor)
         self._sessions = sessionmaker(self.engine, expire_on_commit=False)
         self._committed = threading.Condition()
-        self._commits = 0
-        """How many sessions of this process committed: a waiter that saw this number waits only for a later one."""
+        self._wakes = 0
+        """How many wakes came: a commit of this process, a new event of another (the doorbell), or ``notify``. A
+        waiter that saw this number waits only for a later one."""
+        self._doorbell: threading.Thread | None = None
+        """Reads the newest event id every ``DOORBELL_SECONDS`` once something waits, until ``close``."""
         self._closed = False
         self._reading = 0
         """How many waiters read now: ``close`` lets them end before it closes the connections that they hold."""
@@ -480,9 +497,35 @@ class Database:
 
     def _wake(self) -> None:
         with self._committed:
-            self._commits += 1
+            self._wakes += 1
             self._committed.notify_all()
             self._resolve()
+
+    def notify(self) -> None:
+        """Wake every waiter of this process, as a commit does, so that each checks its ``give_up`` again."""
+        self._wake()
+
+    def _ring_on_events(self) -> None:
+        """Start the doorbell, once: the first waiter of the process starts it. The caller holds ``_committed``.
+
+        Its connection comes from the pool here, under the lock, so a ``close`` after this waits for it to come back.
+        """
+        if self._doorbell is None and not self._closed:
+            conn = self.engine.raw_connection()
+            self._doorbell = threading.Thread(target=self._ring, args=(conn,), name='doorbell', daemon=True)
+            self._doorbell.start()
+
+    def _ring(self, conn: PoolProxiedConnection) -> None:
+        """Wake the waiters when the newest event id moves, until ``close``. Then give ``conn`` back to the pool."""
+        with closing(conn):
+            head = _newest_event(conn)
+            while True:
+                with self._committed:
+                    if self._committed.wait_for(lambda: self._closed, DOORBELL_SECONDS):
+                        return
+                if (newest := _newest_event(conn)) != head:
+                    head = newest
+                    self._wake()
 
     def _resolve(self) -> None:
         """Resolve every waiter of ``changed`` on its own loop. The caller holds ``_committed``."""
@@ -495,7 +538,8 @@ class Database:
     ) -> bool:
         """Block until ``done`` holds in a new session, and return True. False at ``timeout``, ``give_up`` or ``close``.
 
-        It reads again after every commit of this process, and every ``WAIT_POLL_SECONDS`` for one of another. The
+        It reads again after every commit of this process, every new event of another, and every ``notify``: whoever
+        sets what ``give_up`` reads calls ``notify``. A commit of another process that adds no event wakes nothing. The
         read happens outside the condition, so no commit waits for it.
         """
         deadline = time.monotonic() + timeout
@@ -503,7 +547,8 @@ class Database:
             with self._committed:
                 if self._closed:
                     return False
-                seen, self._reading = self._commits, self._reading + 1
+                self._ring_on_events()
+                seen, self._reading = self._wakes, self._reading + 1
             try:
                 with self._sessions() as s:  # registered in _reading: close waits for it
                     found = done(s)
@@ -518,33 +563,34 @@ class Database:
                 return False
             with self._committed:
                 self._committed.wait_for(
-                    lambda seen=seen: self._commits != seen or self._closed, min(left, WAIT_POLL_SECONDS)
+                    lambda seen=seen: self._wakes != seen or self._closed, None if math.isinf(left) else left
                 )
 
     async def changed(self, seen: int, timeout: float) -> int:
-        """The count of this process's commits once it is not ``seen``, or at ``timeout``.
+        """The count of wakes once it is not ``seen``, or at ``timeout``.
 
         ``wait_until`` for a coroutine: it holds no thread while it waits, so a server can hold many long-polls. It
-        sees only this process's commits: wait on it for what only this process writes, as a worker's messages. A
-        caller that saw nothing yet passes 0, and reads again at once if anything committed.
+        wakes as ``wait_until`` does. A caller that saw nothing yet passes 0, and reads again at once if anything woke.
         """
         future = asyncio.get_running_loop().create_future()
         with self._committed:
-            if self._commits != seen or self._closed:
-                return self._commits
+            if self._wakes != seen or self._closed:
+                return self._wakes
+            self._ring_on_events()
             self._changed.add(future)
         try:
             await asyncio.wait([future], timeout=timeout)
         finally:
             with self._committed:
                 self._changed.discard(future)
-        return self._commits
+        return self._wakes
 
     def close(self) -> None:
-        """Make every waiter give up, let the sessions in flight end, then close the pooled connections.
+        """Make every waiter give up, stop the doorbell, let the sessions in flight end, then close the connections.
 
         A connection that is checked out while the pool goes is never closed: Python warns when it collects it. So it
-        waits for every one to come back, a waiter's read or any other session, and opens no new one meanwhile.
+        waits for every one to come back, a waiter's read, the doorbell's or any other session's, and opens no new one
+        meanwhile.
         """
         with self._committed:
             self._closed = True

@@ -332,12 +332,6 @@ class MeasurementRecorded(EventModel):
     """The bar's measurement that ran next to it in a paired evaluation."""
 
 
-class IdeaCreated(EventModel):
-    """An idea was added: by hand, by an agent, or as a follow-up seed."""
-
-    kind: Literal['idea.created'] = 'idea.created'
-
-
 def unjudged(candidate: Candidate) -> bool:
     """Return whether ``candidate`` waits for a verdict that no run gives: pending, and its run scores no more.
 
@@ -779,7 +773,6 @@ def follow_up(
         )
         s.add(idea)
         s.flush()
-        emit(s, IdeaCreated(), TargetRef(TargetKind.IDEA, idea.id), actor)
         ideas.append(idea)
     return ideas
 

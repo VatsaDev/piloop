@@ -60,7 +60,7 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database, migrate
-from piloop.db.triggers.changelog import CampaignStatusChanged
+from piloop.db.triggers.changelog import CampaignConfigChanged, CampaignStatusChanged
 from piloop.ids import CampaignId, CandidateId, CommentId, TargetKind, TargetRef
 from piloop.plugins import host
 from piloop.plugins.executor.kit.capacity import GB, HostSample
@@ -340,10 +340,14 @@ def test_status_shows_why_a_campaign_stopped_and_init_resumes_it_when_the_stop_t
     run_cli(['status', 'demo'])
     assert 'stopped' not in out()
     with db.session() as s:
-        assert [
+        logged = [
             (e.kind, e.actor, e.payload)
             for e in s.scalars(select(Event).where(Event.target_kind == TargetKind.CAMPAIGN))
-        ] == [
+        ]
+        assert [e for e in logged if e[0] == 'campaign.config'] == [
+            ('campaign.config', 'human', CampaignConfigChanged())
+        ], 'the [stop] table that init read changed the stored config, once'
+        assert [e for e in logged if e[0] != 'campaign.config'] == [
             ('campaign.added', 'human', CampaignAdded(baseline=CandidateId(1))),
             (
                 'campaign.status',
@@ -672,7 +676,6 @@ def test_inbox_wait_blocks_until_an_item_lands_and_hands_over_a_cursor_that_miss
 ) -> None:
     run_cli(['init', str(campaign_path)])
     out()
-    monkeypatch.setattr(session, 'WAIT_POLL_SECONDS', 0.01)  # the writer is another Database
     run_cli(['inbox', 'wait', '--timeout', '0'])
     quiet, again = out().splitlines()
     assert quiet == 'nothing new in 0:00:00' and re.fullmatch(r'next: piloop inbox wait --after \d+', again)

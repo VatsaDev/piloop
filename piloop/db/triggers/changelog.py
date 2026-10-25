@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated, Literal
 
+from pydantic import JsonValue
+
 from piloop.db.models import (
     CampaignStatus,
     CommentKind,
@@ -22,7 +24,7 @@ from piloop.db.models import (
 )
 from piloop.db.triggers.ddl import Event, Trigger
 from piloop.db.triggers.provenance import DAEMON_ACTOR, NOW, SESSION_ACTOR
-from piloop.ids import CampaignId, CandidateId, IdeaId, TargetKind, TrackName
+from piloop.ids import HOME, CampaignId, CandidateId, IdeaId, RoleName, TargetKind, TrackName
 from piloop.plugins.verdict_rule.contract import Outcome
 
 type Row = Literal['NEW', 'OLD']
@@ -174,6 +176,50 @@ class Commented(EventModel):
     target_id: int
 
 
+class AgentSessionRequested(EventModel):
+    """An agent was requested: by a trigger, ``piloop launch``, or an INSERT of a ``requested`` row."""
+
+    kind: Literal['agent_session.requested'] = 'agent_session.requested'
+    role: Annotated[RoleName, Sql('{row}.kind')]
+    campaign: Annotated[CampaignId | None, Sql('{row}.campaign_id')]
+    reason: str | None
+
+
+class IdeaCreated(EventModel):
+    """An idea was added: by hand, by an agent, or as a follow-up seed."""
+
+    kind: Literal['idea.created'] = 'idea.created'
+
+
+class CampaignConfigChanged(EventModel):
+    """A campaign's stored config changed (``piloop init`` read its ``piloop.toml`` again). The payload has no body."""
+
+    kind: Literal['campaign.config'] = 'campaign.config'
+
+
+class EvaluationCancelled(EventModel):
+    """On the candidate: someone cancelled its evaluation while it ran (``piloop eval cancel``)."""
+
+    kind: Literal['evaluation.cancelled'] = 'evaluation.cancelled'
+    evaluation: Annotated[int, Sql('{row}.id')]
+    by: Annotated[str, Sql('{row}.cancelled_by')]
+
+
+class LimitSet(EventModel):
+    """On the home: a live limit was set (``piloop limits set``)."""
+
+    kind: Literal['limit.set'] = 'limit.set'
+    key: str
+    value: Annotated[JsonValue, Sql('json({row}.value)')]
+
+
+class LimitUnset(EventModel):
+    """On the home: a live limit was removed (``piloop limits unset``)."""
+
+    kind: Literal['limit.unset'] = 'limit.unset'
+    key: str
+
+
 def plural(subject: str) -> str:
     """``idea`` → ``ideas``: the table of an event kind's subject."""
     return f'{subject}s'
@@ -302,6 +348,65 @@ def link_event(row: Row) -> Trigger:
         temp=True,
     )
 
+
+HOME_TARGET = (f"'{HOME.kind}'", str(HOME.id))
+
+
+def inserted(
+    model: type[EventModel], table: str, target: tuple[str, str], *, actor: str = SESSION_ACTOR, when: str | None = None
+) -> Trigger:
+    """TEMP: log an inserted row of ``table`` as an event of ``model`` on ``target`` (its kind and id), each as SQL."""
+    (kind,) = model.kinds()
+    return Trigger(
+        f'{table}_{kind.split(".")[1]}_event',
+        table,
+        'AFTER INSERT',
+        when=when,
+        body=event_insert(actor, *target, payload(model, 'NEW')),
+        temp=True,
+    )
+
+
+OUTBOX = (
+    inserted(AgentSessionRequested, 'agent_sessions', ("'agent_session'", 'NEW.id'), when="NEW.state = 'requested'"),
+    inserted(IdeaCreated, 'ideas', ("'idea'", 'NEW.id'), actor='NEW.created_by'),
+    Trigger(
+        'campaigns_config_event',
+        'campaigns',
+        'AFTER UPDATE',
+        of=('config',),
+        when='OLD.config IS NOT NEW.config',
+        body=event_insert(SESSION_ACTOR, "'campaign'", 'NEW.id', payload(CampaignConfigChanged, 'NEW')),
+        temp=True,
+    ),
+    Trigger(
+        'evaluations_cancelled_event',
+        'evaluations',
+        'AFTER UPDATE',
+        of=('cancelled_by',),
+        when='OLD.cancelled_by IS NULL AND NEW.cancelled_by IS NOT NULL',
+        body=event_insert(SESSION_ACTOR, "'candidate'", 'NEW.candidate_id', payload(EvaluationCancelled, 'NEW')),
+        temp=True,
+    ),
+    inserted(LimitSet, 'limits', HOME_TARGET),
+    Trigger(
+        'limits_updated_event',
+        'limits',
+        'AFTER UPDATE',
+        of=('value',),
+        when='OLD.value IS NOT NEW.value',
+        body=event_insert(SESSION_ACTOR, *HOME_TARGET, payload(LimitSet, 'NEW')),
+        temp=True,
+    ),
+    Trigger(
+        'limits_unset_event',
+        'limits',
+        'AFTER DELETE',
+        body=event_insert(SESSION_ACTOR, *HOME_TARGET, payload(LimitUnset, 'OLD')),
+        temp=True,
+    ),
+)
+"""The writes that the daemon reacts to and that no decision above logs, so that it wakes on the event."""
 
 CHANGES = (
     changed(IdeaStatusChanged),

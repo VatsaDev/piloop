@@ -1,4 +1,4 @@
-"""``Database.wait_until``: a waiter wakes on a commit of this process, polls for one of another, and gives up."""
+"""``Database.wait_until``: a waiter wakes on a commit of this process, on an event of another, and gives up."""
 
 import asyncio
 import sqlite3
@@ -11,8 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from piloop.actor import System
-from piloop.db import session as db_session
-from piloop.db.models import Campaign
+from piloop.db.models import Campaign, Pause
 from piloop.db.session import Database, DatabaseClosed
 
 
@@ -26,10 +25,19 @@ def renamed(campaign: Campaign) -> Callable[[Session], bool]:
     return lambda s: s.get_one(Campaign, campaign.id).name == 'renamed'
 
 
-def test_a_waiter_wakes_on_a_commit_of_this_process_before_its_poll(
-    db: Database, campaign: Campaign, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(db_session, 'WAIT_POLL_SECONDS', 60)
+def pause(db: Database, campaign: Campaign) -> None:
+    """A change that adds an event: ``campaign.paused``."""
+    with db.session() as s:
+        row = s.get_one(Campaign, campaign.id)
+        row.paused, row.paused_reason = Pause.ALL, 'a test'
+        s.commit()
+
+
+def paused(campaign: Campaign) -> Callable[[Session], bool]:
+    return lambda s: s.get_one(Campaign, campaign.id).paused is Pause.ALL
+
+
+def test_a_waiter_wakes_on_a_commit_of_this_process(db: Database, campaign: Campaign) -> None:
     seen: list[bool] = []
     waiting = threading.Thread(target=lambda: seen.append(db.wait_until(renamed(campaign))))
     waiting.start()
@@ -39,19 +47,43 @@ def test_a_waiter_wakes_on_a_commit_of_this_process_before_its_poll(
     assert seen == [True]
 
 
-def test_a_waiter_polls_for_a_commit_of_another_process(
-    db: Database, campaign: Campaign, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(db_session, 'WAIT_POLL_SECONDS', 0.05)
+def test_a_waiter_wakes_on_an_event_of_another_process(db: Database, campaign: Campaign) -> None:
     other = Database(str(db.engine.url), actor=System.HUMAN)  # its commits notify its own waiters, not this one's
     seen: list[bool] = []
-    waiting = threading.Thread(target=lambda: seen.append(db.wait_until(renamed(campaign))))
+    waiting = threading.Thread(target=lambda: seen.append(db.wait_until(paused(campaign))))
+    waiting.start()
+    time.sleep(0.1)
+    began = time.monotonic()
+    pause(other, campaign)
+    other.close()
+    waiting.join(10)
+    assert seen == [True]
+    assert time.monotonic() - began < 5, 'the doorbell rang'
+
+
+def test_a_commit_of_another_process_without_an_event_wakes_no_waiter(db: Database, campaign: Campaign) -> None:
+    """A heartbeat or a renewal of another process must not wake every waiter: only the feed's head rings."""
+    other = Database(str(db.engine.url), actor=System.HUMAN)
+    waiting = threading.Thread(target=lambda: db.wait_until(renamed(campaign), timeout=1))
+    began = time.monotonic()
     waiting.start()
     time.sleep(0.1)
     rename(other, campaign)
     other.close()
     waiting.join(10)
-    assert seen == [True]
+    assert time.monotonic() - began >= 0.9, 'it read again only at its timeout'
+
+
+def test_notify_wakes_a_waiter_to_check_its_give_up(db: Database) -> None:
+    asked = threading.Event()
+    seen: list[bool] = []
+    waiting = threading.Thread(target=lambda: seen.append(db.wait_until(lambda _s: False, give_up=asked.is_set)))
+    waiting.start()
+    time.sleep(0.1)
+    asked.set()
+    db.notify()
+    waiting.join(5)
+    assert seen == [False]
 
 
 def test_a_closed_database_makes_its_waiters_give_up(db: Database) -> None:
@@ -63,6 +95,9 @@ def test_a_closed_database_makes_its_waiters_give_up(db: Database) -> None:
     waiting.join(10)
     assert not waiting.is_alive() and seen == [False]
     assert db.wait_until(lambda _s: True) is False, 'and a new waiter gives up at once'
+    assert db._doorbell is not None
+    db._doorbell.join(5)
+    assert not db._doorbell.is_alive(), 'the doorbell stops, and its connection went back before the pool closed'
 
 
 def test_a_waiter_gives_up_when_asked(db: Database) -> None:
@@ -140,10 +175,7 @@ def test_a_closed_database_refuses_a_new_session(db: Database) -> None:
         db.session()
 
 
-def test_a_waiter_gives_up_at_its_timeout_without_waiting_for_the_poll(
-    db: Database, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(db_session, 'WAIT_POLL_SECONDS', 60)
+def test_a_waiter_gives_up_at_its_timeout(db: Database) -> None:
     began = time.monotonic()
     assert db.wait_until(lambda _s: False, timeout=0.1) is False
     assert time.monotonic() - began < 5
@@ -161,16 +193,12 @@ def test_changed_returns_on_a_commit_of_this_process_and_holds_no_thread(db: Dat
     asyncio.run(waits())
 
 
-def test_changed_waits_for_no_poll_and_returns_at_once_once_closed(
-    db: Database, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(db_session, 'WAIT_POLL_SECONDS', 0.05)
-
+def test_changed_waits_to_its_timeout_and_returns_at_once_once_closed(db: Database) -> None:
     async def waits() -> None:
         seen = await db.changed(0, 0)
         began = time.monotonic()
         assert await db.changed(seen, 0.5) == seen
-        assert time.monotonic() - began >= 0.4, 'nothing committed here: it waits to its timeout, not for the poll'
+        assert time.monotonic() - began >= 0.4, 'nothing committed: the doorbell does not wake it'
         threading.Timer(0.1, db.close).start()
         began = time.monotonic()
         await db.changed(seen, 30)
