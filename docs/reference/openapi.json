@@ -856,7 +856,531 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "$ref": "#/components/schemas/Defined"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/campaigns/{campaign}/seeds": {
+      "post": {
+        "summary": "File Seed",
+        "description": "File a seed, for research to develop into a defined idea or to reject.",
+        "operationId": "file_seed",
+        "parameters": [
+          {
+            "name": "campaign",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "The campaign's name.",
+              "title": "Campaign"
+            },
+            "description": "The campaign's name."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SeedBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
                   "$ref": "#/components/schemas/IdeaAnswer"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ideas/{idea}/develop": {
+      "post": {
+        "summary": "Develop",
+        "description": "Develop a seed into a defined idea that the daemon can schedule.",
+        "operationId": "develop",
+        "parameters": [
+          {
+            "name": "idea",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Idea"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DevelopBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Defined"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ideas/{idea}/status": {
+      "post": {
+        "summary": "Set Status",
+        "description": "Set an idea's status, with a note on the idea that says why.",
+        "operationId": "set_status",
+        "parameters": [
+          {
+            "name": "idea",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Idea"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StatusBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusChanged"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ideas/{idea}/links/{kind}/{target}": {
+      "put": {
+        "summary": "Link",
+        "description": "Link an idea to another of its campaign: it runs after the target, or supersedes it.",
+        "operationId": "link",
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/LinkKind"
+            }
+          },
+          {
+            "name": "idea",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Idea"
+            }
+          },
+          {
+            "name": "target",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Target"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Reasoned"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdeaAnswer"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Unlink",
+        "description": "Delete an idea's link.",
+        "operationId": "unlink",
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/LinkKind"
+            }
+          },
+          {
+            "name": "target",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Target"
+            }
+          },
+          {
+            "name": "idea",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Idea"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Reasoned"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdeaAnswer"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ideas/{idea}/base": {
+      "post": {
+        "summary": "Set Base",
+        "description": "Set the candidate that an idea's runs start from, or clear the pin.",
+        "operationId": "set_base",
+        "parameters": [
+          {
+            "name": "idea",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Idea"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BaseBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdeaAnswer"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ideas/{idea}/track": {
+      "post": {
+        "summary": "Set Track",
+        "description": "Move an idea to another track of its campaign, with a note on the idea that says why.",
+        "operationId": "set_track",
+        "parameters": [
+          {
+            "name": "idea",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Idea"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TrackBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrackChanged"
                 }
               }
             }
@@ -1135,6 +1659,32 @@
         ],
         "title": "AnomalyNews",
         "description": "An anomaly that the daemon gave to a watchdog."
+      },
+      "BaseBody": {
+        "properties": {
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "base": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base"
+          }
+        },
+        "type": "object",
+        "required": [
+          "reason",
+          "base"
+        ],
+        "title": "BaseBody",
+        "description": "The candidate that an idea's runs start from. Null: no pin, the head when the run starts."
       },
       "Batch": {
         "properties": {
@@ -1567,6 +2117,153 @@
         "title": "DaemonState",
         "description": "The daemon that answers: its process, and where it listens."
       },
+      "Defined": {
+        "properties": {
+          "cursor": {
+            "type": "integer",
+            "title": "Cursor"
+          },
+          "idea": {
+            "$ref": "#/components/schemas/IdeaView"
+          },
+          "review": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review",
+            "description": "Why the idea waits for a review, as ``proposed`` although nobody asked: its author's role is held. Else null."
+          }
+        },
+        "type": "object",
+        "required": [
+          "cursor",
+          "idea",
+          "review"
+        ],
+        "title": "Defined",
+        "description": "An idea that ``add`` or ``develop`` defined."
+      },
+      "DevelopBody": {
+        "properties": {
+          "hypothesis": {
+            "type": "string",
+            "title": "Hypothesis",
+            "description": "The mechanism, and why it should move the metric."
+          },
+          "evidence": {
+            "type": "string",
+            "title": "Evidence",
+            "description": "What supports it, with ids and paths."
+          },
+          "check": {
+            "type": "string",
+            "title": "Check",
+            "description": "The cheapest measurement that can prove it wrong, and the result that stops the run."
+          },
+          "metric": {
+            "type": "string",
+            "title": "Metric",
+            "description": "The metric that decides success."
+          },
+          "effect": {
+            "type": "string",
+            "title": "Effect",
+            "description": "The expected size of the effect in the metric's units, and why."
+          },
+          "plan": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title",
+            "description": "A clearer title. Default: the seed's."
+          },
+          "family": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Family"
+          },
+          "base": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base"
+          },
+          "priority": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Priority"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Default: the seed's priority."
+          },
+          "proposed": {
+            "type": "boolean",
+            "title": "Proposed",
+            "default": false
+          },
+          "after": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "After",
+            "default": []
+          },
+          "supersedes": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Supersedes",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "hypothesis",
+          "evidence",
+          "check",
+          "metric",
+          "effect"
+        ],
+        "title": "DevelopBody",
+        "description": "What makes a seed a defined idea: each field that the implementer needs."
+      },
       "Ending": {
         "type": "string",
         "enum": [
@@ -1734,25 +2431,12 @@
           },
           "idea": {
             "$ref": "#/components/schemas/IdeaView"
-          },
-          "review": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Review",
-            "description": "Why the idea waits for a review, as ``proposed`` although nobody asked: its author's role is held. Else null."
           }
         },
         "type": "object",
         "required": [
           "cursor",
-          "idea",
-          "review"
+          "idea"
         ],
         "title": "IdeaAnswer",
         "description": "An idea that a change wrote, read at ``cursor``."
@@ -2088,6 +2772,15 @@
         "title": "Lines",
         "description": "A list: one item per line."
       },
+      "LinkKind": {
+        "type": "string",
+        "enum": [
+          "after",
+          "supersedes"
+        ],
+        "title": "LinkKind",
+        "description": "How one idea relates to another in ``idea_links``: it runs *after* the target, or it *supersedes* the target."
+      },
       "LiveAgent": {
         "properties": {
           "id": {
@@ -2388,6 +3081,20 @@
         "title": "ProblemDetail",
         "description": "Why a route refuses a request, with its status: a ``Problem``, and what to do."
       },
+      "Reasoned": {
+        "properties": {
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "reason"
+        ],
+        "title": "Reasoned",
+        "description": "A change to an idea, with why: it goes into the event or a note on the idea."
+      },
       "Rendered": {
         "properties": {
           "title": {
@@ -2492,6 +3199,50 @@
         "title": "Seed",
         "description": "A seed that waits for research."
       },
+      "SeedBody": {
+        "properties": {
+          "hunch": {
+            "type": "string",
+            "title": "Hunch"
+          },
+          "provenance": {
+            "type": "string",
+            "title": "Provenance",
+            "description": "Pointers to what prompted the hunch: ids, paths or numbers."
+          },
+          "base": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base",
+            "description": "The candidate to start from, when the hunch is about that tree."
+          },
+          "track": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Track",
+            "description": "The track it works on. Required when the campaign has more than one track."
+          }
+        },
+        "type": "object",
+        "required": [
+          "hunch",
+          "provenance"
+        ],
+        "title": "SeedBody",
+        "description": "A seed: a hunch with pointers, for research to develop into a defined idea or to reject."
+      },
       "SeedNews": {
         "properties": {
           "kind": {
@@ -2536,6 +3287,46 @@
         ],
         "title": "Status",
         "description": "What ``piloop status --json`` prints: the daemon, and each campaign read at ``cursor``."
+      },
+      "StatusBody": {
+        "properties": {
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "status": {
+            "$ref": "#/components/schemas/IdeaStatus"
+          }
+        },
+        "type": "object",
+        "required": [
+          "reason",
+          "status"
+        ],
+        "title": "StatusBody",
+        "description": "An idea's new status."
+      },
+      "StatusChanged": {
+        "properties": {
+          "cursor": {
+            "type": "integer",
+            "title": "Cursor"
+          },
+          "idea": {
+            "$ref": "#/components/schemas/IdeaView"
+          },
+          "was": {
+            "$ref": "#/components/schemas/IdeaStatus"
+          }
+        },
+        "type": "object",
+        "required": [
+          "cursor",
+          "idea",
+          "was"
+        ],
+        "title": "StatusChanged",
+        "description": "An idea whose status changed."
       },
       "StopBody": {
         "properties": {
@@ -2714,6 +3505,48 @@
         ],
         "title": "Thread",
         "description": "An inbox item, and the comments that it cites, that cite it, or that reply to it."
+      },
+      "TrackBody": {
+        "properties": {
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "track": {
+            "type": "string",
+            "title": "Track"
+          }
+        },
+        "type": "object",
+        "required": [
+          "reason",
+          "track"
+        ],
+        "title": "TrackBody",
+        "description": "The track to move an idea to."
+      },
+      "TrackChanged": {
+        "properties": {
+          "cursor": {
+            "type": "integer",
+            "title": "Cursor"
+          },
+          "idea": {
+            "$ref": "#/components/schemas/IdeaView"
+          },
+          "was": {
+            "type": "string",
+            "title": "Was"
+          }
+        },
+        "type": "object",
+        "required": [
+          "cursor",
+          "idea",
+          "was"
+        ],
+        "title": "TrackChanged",
+        "description": "An idea that moved to another track."
       },
       "TrackScore": {
         "properties": {

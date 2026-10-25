@@ -56,7 +56,6 @@ from piloop.db.models import (
     Idea,
     IdeaLink,
     InstanceEnd,
-    LinkKind,
     Measurement,
     Origin,
     Run,
@@ -75,6 +74,7 @@ from piloop.ids import (
     CommentKind,
     Ending,
     IdeaStatus,
+    LinkKind,
     TargetKind,
     TargetRef,
 )
@@ -698,7 +698,7 @@ def test_inbox_lists_what_waits_shows_one_with_its_thread_and_acknowledges(
     run_cli(['inbox', 'reply', '5', 'park it', '--priority', '1'])
     assert out().strip() == 'comment#6 decision on comment#2', 'the answer goes on the root of the thread'
     with pytest.raises(SystemExit, match="^no campaign 'nope'"):
-        run_cli(['idea', 'seed', 'nope', 'a hunch', '--from', 'a pointer'])
+        run_cli(['candidate', 'import', 'nope', 'HEAD'])
 
 
 @pytest.mark.usefixtures('api')
@@ -1863,7 +1863,7 @@ READERS = (
     ['watch'],
     ['limits'],
     ['campaign', 'tree'],
-    ['idea', 'seed', 'demo', 'a hunch', '--from', 'a pointer'],
+    ['candidate', 'remeasure', '1'],
 )
 """Commands that open the database and must never migrate it: only serve, migrate and upgrade do."""
 

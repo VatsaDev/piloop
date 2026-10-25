@@ -13,7 +13,7 @@ from typing import Annotated, Literal
 
 from pydantic import JsonValue
 
-from piloop.db.models import EventModel, LinkKind, Origin, Pause
+from piloop.db.models import EventModel, Origin, Pause
 from piloop.db.triggers.ddl import Event, Trigger
 from piloop.db.triggers.provenance import DAEMON_ACTOR, NOW, SESSION_ACTOR
 from piloop.ids import (
@@ -24,6 +24,7 @@ from piloop.ids import (
     CommentKind,
     IdeaId,
     IdeaStatus,
+    LinkKind,
     RoleName,
     TargetKind,
     TrackName,

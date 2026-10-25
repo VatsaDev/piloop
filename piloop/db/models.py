@@ -57,6 +57,7 @@ from piloop.ids import (
     EvaluatorId,
     IdeaId,
     IdeaStatus,
+    LinkKind,
     MeasurementId,
     Revision,
     RoleName,
@@ -126,13 +127,6 @@ class Pause(StrEnum):
 
     LAUNCHES = 'launches'
     ALL = 'all'
-
-
-class LinkKind(StrEnum):
-    """How one idea relates to another in ``idea_links``: it runs *after* the target, or it *supersedes* the target."""
-
-    AFTER = 'after'
-    SUPERSEDES = 'supersedes'
 
 
 class RunStatus(StrEnum):

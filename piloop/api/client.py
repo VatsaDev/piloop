@@ -20,6 +20,8 @@ from piloop.actor import Actor
 from piloop.api.contract import (
     MAX_POLL_SECONDS,
     AckBody,
+    BaseBody,
+    DevelopBody,
     EventsQuery,
     IdeaBody,
     InboxQuery,
@@ -27,14 +29,19 @@ from piloop.api.contract import (
     Params,
     PauseBody,
     Polled,
+    Reasoned,
     ReplyBody,
+    SeedBody,
     Selection,
+    StatusBody,
     StopBody,
+    TrackBody,
 )
 from piloop.api.views import (
     Acked,
     Batch,
     CampaignAnswer,
+    Defined,
     IdeaAnswer,
     Inbox,
     News,
@@ -42,9 +49,11 @@ from piloop.api.views import (
     ProblemDetail,
     Replied,
     Status,
+    StatusChanged,
     Thread,
+    TrackChanged,
 )
-from piloop.ids import CommentId
+from piloop.ids import CommentId, IdeaId, LinkKind
 
 TIMEOUT_SECONDS = 30
 """How long a call waits for its answer, beyond a long-poll's own wait."""
@@ -124,8 +133,29 @@ class Client:
     def stop(self, campaign: str, body: StopBody) -> CampaignAnswer:
         return self._post(f'/v1/campaigns/{_segment(campaign)}/stop', body, CampaignAnswer)
 
-    def add_idea(self, campaign: str, body: IdeaBody) -> IdeaAnswer:
-        return self._post(f'/v1/campaigns/{_segment(campaign)}/ideas', body, IdeaAnswer)
+    def add_idea(self, campaign: str, body: IdeaBody) -> Defined:
+        return self._post(f'/v1/campaigns/{_segment(campaign)}/ideas', body, Defined)
+
+    def file_seed(self, campaign: str, body: SeedBody) -> IdeaAnswer:
+        return self._post(f'/v1/campaigns/{_segment(campaign)}/seeds', body, IdeaAnswer)
+
+    def develop(self, idea: IdeaId, body: DevelopBody) -> Defined:
+        return self._post(f'/v1/ideas/{idea}/develop', body, Defined)
+
+    def set_status(self, idea: IdeaId, body: StatusBody) -> StatusChanged:
+        return self._post(f'/v1/ideas/{idea}/status', body, StatusChanged)
+
+    def link(self, idea: IdeaId, kind: LinkKind, target: IdeaId, body: Reasoned) -> IdeaAnswer:
+        return self._send('PUT', f'/v1/ideas/{idea}/links/{kind}/{target}', body, IdeaAnswer)
+
+    def unlink(self, idea: IdeaId, kind: LinkKind, target: IdeaId, body: Reasoned) -> IdeaAnswer:
+        return self._send('DELETE', f'/v1/ideas/{idea}/links/{kind}/{target}', body, IdeaAnswer)
+
+    def set_base(self, idea: IdeaId, body: BaseBody) -> IdeaAnswer:
+        return self._post(f'/v1/ideas/{idea}/base', body, IdeaAnswer)
+
+    def set_track(self, idea: IdeaId, body: TrackBody) -> TrackChanged:
+        return self._post(f'/v1/ideas/{idea}/track', body, TrackChanged)
 
     def ack(self, body: AckBody) -> Acked:
         return self._post('/v1/inbox/ack', body, Acked)
@@ -145,14 +175,18 @@ class Client:
         return _answer(response, answer)
 
     def _post[A: BaseModel](self, path: str, body: Params | None, answer: type[A]) -> A:
-        """POST ``body`` as JSON to ``path``, and read the answer as ``answer``.
+        return self._send('POST', path, body, answer)
+
+    def _send[A: BaseModel](self, method: str, path: str, body: Params | None, answer: type[A]) -> A:
+        """Send ``body`` as JSON to ``path`` with ``method``, and read the answer as ``answer``.
 
         Raises:
             Refused: The daemon refused the call.
         """
         content = None if body is None else body.model_dump_json()
         headers = None if body is None else {'content-type': 'application/json'}
-        return _answer(self._http.post(path, content=content, headers=headers, timeout=TIMEOUT_SECONDS), answer)
+        response = self._http.request(method, path, content=content, headers=headers, timeout=TIMEOUT_SECONDS)
+        return _answer(response, answer)
 
 
 def _segment(campaign: str) -> str:

@@ -11,14 +11,13 @@ from piloop.db.models import (
     Comment,
     Idea,
     IdeaLink,
-    LinkKind,
     Measurement,
     Run,
     RunEnd,
     RunStatus,
 )
 from piloop.db.session import Database
-from piloop.ids import IMPLEMENTER, CommentKind, IdeaStatus, Revision, TargetKind, TargetRef
+from piloop.ids import IMPLEMENTER, CommentKind, IdeaStatus, LinkKind, Revision, TargetKind, TargetRef
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.reports.history import (
     FINDINGS_IN_HISTORY,

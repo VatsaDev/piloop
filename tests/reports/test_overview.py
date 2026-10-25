@@ -20,14 +20,23 @@ from piloop.db.models import (
     Event,
     Idea,
     IdeaLink,
-    LinkKind,
     Measurement,
     Run,
     RunEnd,
     RunStatus,
 )
 from piloop.db.session import Database
-from piloop.ids import IMPLEMENTER, CampaignStatus, CommentKind, IdeaStatus, RoleName, RunId, TargetKind, TargetRef
+from piloop.ids import (
+    IMPLEMENTER,
+    CampaignStatus,
+    CommentKind,
+    IdeaStatus,
+    LinkKind,
+    RoleName,
+    RunId,
+    TargetKind,
+    TargetRef,
+)
 from piloop.plugins.section.anomalies import ANOMALIES_SHOWN, REFS_SHOWN
 from piloop.plugins.section.contract import SECTIONS, Rendering, Surface, defaults, markdown
 from piloop.plugins.section.queue import BLOCKED_SHOWN

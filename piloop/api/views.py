@@ -485,8 +485,25 @@ class IdeaAnswer(View):
 
     cursor: int
     idea: IdeaView
+
+
+class Defined(IdeaAnswer):
+    """An idea that ``add`` or ``develop`` defined."""
+
     review: str | None
     """Why the idea waits for a review, as ``proposed`` although nobody asked: its author's role is held. Else null."""
+
+
+class StatusChanged(IdeaAnswer):
+    """An idea whose status changed."""
+
+    was: IdeaStatus
+
+
+class TrackChanged(IdeaAnswer):
+    """An idea that moved to another track."""
+
+    was: TrackName
 
 
 class AckOutcome(StrEnum):

@@ -10,7 +10,16 @@ from typing import Annotated, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from piloop.ids import CampaignStatus, CandidateId, CommentId, CommentKind, Ending, IdeaId, TrackName
+from piloop.ids import (
+    CampaignStatus,
+    CandidateId,
+    CommentId,
+    CommentKind,
+    Ending,
+    IdeaId,
+    IdeaStatus,
+    TrackName,
+)
 
 MAX_POLL_SECONDS = 25
 """The longest that the server holds a long-poll (``Polled.wait``), as the GitHub Actions runner's."""
@@ -114,6 +123,7 @@ class Problem(StrEnum):
 
     UNKNOWN_CAMPAIGN = 'unknown_campaign'
     UNKNOWN_COMMENT = 'unknown_comment'
+    UNKNOWN_IDEA = 'unknown_idea'
     CURSOR_AHEAD = 'cursor_ahead'
     REFUSED = 'refused'
     """An operation refused its input and changed nothing. The detail says why."""
@@ -166,6 +176,67 @@ class IdeaBody(Params):
     """The ideas to wait for. The idea runs from the head when all are done."""
     supersedes: tuple[IdeaId, ...] = ()
     """The ideas that this idea refines."""
+
+
+class SeedBody(Params):
+    """A seed: a hunch with pointers, for research to develop into a defined idea or to reject."""
+
+    hunch: str
+    provenance: str
+    """Pointers to what prompted the hunch: ids, paths or numbers."""
+    base: CandidateId | None = None
+    """The candidate to start from, when the hunch is about that tree."""
+    track: TrackName | None = None
+    """The track it works on. Required when the campaign has more than one track."""
+
+
+class DevelopBody(Params):
+    """What makes a seed a defined idea: each field that the implementer needs."""
+
+    hypothesis: str
+    """The mechanism, and why it should move the metric."""
+    evidence: str
+    """What supports it, with ids and paths."""
+    check: str
+    """The cheapest measurement that can prove it wrong, and the result that stops the run."""
+    metric: str
+    """The metric that decides success."""
+    effect: str
+    """The expected size of the effect in the metric's units, and why."""
+    plan: str | None = None
+    title: str | None = None
+    """A clearer title. Default: the seed's."""
+    family: str | None = None
+    base: CandidateId | None = None
+    priority: Priority | None = None
+    """Default: the seed's priority."""
+    proposed: bool = False
+    after: tuple[IdeaId, ...] = ()
+    supersedes: tuple[IdeaId, ...] = ()
+
+
+class Reasoned(Params):
+    """A change to an idea, with why: it goes into the event or a note on the idea."""
+
+    reason: str
+
+
+class StatusBody(Reasoned):
+    """An idea's new status."""
+
+    status: IdeaStatus
+
+
+class BaseBody(Reasoned):
+    """The candidate that an idea's runs start from. Null: no pin, the head when the run starts."""
+
+    base: CandidateId | None
+
+
+class TrackBody(Reasoned):
+    """The track to move an idea to."""
+
+    track: TrackName
 
 
 class AckBody(Params):

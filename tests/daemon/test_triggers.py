@@ -26,7 +26,6 @@ from piloop.db.models import (
     Evaluator,
     Idea,
     IdeaLink,
-    LinkKind,
     Measurement,
     Run,
     RunEnd,
@@ -34,7 +33,7 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database
-from piloop.ids import IMPLEMENTER, AgentSessionId, Ending, IdeaId, IdeaStatus, RunId, TargetKind, TargetRef
+from piloop.ids import IMPLEMENTER, AgentSessionId, Ending, IdeaId, IdeaStatus, LinkKind, RunId, TargetKind, TargetRef
 from piloop.otel import Tracer
 from piloop.plugins.executor.workers import Workers
 from piloop.plugins.verdict_rule.contract import Outcome

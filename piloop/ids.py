@@ -122,3 +122,10 @@ class IdeaStatus(StrEnum):
     DONE = 'done'
     PARKED = 'parked'
     REJECTED = 'rejected'
+
+
+class LinkKind(StrEnum):
+    """How one idea relates to another in ``idea_links``: it runs *after* the target, or it *supersedes* the target."""
+
+    AFTER = 'after'
+    SUPERSEDES = 'supersedes'

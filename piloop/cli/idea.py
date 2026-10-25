@@ -1,17 +1,14 @@
-"""The ``piloop idea`` commands: propose work, and change an idea's status, links, base or track."""
+"""The ``piloop idea`` commands, clients of the API: propose work, and change an idea's status, links, base or track."""
 
 from typing import Annotated, Literal
 
 import cyclopts
 
-from piloop.api.contract import IdeaBody
-from piloop.campaign import ops
-from piloop.campaign.ideas import Definition
-from piloop.cli import common, local
+from piloop.api.contract import BaseBody, DevelopBody, IdeaBody, Reasoned, SeedBody, StatusBody, TrackBody
+from piloop.cli import common
 from piloop.cli.client import api, campaign_name
 from piloop.cli.common import HARNESS_HELP, CampaignRef
-from piloop.db.models import LinkKind
-from piloop.ids import CandidateId, IdeaId, IdeaStatus, TrackName
+from piloop.ids import CandidateId, IdeaId, IdeaStatus, LinkKind, TrackName
 
 app = cyclopts.App(name='idea')  # its help is where piloop.cli.main registers it
 PRIORITY_HELP = 'From 0 (urgent) to 4 (someday).'
@@ -106,18 +103,11 @@ def idea_seed(
     negative results. Then it defines the seed (`piloop idea develop`) or rejects it with the reason. The seed is
     signed as PILOOP_ACTOR.
     """
-    with local.refused(), local.session() as s:
-        idea = ops.file_seed(
-            s,
-            local.campaign(s, ref).id,
-            hunch,
-            actor=common.settings.actor,
-            provenance=from_,
-            base=base,
-            track=track,
-        )
-        s.commit()
-        common.console.print(f'idea#{idea.id} seed: {hunch}; research develops it next', markup=False)
+    with api() as client:
+        idea = client.file_seed(
+            campaign_name(client, ref), SeedBody(hunch=hunch, provenance=from_, base=base, track=track)
+        ).idea
+    common.console.print(f'idea#{idea.id} seed: {hunch}; research develops it next', markup=False)
 
 
 @app.command(name='develop')
@@ -155,22 +145,27 @@ def idea_develop(
     `piloop schema`). The idea is signed as PILOOP_ACTOR. The idea and its links are written together, so the daemon
     never sees the ready idea without them.
     """
-    with local.refused(), local.session() as s:
-        idea, held = ops.develop_seed(
-            s,
-            idea_id,
-            Definition(hypothesis, evidence, check, metric, effect, plan),
-            actor=common.settings.actor,
-            title=title,
-            family=family,
-            base=base,
-            priority=priority,
-            proposed=proposed,
-            after=after,
-            supersedes=supersedes,
-        )
-        s.commit()
-        common.console.print(f'idea#{idea.id} {idea.status} p{idea.priority}: {idea.title}{waits(held)}', markup=False)
+    body = DevelopBody(
+        hypothesis=hypothesis,
+        evidence=evidence,
+        check=check,
+        metric=metric,
+        effect=effect,
+        plan=plan,
+        title=title,
+        family=family,
+        base=base,
+        priority=priority,
+        proposed=proposed,
+        after=after,
+        supersedes=supersedes,
+    )
+    with api() as client:
+        developed = client.develop(idea_id, body)
+    idea = developed.idea
+    common.console.print(
+        f'idea#{idea.id} {idea.status} p{idea.priority}: {idea.title}{waits(developed.review)}', markup=False
+    )
 
 
 @app.command(name='status')
@@ -187,10 +182,9 @@ def idea_status(
     without a run, so the ideas after it start. A seed is developed first (`piloop idea develop`), and a scheduled
     idea has an open run: either one can only be parked or rejected. A parked or rejected idea's open run finishes.
     """
-    with local.refused(), local.session() as s:
-        old = ops.set_idea_status(s, idea_id, status, reason=reason, actor=common.settings.actor)
-        s.commit()
-        common.console.print(f'idea#{idea_id} {old} → {status}: {reason.strip()}', markup=False)
+    with api() as client:
+        was = client.set_status(idea_id, StatusBody(status=status, reason=reason)).was
+    common.console.print(f'idea#{idea_id} {was} → {status}: {reason.strip()}', markup=False)
 
 
 @app.command(name='link')
@@ -207,10 +201,9 @@ def idea_link(
     The link is written in one transaction, so the daemon never queues the idea in between. A scheduled idea takes no
     `after` link: its run started already. A link that closes a cycle of its kind is refused.
     """
-    with local.refused(), local.session() as s:
-        ops.link(s, idea_id, kind, target_id, reason=reason, actor=common.settings.actor)
-        s.commit()
-        common.console.print(f'idea#{idea_id} {kind} idea#{target_id}', markup=False)
+    with api() as client:
+        client.link(idea_id, kind, target_id, Reasoned(reason=reason))
+    common.console.print(f'idea#{idea_id} {kind} idea#{target_id}', markup=False)
 
 
 @app.command(name='unlink')
@@ -223,10 +216,9 @@ def idea_unlink(
     reason: Reason,
 ) -> None:
     """Delete an idea's link, for example an `after` link to a prerequisite that kept nothing, to run the idea anyway."""
-    with local.refused(), local.session() as s:
-        ops.unlink(s, idea_id, kind, target_id, reason=reason, actor=common.settings.actor)
-        s.commit()
-        common.console.print(f'idea#{idea_id} no longer {kind} idea#{target_id}', markup=False)
+    with api() as client:
+        client.unlink(idea_id, kind, target_id, Reasoned(reason=reason))
+    common.console.print(f'idea#{idea_id} no longer {kind} idea#{target_id}', markup=False)
 
 
 @app.command(name='base')
@@ -245,11 +237,10 @@ def idea_base(
     A pin to another candidate than the head makes a branch. A run already open keeps its base; the next attempt
     takes the new one.
     """
-    with local.refused(), local.session() as s:
-        ops.set_base(s, idea_id, None if base == 'head' else base, reason=reason, actor=common.settings.actor)
-        s.commit()
-        start = 'the head' if base == 'head' else f'candidate#{base}'
-        common.console.print(f'idea#{idea_id} starts from {start}', markup=False)
+    with api() as client:
+        client.set_base(idea_id, BaseBody(base=None if base == 'head' else base, reason=reason))
+    start = 'the head' if base == 'head' else f'candidate#{base}'
+    common.console.print(f'idea#{idea_id} starts from {start}', markup=False)
 
 
 @app.command(name='track')
@@ -264,10 +255,9 @@ def idea_track(
 
     Its runs are judged on that track's primary. A scheduled idea keeps its track: its run is judged on it.
     """
-    with local.refused(), local.session() as s:
-        old = ops.set_track(s, idea_id, track, reason=reason, actor=common.settings.actor)
-        s.commit()
-        common.console.print(f'idea#{idea_id} track {old} → {track}', markup=False)
+    with api() as client:
+        was = client.set_track(idea_id, TrackBody(track=track, reason=reason)).was
+    common.console.print(f'idea#{idea_id} track {was} → {track}', markup=False)
 
 
 def waits(held: str | None) -> str:

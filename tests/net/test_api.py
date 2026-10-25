@@ -30,8 +30,10 @@ from piloop.api.contract import (
     Params,
     PauseBody,
     Problem,
+    Reasoned,
     ReplyBody,
     Selection,
+    StatusBody,
     StopBody,
     defaulted,
 )
@@ -41,7 +43,18 @@ from piloop.daemon.api import Handlers, daemon_state, openapi, router, with_api
 from piloop.db.events import emit
 from piloop.db.models import Campaign, Comment, Event, UnknownEvent, utcnow
 from piloop.db.session import Database
-from piloop.ids import AgentSessionId, CampaignStatus, CommentId, CommentKind, RoleName, TargetKind, TargetRef
+from piloop.ids import (
+    AgentSessionId,
+    CampaignStatus,
+    CommentId,
+    CommentKind,
+    IdeaId,
+    IdeaStatus,
+    LinkKind,
+    RoleName,
+    TargetKind,
+    TargetRef,
+)
 from piloop.net import tokens
 from piloop.net.server import OPENAPI, Server, app, local_listener
 from piloop.net.tokens import Tokens
@@ -358,6 +371,11 @@ def test_a_write_answers_its_cursor_and_refuses_what_its_operation_refuses(
         with pytest.raises(Refused, match='^no comment#9$') as missing:
             client.reply(CommentId(9), ReplyBody(body='hm'))
         assert missing.value.error == Problem.UNKNOWN_COMMENT
+        with pytest.raises(Refused, match='^no idea#9$') as no_idea:
+            client.set_status(IdeaId(9), StatusBody(status=IdeaStatus.PARKED, reason='hm'))
+        with pytest.raises(Refused, match='^no idea#9$') as no_target:
+            client.link(added.idea.id, LinkKind.AFTER, IdeaId(9), Reasoned(reason='hm'))
+        assert no_idea.value.error == no_target.value.error == Problem.UNKNOWN_IDEA
         [result] = client.ack(AckBody(ids=(CommentId(9),))).results
         assert result.line() == 'comment#9 is not in the inbox'
 
