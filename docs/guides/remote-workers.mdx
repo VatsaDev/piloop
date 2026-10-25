@@ -88,7 +88,27 @@ secrets = ["piloop-cas"]
 ```
 
 Each worker gets a token of its own, and dials `url`. Give it the server's `[plugins.cas]` in its image, or as
-`PILOOP_PLUGINS` in the provider's `env`. The server needs Modal's credentials and `piloop[modal]`. To stop every
+`PILOOP_PLUGINS` in the provider's `env`.
+
+`secrets` names the Modal Secrets that each sandbox gets as its environment. They are for the worker itself, such as
+the credentials of a bucket that the worker reads. A job's keys, such as a harness's API key, are piloop secrets, which
+the worker gets when the job starts. For an image in a private registry, name the Modal Secret that pulls it:
+
+```toml
+[plugins.executor.pools.gpu]
+runners = ["process"]
+
+[plugins.executor.pools.gpu.provisioner]
+max = 4
+
+[plugins.executor.pools.gpu.provisioner.compute]
+provider = "modal"
+image = "123456789012.dkr.ecr.us-east-1.amazonaws.com/piloop-worker:0.3"
+registry = { kind = "aws-ecr", secret = "piloop-ecr-pull" }
+```
+
+`aws-ecr` takes `AWS_ROLE_ARN` and `AWS_REGION` (Modal's OIDC) or an IAM user's keys. `basic` takes
+`REGISTRY_USERNAME` and `REGISTRY_PASSWORD`. The pull Secret is not in the sandbox's environment. The server needs Modal's credentials and `piloop[modal]`. To stop every
 worker of the pool, drain them:
 
 ```bash

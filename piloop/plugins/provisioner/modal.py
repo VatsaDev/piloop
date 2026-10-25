@@ -6,22 +6,29 @@ provider = "modal"
 image = "ghcr.io/acme/piloop-worker:0.3"
 gpu = "A100"
 secrets = ["piloop-cas"]
+registry = { kind = "aws-ecr", secret = "piloop-ecr-pull" }
 ```
 
 The image has ``piloop`` on its ``PATH``, with the evaluator runners and harnesses that the pool's jobs need. Each
 sandbox gets the worker's credential in a Modal Secret of its own, never in its command, and the named ``secrets``
-(the CAS's credentials, a harness's login) beside it. Its tags name its worker, its pool and this server's owner, so
-``list`` finds this server's sandboxes alone. Modal ends a sandbox after ``timeout_hours`` (24 at most): its lease then
-expires, and the pool starts another one if a job still waits.
+beside it. Its tags name its worker, its pool and this server's owner, so ``list`` finds this server's sandboxes alone.
+
+Modal Secrets are for what the sandbox needs before any job runs: the credentials that pull its image (``registry``),
+and those of the worker process itself (its CAS's, when the worker reads the bucket). What a job needs, such as a
+harness's API key or a gateway URL, comes from piloop's ``secrets`` capability when the job starts, fenced by its
+lease, and is never a Modal Secret: a Modal Secret is in the environment of every job on the sandbox.
+
+Modal ends a sandbox after ``timeout_hours`` (24 at most): its lease then expires, and the pool starts another one if a
+job still waits.
 
 The server needs Modal's credentials (``MODAL_TOKEN_ID`` and ``MODAL_TOKEN_SECRET``, or ``modal token new``), and the
 ``modal`` extra (``uv tool install 'piloop[modal]'``), imported when the pool's provisioner opens.
 """
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, assert_never
 
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from piloop.plugins.provisioner.contract import (
     Instance,
@@ -37,6 +44,18 @@ if TYPE_CHECKING:
 
 OWNER, NAME, POOL = 'piloop-owner', 'piloop-name', 'piloop-pool'
 """The tags of a sandbox."""
+
+
+class Registry(BaseModel):
+    """``registry``: how Modal pulls a private ``image``, with a Modal Secret that only the pull reads."""
+
+    model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
+
+    kind: Literal['aws-ecr', 'basic']
+    """``aws-ecr``: AWS ECR, with ``AWS_ROLE_ARN`` and ``AWS_REGION`` (Modal's OIDC) or an IAM user's keys in the
+    Secret. ``basic``: any other registry, with ``REGISTRY_USERNAME`` and ``REGISTRY_PASSWORD``."""
+    secret: str
+    """The Modal Secret's name, in the provider's ``environment``. It is not in the sandbox's environment."""
 
 
 class Modal(ProvisionerConfig):
@@ -58,8 +77,11 @@ class Modal(ProvisionerConfig):
     """Where the sandboxes run, such as ``"us-east"``. Unset: anywhere."""
     timeout_hours: float = Field(default=24, gt=0, le=24)
     """The longest that a sandbox lives."""
+    registry: Registry | None = None
+    """Where a private ``image`` is pulled from, and with which Secret. Unset: ``image`` is public."""
     secrets: list[str] = []
-    """The Modal Secrets that each sandbox gets as its environment, by name."""
+    """The Modal Secrets that each sandbox gets as its environment, by name: what the sandbox itself needs, never a
+    job's secrets (piloop's ``secrets`` capability gives those)."""
     env: dict[str, str] = {}
     """More environment of each sandbox, such as ``PILOOP_PLUGINS__CAS__PROVIDER``: never a secret."""
 
@@ -114,7 +136,7 @@ class ModalProvisioning:
                 app=self.app(),
                 name=launch.name,
                 tags={OWNER: self._owner, NAME: launch.name, POOL: launch.pool},
-                image=modal.Image.from_registry(config.image),
+                image=self._image(),
                 secrets=[
                     credential,
                     *(modal.Secret.from_name(n, environment_name=config.environment) for n in config.secrets),
@@ -137,6 +159,19 @@ class ModalProvisioning:
             modal.exception.ImageBuildError,
         ) as e:
             raise StartRefused(f'Modal refused the sandbox {launch.name}: {type(e).__name__}: {e}') from e
+
+    def _image(self) -> modal_sdk.Image:
+        modal, config = self._modal, self._config
+        if (registry := config.registry) is None:
+            return modal.Image.from_registry(config.image)
+        secret = modal.Secret.from_name(registry.secret, environment_name=config.environment)
+        match registry.kind:
+            case 'aws-ecr':
+                return modal.Image.from_aws_ecr(config.image, secret=secret)
+            case 'basic':
+                return modal.Image.from_registry(config.image, secret=secret)
+            case _:
+                assert_never(registry.kind)
 
     def stop(self, name: str) -> None:
         for sandbox in self._sandboxes(**{NAME: name}):

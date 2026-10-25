@@ -91,7 +91,8 @@ def sdk(monkeypatch: pytest.MonkeyPatch) -> FakeModal:
     monkeypatch.setattr(modal.Sandbox, 'list', fake.listed)
     monkeypatch.setattr(modal.Secret, 'from_dict', lambda env: ('secret', env))
     monkeypatch.setattr(modal.Secret, 'from_name', lambda name, environment_name=None: ('named', name))
-    monkeypatch.setattr(modal.Image, 'from_registry', lambda tag: ('image', tag))
+    monkeypatch.setattr(modal.Image, 'from_registry', lambda tag, secret=None: ('image', tag, secret))
+    monkeypatch.setattr(modal.Image, 'from_aws_ecr', lambda tag, *, secret: ('ecr image', tag, secret))
     return fake
 
 
@@ -119,7 +120,7 @@ def test_a_sandbox_runs_the_argv_with_the_credential_in_a_secret_and_this_server
         7200,
         {'PILOOP_TICK_SECONDS': '2'},
     )
-    assert sandbox.options['image'] == ('image', 'ghcr.io/acme/piloop-worker:0.3')
+    assert sandbox.options['image'] == ('image', 'ghcr.io/acme/piloop-worker:0.3', None)
     assert sdk.apps == [('piloop', 'dev')], 'one lookup of the app'
     [instance] = provisioning.list()
     assert (instance.name, instance.state, instance.handle) == (
@@ -127,6 +128,28 @@ def test_a_sandbox_runs_the_argv_with_the_credential_in_a_secret_and_this_server
         InstanceState.RUNNING,
         {'id': sandbox.object_id},
     )
+
+
+@pytest.mark.parametrize(
+    ('kind', 'image'),
+    [
+        ('aws-ecr', ('ecr image', 'registry.test/piloop:1', ('named', 'pull'))),
+        ('basic', ('image', 'registry.test/piloop:1', ('named', 'pull'))),
+    ],
+)
+def test_a_private_image_is_pulled_with_its_registry_secret_which_the_sandbox_does_not_get(
+    sdk: FakeModal, kind: str, image: tuple[object, ...]
+) -> None:
+    keys = {'image': 'registry.test/piloop:1', 'registry': {'kind': kind, 'secret': 'pull'}, 'secrets': ['cas']}
+    opened('owner-a', **keys).start(LAUNCH)
+    [sandbox] = sdk.sandboxes
+    assert sandbox.options['image'] == image
+    assert sandbox.options['secrets'] == [('secret', {'PILOOP_HTTPS_TOKEN': 'plt_secret'}), ('named', 'cas')]
+
+
+def test_a_registry_names_a_kind_that_modal_pulls_from() -> None:
+    with pytest.raises(ValueError, match='kind'):
+        PROVISIONERS.validated({'provider': 'modal', 'image': 'x', 'registry': {'kind': 'quay', 'secret': 's'}})
 
 
 @pytest.mark.parametrize(
