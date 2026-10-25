@@ -2,10 +2,12 @@ import fcntl
 import json
 import math
 import os
+import py_compile
 import random
 import re
 import sqlite3
 import subprocess
+import sys
 import threading
 from contextlib import closing
 from pathlib import Path
@@ -3198,6 +3200,26 @@ def test_an_evaluation_that_changes_a_linked_input_is_a_crash_and_the_shared_cop
         measured = s.scalars(select(Measurement).where(Measurement.candidate_id == candidate)).all()[-1]
     assert measured.metrics['score'] == 1.0, 'the input as it was put in the store'
     assert len(events(spans, INPUTS_REBUILT)) == (0 if reflinks(tmp_path) else 1), 'a hard link carried the change'
+
+
+def test_an_evaluation_that_imports_a_linked_module_finds_its_bytecode_current(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, tracer: Tracer
+) -> None:
+    """Python checks a cached ``.pyc`` against its source's modification time, and writes a new one beside it when
+    they differ: a linked virtual environment's copies keep the times they were stored with."""
+    data = Path(campaign.path) / 'data'
+    (data / 'mod.py').write_text('X = 1\n')
+    os.utime(data / 'mod.py', ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
+    py_compile.compile(str(data / 'mod.py'), doraise=True)
+    imports = "import sys; sys.path.insert(0, 'data'); import mod; print('METRIC score=1'); print('METRIC size=1')"
+    set_config(
+        db, campaign, link=['data'], evaluate=['env', '-u', 'PYTHONDONTWRITEBYTECODE', sys.executable, '-c', imports]
+    )
+    candidate = baseline(db, campaign.id).id
+    controller(db, runtime, tmp_path, tracer).remeasure(candidate)
+    with db.session() as s:
+        measured = s.scalars(select(Measurement).where(Measurement.candidate_id == candidate)).all()[-1]
+    assert (measured.metrics, measured.error) == ({'score': 1.0, 'size': 1.0}, None)
 
 
 def reflinks(tmp_path: Path) -> bool:

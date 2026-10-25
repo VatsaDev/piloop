@@ -237,8 +237,8 @@ def test_each_path_of_a_shared_blob_gets_the_checked_bytes_whatever_an_agent_doe
     real = tree_module._copy
     written: list[Path] = []
 
-    def editing(src: Path, path: Path, mode: int) -> None:
-        real(src, path, mode)
+    def editing(src: Path, path: Path, mode: int, mtime_ns: int | None) -> None:
+        real(src, path, mode, mtime_ns)
         written.append(path)
         written[0].write_bytes(b'edited by an agent')  # the first restored path changes before the next copy
 
@@ -349,6 +349,26 @@ def test_without_reflinks_trees_share_hard_links_to_read_only_copies(tmp_path: P
     assert not (second / 'idea7' / 'arrays' / 'new.npy').exists()
 
 
+@pytest.mark.parametrize('clones', ['no_reflink', 'reflink'])
+@pytest.mark.parametrize('shares', [True, False])
+def test_materialised_files_keep_their_modification_times(
+    tmp_path: Path, workspace: Path, clones: str, shares: bool, request: pytest.FixtureRequest
+) -> None:
+    """A cache that checks its source's time (Python's bytecode, make) stays current in a copy: the arrays are one blob
+    with two times, so each tree's copy of it is its own when they would share an inode."""
+    request.getfixturevalue(clones)
+    arrays, other = workspace / 'idea7' / 'arrays' / 'x.npy', workspace / 'idea7' / 'copy.npy'
+    os.utime(arrays, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
+    os.utime(other, ns=(1_600_000_000_000_000_000, 1_600_000_000_000_000_000))
+    cas = disk(tmp_path)
+    stored = put_tree(cas, workspace, ['idea7'])
+    into = shared(cas, tmp_path) if shares else None
+    materialise(cas, Manifest.get(cas, stored.manifest.put(cas)), tmp_path / 'tree', into=into)
+    for source in (arrays, other):
+        copy = tmp_path / 'tree' / source.relative_to(workspace)
+        assert copy.stat().st_mtime_ns == source.stat().st_mtime_ns
+
+
 @pytest.mark.usefixtures('no_reflink')
 def test_a_copy_that_a_job_changed_through_its_hard_link_is_refused_and_made_again(
     tmp_path: Path, workspace: Path
@@ -404,11 +424,11 @@ def test_a_copy_removed_between_its_check_and_its_link_is_made_again(
     real = tree_module._reflink
     calls: list[Path] = []
 
-    def removed_once(source: Path, path: Path, mode: int) -> None:
+    def removed_once(source: Path, path: Path, mode: int, mtime_ns: int | None) -> None:
         calls.append(source)
         if len(calls) == 1:
             source.unlink()
-        real(source, path, mode)
+        real(source, path, mode, mtime_ns)
 
     monkeypatch.setattr(tree_module, '_reflink', removed_once)
     done = materialise(cas, stored.manifest, tmp_path / 'out', into=into)
@@ -479,10 +499,10 @@ def test_a_path_taken_meanwhile_is_kept_when_placing(
     stored = put_tree(cas, workspace, ['idea7.log'])
     real = Copies.place
 
-    def taken(self: Copies, blob: Cid, mode: int, path: Path) -> object:
+    def taken(self: Copies, blob: Cid, mode: int, mtime_ns: int | None, path: Path) -> object:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text('written meanwhile')
-        return real(self, blob, mode, path)
+        return real(self, blob, mode, mtime_ns, path)
 
     monkeypatch.setattr(Copies, 'place', taken)
     done = materialise(cas, stored.manifest, tmp_path / 'out', into=into)

@@ -45,6 +45,9 @@ class Entry(BaseModel):
     """Permission bits (``st_mode & 0o7777``)."""
     size: int = 0
     """The file's size: ``remove`` compares it before it hashes. Not part of the address."""
+    mtime_ns: int | None = None
+    """The file's modification time, which ``materialise`` gives its copy: a cache in the tree that checks its
+    source's time, such as Python's bytecode, stays current. None in a manifest stored before it was kept."""
     blob: BlobAddress | None = None
     link: str | None = None
 
@@ -242,7 +245,7 @@ def put_walk(
             raise Cancelled(rel)
         stat_key = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
         if seen is not None and (known := seen.get(stat_key)) is not None and cas.has(known[0]):
-            return Entry(path=rel, mode=stat.S_IMODE(st.st_mode), size=known[1], blob=known[0])
+            return Entry(path=rel, mode=stat.S_IMODE(st.st_mode), size=known[1], mtime_ns=st.st_mtime_ns, blob=known[0])
         try:
             with (root / rel).open('rb') as file:
                 size = os.fstat(file.fileno()).st_size
@@ -255,7 +258,7 @@ def put_walk(
             return 'gone since the walk: an agent or a prune removed it'
         if seen is not None:
             seen[stat_key] = (cid, size)
-        return Entry(path=rel, mode=stat.S_IMODE(st.st_mode), size=size, blob=cid)
+        return Entry(path=rel, mode=stat.S_IMODE(st.st_mode), size=size, mtime_ns=st.st_mtime_ns, blob=cid)
 
     files = found.files
     pool = ThreadPoolExecutor(workers, thread_name_prefix='put-tree')
@@ -427,7 +430,7 @@ def materialise(
                 raise Missing(f'the blob {entries[0].blob} of {entries[0].path} is not in the CAS')
             for entry in entries:
                 try:
-                    _copy(source, root / entry.path, entry.mode)
+                    _copy(source, root / entry.path, entry.mode, entry.mtime_ns)
                 except FileExistsError, NotADirectoryError:  # someone wrote there meanwhile: theirs wins
                     kept.append(entry.path)
                     continue
@@ -445,8 +448,11 @@ def materialise(
     return done
 
 
-def _copy(src: Path, path: Path, mode: int) -> None:
-    """``src`` to a new ``path`` with ``mode``, linked into place. Raises ``FileExistsError`` when ``path`` is taken."""
+def _copy(src: Path, path: Path, mode: int, mtime_ns: int | None) -> None:
+    """``src`` to a new ``path`` with ``mode`` and ``mtime_ns``, linked into place.
+
+    Raises ``FileExistsError`` when ``path`` is taken.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(dir=path.parent, prefix=f'.{path.name}.')
     os.close(fd)
@@ -454,6 +460,7 @@ def _copy(src: Path, path: Path, mode: int) -> None:
     try:
         shutil.copyfile(src, tmp)
         tmp.chmod(mode)
+        _stamp(tmp, mtime_ns)
         os.link(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)
@@ -466,7 +473,7 @@ def _place_all(into: Copies, entries: list[Entry], root: Path, done: Materialise
     written, kept = 0, []
     for entry in entries:
         try:
-            placed = into.place(blob, entry.mode, root / entry.path)
+            placed = into.place(blob, entry.mode, entry.mtime_ns, root / entry.path)
         except FileExistsError, NotADirectoryError:  # someone wrote there meanwhile: theirs wins
             kept.append(entry.path)
             continue
@@ -660,43 +667,45 @@ class Copies:
         """How each copy was when this process made or checked it."""
         self._locks = [threading.Lock() for _ in range(LOCKS)]
 
-    def place(self, blob: Cid, mode: int, path: Path) -> Placed:
-        """Put a read-only copy of the blob at a new ``path``, with the execute bits of ``mode``.
+    def place(self, blob: Cid, mode: int, mtime_ns: int | None, path: Path) -> Placed:
+        """Put a read-only copy of the blob at a new ``path``, with the execute bits of ``mode`` and ``mtime_ns``.
 
         Raises ``FileExistsError`` when ``path`` is taken.
         """
         mode &= 0o555
         path.parent.mkdir(parents=True, exist_ok=True)
         while True:
-            source, rebuilt = self._copy(blob, mode)
+            source, rebuilt = self._copy(blob, mode, mtime_ns)
             try:
                 try:
-                    _reflink(source, path, mode)
+                    _reflink(source, path, mode, mtime_ns)
                 except OSError as e:
                     if e.errno not in NO_REFLINK:
                         raise
-                    _link(source, path, mode)
+                    _link(source, path, mode, mtime_ns)
             except FileNotFoundError:  # someone removed it meanwhile: make it again
                 continue
             return Placed(Copy.of(blob, path), rebuilt)
 
-    def _copy(self, blob: Cid, mode: int) -> tuple[Path, bool]:
-        """The shared copy of the blob with ``mode``, checked if it was made before; True when it was made again."""
-        path = self.root / f'{blob}.{mode:o}'
+    def _copy(self, blob: Cid, mode: int, mtime_ns: int | None) -> tuple[Path, bool]:
+        """The shared copy of the blob with ``mode`` and ``mtime_ns``, checked if it was made before; True when remade.
+
+        A hard link shares its time with every tree that links it, so each time has its own copy.
+        """
+        path = self.root / '.'.join(str(part) for part in (blob, f'{mode:o}', mtime_ns) if part is not None)
         with self._locks[hash(path.name) % LOCKS]:
             made = self._made.get(path.name)
             if made is not None and made.unchanged(path):
                 return path, False
             held = path.exists() and cid_of(path) == blob
             rebuilt = path.exists() and not held
-            if held:
-                path.chmod(mode)
-            else:
+            if not held:
                 path.unlink(missing_ok=True)
                 path.parent.mkdir(parents=True, exist_ok=True)
                 if self._cas.get_file(blob, path) is None:
                     raise Missing(f'the blob {blob} is not in the CAS')
-                path.chmod(mode)
+            path.chmod(mode)
+            _stamp(path, mtime_ns)
             self._made[path.name] = Copy.of(blob, path)
             return path, rebuilt
 
@@ -735,13 +744,17 @@ def evict_unlinked(root: Path, reserve: int, stop: threading.Event | None = None
     return evicted
 
 
-def _reflink(source: Path, path: Path, mode: int) -> None:
-    """Make ``path`` a copy-on-write clone of ``source`` with ``mode``. Raises ``FileExistsError`` when it is taken."""
+def _reflink(source: Path, path: Path, mode: int, mtime_ns: int | None) -> None:
+    """Make ``path`` a copy-on-write clone of ``source`` with ``mode`` and ``mtime_ns``.
+
+    Raises ``FileExistsError`` when it is taken.
+    """
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         with source.open('rb') as src:
             fcntl.ioctl(fd, FICLONE, src.fileno())
         os.fchmod(fd, mode)
+        _stamp(fd, mtime_ns)
     except BaseException:
         path.unlink()
         raise
@@ -749,11 +762,17 @@ def _reflink(source: Path, path: Path, mode: int) -> None:
         os.close(fd)
 
 
-def _link(source: Path, path: Path, mode: int) -> None:
-    """A hard link to ``source`` at ``path``, or a copy with ``mode`` on another filesystem."""
+def _link(source: Path, path: Path, mode: int, mtime_ns: int | None) -> None:
+    """A hard link to ``source`` at ``path``, or a copy with ``mode`` and ``mtime_ns`` on another filesystem."""
     try:
         os.link(source, path)
     except OSError as e:
         if e.errno != errno.EXDEV:
             raise
-        _copy(source, path, mode)
+        _copy(source, path, mode, mtime_ns)
+
+
+def _stamp(file: Path | int, mtime_ns: int | None) -> None:
+    """Give ``file`` (a path or an open descriptor) the access and modification time ``mtime_ns``, when one is known."""
+    if mtime_ns is not None:
+        os.utime(file, ns=(mtime_ns, mtime_ns))
