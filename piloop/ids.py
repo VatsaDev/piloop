@@ -1,4 +1,4 @@
-"""The ids of rows, the names of roles and tracks, what a row is about, and why a comment was written.
+"""The ids of rows, the names of roles and tracks, what a row is about, and the states that the API shows and takes.
 
 Each id is a ``NewType`` of ``int``, so an idea's id does not type-check where a candidate's id goes. A name is a
 ``NewType`` of ``str``. A ``TargetRef`` is a kind and an id, written ``idea#12``.
@@ -88,3 +88,37 @@ class CommentKind(StrEnum):
     FINDING = 'finding'
     DECISION = 'decision'
     ESCALATION = 'escalation'
+
+
+class CampaignStatus(StrEnum):
+    """Whether the daemon still requests work for a campaign. ``stopped`` after a ``[stop]`` condition held."""
+
+    ACTIVE = 'active'
+    STOPPED = 'stopped'
+
+
+class Ending(StrEnum):
+    """How the daemon ends the agents of a stop or a cancel that someone requested."""
+
+    WRAP_UP = 'wrap_up'
+    """After the wrap-up prompt and its grace period: the agent may commit first."""
+    NOW = 'now'
+    """At once."""
+
+
+class IdeaStatus(StrEnum):
+    """The lifecycle of an idea. The scheduler picks up ``ready`` ideas in priority order.
+
+    A ``seed`` is a rough idea with pointers. An agent whose role's ``files`` allows it files one (``piloop idea
+    seed``). Research develops it into a defined idea (``piloop idea develop``, which makes it ``ready`` or
+    ``proposed``), or rejects it.
+    A ``proposed`` idea is defined and waits for a human to approve it.
+    """
+
+    SEED = 'seed'
+    PROPOSED = 'proposed'
+    READY = 'ready'
+    SCHEDULED = 'scheduled'
+    DONE = 'done'
+    PARKED = 'parked'
+    REJECTED = 'rejected'

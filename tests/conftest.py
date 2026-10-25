@@ -51,7 +51,7 @@ from piloop.plugins.cas.contract import CAS, Cas
 from piloop.plugins.executor.kit.leases import Timing
 from piloop.plugins.executor.workers import Workers, WorkersExecutor
 from piloop.plugins.executor.workers.worker import Worker
-from piloop.plugins.network.contract import NetworkHost
+from piloop.plugins.network.contract import NetworkConfig, NetworkHost
 from piloop.plugins.network.https import TOKEN_ENV, Https
 from piloop.plugins.role.contract import RoleConfig
 from piloop.plugins.runtime.contract import Handle, Runtime
@@ -59,12 +59,12 @@ from piloop.plugins.runtime.subprocess import SubprocessRuntime
 from piloop.plugins.secrets.contract import HomeSecrets
 from piloop.plugins.secrets.local import LocalSecrets
 from piloop.plugins.verdict_rule.contract import Outcome
-from piloop.reports.feed import iso
 from piloop.runtime.factory import RuntimeFactory
 from piloop.scoring.evaluate import Measured, run_evaluate
 from piloop.scoring.ledger import current_evaluator
 from piloop.settings import Settings, env_names
 from piloop.store import tree as tree_module
+from piloop.text import iso
 from piloop.usage import Usage
 
 # Harness stand-ins: any argv that edits the worktree and commits.
@@ -582,11 +582,17 @@ def role_of[R: RoleConfig](cfg: CampaignConfig, kind: type[R]) -> R:
 
 
 @contextmanager
-def serving_api(cfg: Settings, listen: str | None = None) -> Generator[list[Server]]:
-    """Serve the API of ``cfg``'s home, as the daemon does: on its socket, and on ``listen`` with ``https``."""
+def serving_api(
+    cfg: Settings, listen: str | None = None, network_config: NetworkConfig | None = None
+) -> Generator[list[Server]]:
+    """Serve the API of ``cfg``'s home, as the daemon does: on its socket, and on the network's ``listen``.
+
+    The network is ``https`` on ``listen``, unless ``network_config`` is another.
+    """
     db = Database(cfg.database_url, actor=ACTOR)
     tokens = Tokens(db)
-    network = Https.model_validate({'listen': listen}).open(NetworkHost(tokens, HomeSecrets(db, LocalSecrets())))
+    config = network_config or Https.model_validate({'listen': listen})
+    network = config.open(NetworkHost(tokens, HomeSecrets(db, LocalSecrets())))
     listener = network.listener()
     listeners = [local_listener(cfg.socket_file), *([] if listener is None else [listener])]
     api = Handlers(db, cfg, daemon_state(iso(utcnow()), None if listener is None else url(listener)))

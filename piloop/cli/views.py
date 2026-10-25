@@ -1,12 +1,9 @@
-"""The commands that print the daemon's views: ``status``, ``inbox`` and ``events``. Each is one client of the API."""
+"""The commands that print the daemon's views: ``status``, ``inbox`` (list, show, wait) and ``events``, clients of the API."""
 
 import json
 import shlex
 import time
-from collections.abc import Generator
-from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Annotated
 
 import cyclopts
@@ -14,27 +11,28 @@ from cyclopts import validators
 from rich.table import Table
 from rich.text import Text
 
-from piloop.api.client import Client, NoDaemon, Refused
-from piloop.api.contract import LIMIT, MAX_LIMIT, MAX_POLL_SECONDS, EventsQuery, InboxQuery, Problem, Selection
-from piloop.api.views import Batch, DaemonState, LiveKey, seed_line
+from piloop.api.client import Client, Refused
+from piloop.api.contract import (
+    LIMIT,
+    MAX_LIMIT,
+    MAX_POLL_SECONDS,
+    EventsQuery,
+    InboxQuery,
+    NewsQuery,
+    Problem,
+    Selection,
+    defaulted,
+)
+from piloop.api.views import Batch, DaemonState, LiveKey, seed_line, thread_lines
 from piloop.cli import common
+from piloop.cli.client import api, cwd
 from piloop.cli.common import CampaignRef, JsonFlag
-from piloop.ids import CommentKind
+from piloop.ids import CommentId, CommentKind
 from piloop.text import age, cell
 
 KindFilter = Annotated[
     tuple[CommentKind, ...], cyclopts.Parameter(name='--kind', help='Only items of this kind. Repeatable.')
 ]
-
-
-@contextmanager
-def api() -> Generator[Client]:
-    """A client of the home's daemon. Exit with what to do when there is no daemon or it refuses the call."""
-    try:
-        with Client.on(common.settings.socket_file) as client:
-            yield client
-    except (NoDaemon, Refused) as e:
-        raise SystemExit(str(e)) from e
 
 
 def status(ref: CampaignRef | None = None, /, *, json_: JsonFlag = False) -> None:
@@ -48,13 +46,14 @@ def status(ref: CampaignRef | None = None, /, *, json_: JsonFlag = False) -> Non
     With --json, it prints the daemon's pid and the URL it listens on, and the main facts of each campaign, read at one
     cursor: follow them with `piloop events --after <cursor>`.
     """
-    selection = Selection(campaign=ref, cwd=_cwd())
-    if json_:
-        with api() as client:
-            common.print_json(client.status(selection).model_dump(mode='json'))
-        return
     with api() as client:
-        shown = client.overview(selection)
+        status = client.status(Selection(campaign=ref, cwd=cwd()))
+        status = status.model_copy(update={'campaigns': defaulted(status.campaigns)})
+        if json_:
+            common.print_json(status.model_dump(mode='json'))
+            return
+        names = [c.name for c in status.campaigns]
+        shown = client.overview(Selection(campaign=names[0] if len(names) == 1 else None))
     common.console.print(daemon_line(shown.daemon), markup=False)
     for key in shown.limits:
         common.console.print(f'limit: {limit_line(key)}', markup=False)
@@ -93,7 +92,7 @@ def inbox_list(
     prints them read at one cursor: follow them with `piloop events --after <cursor>`.
     """
     with api() as client:
-        inbox = client.inbox(InboxQuery(campaign=ref, cwd=_cwd(), kind=kind, acked=all_))
+        inbox = client.inbox(InboxQuery(campaign=ref, cwd=cwd(), kind=kind, acked=all_))
     if json_:
         common.print_json(inbox.model_dump(mode='json'))
         return
@@ -121,6 +120,45 @@ def inbox_list(
     if seeds := [seed_line(seed) for seed in inbox.seeds]:
         common.console.print(f'{len(seeds)} seed(s) waiting for research:', markup=False)
         common.console.print('\n'.join(seeds), markup=False, highlight=False, soft_wrap=True)
+
+
+def inbox_show(comment: Annotated[CommentId, cyclopts.Parameter(help='The id of the item.')], /) -> None:
+    """Show one item in full, then the comments that it cites as `comment#<id>`, that cite it, or reply to it."""
+    with api() as client:
+        title, lines = thread_lines(client.thread(comment), clock())
+    common.console.print(title, style='bold', markup=False)
+    common.console.print('\n'.join(lines), markup=False, highlight=False)
+
+
+def inbox_wait(
+    ref: CampaignRef | None = None,
+    /,
+    *,
+    timeout: Annotated[float, cyclopts.Parameter(help='Seconds to wait before it returns with nothing new.')] = 1800,
+    after: Annotated[
+        int | None,
+        cyclopts.Parameter(help='The event id to start after: the cursor that the last wait printed. Default: now.'),
+    ] = None,
+) -> None:
+    """Wait until something needs the orchestrator, print it one line per item, then print the command to wait again.
+
+    These events end the wait: a new unacknowledged inbox item that someone else wrote, a seed that someone else
+    filed, a campaign that the daemon stopped, an anomaly that the daemon gave to a watchdog, and the daemon's verdict
+    on a measured candidate. Your own decisions, as PILOOP_ACTOR, do not end it. At --timeout it returns with nothing.
+    Set the timeout of your shell tool higher than --timeout. Without a campaign, it waits for every campaign.
+    """
+    deadline, cursor = time.monotonic() + timeout, after
+    with api() as client:
+        while True:
+            wait = min(MAX_POLL_SECONDS, max(0.0, deadline - time.monotonic()))
+            found = client.news(NewsQuery(after=cursor, campaign=ref, cwd=cwd(), wait=wait))
+            cursor = found.next
+            if found.items or time.monotonic() >= deadline:
+                break
+    again = shlex.join(['piloop', 'inbox', 'wait', *([ref] if ref else []), '--after', str(cursor)])
+    lines = '\n'.join(item.text() for item in found.items)
+    common.console.print(lines or f'nothing new in {timedelta(seconds=round(timeout))}', markup=False, soft_wrap=True)
+    common.console.print(f'next: {again}', markup=False, soft_wrap=True)
 
 
 def events(
@@ -184,7 +222,7 @@ def events(
 
 
 def _read(client: Client, after: int, campaign: str | None, kind: tuple[str, ...], limit: int, wait: float) -> Batch:
-    return client.events(EventsQuery(after=after, campaign=campaign, cwd=_cwd(), kind=kind, limit=limit, wait=wait))
+    return client.events(EventsQuery(after=after, campaign=campaign, cwd=cwd(), kind=kind, limit=limit, wait=wait))
 
 
 def clock() -> datetime:
@@ -194,8 +232,3 @@ def clock() -> datetime:
 
 def _age(iso: str, now: datetime) -> str:
     return age(datetime.fromisoformat(iso), now)
-
-
-def _cwd() -> str:
-    """Where this command runs: the daemon resolves a relative path of a campaign from it."""
-    return str(Path.cwd())

@@ -1,7 +1,7 @@
 """Short text: one line of free text that fits in a table cell, a tab title or an inbox line, markdown headings, ages."""
 
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 
 CELL_CHARS = 100
 NONE = '—'
@@ -38,3 +38,31 @@ def age(then: datetime, now: datetime) -> str:
         if seconds >= size:
             return f'{seconds // size}{unit}'
     return f'{seconds}s'
+
+
+LINKED_CHARS = 800
+"""How much of each linked comment ``piloop inbox show`` prints under an item."""
+
+
+def block(text: str, chars: int = LINKED_CHARS) -> str:
+    """Return whole lines of ``text`` up to ``chars`` characters, then ``… (N more lines)`` for the rest.
+
+    If the first line is longer than ``chars``, it is cut short, so that a one-line comment always shows.
+    """
+    lines = text.strip().splitlines() or [NONE]
+    kept: list[str] = []
+    used = 0
+    for line in lines:
+        if used + len(line) > chars:
+            break
+        kept.append(line)
+        used += len(line) + 1
+    if not kept:
+        kept = [lines[0][: chars - 1] + '…']
+    omitted = len(lines) - len(kept)
+    return '\n'.join([*kept, f'… ({omitted} more lines)'] if omitted else kept)
+
+
+def iso(at: datetime) -> str:
+    """``at`` in ISO 8601 UTC, as every document says a time."""
+    return at.astimezone(UTC).isoformat(timespec='microseconds').replace('+00:00', 'Z')

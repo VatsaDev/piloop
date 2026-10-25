@@ -13,20 +13,13 @@ from piloop.campaign.ideas import defined_by
 from piloop.config import load_campaign_config
 from piloop.daemon.run_controller import RunController
 from piloop.daemon.scheduler import Scheduler
-from piloop.db.models import (
-    AgentSession,
-    AgentSessionState,
-    Campaign,
-    Candidate,
-    Comment,
-    Idea,
-    IdeaStatus,
-)
+from piloop.db.models import AgentSession, AgentSessionState, Campaign, Candidate, Comment, Idea
 from piloop.db.session import Database
-from piloop.ids import CommentKind, TargetKind
+from piloop.ids import CommentKind, IdeaStatus, TargetKind
 from piloop.otel import Tracer
 from piloop.plugins.executor.workers import Workers
-from tests.conftest import RESEARCH, ScriptRuntime, factory, serving
+from piloop.settings import Settings
+from tests.conftest import RESEARCH, ScriptRuntime, factory, serving, serving_api
 from tests.daemon.test_triggers import add_ideas, configure, finish_a_run, last_reason, low_water, occupy
 
 PYTHON = shlex.quote(sys.executable)
@@ -52,8 +45,11 @@ def test_research_sweep_inserts_ideas_signed_with_its_implementer_id(
     controller = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     scheduler = Scheduler(db, controller, Tracer(None), tmp_path, factory(runtime))
 
-    assert scheduler.run_all() == [1], 'a free implementer slot, no idea for it: low water requests a research sweep'
-    scheduler.wait()
+    with serving_api(Settings(home=tmp_path)):  # the sweep's `piloop idea add` asks the daemon
+        assert scheduler.run_all() == [1], (
+            'a free implementer slot, no idea for it: low water requests a research sweep'
+        )
+        scheduler.wait()
     scheduler.stop(timeout=5)
 
     with db.session() as s:

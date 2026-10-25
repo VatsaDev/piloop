@@ -18,12 +18,12 @@ from abc import ABC, abstractmethod
 from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal, assert_never
+from typing import Literal
 
 from pydantic import SecretStr, TypeAdapter
 from sqlalchemy.orm import Session
 
-from piloop.actor import Actor, Agent, System
+from piloop.actor import Actor
 from piloop.db.events import emit, has, latest
 from piloop.db.models import AgentSession, Event, EventModel
 from piloop.db.session import Database
@@ -115,16 +115,12 @@ def writable(s: Session, actor: Actor, owner: Owner) -> None:
     Raises:
         Denied: An agent's write of the home's secrets, or of another campaign's.
     """
-    match actor:
-        case System():
-            return
-        case Agent(session=session):
-            row = s.get(AgentSession, session)
-            own = row.campaign_id if row is not None else None
-            if owner is None or owner != own:
-                raise Denied(f'{actor} writes only the secrets of its own campaign')
-        case _:
-            assert_never(actor)
+    if (agent := actor.launched) is None:
+        return
+    row = s.get(AgentSession, agent.session)
+    own = row.campaign_id if row is not None else None
+    if owner is None or owner != own:
+        raise Denied(f'{actor} writes only the secrets of its own campaign')
 
 
 def set_secret(

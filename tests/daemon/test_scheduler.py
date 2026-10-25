@@ -37,7 +37,7 @@ from piloop.agents.results import (
 )
 from piloop.agents.roles import SQL_HINT, compose_brief
 from piloop.campaign.campaigns import sync
-from piloop.campaign.stop import Ending, request_cancel, request_stop, runs
+from piloop.campaign.stop import request_cancel, request_stop, runs
 from piloop.config import CampaignConfig, load_campaign_config
 from piloop.daemon.loop import Turn
 from piloop.daemon.run_controller import RunController, wrap_up_lead
@@ -48,7 +48,6 @@ from piloop.db.models import (
     AgentSession,
     AgentSessionState,
     Campaign,
-    CampaignStatus,
     Candidate,
     Comment,
     Evaluation,
@@ -56,7 +55,6 @@ from piloop.db.models import (
     EventModel,
     Idea,
     IdeaLink,
-    IdeaStatus,
     Lease,
     LeaseKind,
     LeaseState,
@@ -74,9 +72,12 @@ from piloop.db.triggers.changelog import IdeaStatusChanged
 from piloop.ids import (
     IMPLEMENTER,
     AgentSessionId,
+    CampaignStatus,
     CandidateId,
     CommentId,
     CommentKind,
+    Ending,
+    IdeaStatus,
     RoleName,
     RunId,
     TargetKind,

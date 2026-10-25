@@ -183,6 +183,8 @@ def test_a_closed_database_refuses_a_new_session(db: Database) -> None:
     db.close()
     with pytest.raises(DatabaseClosed, match='the database is closed'):
         db.session()
+    with pytest.raises(DatabaseClosed, match='the database is closed'), db.acting(System.HUMAN):
+        pass
 
 
 def test_a_waiter_gives_up_at_its_timeout(db: Database) -> None:

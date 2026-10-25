@@ -19,26 +19,27 @@ from sqlalchemy import ColumnElement, ScalarSelect, case, select
 from sqlalchemy.orm import Mapped, Session, aliased
 
 from piloop.actor import Actor
-from piloop.api.views import Seed, seed_line
+from piloop.api.views import (
+    AckOutcome,
+    AckResult,
+    AnomalyNews,
+    CommentNews,
+    CommentView,
+    News,
+    NewsItem,
+    Seed,
+    SeedNews,
+    StoppedNews,
+    Thread,
+    VerdictNews,
+)
 from piloop.campaign.anomaly import AnomalyReported
 from piloop.db import feed as db_feed
-from piloop.db.models import (
-    AgentSession,
-    Campaign,
-    CampaignStatus,
-    Candidate,
-    Comment,
-    Event,
-    Idea,
-    IdeaStatus,
-    Measurement,
-    Run,
-    utcnow,
-)
+from piloop.db.models import AgentSession, Campaign, Candidate, Comment, Event, Idea, Measurement, Run, utcnow
 from piloop.db.triggers.changelog import CampaignStatusChanged, Commented, IdeaCreated
-from piloop.ids import CampaignId, CommentId, CommentKind, TargetKind, TargetRef
+from piloop.ids import CampaignId, CampaignStatus, CommentId, CommentKind, IdeaStatus, TargetKind, TargetRef
 from piloop.scoring.ledger import CandidateJudged
-from piloop.text import cell
+from piloop.text import iso
 
 CITATION = re.compile(r'comment#(\d+)')
 """How a comment refers to another comment in its body. ``thread`` follows these references in both directions."""
@@ -91,14 +92,14 @@ def seed_of(idea: Idea, campaign: Campaign) -> Seed:
 WAKES: Final = tuple(
     db_feed.Topic(m) for m in (Commented, CampaignStatusChanged, AnomalyReported, IdeaCreated, CandidateJudged)
 )
-"""The events that ``news`` turns into lines: what ends ``piloop inbox wait``."""
+"""The events that ``news`` reports: what ends ``piloop inbox wait``."""
 PAGE = 500
 
 
-def news(s: Session, after: int, *, campaign_id: CampaignId | None = None, me: Actor) -> tuple[int, list[str]]:
-    """Return the events after event#``after`` that the orchestrator must look at, one line each, and the next cursor.
+def news(s: Session, after: int, *, campaign_id: CampaignId | None = None, me: Actor) -> News:
+    """Return the events after event#``after`` that the orchestrator must look at, and the next cursor.
 
-    The lines report:
+    The news reports:
 
     - new unacknowledged inbox items not written by ``me``. The orchestrator's own decisions are for the human.
     - seeds that someone else filed.
@@ -109,20 +110,19 @@ def news(s: Session, after: int, *, campaign_id: CampaignId | None = None, me: A
     It reads the ``WAKES`` events from the feed (``piloop.db.feed``), a page at a time until a page gives a line.
     ``campaign_id`` filters all of them. The returned cursor passes every event that it read, so no event is missed.
     """
-    cursor, lines, more = after, list[str](), True
-    while more and not lines:
+    cursor, found, more = after, list[NewsItem](), True
+    while more and not found:
         page = db_feed.after(s, cursor, WAKES, limit=PAGE)
         cursor, more = page.next, page.more
         events = s.scalars(select(Event).where(Event.id.in_(page.ids)).order_by(Event.id)).all()
-        lines = _lines(s, events, campaign_id, me)
-    return cursor, lines
+        found = _news(s, events, campaign_id, me)
+    return News(next=cursor, items=found)
 
 
-def _lines(s: Session, events: Sequence[Event], campaign_id: CampaignId | None, me: Actor) -> list[str]:
+def _news(s: Session, events: Sequence[Event], campaign_id: CampaignId | None, me: Actor) -> list[NewsItem]:
     fresh = {e.target_id for e in events if isinstance(e.payload, Commented)}
-    lines = [
-        f'comment#{c.id} {c.kind} p{c.priority} on {c.target}'
-        f' ({campaign.name if campaign else "—"}) by {c.author}: {cell(c.body)}'
+    found: list[NewsItem] = [
+        CommentNews(comment=comment_view(c), campaign_name=campaign.name if campaign else None)
         for c, campaign in items(s, campaign_id=campaign_id)
         if c.id in fresh and c.author != me.signature
     ]
@@ -131,40 +131,40 @@ def _lines(s: Session, events: Sequence[Event], campaign_id: CampaignId | None, 
             case CampaignStatusChanged(new=CampaignStatus.STOPPED, stopped_reason=why):
                 campaign = s.get(Campaign, e.target_id)
                 if campaign is not None and campaign_id in (None, campaign.id):
-                    lines.append(f'campaign {campaign.name} stopped: {why}')
+                    found.append(StoppedNews(campaign_name=campaign.name, reason=why))
             case AnomalyReported(line=line):
                 agent_session = s.get(AgentSession, e.target_id)
                 if agent_session is not None and campaign_id in (None, agent_session.campaign_id):
-                    lines.append(f'anomaly, {agent_session.kind}#{agent_session.id} requested: {line}')
+                    found.append(AnomalyNews(role=agent_session.kind, agent_session=agent_session.id, line=line))
             case IdeaCreated() if e.actor != me.signature:
                 idea = s.get(Idea, e.target_id)
                 if idea is not None and idea.status is IdeaStatus.SEED and campaign_id in (None, idea.campaign_id):
-                    lines.append(seed_line(seed_of(idea, idea.campaign)))
+                    found.append(SeedNews(seed=seed_of(idea, idea.campaign)))
             case CandidateJudged(verdict=verdict, reason=reason):
                 candidate = s.get(Candidate, e.target_id)
                 if candidate is not None and campaign_id in (None, candidate.campaign_id):
-                    lines.append(f'candidate#{candidate.id} {verdict}: {cell(str(reason))}')
-    return lines
+                    found.append(VerdictNews(candidate=candidate.id, verdict=str(verdict), reason=str(reason)))
+    return found
 
 
-def ack(s: Session, ids: Sequence[CommentId], actor: Actor) -> list[str]:
-    """Acknowledge the inbox items ``ids`` as ``actor`` and commit. Return one line per id that says what happened.
+def ack(s: Session, ids: Sequence[CommentId], actor: Actor) -> list[AckResult]:
+    """Acknowledge the inbox items ``ids`` as ``actor`` and commit. Return what happened to each id.
 
     An id that is not an inbox item, or that is already acknowledged, is reported and not changed.
     """
     now = utcnow()
-    lines = []
+    results = []
     for comment_id in ids:
         comment = s.get(Comment, comment_id)
         if comment is None or comment.priority is None:
-            lines.append(f'comment#{comment_id} is not in the inbox')
+            results.append(AckResult(id=comment_id, outcome=AckOutcome.NOT_IN_INBOX, acked_by=None))
         elif comment.acked_at is not None:
-            lines.append(f'comment#{comment_id} was acknowledged already, by {comment.acked_by}')
+            results.append(AckResult(id=comment_id, outcome=AckOutcome.ALREADY, acked_by=comment.acked_by))
         else:
             comment.acked_at, comment.acked_by = now, actor.signature
-            lines.append(f'comment#{comment_id} acknowledged')
+            results.append(AckResult(id=comment_id, outcome=AckOutcome.ACKED, acked_by=actor.signature))
     s.commit()
-    return lines
+    return results
 
 
 def reply(s: Session, comment_id: CommentId, body: str, *, author: Actor, priority: int) -> Comment:
@@ -187,6 +187,26 @@ def reply(s: Session, comment_id: CommentId, body: str, *, author: Actor, priori
     s.add(answer)
     s.commit()
     return answer
+
+
+def comment_view(c: Comment) -> CommentView:
+    """``c`` as the API shows it."""
+    return CommentView(
+        id=c.id,
+        kind=str(c.kind),
+        target=str(c.target),
+        author=c.author,
+        created=iso(c.created_at),
+        priority=c.priority,
+        acked_at=iso(c.acked_at) if c.acked_at else None,
+        acked_by=c.acked_by,
+        body=c.body,
+    )
+
+
+def thread_of(s: Session, comment: Comment) -> Thread:
+    """``comment`` and the comments linked to it (``thread``)."""
+    return Thread(comment=comment_view(comment), linked=[comment_view(o) for o in thread(s, comment)])
 
 
 def thread(s: Session, comment: Comment) -> list[Comment]:

@@ -119,6 +119,10 @@ class Settings(BaseSettings):
     """Who this process is. Every row it updates records this value in ``updated_by``. The daemon launches each agent
     with ``<role>#<agent_session_id>``, for example ``implementer#12`` or ``scout#7``."""
 
+    server: str | None = None
+    """The daemon that the commands which call the API ask, such as ``https://piloop.example.com``: its network's
+    client dials it, with the credential of this machine. Unset: the daemon of this home, on its socket."""
+
     messages: Path | None = None
     """The queue of messages for this agent's turn, set by a runtime that keeps one. ``piloop agent messages`` takes
     them."""

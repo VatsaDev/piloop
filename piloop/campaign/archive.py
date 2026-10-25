@@ -25,21 +25,9 @@ from sqlalchemy.orm import Session
 
 from piloop import deprecated
 from piloop.campaign.campaigns import workspace_dir
-from piloop.db.models import (
-    ENDED,
-    OPEN_RUNS,
-    AgentSession,
-    Archive,
-    Campaign,
-    CampaignStatus,
-    Idea,
-    IdeaStatus,
-    Run,
-    count,
-    utcnow,
-)
+from piloop.db.models import ENDED, OPEN_RUNS, AgentSession, Archive, Campaign, Idea, Run, count, utcnow
 from piloop.db.session import Database
-from piloop.ids import CampaignId, IdeaId
+from piloop.ids import CampaignId, CampaignStatus, IdeaId, IdeaStatus
 from piloop.plugins.cas.contract import Cas, Integrity, integrity
 from piloop.settings import INPUTS_DIR
 from piloop.store.tree import (

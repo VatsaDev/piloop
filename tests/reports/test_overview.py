@@ -14,14 +14,12 @@ from piloop.db.models import (
     AgentSession,
     AgentSessionState,
     Campaign,
-    CampaignStatus,
     Candidate,
     Cause,
     Comment,
     Event,
     Idea,
     IdeaLink,
-    IdeaStatus,
     LinkKind,
     Measurement,
     Run,
@@ -29,13 +27,14 @@ from piloop.db.models import (
     RunStatus,
 )
 from piloop.db.session import Database
-from piloop.ids import IMPLEMENTER, CommentKind, RoleName, RunId, TargetKind, TargetRef
+from piloop.ids import IMPLEMENTER, CampaignStatus, CommentKind, IdeaStatus, RoleName, RunId, TargetKind, TargetRef
 from piloop.plugins.section.anomalies import ANOMALIES_SHOWN, REFS_SHOWN
 from piloop.plugins.section.contract import SECTIONS, Rendering, Surface, defaults, markdown
 from piloop.plugins.section.queue import BLOCKED_SHOWN
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.reports import overview as overview_module
-from piloop.reports.overview import LINKED_CHARS, anomalies, block
+from piloop.reports.overview import anomalies
+from piloop.text import LINKED_CHARS, block
 from tests.conftest import RESEARCH, WATCHDOG, end_of, reconfigured, spent
 
 T = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)

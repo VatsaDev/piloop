@@ -17,9 +17,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from piloop.config import CampaignConfig, ClosingReview, Spend
-from piloop.db.models import AgentSession, AgentSessionState, Campaign, CampaignStatus, Comment, utcnow
+from piloop.db.models import AgentSession, AgentSessionState, Campaign, Comment, utcnow
 from piloop.db.triggers import DAEMON_ACTOR
-from piloop.ids import CommentKind, TargetKind, TargetRef
+from piloop.ids import CampaignStatus, CommentKind, TargetKind, TargetRef
 from piloop.proc import STDERR_IN_ERROR, child_env, kill_group
 
 TIMEOUT = 60

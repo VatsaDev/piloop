@@ -19,9 +19,9 @@ from sqlalchemy import select, text
 from piloop.api import views
 from piloop.campaign import campaigns as campaign_module, ops
 from piloop.cli import common, main as cli, views as cli_views
-from piloop.db.models import Campaign, Comment, Event, Idea, IdeaStatus
+from piloop.db.models import Campaign, Comment, Event, Idea
 from piloop.db.session import Database
-from piloop.ids import CampaignId, CommentKind, IdeaId, TargetKind, TargetRef
+from piloop.ids import CampaignId, CommentKind, IdeaId, IdeaStatus, TargetKind, TargetRef
 from piloop.net.server import Server
 from piloop.settings import Settings
 

@@ -17,7 +17,6 @@ from piloop.db.models import (
     Candidate,
     Comment,
     Idea,
-    IdeaStatus,
     Run,
     RunEnd,
     RunStatus,
@@ -25,12 +24,13 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database
-from piloop.ids import AgentSessionId, CommentKind
+from piloop.ids import AgentSessionId, CommentKind, IdeaStatus
 from piloop.plugins.role.scout import MIN_WINDOW, WATCH_RUNS, WINDOW, ScoutRole, sources, watch_list, window
 from piloop.plugins.trigger.cron import CronTrigger
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.reports.history import history
-from tests.conftest import RESEARCH, SCOUT, ScriptRuntime, role_of, write_toml
+from piloop.settings import Settings
+from tests.conftest import RESEARCH, SCOUT, ScriptRuntime, role_of, serving_api, write_toml
 from tests.daemon.test_triggers import add_ideas, agent_sessions, backdate, configure, occupy, scheduler
 from tests.reports.test_overview import overview
 
@@ -89,8 +89,9 @@ def test_a_scout_sweep_reads_its_context_signs_as_a_scout_and_files_only_seeds_a
     occupy(db, campaign)
     scout_due(db, campaign, 61)
     sched = scheduler(db, runtime, tmp_path)
-    assert sched.run_all() == [1]
-    sched.wait()
+    with serving_api(Settings(home=tmp_path)):  # the sweep's `piloop idea add` asks the daemon
+        assert sched.run_all() == [1]
+        sched.wait()
     sched.stop(timeout=5)
 
     workspace = tmp_path / 'projects' / str(campaign.id) / 'workspace'

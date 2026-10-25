@@ -21,19 +21,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from piloop.db.events import has
-from piloop.db.models import (
-    AgentSession,
-    Candidate,
-    Event,
-    EventModel,
-    Idea,
-    IdeaStatus,
-    Run,
-    Technique,
-    count,
-)
+from piloop.db.models import AgentSession, Candidate, Event, EventModel, Idea, Run, Technique, count
 from piloop.db.triggers.changelog import IdeaStatusChanged
-from piloop.ids import AgentSessionId, CampaignId, RoleName, TargetKind
+from piloop.ids import AgentSessionId, CampaignId, IdeaStatus, RoleName, TargetKind
 from piloop.plugins.role.contract import Sweep, SweepRole
 from piloop.plugins.trigger.contract import TriggerEntry
 from piloop.plugins.verdict_rule.contract import Outcome

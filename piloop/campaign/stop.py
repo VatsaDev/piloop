@@ -7,7 +7,6 @@ answers (``piloop.db.requests``).
 
 import math
 from datetime import datetime, timedelta
-from enum import StrEnum
 from typing import Literal, assert_never
 
 from sqlalchemy import ColumnElement, exists, func, select
@@ -25,13 +24,11 @@ from piloop.db.models import (
     AgentSession,
     AgentSessionState,
     Campaign,
-    CampaignStatus,
     Candidate,
     Comment,
     Event,
     EventModel,
     Idea,
-    IdeaStatus,
     Measurement,
     Run,
     campaign_runs,
@@ -41,20 +38,11 @@ from piloop.db.models import (
 from piloop.db.requests import answer, pending
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.db.triggers.changelog import CampaignPausedChanged, CampaignStatusChanged
-from piloop.ids import CommentKind, RunId, TargetKind, TargetRef
+from piloop.ids import CampaignStatus, CommentKind, Ending, IdeaStatus, RunId, TargetKind, TargetRef
 from piloop.plugins.stop_rule.contract import STOP_RULES, Fact, Go, Hold, Progress, Stop, StopCase
 from piloop.scoring.ledger import head, keeps, score
 from piloop.scoring.verdict import pending_clause
 from piloop.usage.totals import campaign_tokens
-
-
-class Ending(StrEnum):
-    """How the daemon ends the agents of a stop or a cancel that someone requested."""
-
-    WRAP_UP = 'wrap_up'
-    """After the wrap-up prompt and its grace period: the agent may commit first."""
-    NOW = 'now'
-    """At once."""
 
 
 class StopRequested(EventModel):

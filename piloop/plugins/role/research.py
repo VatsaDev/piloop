@@ -3,7 +3,8 @@ from importlib.resources import files
 from pydantic import Field
 from sqlalchemy import select
 
-from piloop.db.models import Idea, IdeaStatus, count
+from piloop.db.models import Idea, count
+from piloop.ids import IdeaStatus
 from piloop.plugins.role.contract import Files, Sweep, SweepRole
 from piloop.plugins.trigger.contract import TriggerEntry
 from piloop.plugins.trigger.low_water import LowWaterTrigger

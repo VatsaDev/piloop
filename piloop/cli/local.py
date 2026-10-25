@@ -10,6 +10,7 @@ from pathlib import Path
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
+from piloop.api.contract import defaulted
 from piloop.campaign.campaigns import UnknownCampaign, find, named, selected
 from piloop.campaign.ops import Refused
 from piloop.cli import common
@@ -72,7 +73,7 @@ def known(ref: str) -> None:
 def campaigns(s: Session, ref: str | None) -> list[Campaign]:
     """The campaigns for a command without a ref: the one cwd is in, else the only active one, else every campaign."""
     try:
-        return selected(s, ref, Path.cwd())
+        return defaulted(selected(s, ref, Path.cwd()))
     except UnknownCampaign as e:
         raise SystemExit(str(e)) from e
 

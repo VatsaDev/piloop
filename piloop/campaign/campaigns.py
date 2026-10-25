@@ -19,10 +19,10 @@ from piloop import deprecated
 from piloop.actor import Actor, System
 from piloop.config import CONFIG_FILE, CampaignConfig, ConfigError, load_campaign_config
 from piloop.db.events import emit
-from piloop.db.models import Campaign, CampaignStatus, Candidate, EventModel, Measurement, Origin
+from piloop.db.models import Campaign, Candidate, EventModel, Measurement, Origin
 from piloop.db.session import Database
 from piloop.db.sql import sql_error
-from piloop.ids import CampaignId, CandidateId, Revision, TargetKind, TargetRef
+from piloop.ids import CampaignId, CampaignStatus, CandidateId, Revision, TargetKind, TargetRef
 from piloop.plugins.cas.contract import CAS, Cas
 from piloop.plugins.executor.contract import RepoId, Source, Workspace
 from piloop.plugins.role.contract import ideas_taken
@@ -289,7 +289,7 @@ def named(s: Session, ref: str, cwd: Path | None = None) -> Campaign:
 
 
 def selected(s: Session, ref: str | None, cwd: Path | None) -> list[Campaign]:
-    """The campaign that ``ref`` names, else the one ``cwd`` is in, else the only active one, else every campaign.
+    """The campaign that ``ref`` names, else the one ``cwd`` is in, else every campaign.
 
     Raises:
         UnknownCampaign: ``ref`` names none.
@@ -298,8 +298,7 @@ def selected(s: Session, ref: str | None, cwd: Path | None) -> list[Campaign]:
         return [named(s, ref, cwd)]
     if cwd is not None and (here := checked_out(s, cwd)):
         return [here]
-    active = s.scalars(select(Campaign).where(Campaign.status == CampaignStatus.ACTIVE)).all()
-    return list(active) if len(active) == 1 else list(s.scalars(select(Campaign)).all())
+    return list(s.scalars(select(Campaign)).all())
 
 
 def checked_out(s: Session, path: Path) -> Campaign | None:

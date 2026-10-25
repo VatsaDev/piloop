@@ -21,13 +21,12 @@ from piloop.db.models import (
     Comment,
     Event,
     Idea,
-    IdeaStatus,
     Run,
     UnknownEvent,
 )
 from piloop.db.session import Database
 from piloop.db.triggers.changelog import IdeaCreated
-from piloop.ids import CampaignId, CommentKind, TargetKind, TargetRef
+from piloop.ids import CampaignId, CommentKind, IdeaStatus, TargetKind, TargetRef
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.reports import feed
 

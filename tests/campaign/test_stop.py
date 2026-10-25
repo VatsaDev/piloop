@@ -17,7 +17,6 @@ from piloop.actor import Agent, System
 from piloop.campaign.memory import Synced
 from piloop.campaign.ops import pause
 from piloop.campaign.stop import (
-    Ending,
     StopRequested,
     check as check_campaign,
     hours,
@@ -36,13 +35,11 @@ from piloop.db.models import (
     AgentSession,
     AgentSessionState,
     Campaign,
-    CampaignStatus,
     Candidate,
     Comment,
     Document,
     Event,
     Idea,
-    IdeaStatus,
     Measurement,
     Origin,
     Pause,
@@ -54,7 +51,17 @@ from piloop.db.models import (
 from piloop.db.requests import RequestAnswered, pending
 from piloop.db.session import Database
 from piloop.db.triggers.changelog import CampaignPausedChanged, CampaignStatusChanged
-from piloop.ids import IMPLEMENTER, CandidateId, CommentKind, RunId, TargetKind, TargetRef
+from piloop.ids import (
+    IMPLEMENTER,
+    CampaignStatus,
+    CandidateId,
+    CommentKind,
+    Ending,
+    IdeaStatus,
+    RunId,
+    TargetKind,
+    TargetRef,
+)
 from piloop.otel import Tracer
 from piloop.plugins import host
 from piloop.plugins.host import data_errors

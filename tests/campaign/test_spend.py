@@ -15,8 +15,9 @@ from piloop.campaign.campaigns import sync
 from piloop.campaign.spend import SpendError
 from piloop.campaign.stop import check
 from piloop.config import CampaignConfig, ConfigError, load_campaign_config
-from piloop.db.models import AgentSession, Campaign, CampaignStatus, Comment, Idea, IdeaStatus, Run, RunStatus
+from piloop.db.models import AgentSession, Campaign, Comment, Idea, Run, RunStatus
 from piloop.db.session import Database
+from piloop.ids import CampaignStatus, IdeaStatus
 from piloop.plugins.stop_rule.contract import Hold
 from piloop.reports.overview import progress
 from tests.conftest import WATCHDOG, ScriptRuntime, write_toml

@@ -15,13 +15,16 @@ from piloop.actor import System
 from piloop.campaign import campaigns as campaign_module
 from piloop.cli import common
 from piloop.db.events import has
-from piloop.db.models import Campaign, Candidate, Event, Idea, IdeaLink, IdeaStatus, Measurement, Run
+from piloop.db.models import Campaign, Candidate, Event, Idea, IdeaLink, Measurement, Run
 from piloop.db.session import Database
+from piloop.ids import IdeaStatus
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring.ledger import RejudgeRequested
 from piloop.settings import Settings
 from tests.cli.test_cli import research_files, run_cli
 from tests.conftest import at_head, bare_config
+
+pytestmark = pytest.mark.usefixtures('api')
 
 
 @pytest.fixture(autouse=True)
@@ -65,9 +68,9 @@ def test_pause_and_resume_hold_the_campaign_say_so_in_status_and_refuse_twice(ca
     with pytest.raises(SystemExit, match=r'campaign demo is paused already \(launches\)'):
         run_cli(['pause', 'demo', '--reason', 'again'])
     run_cli(['pause', 'demo', '--evals', '--reason', 'the box is busy'])
-    assert out().startswith('campaign demo paused (launches and evaluations): the box is busy;')
+    assert out().startswith('campaign demo paused (all): the box is busy;')
     run_cli(['resume', 'demo'])
-    assert out().strip() == 'campaign demo resumed; it held all'
+    assert out().strip() == 'campaign demo resumed'
     with pytest.raises(SystemExit, match='campaign demo is not paused'):
         run_cli(['resume', 'demo'])
     with pytest.raises(SystemExit, match='a reason is required'):

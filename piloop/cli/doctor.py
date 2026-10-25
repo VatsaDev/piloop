@@ -27,9 +27,9 @@ from piloop.cli import skills, upgrade
 from piloop.config import CampaignConfig, ConfigError, explain, load_campaign_config
 from piloop.daemon.main import preflight, unbound_failures
 from piloop.daemon.serve import SECRETS_COMMAND_ENV, SecretsError, running_pid, secrets
-from piloop.db.models import CampaignStatus, utcnow
+from piloop.db.models import utcnow
 from piloop.db.session import head, schema_mismatch
-from piloop.ids import CampaignId
+from piloop.ids import CampaignId, CampaignStatus
 from piloop.plugins.host import Check, PluginError, Severity, declared
 from piloop.plugins.secrets.contract import SECRETS, SecretKey
 from piloop.plugins.vcs.contract import VCS

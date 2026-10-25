@@ -7,12 +7,11 @@ Every role shares one lifecycle (``piloop.agents.launcher``). A role differs in 
 from dataclasses import dataclass
 from importlib.resources.abc import Traversable
 from pathlib import Path
-from typing import assert_never
 
 from covalence import Cid
 from sqlalchemy.orm import Session
 
-from piloop.actor import Actor, Agent, System
+from piloop.actor import Actor, Agent
 from piloop.config import BRIEF_FILE, CampaignConfig, Track
 from piloop.db.models import AgentSession, Campaign
 from piloop.harnesses import Harness
@@ -125,14 +124,10 @@ def files_of(cfg: CampaignConfig, actor: Actor) -> Files | None:
 
     None for an actor that is not a role, such as ``orchestrator`` or ``human``: it may file anything.
     """
-    match actor:
-        case Agent(role=role):
-            table = cfg.roles.all().get(role)
-            return None if table is None else table.files
-        case System():
-            return None
-        case _:
-            assert_never(actor)
+    if (agent := actor.launched) is None:
+        return None
+    table = cfg.roles.all().get(agent.role)
+    return None if table is None else table.files
 
 
 def read_brief(cas: Cas, brief: Cid) -> str:

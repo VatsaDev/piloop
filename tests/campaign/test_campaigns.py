@@ -21,8 +21,9 @@ from piloop.campaign.campaigns import (
     sync,
 )
 from piloop.config import CampaignConfig, ConfigError, load_campaign_config
-from piloop.db.models import Campaign, CampaignStatus
+from piloop.db.models import Campaign
 from piloop.db.session import Database
+from piloop.ids import CampaignStatus
 from piloop.plugins.host import Scope, declared
 from piloop.plugins.role.contract import ROLES
 from tests.conftest import HARNESS_APPEND, store_config, write_toml

@@ -19,7 +19,8 @@ from sqlalchemy.orm import Session
 
 from piloop.campaign import inbox
 from piloop.config import CampaignConfig
-from piloop.db.models import Campaign, CampaignStatus, Journal, Lesson, LessonStatus
+from piloop.db.models import Campaign, Journal, Lesson, LessonStatus
+from piloop.ids import CampaignStatus
 from piloop.reports.overview import summary
 from piloop.text import metric as number
 

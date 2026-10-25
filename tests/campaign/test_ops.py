@@ -18,7 +18,6 @@ from piloop.config import load_campaign_config
 from piloop.db.events import in_order
 from piloop.db.models import (
     Campaign,
-    CampaignStatus,
     Candidate,
     Cause,
     Comment,
@@ -26,7 +25,6 @@ from piloop.db.models import (
     EventModel,
     Idea,
     IdeaLink,
-    IdeaStatus,
     LinkKind,
     Measurement,
     Origin,
@@ -46,7 +44,7 @@ from piloop.db.triggers.changelog import (
     IdeaTrackChanged,
     VerdictChanged,
 )
-from piloop.ids import CampaignId, CandidateId, CommentKind, IdeaId, TargetKind, TrackName
+from piloop.ids import CampaignId, CampaignStatus, CandidateId, CommentKind, IdeaId, IdeaStatus, TargetKind, TrackName
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring.ledger import (
     MeasurementRecorded,

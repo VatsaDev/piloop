@@ -26,21 +26,30 @@ from piloop.db.models import (
     PROCESS,
     AgentSession,
     Campaign,
-    CampaignStatus,
     Candidate,
     Evaluator,
     Event,
     EventModel,
     Idea,
     IdeaLink,
-    IdeaStatus,
     LinkKind,
     Measurement,
     Origin,
     Run,
     latest_agent_session,
 )
-from piloop.ids import CampaignId, CandidateId, EvaluatorId, MeasurementId, RunId, TargetKind, TargetRef, TrackName
+from piloop.ids import (
+    CampaignId,
+    CampaignStatus,
+    CandidateId,
+    EvaluatorId,
+    IdeaStatus,
+    MeasurementId,
+    RunId,
+    TargetKind,
+    TargetRef,
+    TrackName,
+)
 from piloop.plugins.vcs.contract import (
     Conflicts,
     RebaseVersion,

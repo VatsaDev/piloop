@@ -22,6 +22,7 @@ from typing import Literal, Self, assert_never
 import httpx2 as httpx
 from pydantic import BaseModel, ConfigDict, FilePath, SecretStr, model_validator
 
+from piloop.actor import Actor
 from piloop.api.contract import Access
 from piloop.net.tokens import Caller
 from piloop.plugins.network.contract import (
@@ -38,6 +39,8 @@ from piloop.plugins.network.contract import (
 TIMEOUT = httpx.Timeout(30, connect=10)
 TOKEN_ENV = 'PILOOP_HTTPS_TOKEN'
 """The variable that holds the bearer token of a machine that dials the server (``piloop worker``)."""
+ACTOR_HEADER = 'x-piloop-actor'
+"""The header in which a caller asks to act as another actor than its token's, such as ``orchestrator``."""
 
 
 class Certificate(BaseModel):
@@ -73,14 +76,15 @@ class Https(NetworkConfig):
     def open(self, host: NetworkHost) -> HttpsNetwork:
         return HttpsNetwork(host, self)
 
-    def client(self, server: str) -> httpx.Client:
-        """A client that sends the bearer token of ``TOKEN_ENV``.
+    def client(self, server: str, actor: Actor | None = None) -> httpx.Client:
+        """A client that sends the bearer token of ``TOKEN_ENV``, and ``actor`` in ``ACTOR_HEADER``.
 
         It trusts the system's certificates, or those of ``SSL_CERT_FILE`` when it is set.
         """
         if not (token := os.environ.get(TOKEN_ENV)):
             raise NoCredential(f'set {TOKEN_ENV} to the secret that `piloop token create <name>` printed on the server')
-        return httpx.Client(base_url=server, headers={'Authorization': f'Bearer {token}'}, timeout=TIMEOUT)
+        headers = {'Authorization': f'Bearer {token}', **({} if actor is None else {ACTOR_HEADER: actor.signature})}
+        return httpx.Client(base_url=server, headers=headers, timeout=TIMEOUT)
 
 
 class HttpsNetwork:
@@ -113,6 +117,10 @@ class HttpsNetwork:
         if headers.get('authorization'):
             return Refused('the credential is not a piloop token (plt_…): send Authorization: Bearer <token>')
         return Refused('no bearer token: send Authorization: Bearer <token> (piloop token create)')
+
+    def actor(self, headers: Mapping[str, str]) -> str | None:
+        """The actor that ``ACTOR_HEADER`` names."""
+        return headers.get(ACTOR_HEADER)
 
     def enroll(self, principal: str, access: Access) -> Enrollment:
         """A token called ``principal``, in place of the one that has that name, in ``TOKEN_ENV``."""

@@ -2,7 +2,8 @@ from datetime import timedelta
 
 from sqlalchemy import select
 
-from piloop.db.models import Idea, IdeaStatus, count
+from piloop.db.models import Idea, count
+from piloop.ids import IdeaStatus
 from piloop.plugins.trigger.contract import Fire, Pass, Trigger
 from piloop.plugins.trigger.kit.reasons import retry
 

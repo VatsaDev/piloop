@@ -7,22 +7,26 @@ A snapshot (``Status``, ``Inbox``) carries the cursor that it was read at: a cli
 (``Batch``) and so joins the two without a gap. The fields are on the "Event feed" page of the docs.
 """
 
-from typing import Annotated, Literal
+from datetime import datetime
+from enum import StrEnum
+from typing import Annotated, Literal, assert_never
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from piloop.ids import (
     AgentSessionId,
     CampaignId,
+    CampaignStatus,
     CandidateId,
     CommentId,
     EvaluatorId,
     IdeaId,
+    IdeaStatus,
     RoleName,
     RunId,
     TrackName,
 )
-from piloop.text import CELL_CHARS, NONE, cell, metric
+from piloop.text import CELL_CHARS, NONE, age, block, cell, metric
 
 PROTOCOL = 1
 """The version of the documents and of the event envelope. A field may be added within a version, and readers ignore
@@ -134,7 +138,7 @@ class CampaignState(View):
     path: str
     parent: Named | None
     """The campaign that it is under. Null for a root."""
-    status: str
+    status: CampaignStatus
     stopped_reason: str | None
     paused: str | None
     """What ``piloop pause`` holds: ``launches`` or ``all``. Null while the campaign is not paused."""
@@ -359,3 +363,191 @@ class ProblemDetail(View):
     error: str | None = None
     """A ``Problem``. Missing from a 404 of a route that the daemon does not have: it runs an older piloop."""
     detail: str
+
+
+class CommentView(View):
+    """A comment, as ``piloop inbox show`` shows it."""
+
+    id: CommentId
+    kind: str
+    target: str
+    """What it is about, as ``idea#12``."""
+    author: str
+    created: str
+    priority: int | None
+    """Null for a comment that is not in the inbox."""
+    acked_at: str | None
+    acked_by: str | None
+    body: str
+
+
+class Thread(View):
+    """An inbox item, and the comments that it cites, that cite it, or that reply to it."""
+
+    comment: CommentView
+    linked: list[CommentView]
+
+
+class CommentNews(View):
+    """A new inbox item that someone else wrote."""
+
+    kind: Literal['comment'] = 'comment'
+    comment: CommentView
+    campaign_name: str | None
+
+    def text(self) -> str:
+        """The item as ``piloop inbox wait`` prints it."""
+        c = self.comment
+        return f'comment#{c.id} {c.kind} p{c.priority} on {c.target} ({self.campaign_name or "—"}) by {c.author}: {cell(c.body)}'
+
+
+class StoppedNews(View):
+    """A campaign that the daemon stopped."""
+
+    kind: Literal['campaign_stopped'] = 'campaign_stopped'
+    campaign_name: str
+    reason: str | None
+
+    def text(self) -> str:
+        """The item as ``piloop inbox wait`` prints it."""
+        return f'campaign {self.campaign_name} stopped: {self.reason}'
+
+
+class AnomalyNews(View):
+    """An anomaly that the daemon gave to a watchdog."""
+
+    kind: Literal['anomaly_requested'] = 'anomaly_requested'
+    role: str
+    agent_session: AgentSessionId
+    line: str
+
+    def text(self) -> str:
+        """The item as ``piloop inbox wait`` prints it."""
+        return f'anomaly, {self.role}#{self.agent_session} requested: {self.line}'
+
+
+class SeedNews(View):
+    """A seed that someone else filed."""
+
+    kind: Literal['seed_filed'] = 'seed_filed'
+    seed: Seed
+
+    def text(self) -> str:
+        """The item as ``piloop inbox wait`` prints it."""
+        return seed_line(self.seed)
+
+
+class VerdictNews(View):
+    """The daemon's verdict on a measured candidate."""
+
+    kind: Literal['verdict'] = 'verdict'
+    candidate: CandidateId
+    verdict: str
+    reason: str
+
+    def text(self) -> str:
+        """The item as ``piloop inbox wait`` prints it."""
+        return f'candidate#{self.candidate} {self.verdict}: {cell(self.reason)}'
+
+
+type NewsItem = Annotated[CommentNews | StoppedNews | AnomalyNews | SeedNews | VerdictNews, Field(discriminator='kind')]
+
+
+class News(View):
+    """What needs the orchestrator after a cursor: what ends ``piloop inbox wait``."""
+
+    next: int
+    """The cursor for the next wait. It passes every event that the read examined."""
+    items: list[NewsItem]
+
+
+class CampaignAnswer(View):
+    """A campaign after a change, read at ``cursor``: the events after it are the effects of the change."""
+
+    cursor: int
+    campaign: CampaignState
+
+
+class IdeaView(View):
+    """An idea, as the change that wrote it left it."""
+
+    id: IdeaId
+    campaign: CampaignId
+    title: str
+    status: IdeaStatus
+    priority: int
+    track: TrackName
+    created_by: str
+
+
+class IdeaAnswer(View):
+    """An idea that a change wrote, read at ``cursor``."""
+
+    cursor: int
+    idea: IdeaView
+    review: str | None
+    """Why the idea waits for a review, as ``proposed`` although nobody asked: its author's role is held. Else null."""
+
+
+class AckOutcome(StrEnum):
+    """What an acknowledgement did to one id."""
+
+    ACKED = 'acked'
+    ALREADY = 'already'
+    """Someone acknowledged it before: ``acked_by`` says who."""
+    NOT_IN_INBOX = 'not_in_inbox'
+    """No such comment, or one without a priority: nothing to acknowledge."""
+
+
+class AckResult(View):
+    """What an acknowledgement did to one id."""
+
+    id: CommentId
+    outcome: AckOutcome
+    acked_by: str | None
+    """Who acknowledged it: the caller, or whoever did before. Null for an id that is not in the inbox."""
+
+    def line(self) -> str:
+        """The result as ``piloop inbox ack`` prints it."""
+        match self.outcome:
+            case AckOutcome.ACKED:
+                return f'comment#{self.id} acknowledged'
+            case AckOutcome.ALREADY:
+                return f'comment#{self.id} was acknowledged already, by {self.acked_by}'
+            case AckOutcome.NOT_IN_INBOX:
+                return f'comment#{self.id} is not in the inbox'
+            case _:
+                assert_never(self.outcome)
+
+
+class Acked(View):
+    """What an acknowledgement did to each id, read at ``cursor``."""
+
+    cursor: int
+    results: list[AckResult]
+
+
+class Replied(View):
+    """The answer to an inbox item, read at ``cursor``."""
+
+    cursor: int
+    comment: CommentView
+
+
+def thread_lines(thread: Thread, now: datetime) -> tuple[str, list[str]]:
+    """``thread`` as ``piloop inbox show`` prints it: a title line, the body in full, then each linked comment, cut."""
+    c = thread.comment
+    if c.priority is None:
+        state = 'not in the inbox'
+    elif c.acked_at is None:
+        state = f'p{c.priority}, unacknowledged'
+    else:
+        state = f'p{c.priority}, acknowledged by {c.acked_by} {age(datetime.fromisoformat(c.acked_at), now)} ago'
+    title = f'comment#{c.id} {c.kind} on {c.target} by {c.author}, {age(datetime.fromisoformat(c.created), now)} ago · {state}'
+    lines = c.body.strip().splitlines()
+    if thread.linked:
+        lines += ['', 'linked: the comments it cites, those citing it, its replies']
+    for other in thread.linked:
+        head = f'- comment#{other.id} {other.kind} by {other.author}, {age(datetime.fromisoformat(other.created), now)} ago: '
+        lines += (head + block(other.body).replace('\n', '\n  ')).splitlines()
+    return title, lines

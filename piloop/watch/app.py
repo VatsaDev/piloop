@@ -33,9 +33,9 @@ from piloop.agents.results import queue_prompt
 from piloop.campaign import inbox, ops
 from piloop.campaign.campaigns import find
 from piloop.campaign.ideas import reprioritise
-from piloop.db.models import Idea, IdeaStatus, utcnow
+from piloop.db.models import Idea, utcnow
 from piloop.db.session import Database
-from piloop.ids import AgentSessionId, CommentId, IdeaId
+from piloop.ids import AgentSessionId, CommentId, IdeaId, IdeaStatus
 from piloop.watch.panels import CAMPAIGN_COLUMNS, PANELS, Cell, Context, Item, Panel, campaigns, header
 
 POLL_SECONDS = 0.5
@@ -171,11 +171,15 @@ class InboxTable(PanelTable):
 
     def action_ack(self) -> None:
         if (key := self.key()) is not None:
-            self.campaign.act(lambda s: '; '.join(inbox.ack(s, [CommentId(key)], self.campaign.actor)))
+            self.campaign.act(
+                lambda s: '; '.join(r.line() for r in inbox.ack(s, [CommentId(key)], self.campaign.actor))
+            )
 
     def action_ack_shown(self) -> None:
         if keys := self.keys():
-            self.campaign.act(lambda s: '; '.join(inbox.ack(s, [CommentId(k) for k in keys], self.campaign.actor)))
+            self.campaign.act(
+                lambda s: '; '.join(r.line() for r in inbox.ack(s, [CommentId(k) for k in keys], self.campaign.actor))
+            )
 
     def action_reply(self) -> None:
         if (key := self.key()) is None:

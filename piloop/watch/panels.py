@@ -17,15 +17,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from piloop.actor import Actor
+from piloop.api.views import thread_lines
 from piloop.campaign import inbox
 from piloop.campaign.ideas import links, superseded_by
 from piloop.config import CampaignConfig
-from piloop.db.models import AgentSession, Campaign, CampaignStatus, Candidate, Comment, Idea, IdeaStatus, Origin
-from piloop.ids import CampaignId, TargetKind, TargetRef
+from piloop.db.models import AgentSession, Campaign, Candidate, Comment, Idea, Origin
+from piloop.ids import CampaignId, CampaignStatus, IdeaStatus, TargetKind, TargetRef
 from piloop.reports.overview import (
     agent_output,
     head_scores,
-    item_lines,
     latest_events,
     live_agent_sessions,
     on,
@@ -164,7 +164,7 @@ class InboxPanel:
         comment = s.get(Comment, key)
         if comment is None:
             return Text(f'comment#{key} is gone')
-        title, body = item_lines(s, comment, ctx.now)
+        title, body = thread_lines(inbox.thread_of(s, comment), ctx.now)
         return Group(Text(title, style='bold'), Text(), lines(*body))
 
 

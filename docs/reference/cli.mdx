@@ -86,7 +86,8 @@ The daemon serves an HTTP API, `/v1`, on the Unix socket `$PILOOP_HOME/piloop.so
 When that path is too long for a socket (104 bytes on macOS, 108 on Linux), the socket is
 `/tmp/piloop-<uid>/<hash>.sock`, a hash of the home. A call there needs no token. `GET /v1/openapi.json` describes
 every route. With `--listen`, other machines call the same routes with a token of `piloop token` whose access reads
-(`read`, `act` or `admin`).
+(`read`, `act` or `admin`). On such a machine, `PILOOP_SERVER=<url>` makes `status`, `inbox` and `events` ask that
+server, with the network's credential, such as `PILOOP_HTTPS_TOKEN`.
 
 ```bash
 curl --unix-socket ~/.piloop/piloop.sock 'http://piloop/v1/status?campaign=enwik8'
@@ -418,7 +419,7 @@ their brief.
 `--json` prints one JSON document instead: the daemon's pid and the main facts of each campaign, read at one cursor of
 the [event feed](/reference/event-feed).
 
-`status`, `inbox` and `events` ask the daemon. Without one, they stop and say to run `piloop serve --detach`.
+`status`, `inbox` (its list, `show` and `wait`) and `events` ask the daemon. Without one, they stop and say to run `piloop serve --detach`.
 
 ### piloop events
 
@@ -480,6 +481,15 @@ Marks items as seen. `--up-to` marks every unacknowledged item up to that id ins
 keeps only the items of one campaign, and `--kind` keeps only the items of the given kinds. With `IDS`, `--campaign` and
 `--kind` are refused.
 Nothing waits on an acknowledgement. To revise a decision, write a `decision` comment on its target.
+
+### piloop inbox reply
+
+```text
+piloop inbox reply ID BODY [--priority N]
+```
+
+Answers an item with a `decision` on the root of its thread. The answer is an inbox item itself, so it ends
+`piloop inbox wait` for every orchestrator but you.
 
 ### piloop inbox wait
 

@@ -12,9 +12,9 @@ from piloop.campaign import ops
 from piloop.config import load_campaign_config
 from piloop.daemon.run_controller import RunController
 from piloop.db.events import in_order
-from piloop.db.models import AgentSession, AgentSessionState, Campaign, Candidate, Comment, IdeaStatus, Origin
+from piloop.db.models import AgentSession, AgentSessionState, Campaign, Candidate, Comment, Origin
 from piloop.db.session import Database
-from piloop.ids import CampaignId, TargetKind
+from piloop.ids import CampaignId, IdeaStatus, TargetKind
 from piloop.plugins.vcs.git import GitRepository
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring.ledger import RejudgeFailed, head, import_reference, rejudges, request_remeasure

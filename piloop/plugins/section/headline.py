@@ -1,5 +1,6 @@
 from piloop.api.views import Figure, Figures, Rendered
-from piloop.db.models import CampaignStatus, count
+from piloop.db.models import count
+from piloop.ids import CampaignStatus
 from piloop.plugins.section.contract import Rendering, Section, Surface
 from piloop.reports.overview import head_scores, holds, produced
 from piloop.scoring.ledger import keeps, references

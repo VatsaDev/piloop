@@ -13,17 +13,21 @@ from typing import Annotated, Literal
 
 from pydantic import JsonValue
 
-from piloop.db.models import (
-    CampaignStatus,
-    EventModel,
-    IdeaStatus,
-    LinkKind,
-    Origin,
-    Pause,
-)
+from piloop.db.models import EventModel, LinkKind, Origin, Pause
 from piloop.db.triggers.ddl import Event, Trigger
 from piloop.db.triggers.provenance import DAEMON_ACTOR, NOW, SESSION_ACTOR
-from piloop.ids import HOME, CampaignId, CandidateId, CommentKind, IdeaId, RoleName, TargetKind, TrackName
+from piloop.ids import (
+    HOME,
+    CampaignId,
+    CampaignStatus,
+    CandidateId,
+    CommentKind,
+    IdeaId,
+    IdeaStatus,
+    RoleName,
+    TargetKind,
+    TrackName,
+)
 from piloop.plugins.cas.contract import BlobAddress
 from piloop.plugins.verdict_rule.contract import Outcome
 

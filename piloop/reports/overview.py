@@ -21,7 +21,6 @@ from sqlalchemy.orm import Session
 
 from piloop.agents.results import StartupAnomaly
 from piloop.agents.roles import harness_of
-from piloop.campaign import inbox
 from piloop.campaign.anomaly import AnomalyKind, AnomalyReported
 from piloop.campaign.ideas import runnable
 from piloop.campaign.inbox import campaign_of
@@ -34,12 +33,9 @@ from piloop.db.models import (
     AgentSession,
     AgentSessionState,
     Campaign,
-    CampaignStatus,
     Candidate,
-    Comment,
     Event,
     Idea,
-    IdeaStatus,
     Origin,
     Pause,
     Run,
@@ -47,7 +43,7 @@ from piloop.db.models import (
     campaign_runs,
     count,
 )
-from piloop.ids import AgentSessionId, CampaignId, EvaluatorId, TargetKind, TargetRef
+from piloop.ids import AgentSessionId, CampaignId, CampaignStatus, EvaluatorId, IdeaStatus, TargetKind, TargetRef
 from piloop.plugins.metric import Direction
 from piloop.plugins.role.contract import Files
 from piloop.plugins.stop_rule.contract import Fact
@@ -66,8 +62,6 @@ from piloop.usage import human
 from piloop.usage.totals import campaign_tokens
 
 DETAIL_CHARS = 160
-LINKED_CHARS = 800
-"""How much of each linked comment ``piloop inbox show`` prints under an item."""
 
 
 INCIDENTS = frozenset(
@@ -294,48 +288,6 @@ def scored(c: Candidate, evaluator_id: EvaluatorId | None, primary: Metric) -> t
     parent = score(c.parent, evaluator_id, primary) if c.parent is not None else None
     delta = metric(value - parent, signed=True) if value is not None and parent is not None else NONE
     return NONE if value is None else metric(value), delta
-
-
-def block(text: str, chars: int = LINKED_CHARS) -> str:
-    """Return whole lines of ``text`` up to ``chars`` characters, then ``… (N more lines)`` for the rest.
-
-    If the first line is longer than ``chars``, it is cut short, so that a one-line comment always shows.
-    """
-    lines = text.strip().splitlines() or [NONE]
-    kept: list[str] = []
-    used = 0
-    for line in lines:
-        if used + len(line) > chars:
-            break
-        kept.append(line)
-        used += len(line) + 1
-    if not kept:
-        kept = [lines[0][: chars - 1] + '…']
-    omitted = len(lines) - len(kept)
-    return '\n'.join([*kept, f'… ({omitted} more lines)'] if omitted else kept)
-
-
-def item_lines(s: Session, c: Comment, now: datetime) -> tuple[str, list[str]]:
-    """Format one comment and its thread as ``piloop inbox show`` prints them: a title line and the lines below.
-
-    The body is shown in full. The linked comments follow (the comments it cites as comment#<id>, the comments that
-    cite it, and its replies), each cut by ``block``.
-    """
-    if c.priority is None:
-        state = 'not in the inbox'
-    elif c.acked_at is None:
-        state = f'p{c.priority}, unacknowledged'
-    else:
-        state = f'p{c.priority}, acknowledged by {c.acked_by} {age(c.acked_at, now)} ago'
-    title = f'comment#{c.id} {c.kind} on {c.target} by {c.author}, {age(c.created_at, now)} ago · {state}'
-    lines = c.body.strip().splitlines()
-    rest = inbox.thread(s, c)
-    if rest:
-        lines += ['', 'linked: the comments it cites, those citing it, its replies']
-    for other in rest:
-        head = f'- comment#{other.id} {other.kind} by {other.author}, {age(other.created_at, now)} ago: '
-        lines += (head + block(other.body).replace('\n', '\n  ')).splitlines()
-    return title, lines
 
 
 def anomalies(s: Session, campaign: Campaign, cfg: CampaignConfig) -> list[Anomaly]:

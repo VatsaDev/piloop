@@ -19,8 +19,9 @@ from piloop.actor import System
 from piloop.cli import doctor, skills, upgrade
 from piloop.cli.doctor import checks, report
 from piloop.config import CampaignConfig
-from piloop.db.models import Campaign, CampaignStatus
+from piloop.db.models import Campaign
 from piloop.db.session import Database
+from piloop.ids import CampaignStatus
 from piloop.plugins.host import Check, Severity
 from piloop.plugins.secrets.contract import SECRETS, set_secret
 from piloop.settings import Settings

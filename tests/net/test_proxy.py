@@ -113,6 +113,8 @@ def test_a_worker_client_sends_its_credential_and_name(monkeypatch: pytest.Monke
     monkeypatch.setenv(NAME_ENV, 'gpu-0123abcd')
     client = config.client('https://piloop.test')
     assert (client.headers['authorization'], client.headers['x-who']) == ('Bearer proxy-key', 'gpu-0123abcd')
+    assert 'x-piloop-actor' not in client.headers
+    assert config.client('https://piloop.test', System.ORCHESTRATOR).headers['x-piloop-actor'] == 'orchestrator'
     monkeypatch.delenv(NAME_ENV)
     with pytest.raises(NoCredential):
         config.client('https://piloop.test')

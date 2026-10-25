@@ -50,11 +50,13 @@ from piloop.ids import (
     IMPLEMENTER,
     AgentSessionId,
     CampaignId,
+    CampaignStatus,
     CandidateId,
     CommentId,
     CommentKind,
     EvaluatorId,
     IdeaId,
+    IdeaStatus,
     MeasurementId,
     Revision,
     RoleName,
@@ -115,13 +117,6 @@ class CidText(TypeDecorator[Cid]):
         return None if value is None else Cid(value)
 
 
-class CampaignStatus(StrEnum):
-    """Whether the daemon still requests work for a campaign. ``stopped`` after a ``[stop]`` condition held."""
-
-    ACTIVE = 'active'
-    STOPPED = 'stopped'
-
-
 class Pause(StrEnum):
     """What a paused campaign holds (``piloop pause``). Running work goes on either way, and nothing is escalated.
 
@@ -131,24 +126,6 @@ class Pause(StrEnum):
 
     LAUNCHES = 'launches'
     ALL = 'all'
-
-
-class IdeaStatus(StrEnum):
-    """The lifecycle of an idea. The scheduler picks up ``ready`` ideas in priority order.
-
-    A ``seed`` is a rough idea with pointers. An agent whose role's ``files`` allows it files one (``piloop idea
-    seed``). Research develops it into a defined idea (``piloop idea develop``, which makes it ``ready`` or
-    ``proposed``), or rejects it.
-    A ``proposed`` idea is defined and waits for a human to approve it.
-    """
-
-    SEED = 'seed'
-    PROPOSED = 'proposed'
-    READY = 'ready'
-    SCHEDULED = 'scheduled'
-    DONE = 'done'
-    PARKED = 'parked'
-    REJECTED = 'rejected'
 
 
 class LinkKind(StrEnum):

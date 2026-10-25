@@ -6,14 +6,14 @@ import cyclopts
 from sqlalchemy.orm import Session
 
 from piloop.agents import results
-from piloop.campaign.stop import CANCELLABLE, Ending, request_cancel
+from piloop.campaign.stop import CANCELLABLE, request_cancel
 from piloop.cli import common, local
 from piloop.cli.common import HARNESS_HELP, CampaignRef
 from piloop.db.events import has, latest
 from piloop.db.models import LIVE, OPEN_RUNS, AgentSession, Event, Run, TargetKind
 from piloop.db.session import Database
 from piloop.harnesses import MessageFormat, render_messages
-from piloop.ids import AgentSessionId, CommentId, RoleName, RunId, TargetRef
+from piloop.ids import AgentSessionId, CommentId, Ending, RoleName, RunId, TargetRef
 from piloop.plugins.runtime.contract import MESSAGES_ENV, take
 from piloop.reports.overview import agent_output
 

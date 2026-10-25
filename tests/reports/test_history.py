@@ -11,7 +11,6 @@ from piloop.db.models import (
     Comment,
     Idea,
     IdeaLink,
-    IdeaStatus,
     LinkKind,
     Measurement,
     Run,
@@ -19,7 +18,7 @@ from piloop.db.models import (
     RunStatus,
 )
 from piloop.db.session import Database
-from piloop.ids import IMPLEMENTER, CommentKind, Revision, TargetKind, TargetRef
+from piloop.ids import IMPLEMENTER, CommentKind, IdeaStatus, Revision, TargetKind, TargetRef
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.reports.history import (
     FINDINGS_IN_HISTORY,

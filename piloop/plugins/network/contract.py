@@ -19,6 +19,7 @@ from typing import Annotated, Protocol
 import httpx2 as httpx
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, WithJsonSchema, model_validator
 
+from piloop.actor import Actor
 from piloop.api.contract import Access
 from piloop.net.tokens import Caller, Tokens
 from piloop.plugins.host import Capability, Choice, Parameters, Scope
@@ -137,6 +138,13 @@ class Network(Protocol):
         """
         ...
 
+    def actor(self, headers: Mapping[str, str]) -> str | None:
+        """Whom a request asks to act as: an actor's signature, such as ``orchestrator``, or None for the caller itself.
+
+        The provider decides how a request carries the ask, such as in a header. Core checks that the caller may act as it. The provider's ``client`` sends the ask the same way.
+        """
+        ...
+
     def enroll(self, principal: str, access: Access) -> Enrollment:
         """Give the machine called ``principal`` a credential of ``access``, in place of any that it had.
 
@@ -167,10 +175,10 @@ class NetworkConfig(Parameters, ABC):
         """Make the server's side of the network. The daemon calls it once, when it starts."""
 
     @abstractmethod
-    def client(self, server: str) -> httpx.Client:
+    def client(self, server: str, actor: Actor | None = None) -> httpx.Client:
         """The dialing side, which needs no host: a client of the server at ``server``, with this machine's credential.
 
-        The provider finds the credential itself, so its caller (``piloop worker``) knows no kind of credential.
+        It asks to act as ``actor`` (``Network.actor``), or as the caller itself when None. The provider finds the credential itself, so its caller (``piloop worker``) knows no kind of credential.
 
         Raises:
             NoCredential: This machine has none.

@@ -2,7 +2,8 @@ from sqlalchemy import func, select
 
 from piloop.api.views import Lines, Rendered
 from piloop.campaign.ideas import links, superseded_by
-from piloop.db.models import Idea, IdeaStatus
+from piloop.db.models import Idea
+from piloop.ids import IdeaStatus
 from piloop.plugins.section.contract import Rendering, Section, Surface
 from piloop.reports.overview import queued_ideas
 from piloop.text import NONE, age, cell

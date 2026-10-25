@@ -1,4 +1,4 @@
-"""The commands about campaigns: ``init``, ``history``, ``watch``, ``pause``, ``resume``, ``campaign stop``."""
+"""The commands about campaigns that open the database: ``init``, ``history``, ``watch``, ``campaign parent|tree``."""
 
 import sys
 from pathlib import Path
@@ -25,17 +25,13 @@ from piloop.campaign.campaigns import (
     workspace_dir,
 )
 from piloop.campaign.memory import sync_documents
-from piloop.campaign.stop import Ending, request_stop
 from piloop.cli import common, local
 from piloop.cli.common import CampaignRef
-from piloop.db.models import CampaignStatus
 from piloop.db.session import Database
-from piloop.reports.overview import paused
+from piloop.ids import CampaignStatus
 from piloop.reports.pack import renderables as pack_renderables
 from piloop.text import metric
 from piloop.watch.app import Watch
-
-app = cyclopts.App(name='campaign')  # its help is where piloop.cli.main registers it
 
 
 def init(
@@ -114,41 +110,6 @@ def history(ref: CampaignRef | None = None, /) -> None:
             )
 
 
-def pause(
-    ref: CampaignRef,
-    /,
-    *,
-    reason: Annotated[str, cyclopts.Parameter(help='Why, with ids: what the pause waits for.')],
-    evals: Annotated[
-        bool,
-        cyclopts.Parameter(help='Hold the measurements that the daemon starts too: after a new evaluator, or asked.'),
-    ] = False,
-) -> None:
-    """Pause a campaign: nothing new launches, and nothing is escalated. `piloop resume` ends the pause.
-
-    The daemon queues no run, requests no role and launches no requested row, so research files no ideas. A sweep that
-    runs already files its ideas as proposed. Running work goes on, and its commits are scored. The daemon still
-    measures again what a new evaluator or `piloop candidate remeasure` needs, so the pause can end on a measured head.
-    `--evals` holds those measurements too. The pause is in the database: it holds wherever you run the command.
-    """
-    with local.refused(), local.session() as s:
-        campaign = ops.pause(s, local.campaign(s, ref).id, evals=evals, reason=reason)
-        s.commit()
-        common.console.print(
-            f'campaign {campaign.name} {paused(campaign)}; running work goes on; `piloop resume {campaign.name}` ends it',
-            markup=False,
-        )
-
-
-def resume(ref: CampaignRef, /) -> None:
-    """Resume a paused campaign. The daemon queues runs and requests roles again at once."""
-    with local.refused(), local.session() as s:
-        campaign = local.campaign(s, ref)
-        held = ops.resume(s, campaign.id)
-        s.commit()
-        common.console.print(f'campaign {campaign.name} resumed; it held {held}', markup=False)
-
-
 def watch_cmd(
     ref: CampaignRef | None = None,
     /,
@@ -178,7 +139,6 @@ def watch_cmd(
         db.close()
 
 
-@app.command(name='parent')
 def parent(
     ref: CampaignRef,
     parent_ref: Annotated[str | None, cyclopts.Parameter(help='The campaign to put it under.')] = None,
@@ -201,41 +161,9 @@ def parent(
         common.console.print(f'{campaign.name} #{campaign.id} is {where}', markup=False)
 
 
-@app.command(name='tree')
 def tree() -> None:
     """Print every campaign under its parent, with its type and its status."""
     with local.session() as s:
         for depth, campaign in campaign_tree(s):
             line = f'{"  " * depth}{campaign.name} #{campaign.id}  {campaign.type}  {campaign.status}'
             common.console.print(line, markup=False, highlight=False)
-
-
-@app.command(name='stop')
-def stop(
-    ref: CampaignRef,
-    /,
-    *,
-    kill: Annotated[
-        bool, cyclopts.Parameter(help='End the running implementers at once, without the wrap-up prompt.', negative='')
-    ] = False,
-    reason: Annotated[str, cyclopts.Parameter(help='Why, for `stopped_reason` and the closing review.')] = '',
-) -> None:
-    """Stop a campaign. The daemon stops it at once, as when a `[stop]` condition holds.
-
-    This works also while the campaign is paused or held at its `[spend]` limit. A paused campaign gets its closing
-    review; a held one as `[spend] closing_review` says. It drops the queued runs and the requested agents, and the
-    `stopped` triggers request the closing review. Each
-    running implementer is told to save its work and stop, and is ended 10 minutes later. What the implementers saved is scored.
-    With `--kill`, the implementers are ended at once, and what they committed is still scored. On a stopped campaign,
-    `--kill` ends the implementers that are still winding down. The campaign's `piloop.toml` is not changed.
-    """
-    with local.session() as s:
-        campaign = local.campaign(s, ref)
-        if campaign.status is CampaignStatus.STOPPED and not kill:
-            raise SystemExit(
-                f'{campaign.name} is stopped already ({campaign.stopped_reason}); --kill ends its implementers at once'
-            )
-        request_stop(s, campaign, common.settings.actor, reason=reason, ending=Ending.NOW if kill else Ending.WRAP_UP)
-        s.commit()
-        how = 'ends its implementers now' if kill else 'tells its implementers to save their work and stop'
-        common.console.print(f'stop requested for {campaign.name}: the daemon {how}', markup=False)

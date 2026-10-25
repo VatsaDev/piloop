@@ -33,9 +33,9 @@ from piloop.plugins.executor.contract import EXECUTORS
 from piloop.plugins.network import contract as network
 from piloop.plugins.secrets.contract import SECRETS, HomeSecrets
 from piloop.proc import Inherited
-from piloop.reports.feed import iso
 from piloop.runtime.factory import make_runtime, runtimes
 from piloop.settings import CONFIG_FILE, Settings, settings
+from piloop.text import iso
 from piloop.version import code_digest
 
 ACTOR = System.DAEMON

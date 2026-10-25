@@ -31,12 +31,11 @@ from piloop.api.contract import Selection
 from piloop.campaign import campaigns as campaign_module, inbox
 from piloop.campaign.campaigns import CampaignAdded
 from piloop.campaign.ideas import defined_by, runnable
-from piloop.campaign.stop import CancelRequested, Ending, StopRequested
+from piloop.campaign.stop import CancelRequested, StopRequested
 from piloop.cli import (
     agents as agents_cli,
     campaign as campaign_cli,
     common,
-    inbox as inbox_cli,
     install,
     main as cli,
     views,
@@ -50,14 +49,12 @@ from piloop.db.models import (
     AgentSession,
     AgentSessionState,
     Campaign,
-    CampaignStatus,
     Candidate,
     Comment,
     Evaluation,
     Event,
     Idea,
     IdeaLink,
-    IdeaStatus,
     InstanceEnd,
     LinkKind,
     Measurement,
@@ -70,7 +67,17 @@ from piloop.db.models import (
 )
 from piloop.db.session import Database, migrate
 from piloop.db.triggers.changelog import CampaignConfigChanged, CampaignStatusChanged
-from piloop.ids import CampaignId, CandidateId, CommentId, CommentKind, TargetKind, TargetRef
+from piloop.ids import (
+    CampaignId,
+    CampaignStatus,
+    CandidateId,
+    CommentId,
+    CommentKind,
+    Ending,
+    IdeaStatus,
+    TargetKind,
+    TargetRef,
+)
 from piloop.plugins import host
 from piloop.plugins.executor.kit.capacity import GB, HostSample
 from piloop.plugins.executor.kit.leases import Leases
@@ -241,6 +248,7 @@ def test_every_role_but_the_implementer_files_a_seed_and_only_research_the_orche
         as_('human', 'idea', 'add', 'demo', 'from nowhere', '--base', '99')
 
 
+@pytest.mark.usefixtures('api')
 def test_a_seed_developed_with_its_links_is_never_runnable_without_them(
     campaign_path: Path, tmp_path: Path, out, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -272,6 +280,7 @@ def research_files(campaign_path: Path, most: int) -> None:
     toml.write_text(re.sub(r'max_ideas = \d+', f'max_ideas = {most}', toml.read_text()))
 
 
+@pytest.mark.usefixtures('api')
 def test_a_sweep_files_its_new_ideas_as_proposed_while_its_role_may_file_none(
     campaign_path: Path, tmp_path: Path, out, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -624,7 +633,6 @@ def test_inbox_lists_what_waits_shows_one_with_its_thread_and_acknowledges(
     run_cli(['init', str(other)])
     now = datetime(2026, 10, 7, 12, tzinfo=UTC)
     monkeypatch.setattr(views, 'clock', lambda: now)  # what the ages count from
-    monkeypatch.setattr(inbox_cli, 'utcnow', lambda: now)
     monkeypatch.setattr(inbox, 'utcnow', lambda: now)  # when an item is acknowledged
     insert = 'INSERT INTO comments (target_kind, target_id, author, kind, body, priority, created_at) VALUES '
     at = f"'{now:%Y-%m-%d %H:%M:%S}'"
@@ -687,12 +695,20 @@ def test_inbox_lists_what_waits_shows_one_with_its_thread_and_acknowledges(
             run_cli(['inbox', 'ack', '1', *narrow])
     with pytest.raises(SystemExit, match='no comment#99'):
         run_cli(['inbox', 'show', '99'])
+    run_cli(['inbox', 'reply', '5', 'park it', '--priority', '1'])
+    assert out().strip() == 'comment#6 decision on comment#2', 'the answer goes on the root of the thread'
+    with pytest.raises(SystemExit, match="^no campaign 'nope'"):
+        run_cli(['idea', 'seed', 'nope', 'a hunch', '--from', 'a pointer'])
 
 
+@pytest.mark.usefixtures('api')
 def test_inbox_wait_blocks_until_an_item_lands_and_hands_over_a_cursor_that_misses_nothing(
     campaign_path: Path, out, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     run_cli(['init', str(campaign_path)])
+    out()
+    monkeypatch.setattr(views, 'MAX_POLL_SECONDS', 0.1)
+    run_cli(['inbox', 'wait', '--timeout', '0.3'])  # it asks again after each long-poll, until its own timeout
     out()
     run_cli(['inbox', 'wait', '--timeout', '0'])
     quiet, again = out().splitlines()
@@ -964,6 +980,7 @@ def test_eval_queue_lists_the_running_then_the_waiting_evaluations_and_eval_canc
         run_cli(['eval', 'cancel', '2'])
 
 
+@pytest.mark.usefixtures('api')
 def test_candidate_note_keeps_a_regressed_result_in_view_with_follow_ups_pinned_to_it(
     campaign_path: Path, out, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1154,6 +1171,7 @@ def test_prompt_is_a_note_on_the_agent_and_says_whether_it_arrived(
         run_cli(['prompt', '2', 'x'])
 
 
+@pytest.mark.usefixtures('api')
 def test_campaign_stop_and_cancels_are_requests_that_the_daemon_acts_on(campaign_path: Path, out) -> None:
     run_cli(['init', str(campaign_path)])
     db = Database(common.settings.database_url, actor=common.settings.actor)
@@ -1211,7 +1229,10 @@ def test_campaign_stop_and_cancels_are_requests_that_the_daemon_acts_on(campaign
         s.get_one(Campaign, 1).status, s.get_one(Campaign, 1).stopped_reason = CampaignStatus.STOPPED, 'by hand'
         s.commit()
     db.close()
-    with pytest.raises(SystemExit, match=r'demo is stopped already \(by hand\); --kill ends its implementers at once'):
+    with pytest.raises(
+        SystemExit,
+        match=r'demo is stopped already \(by hand\); `piloop campaign stop --kill` ends its implementers at once',
+    ):
         run_cli(['campaign', 'stop', 'demo'])
     run_cli(['campaign', 'stop', 'demo', '--kill'])
     assert out().strip() == 'stop requested for demo: the daemon ends its implementers now'
@@ -1313,7 +1334,7 @@ def test_status_shows_where_the_daemon_listens_and_a_restart_keeps_a_free_port(
 def listening() -> str | None:
     """The URL that the home's daemon serves other machines on, or None when no daemon answers or it serves none."""
     try:
-        with Client.on(common.settings.socket_file) as client:
+        with Client.on(common.settings.socket_file, System.HUMAN) as client:
             return client.status(Selection()).daemon.listen
     except NoDaemon:
         return None
@@ -1749,6 +1770,7 @@ def test_schema_prints_the_procedures_and_tables_pi_puts_in_its_sql_tool(out) ->
     )
 
 
+@pytest.mark.usefixtures('api')
 def test_with_several_tracks_every_idea_and_seed_names_its_track(campaign_path: Path, out) -> None:
     toml = campaign_path / 'piloop.toml'
     text = toml.read_text().replace('role = "primary"', 'role = "primary"\nmargin = 1')
@@ -1839,9 +1861,9 @@ READERS = (
     ['history'],
     ['sql', 'SELECT 1'],
     ['watch'],
-    ['inbox', 'show', '1'],
+    ['limits'],
     ['campaign', 'tree'],
-    ['idea', 'add', 'demo', 'a title'],
+    ['idea', 'seed', 'demo', 'a hunch', '--from', 'a pointer'],
 )
 """Commands that open the database and must never migrate it: only serve, migrate and upgrade do."""
 

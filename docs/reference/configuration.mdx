@@ -519,6 +519,7 @@ With `provider = "proxy"`:
 | `rules` | list\[[Rule](#rule)\] | `[]` | Who gets which access, by their claims: the first rule that matches wins, and no match is refused. |
 | `name_claim` | string \| null | `null` | The claim that names a caller who is not a worker, such as its principal. Needed by any rule but `worker`. |
 | `worker_header` | string | `"x-piloop-worker"` | The header in which a worker names itself. The proxy passes it through. |
+| `actor_header` | string | `"x-piloop-actor"` | The header in which a caller asks to act as another actor than itself, such as `orchestrator`. The proxy passes it through. |
 | `worker_credential_secret` | string | `"PILOOP_WORKER_CREDENTIAL"` | The home's secret that holds the workers' credential, which `enroll` hands to a provisioned worker. |
 
 #### Rule

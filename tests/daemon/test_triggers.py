@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from piloop.actor import System
 from piloop.campaign.anomaly import AnomalyKind, AnomalyReported
-from piloop.campaign.stop import Ending, request_cancel
+from piloop.campaign.stop import request_cancel
 from piloop.config import load_campaign_config
 from piloop.daemon.main import ACTOR
 from piloop.daemon.run_controller import RunController
@@ -26,7 +26,6 @@ from piloop.db.models import (
     Evaluator,
     Idea,
     IdeaLink,
-    IdeaStatus,
     LinkKind,
     Measurement,
     Run,
@@ -35,7 +34,7 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database
-from piloop.ids import IMPLEMENTER, AgentSessionId, IdeaId, RunId, TargetKind, TargetRef
+from piloop.ids import IMPLEMENTER, AgentSessionId, Ending, IdeaId, IdeaStatus, RunId, TargetKind, TargetRef
 from piloop.otel import Tracer
 from piloop.plugins.executor.workers import Workers
 from piloop.plugins.verdict_rule.contract import Outcome

@@ -4,7 +4,8 @@ from enum import StrEnum
 
 from sqlalchemy import Enum
 
-from piloop.db.models import AgentSessionState, Base, Cause, IdeaStatus, Origin, RunEnd, RunStatus
+from piloop.db.models import AgentSessionState, Base, Cause, Origin, RunEnd, RunStatus
+from piloop.ids import IdeaStatus
 from piloop.plugins.verdict_rule.contract import Outcome
 from scripts.generate import SNIPPETS, header
 

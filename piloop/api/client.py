@@ -11,15 +11,46 @@ from contextlib import contextmanager
 from http import HTTPStatus
 from pathlib import Path
 from typing import Self
+from urllib.parse import quote
 
 import httpx2 as httpx
 from pydantic import BaseModel, ValidationError
 
-from piloop.api.contract import MAX_POLL_SECONDS, EventsQuery, InboxQuery, Params, Polled, Selection
-from piloop.api.views import Batch, Inbox, Overview, ProblemDetail, Status
+from piloop.actor import Actor
+from piloop.api.contract import (
+    MAX_POLL_SECONDS,
+    AckBody,
+    EventsQuery,
+    IdeaBody,
+    InboxQuery,
+    NewsQuery,
+    Params,
+    PauseBody,
+    Polled,
+    ReplyBody,
+    Selection,
+    StopBody,
+)
+from piloop.api.views import (
+    Acked,
+    Batch,
+    CampaignAnswer,
+    IdeaAnswer,
+    Inbox,
+    News,
+    Overview,
+    ProblemDetail,
+    Replied,
+    Status,
+    Thread,
+)
+from piloop.ids import CommentId
 
 TIMEOUT_SECONDS = 30
 """How long a call waits for its answer, beyond a long-poll's own wait."""
+SOCKET_ACTOR_HEADER = 'x-piloop-actor'
+"""The header in which a client on the home's socket asks to act as its ``PILOOP_ACTOR``. A network carries the ask its
+own way (``Network.actor``)."""
 
 
 class NoDaemon(ConnectionError):
@@ -42,8 +73,8 @@ class Client:
 
     @classmethod
     @contextmanager
-    def on(cls, socket: Path) -> Generator[Self]:
-        """A client of the daemon that serves on the Unix socket ``socket``, until the block ends.
+    def on(cls, socket: Path, actor: Actor) -> Generator[Self]:
+        """A client of the daemon that serves on the Unix socket ``socket``, acting as ``actor``, until the block ends.
 
         Raises:
             NoDaemon: Nothing listens on the socket.
@@ -53,7 +84,17 @@ class Client:
                 f'no daemon listens on {socket}: start it with `piloop serve --detach`, or set PILOOP_HOME;'
                 ' a daemon of an older piloop serves no socket: `piloop restart`'
             )
-        with httpx.Client(transport=httpx.HTTPTransport(uds=str(socket)), base_url='http://piloop') as http:
+        transport = httpx.HTTPTransport(uds=str(socket))
+        with httpx.Client(
+            transport=transport, base_url='http://piloop', headers={SOCKET_ACTOR_HEADER: actor.signature}
+        ) as http:
+            yield cls(http)
+
+    @classmethod
+    @contextmanager
+    def at(cls, http: httpx.Client) -> Generator[Self]:
+        """A client over ``http``: a network's client of a server (``NetworkConfig.client``), which carries the actor."""
+        with http:
             yield cls(http)
 
     def status(self, query: Selection) -> Status:
@@ -68,6 +109,30 @@ class Client:
     def events(self, query: EventsQuery) -> Batch:
         return self._get('/v1/events', query, Batch)
 
+    def news(self, query: NewsQuery) -> News:
+        return self._get('/v1/inbox/news', query, News)
+
+    def thread(self, comment: CommentId) -> Thread:
+        return self._get(f'/v1/inbox/{comment}', Params(), Thread)
+
+    def pause(self, campaign: str, body: PauseBody) -> CampaignAnswer:
+        return self._post(f'/v1/campaigns/{_segment(campaign)}/pause', body, CampaignAnswer)
+
+    def resume(self, campaign: str) -> CampaignAnswer:
+        return self._post(f'/v1/campaigns/{_segment(campaign)}/resume', None, CampaignAnswer)
+
+    def stop(self, campaign: str, body: StopBody) -> CampaignAnswer:
+        return self._post(f'/v1/campaigns/{_segment(campaign)}/stop', body, CampaignAnswer)
+
+    def add_idea(self, campaign: str, body: IdeaBody) -> IdeaAnswer:
+        return self._post(f'/v1/campaigns/{_segment(campaign)}/ideas', body, IdeaAnswer)
+
+    def ack(self, body: AckBody) -> Acked:
+        return self._post('/v1/inbox/ack', body, Acked)
+
+    def reply(self, comment: CommentId, body: ReplyBody) -> Replied:
+        return self._post(f'/v1/inbox/{comment}/reply', body, Replied)
+
     def _get[A: BaseModel](self, path: str, query: Params, answer: type[A]) -> A:
         """GET ``path`` with ``query`` as its query string, and read the answer as ``answer``.
 
@@ -77,9 +142,28 @@ class Client:
         wait = query.wait if isinstance(query, Polled) else 0
         params = query.model_dump(mode='json', exclude_defaults=True)
         response = self._http.get(path, params=params, timeout=TIMEOUT_SECONDS + min(wait, MAX_POLL_SECONDS))
-        if response.is_success:
-            return answer.model_validate_json(response.content)
-        raise _refused(response)
+        return _answer(response, answer)
+
+    def _post[A: BaseModel](self, path: str, body: Params | None, answer: type[A]) -> A:
+        """POST ``body`` as JSON to ``path``, and read the answer as ``answer``.
+
+        Raises:
+            Refused: The daemon refused the call.
+        """
+        content = None if body is None else body.model_dump_json()
+        headers = None if body is None else {'content-type': 'application/json'}
+        return _answer(self._http.post(path, content=content, headers=headers, timeout=TIMEOUT_SECONDS), answer)
+
+
+def _segment(campaign: str) -> str:
+    """A campaign's name as one segment of a path."""
+    return quote(campaign, safe='')
+
+
+def _answer[A: BaseModel](response: httpx.Response, answer: type[A]) -> A:
+    if response.is_success:
+        return answer.model_validate_json(response.content)
+    raise _refused(response)
 
 
 class _Invalid(BaseModel):

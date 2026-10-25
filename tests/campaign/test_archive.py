@@ -26,20 +26,9 @@ from piloop.campaign.archive import (
     restore,
 )
 from piloop.campaign.campaigns import workspace_dir
-from piloop.db.models import (
-    AgentSession,
-    AgentSessionState,
-    Archive,
-    Campaign,
-    CampaignStatus,
-    Idea,
-    IdeaStatus,
-    Run,
-    RunStatus,
-    utcnow,
-)
+from piloop.db.models import AgentSession, AgentSessionState, Archive, Campaign, Idea, Run, RunStatus, utcnow
 from piloop.db.session import Database
-from piloop.ids import IMPLEMENTER, AgentSessionId, CampaignId, IdeaId, RoleName
+from piloop.ids import IMPLEMENTER, AgentSessionId, CampaignId, CampaignStatus, IdeaId, IdeaStatus, RoleName
 from piloop.plugins.cas.disk import DiskCas
 from piloop.plugins.cas.kit.objects import ObjectsCas, key
 from piloop.settings import INPUTS_DIR

@@ -23,7 +23,7 @@ from collections.abc import Callable, Generator
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import NewType, assert_never
+from typing import NewType
 
 from alembic import command, context
 from alembic.config import Config as AlembicConfig
@@ -34,9 +34,9 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import ConnectionPoolEntry, PoolProxiedConnection
 
 from piloop import deprecated
-from piloop.actor import Actor, Agent, System
+from piloop.actor import Actor, Agent
 from piloop.db.models import utcnow
-from piloop.db.sql import CONNECTION_PRAGMAS, install_actor, install_functions, lock_holder, optimize
+from piloop.db.sql import CONNECTION_PRAGMAS, install_actor, install_functions, lock_holder, optimize, sign
 from piloop.plugins.cas.contract import Cas
 from piloop.version import Version, installed
 
@@ -275,18 +275,16 @@ def schema_mismatch(database: Path, daemon: int | None, actor: Actor) -> SchemaM
     if at == head():
         return None
     found = f'{database} is at schema revision {at or "none"}, and this {installed()} knows {head()}'
-    match actor:
+    match actor.launched:
         case Agent():
             fix = 'the daemon is being upgraded; retry in a minute'
-        case System() if daemon is None:
+        case None if daemon is None:
             fix = 'run `piloop migrate`, which backs it up first'
-        case System():
+        case _:
             fix = (
                 f'the daemon (pid {daemon}) runs an older piloop. `piloop restart` restarts it on this piloop,'
                 ' which migrates it'
             )
-        case _:
-            assert_never(actor)
     return SchemaMismatch(found, fix)
 
 
@@ -467,6 +465,7 @@ class Database:
 
     def __init__(self, url: str, *, actor: Actor) -> None:
         self.engine = make_engine(url, actor)
+        self.actor = actor
         self._sessions = sessionmaker(self.engine, expire_on_commit=False)
         self._committed = threading.Condition()
         self._wakes = 0
@@ -495,6 +494,28 @@ class Database:
         if self._closed:
             raise DatabaseClosed('the database is closed')
         return self._sessions()
+
+    @contextmanager
+    def acting(self, actor: Actor) -> Generator[Session]:
+        """A session whose writes sign as ``actor``, as a session of a client that ``actor`` runs would: the API's.
+
+        Its connection signs as ``actor`` until the block ends, then as this database's own actor again, before it goes
+        back to the pool.
+
+        Raises:
+            DatabaseClosed: ``close`` came first.
+        """
+        if self._closed:
+            raise DatabaseClosed('the database is closed')
+        with self.engine.connect() as conn:
+            driver = conn.connection.driver_connection
+            assert isinstance(driver, sqlite3.Connection)  # make_engine opens SQLite only
+            sign(driver, actor)
+            try:
+                with self._sessions(bind=conn) as s:
+                    yield s
+            finally:
+                sign(driver, self.actor)
 
     def _count_checkout(self, change: int) -> None:
         with self._committed:

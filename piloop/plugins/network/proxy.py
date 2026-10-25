@@ -37,6 +37,7 @@ from typing import Final, Self
 import httpx2 as httpx
 from pydantic import BaseModel, ConfigDict, SecretStr, model_validator
 
+from piloop.actor import Actor
 from piloop.api.contract import Access
 from piloop.mcp import EnvName
 from piloop.net.tokens import Caller
@@ -88,6 +89,9 @@ class Proxy(NetworkConfig):
     """The claim that names a caller who is not a worker, such as its principal. Needed by any rule but ``worker``."""
     worker_header: str = 'x-piloop-worker'
     """The header in which a worker names itself. The proxy passes it through."""
+    actor_header: str = 'x-piloop-actor'
+    """The header in which a caller asks to act as another actor than itself, such as ``orchestrator``. The proxy
+    passes it through."""
     worker_credential_secret: EnvName = 'PILOOP_WORKER_CREDENTIAL'
     """The home's secret that holds the workers' credential, which ``enroll`` hands to a provisioned worker."""
 
@@ -107,12 +111,14 @@ class Proxy(NetworkConfig):
     def open(self, host: NetworkHost) -> ProxyNetwork:
         return ProxyNetwork(host, self)
 
-    def client(self, server: str) -> httpx.Client:
-        """A client that sends this worker's credential as its bearer, and its name."""
+    def client(self, server: str, actor: Actor | None = None) -> httpx.Client:
+        """A client that sends this worker's credential as its bearer, its name, and ``actor`` in ``actor_header``."""
         credential, name = os.environ.get(CREDENTIAL_ENV), os.environ.get(NAME_ENV)
         if not credential or not name:
             raise NoCredential(f'set {CREDENTIAL_ENV} to the worker credential and {NAME_ENV} to this worker name')
         headers = {'Authorization': f'Bearer {credential}', self.worker_header: name}
+        if actor is not None:
+            headers[self.actor_header] = actor.signature
         return httpx.Client(base_url=server, headers=headers, timeout=TIMEOUT)
 
 
@@ -142,6 +148,10 @@ class ProxyNetwork:
         if not (name := headers.get(header.lower())):
             return Refused(f'the caller is named in {header}, and it is empty')
         return Caller(name, rule.access)
+
+    def actor(self, headers: Mapping[str, str]) -> str | None:
+        """The actor that ``actor_header`` names."""
+        return headers.get(self.config.actor_header.lower())
 
     def enroll(self, principal: str, access: Access) -> Enrollment:
         """The workers' credential of the home's secret, and ``principal`` as the worker's name."""

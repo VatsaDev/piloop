@@ -21,18 +21,16 @@ from textual.pilot import Pilot
 from textual.widgets import HelpPanel
 
 from piloop.actor import Actor, System
-from piloop.campaign import inbox, ops
+from piloop.campaign import ops
 from piloop.config import CampaignConfig
 from piloop.db.models import (
     AgentSession,
     AgentSessionState,
     Campaign,
-    CampaignStatus,
     Candidate,
     Comment,
     Event,
     Idea,
-    IdeaStatus,
     Measurement,
     Origin,
     Run,
@@ -41,11 +39,13 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database
-from piloop.ids import IMPLEMENTER, CommentId, CommentKind, IdeaId, TargetKind, TargetRef
+from piloop.ids import IMPLEMENTER, CampaignStatus, CommentId, CommentKind, IdeaId, IdeaStatus, TargetKind, TargetRef
 from piloop.plugins.verdict_rule.contract import Outcome
+from piloop.settings import Settings
 from piloop.watch.app import CampaignScreen, CampaignsScreen, CandidatesTable, Watch
 from piloop.watch.panels import PANELS, Context, kept_scores
-from tests.conftest import RESEARCH, WATCHDOG, reconfigured, spent, wait_until
+from tests.campaign.test_inbox import news_lines
+from tests.conftest import RESEARCH, WATCHDOG, reconfigured, serving_api, spent, wait_until
 from tests.reports.test_history import idea
 
 
@@ -380,7 +380,7 @@ def test_r_replies_to_the_thread_root_with_a_priority_that_wakes_the_orchestrato
             3,
             'Revert it',
         )
-        assert inbox.news(s, cursor, campaign_id=live_campaign.id, me=System.ORCHESTRATOR)[1] == [
+        assert news_lines(s, cursor, campaign_id=live_campaign.id, me=System.ORCHESTRATOR)[1] == [
             'comment#6 decision p3 on comment#2 (demo) by human: Revert it'
         ]
 
@@ -763,6 +763,11 @@ def test_a_reply_typed_in_the_watch_wakes_the_orchestrators_inbox_wait(
     db: Database, campaign: Campaign, tmp_path: Path
 ) -> None:
     """End to end in an isolated PILOOP_HOME: `piloop watch` in a terminal, `piloop inbox wait` as the orchestrator."""
+    with serving_api(Settings(home=tmp_path)):
+        _reply_wakes_the_wait(db, campaign, tmp_path)
+
+
+def _reply_wakes_the_wait(db: Database, campaign: Campaign, tmp_path: Path) -> None:
     with db.session() as s:
         s.add(
             Comment(

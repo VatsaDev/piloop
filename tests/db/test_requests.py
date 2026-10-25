@@ -5,7 +5,6 @@ import pytest
 from piloop.actor import Agent, System
 from piloop.campaign.stop import (
     CancelRequested,
-    Ending,
     StopRequested,
     agent_cancel,
     answer_done,
@@ -14,20 +13,10 @@ from piloop.campaign.stop import (
     run_cancel,
 )
 from piloop.db.events import emit, in_order
-from piloop.db.models import (
-    AgentSession,
-    AgentSessionState,
-    Campaign,
-    CampaignStatus,
-    Candidate,
-    Evaluator,
-    Idea,
-    IdeaStatus,
-    Run,
-)
+from piloop.db.models import AgentSession, AgentSessionState, Campaign, Candidate, Evaluator, Idea, Run
 from piloop.db.requests import RequestAnswered, answer, pending
 from piloop.db.session import Database
-from piloop.ids import IMPLEMENTER, CandidateId, RunId, TargetKind, TargetRef
+from piloop.ids import IMPLEMENTER, CampaignStatus, CandidateId, Ending, IdeaStatus, RunId, TargetKind, TargetRef
 from piloop.scoring.ledger import record, request_remeasure, requested
 from tests.conftest import WATCHDOG
 

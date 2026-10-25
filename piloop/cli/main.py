@@ -29,7 +29,6 @@ GROUPS = (
         'The artifact store that archived workspace files live in: what it holds, eviction, checks.',
     ),
     ('token', 'token:app', 'The bearer tokens of `piloop serve` and `piloop cas serve`.'),
-    ('campaign', 'campaign:app', 'Act on a campaign as a whole.'),
     ('agent', 'agents:agent_app', 'Act on one agent.'),
     ('run', 'agents:run_app', 'Act on one run.'),
     ('worker', 'worker:app', 'The workers that run jobs on leases.'),
@@ -42,8 +41,8 @@ COMMANDS = (
     ('init', 'campaign:init'),
     ('history', 'campaign:history'),
     ('watch', 'campaign:watch_cmd'),
-    ('pause', 'campaign:pause'),
-    ('resume', 'campaign:resume'),
+    ('pause', 'control:pause'),
+    ('resume', 'control:resume'),
     ('restore', 'store:restore'),
     ('launch', 'agents:launch'),
     ('prompt', 'agents:prompt'),
@@ -71,9 +70,16 @@ inbox = cyclopts.App(
     name='inbox', help='Read and acknowledge what the agents address to you: decisions, escalations and findings.'
 )
 inbox.default(views.inbox_list)
-for name in ('show', 'wait', 'ack'):
-    inbox.command(f'piloop.cli.inbox:inbox_{name}', name=name)
+inbox.command(views.inbox_show, name='show')
+inbox.command(views.inbox_wait, name='wait')
+inbox.command('piloop.cli.inbox:inbox_ack', name='ack')
+inbox.command('piloop.cli.inbox:inbox_reply', name='reply')
 app.command(inbox)
+campaign = cyclopts.App(name='campaign', help='Act on a campaign as a whole.')
+campaign.command('piloop.cli.campaign:parent', name='parent')
+campaign.command('piloop.cli.campaign:tree', name='tree')
+campaign.command('piloop.cli.control:stop', name='stop')
+app.command(campaign)
 for name, path, help_ in GROUPS:
     app.command(f'piloop.cli.{path}', name=name, help=help_)
 for name, path in COMMANDS:

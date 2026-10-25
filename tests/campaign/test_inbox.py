@@ -5,28 +5,17 @@ import re
 import pytest
 from inline_snapshot import snapshot
 from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
-from piloop.actor import System
+from piloop.actor import Actor, System
 from piloop.campaign import inbox
 from piloop.campaign.anomaly import AnomalyKind, AnomalyReported
 from piloop.db import feed as db_feed
 from piloop.db.events import emit, in_order
-from piloop.db.models import (
-    AgentSession,
-    AgentSessionState,
-    Campaign,
-    CampaignStatus,
-    Comment,
-    Event,
-    Idea,
-    IdeaStatus,
-    Measurement,
-    Run,
-    utcnow,
-)
+from piloop.db.models import AgentSession, AgentSessionState, Campaign, Comment, Event, Idea, Measurement, Run, utcnow
 from piloop.db.session import Database
 from piloop.db.triggers.changelog import CommentAcked, IdeaCreated
-from piloop.ids import CommentId, CommentKind, TargetKind, TargetRef
+from piloop.ids import CampaignId, CampaignStatus, CommentId, CommentKind, IdeaStatus, TargetKind, TargetRef
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring.ledger import CandidateJudged
 from tests.conftest import WATCHDOG
@@ -122,7 +111,9 @@ def test_most_urgent_first_narrowed_by_kind_until_acknowledged(db: Database, cam
             'half the sweeps add nothing',
         ]
         assert bodies(inbox.items(s, kinds=[CommentKind.DECISION])) == ['lowered the floor', 'requeued idea#4']
-        assert inbox.ack(s, [CommentId(3), CommentId(1), CommentId(3), CommentId(99)], System.HUMAN) == [
+        assert [
+            r.line() for r in inbox.ack(s, [CommentId(3), CommentId(1), CommentId(3), CommentId(99)], System.HUMAN)
+        ] == [
             'comment#3 acknowledged',
             'comment#1 acknowledged',
             'comment#3 was acknowledged already, by human',
@@ -234,7 +225,7 @@ def test_news_is_what_happened_since_the_cursor_that_the_orchestrator_did_not_wr
         s.get_one(Campaign, campaign.id).status = CampaignStatus.STOPPED
         s.get_one(Campaign, campaign.id).stopped_reason = 'max_tokens 100 reached'
         s.commit()
-        last, lines = inbox.news(s, cursor, me=System.ORCHESTRATOR)
+        last, lines = news_lines(s, cursor, me=System.ORCHESTRATOR)
         assert lines == snapshot(
             [
                 'comment#6 escalation p0 on campaign#2 (other) by watchdog#5: theirs',
@@ -246,8 +237,8 @@ def test_news_is_what_happened_since_the_cursor_that_the_orchestrator_did_not_wr
                 'campaign demo stopped: max_tokens 100 reached',
             ]
         )
-        assert inbox.news(s, last, me=System.ORCHESTRATOR) == (last, []), 'the cursor moved past all of it'
-        assert inbox.news(s, cursor, campaign_id=other.id, me=System.ORCHESTRATOR)[1] == snapshot(
+        assert news_lines(s, last, me=System.ORCHESTRATOR) == (last, []), 'the cursor moved past all of it'
+        assert news_lines(s, cursor, campaign_id=other.id, me=System.ORCHESTRATOR)[1] == snapshot(
             [
                 'comment#6 escalation p0 on campaign#2 (other) by watchdog#5: theirs',
                 'seed idea#3 (other) by watchdog#1: hunch 2 — run#1',
@@ -271,10 +262,10 @@ def test_news_reads_only_what_wakes_a_page_at_a_time_until_a_page_has_a_line(
         s.add(Comment(target=on_campaign, author='watchdog#1', priority=1, body='open'))
         s.add(Comment(target=on_campaign, author='watchdog#1', body='a note: an event, but not of the inbox'))
         s.commit()
-        last, lines = inbox.news(s, cursor, me=System.ORCHESTRATOR)
+        last, lines = news_lines(s, cursor, me=System.ORCHESTRATOR)
         assert lines == ['comment#4 note p1 on campaign#1 (demo) by watchdog#1: open']
         newest = db_feed.newest(s)
-        assert last < newest and inbox.news(s, last, me=System.ORCHESTRATOR) == (newest, []), 'it passes the note'
+        assert last < newest and news_lines(s, last, me=System.ORCHESTRATOR) == (newest, []), 'it passes the note'
 
 
 def test_a_reply_answers_the_root_of_the_thread_and_wakes_the_orchestrator_but_not_its_author(
@@ -306,7 +297,13 @@ def test_a_reply_answers_the_root_of_the_thread_and_wakes_the_orchestrator_but_n
         ), 'a reply to a reply goes to the root: one level from a campaign'
         assert [c.id for c in inbox.thread(s, item)] == [follow_up.id, answer.id]
         assert [c.id for c, _ in inbox.items(s, campaign_id=campaign.id)] == [item.id, answer.id, follow_up.id]
-        assert inbox.news(s, cursor, campaign_id=campaign.id, me=System.ORCHESTRATOR)[1] == [
+        assert news_lines(s, cursor, campaign_id=campaign.id, me=System.ORCHESTRATOR)[1] == [
             'comment#3 decision p2 on comment#1 (demo) by human: Revert it: the floor moved.'
         ]
-        assert inbox.news(s, cursor, me=System.HUMAN)[1] == [], 'not news to whoever wrote it'
+        assert news_lines(s, cursor, me=System.HUMAN)[1] == [], 'not news to whoever wrote it'
+
+
+def news_lines(s: Session, after: int, *, campaign_id: CampaignId | None = None, me: Actor) -> tuple[int, list[str]]:
+    """The news after ``after``, as ``piloop inbox wait`` prints it, and the next cursor."""
+    found = inbox.news(s, after, campaign_id=campaign_id, me=me)
+    return found.next, [item.text() for item in found.items]

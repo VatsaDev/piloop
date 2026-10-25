@@ -12,6 +12,7 @@ import pytest
 from pydantic import ValidationError
 
 from piloop import settings as settings_module
+from piloop.actor import System
 from piloop.api.client import Client
 from piloop.api.contract import Selection
 from piloop.cli import common
@@ -33,7 +34,7 @@ def test_the_daemon_serves_on_listen_and_its_shutdown_closes_the_port_and_the_so
     url = daemon._servers[-1].url
     assert httpx.post(url + UNROUTED).status_code == 404
     assert cfg.socket_file.stat().st_mode & 0o777 == 0o600, 'only the user of the home calls as its owner'
-    with Client.on(cfg.socket_file) as client:
+    with Client.on(cfg.socket_file, System.HUMAN) as client:
         assert client.status(Selection()).daemon.listen == url
     daemon.shutdown(timeout=5)
     with pytest.raises(httpx.ConnectError):
@@ -64,7 +65,7 @@ def test_a_daemon_without_listen_serves_only_its_socket_and_replaces_one_that_a_
     with daemon.tracer.span('test') as span:
         daemon._listen(span)
     assert [server.listener.socket.family for server in daemon._servers] == [socket.AF_UNIX]
-    with Client.on(cfg.socket_file) as client:
+    with Client.on(cfg.socket_file, System.HUMAN) as client:
         assert client.status(Selection()).daemon.listen is None
     daemon.shutdown(timeout=5)
 
@@ -120,7 +121,7 @@ def test_a_home_whose_socket_does_not_fit_serves_on_a_short_path_that_its_client
     with daemon.tracer.span('test') as span:
         daemon._listen(span)
     assert cfg.socket_file.parent.stat().st_mode & 0o777 == 0o700, 'only the user of the home reaches it'
-    with Client.on(cfg.socket_file) as client:
+    with Client.on(cfg.socket_file, System.HUMAN) as client:
         assert client.status(Selection()).campaigns == [], 'a client finds the daemon from the home alone'
     daemon.shutdown(timeout=5)
     assert not cfg.socket_file.exists()

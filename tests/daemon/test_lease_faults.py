@@ -38,7 +38,6 @@ from piloop.db.models import (
     Evaluation,
     Event,
     Idea,
-    IdeaStatus,
     Lease,
     LeaseState,
     Measurement,
@@ -47,7 +46,7 @@ from piloop.db.models import (
     RunStatus,
 )
 from piloop.db.session import Database
-from piloop.ids import Revision, RunId, TargetKind
+from piloop.ids import IdeaStatus, Revision, RunId, TargetKind
 from piloop.otel import Tracer
 from piloop.plugins.cas.contract import CAS
 from piloop.plugins.executor.contract import AgentFinished, AgentReport, EvaluationReport, Source

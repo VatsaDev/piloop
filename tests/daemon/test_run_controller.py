@@ -49,7 +49,6 @@ from piloop.db.models import (
     AgentSession,
     AgentSessionState,
     Campaign,
-    CampaignStatus,
     Candidate,
     Cause,
     Comment,
@@ -57,7 +56,6 @@ from piloop.db.models import (
     Event,
     Idea,
     IdeaLink,
-    IdeaStatus,
     Lesson,
     LessonStatus,
     LinkKind,
@@ -74,9 +72,12 @@ from piloop.harnesses import SESSION_ENV
 from piloop.ids import (
     IMPLEMENTER,
     CampaignId,
+    CampaignStatus,
     CandidateId,
     CommentId,
+    Ending,
     EvaluatorId,
+    IdeaStatus,
     Revision,
     RoleName,
     RunId,
@@ -1524,9 +1525,9 @@ def test_a_cancel_made_while_the_implementer_starts_survives_a_failed_start(
             run = s.get_one(Run, run_id)
             [agent_session] = s.scalars(select(AgentSession).where(AgentSession.run_id == run_id)).all()
             if on == 'run':
-                stop.request_cancel(s, run, System.HUMAN, ending=stop.Ending.NOW)
+                stop.request_cancel(s, run, System.HUMAN, ending=Ending.NOW)
             else:
-                stop.request_cancel(s, agent_session, System.HUMAN, ending=stop.Ending.NOW)
+                stop.request_cancel(s, agent_session, System.HUMAN, ending=Ending.NOW)
             s.commit()
         raise RuntimeError('no pickup')
 
@@ -1547,7 +1548,7 @@ def test_a_cancelled_run_whose_implementer_ends_by_itself_first_closes_as_cancel
     """The daemon ends a cancelled implementer on its next tick; one that ends before that does not requeue its idea."""
     run_id = make_run(db, campaign)
     with db.session() as s:
-        stop.request_cancel(s, s.get_one(Run, run_id), System.HUMAN, ending=stop.Ending.NOW)
+        stop.request_cancel(s, s.get_one(Run, run_id), System.HUMAN, ending=Ending.NOW)
         s.commit()
     execute(controller(db, runtime, tmp_path), db, run_id)
     with db.session() as s:

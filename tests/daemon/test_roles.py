@@ -25,7 +25,6 @@ from piloop.db.models import (
     Candidate,
     Comment,
     Idea,
-    IdeaStatus,
     Measurement,
     Run,
     RunEnd,
@@ -33,7 +32,7 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database
-from piloop.ids import AgentSessionId, CommentKind, RoleName, TargetKind, TargetRef
+from piloop.ids import AgentSessionId, CommentKind, IdeaStatus, RoleName, TargetKind, TargetRef
 from piloop.otel import Tracer
 from piloop.plugins import host as plugins_module
 from piloop.plugins.cas.contract import CAS

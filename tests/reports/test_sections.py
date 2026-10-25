@@ -9,8 +9,9 @@ from inline_snapshot import snapshot
 
 from piloop.api.views import CampaignOverview, Figure, Figures, Lines, Rendered, Table, Text
 from piloop.config import StatusConfig
-from piloop.db.models import Campaign, CampaignStatus, Pause
+from piloop.db.models import Campaign, Pause
 from piloop.db.session import Database
+from piloop.ids import CampaignStatus
 from piloop.plugins.role.contract import ImplementerRole
 from piloop.plugins.section.contract import SECTIONS, Rendering, Section, Surface, defaults, markdown
 from tests.daemon.test_roles import forget_loaded, installed

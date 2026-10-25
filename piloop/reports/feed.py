@@ -41,10 +41,11 @@ from piloop.api.views import (
 from piloop.campaign import inbox
 from piloop.campaign.inbox import campaign_of
 from piloop.db import feed as db_feed
-from piloop.db.models import OPEN_RUNS, Campaign, Event, Idea, IdeaStatus, Run, campaign_runs, count
-from piloop.ids import CampaignId, CommentKind
+from piloop.db.models import OPEN_RUNS, Campaign, Event, Idea, Run, campaign_runs, count
+from piloop.ids import CampaignId, CommentKind, IdeaStatus
 from piloop.reports.overview import head_scores, live_agent_sessions, produced, queued_ideas
 from piloop.scoring.ledger import keeps
+from piloop.text import iso
 from piloop.usage.totals import campaign_tokens
 
 
@@ -201,11 +202,6 @@ def inbox_view(
         ],
         seeds=[inbox.seed_of(i, p) for i, p in inbox.seeds(s, campaign_id=campaign_id)],
     )
-
-
-def iso(at: datetime) -> str:
-    """``at`` in ISO 8601 UTC, as every document says a time."""
-    return at.astimezone(UTC).isoformat(timespec='microseconds').replace('+00:00', 'Z')
 
 
 def _time(stored: str) -> str | None:

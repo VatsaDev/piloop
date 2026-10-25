@@ -22,6 +22,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from uvicorn.protocols.http.h11_impl import H11Protocol
 
+from piloop.api.client import SOCKET_ACTOR_HEADER
 from piloop.api.contract import GRANTS, Access
 from piloop.net import Changed, InvalidBody, Refusal, Route
 from piloop.net.tokens import PREFIX, Caller, Tokens
@@ -48,6 +49,16 @@ def authorized(access: Access) -> Callable[[Request], Caller]:
         return known
 
     return caller
+
+
+def asked(request: Request) -> str | None:
+    """Whom ``request`` asks to act as, as its listener carries the ask. None: the caller itself.
+
+    A client on the socket sends ``SOCKET_ACTOR_HEADER``, and a network carries the ask its own way (``Network.actor``).
+    """
+    if request.scope['state'].get(_LOCAL):
+        return request.headers.get(SOCKET_ACTOR_HEADER)
+    return served(request).network.actor(request.headers)
 
 
 def _identified(tokens: Tokens, network: Network, request: Request) -> Caller | Refused:

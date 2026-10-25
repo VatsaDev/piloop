@@ -19,11 +19,11 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from piloop.actor import Actor, Agent, System
+from piloop.actor import Actor
 from piloop.agents.roles import files_of
 from piloop.campaign.campaigns import repository
 from piloop.campaign.ideas import Definition, NotASeed, develop
-from piloop.campaign.stop import held
+from piloop.campaign.stop import held, request_stop
 from piloop.config import CampaignConfig
 from piloop.db.events import emit
 from piloop.db.models import (
@@ -35,13 +35,23 @@ from piloop.db.models import (
     Comment,
     Idea,
     IdeaLink,
-    IdeaStatus,
     LinkKind,
     Measurement,
     Pause,
     Run,
 )
-from piloop.ids import CampaignId, CandidateId, CommentKind, IdeaId, TargetKind, TargetRef, TrackName
+from piloop.ids import (
+    CampaignId,
+    CampaignStatus,
+    CandidateId,
+    CommentKind,
+    Ending,
+    IdeaId,
+    IdeaStatus,
+    TargetKind,
+    TargetRef,
+    TrackName,
+)
 from piloop.plugins.role.contract import Files
 from piloop.plugins.vcs.contract import VcsError
 from piloop.plugins.verdict_rule.contract import Outcome
@@ -109,6 +119,24 @@ def resume(s: Session, campaign_id: CampaignId) -> Pause:
     return held
 
 
+def stop(s: Session, campaign_id: CampaignId, actor: Actor, *, reason: str, ending: Ending) -> Campaign:
+    """Ask the daemon to stop the campaign at once (``request_stop``), as when a ``[stop]`` condition holds.
+
+    On a stopped campaign, an ending ``now`` ends the implementers that still wind down.
+
+    Raises:
+        Refused: the campaign is stopped already, and the ending is not ``now``.
+    """
+    campaign = _get(s, Campaign, campaign_id, 'campaign')
+    if campaign.status is CampaignStatus.STOPPED and ending is not Ending.NOW:
+        raise Refused(
+            f'{campaign.name} is stopped already ({campaign.stopped_reason});'
+            ' `piloop campaign stop --kill` ends its implementers at once'
+        )
+    request_stop(s, campaign, actor, reason=reason, ending=ending)
+    return campaign
+
+
 def set_parent(s: Session, campaign_id: CampaignId, parent_id: CampaignId | None) -> Campaign:
     """Put the campaign under ``parent_id`` in the tree of campaigns, or make it a root with None, and return it.
 
@@ -143,13 +171,10 @@ def review_first(campaign: Campaign, actor: Actor, *, new: bool) -> str | None:
     ``max_ideas`` is 0 (a sweep reads it once, in its brief; the operator may have set it to 0 since). The orchestrator
     and humans paused the campaign themselves.
     """
-    match actor:
-        case Agent(role=name):
-            role = campaign.config.roles.sweeping().get(name)
-        case System():
-            return None
-        case _:
-            assert_never(actor)
+    if (agent := actor.launched) is None:
+        return None
+    name = agent.role
+    role = campaign.config.roles.sweeping().get(name)
     if role is None:
         return None
     if campaign.paused is not None:

@@ -11,9 +11,9 @@ from piloop.campaign import campaigns as campaign_module
 from piloop.campaign.archive import Job, archive, prune
 from piloop.campaign.campaigns import workspace_dir
 from piloop.cli import common, local
-from piloop.db.models import Archive, Campaign, IdeaStatus
+from piloop.db.models import Archive, Campaign
 from piloop.db.session import Database
-from piloop.ids import CampaignId
+from piloop.ids import CampaignId, IdeaStatus
 from piloop.plugins.cas.kit.objects import key
 from piloop.settings import Settings
 from tests.campaign.test_archive import add_idea, add_run, files, write

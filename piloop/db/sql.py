@@ -34,14 +34,13 @@ import sqlite3
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
-from typing import assert_never
 
 from covalence import Cid
 from sqlalchemy import MetaData
 from sqlalchemy.dialects import sqlite
 from sqlalchemy.schema import CreateIndex, CreateTable
 
-from piloop.actor import Actor, Agent, System
+from piloop.actor import Actor
 from piloop.db.models import Base
 from piloop.db.triggers import EVENT_TRIGGER_NAMES
 from piloop.db.triggers.fts import FTS_COLUMNS, FTS_TABLES, FTS_TRIGGER_NAMES, fts_table
@@ -184,15 +183,18 @@ def install_actor(con: sqlite3.Connection, actor: Actor) -> None:
     It creates a TEMP table and TEMP triggers, for this connection only. An agent's connection also records its agent
     session, so that a finding after its end is refused (``piloop.db.triggers.ended``).
     """
-    match actor:
-        case Agent(session=session):
-            agent_session: int | None = session
-        case System():
-            agent_session = None
-        case _:
-            assert_never(actor)
     con.executescript(ACTOR_TRIGGERS)
-    con.execute(f'INSERT INTO {ACTOR_TABLE} (actor, agent_session) VALUES (?, ?)', (actor.signature, agent_session))
+    sign(con, actor)
+
+
+def sign(con: sqlite3.Connection, actor: Actor) -> None:
+    """Make the writes through ``con`` sign as ``actor`` from now on, in place of the actor that it had."""
+    agent = actor.launched
+    con.execute(f'DELETE FROM {ACTOR_TABLE}')
+    con.execute(
+        f'INSERT INTO {ACTOR_TABLE} (actor, agent_session) VALUES (?, ?)',
+        (actor.signature, None if agent is None else agent.session),
+    )
     con.commit()
 
 

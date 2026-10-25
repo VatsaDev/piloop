@@ -21,11 +21,12 @@ from dataclasses import dataclass
 from sqlalchemy import ColumnElement, case, distinct, exists, func, select
 from sqlalchemy.orm import Session, aliased
 
+from piloop.api.views import IdeaView
 from piloop.db.events import has
-from piloop.db.models import Candidate, Comment, Event, Idea, IdeaLink, IdeaStatus, LinkKind, Run
+from piloop.db.models import Candidate, Comment, Event, Idea, IdeaLink, LinkKind, Run
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.db.triggers.changelog import IdeaStatusChanged
-from piloop.ids import CampaignId, CandidateId, CommentKind, IdeaId, TargetKind, TargetRef
+from piloop.ids import CampaignId, CandidateId, CommentKind, IdeaId, IdeaStatus, TargetKind, TargetRef
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring.ledger import NEVER_RAN
 
@@ -345,3 +346,16 @@ def yields(s: Session, campaign_id: CampaignId) -> list[Yield]:
         counts[3] += interesting
     found = [Yield(name, *counts) for name, counts in tally.items()]
     return sorted(found, key=lambda y: (-y.keeps, -y.interesting, -y.ideas, y.source))
+
+
+def idea_view(idea: Idea) -> IdeaView:
+    """``idea`` as the API answers it."""
+    return IdeaView(
+        id=idea.id,
+        campaign=idea.campaign_id,
+        title=idea.title,
+        status=idea.status,
+        priority=idea.priority,
+        track=idea.track,
+        created_by=idea.created_by,
+    )

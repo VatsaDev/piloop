@@ -4,12 +4,14 @@ from typing import Annotated, Literal
 
 import cyclopts
 
+from piloop.api.contract import IdeaBody
 from piloop.campaign import ops
 from piloop.campaign.ideas import Definition
 from piloop.cli import common, local
+from piloop.cli.client import api, campaign_name
 from piloop.cli.common import HARNESS_HELP, CampaignRef
-from piloop.db.models import IdeaStatus, LinkKind
-from piloop.ids import CandidateId, IdeaId, TrackName
+from piloop.db.models import LinkKind
+from piloop.ids import CandidateId, IdeaId, IdeaStatus, TrackName
 
 app = cyclopts.App(name='idea')  # its help is where piloop.cli.main registers it
 PRIORITY_HELP = 'From 0 (urgent) to 4 (someday).'
@@ -57,26 +59,26 @@ def idea_add(
     proposed: it waits for a review. The idea is signed as PILOOP_ACTOR. The idea and its links are written together,
     so the daemon never sees the idea without them.
     """
-    with local.refused(), local.session() as s:
-        idea, held = ops.add_idea(
-            s,
-            local.campaign(s, ref).id,
-            title,
-            actor=common.settings.actor,
-            hypothesis=hypothesis,
-            plan=plan,
-            provenance=from_,
-            family=family,
-            priority=priority,
-            harness=harness,
-            base=base,
-            proposed=proposed,
-            track=track,
-            after=after,
-            supersedes=supersedes,
-        )
-        s.commit()
-        common.console.print(f'idea#{idea.id} {idea.status} p{priority}: {title}{waits(held)}', markup=False)
+    body = IdeaBody(
+        title=title,
+        hypothesis=hypothesis,
+        plan=plan,
+        provenance=from_,
+        family=family,
+        priority=priority,
+        harness=harness,
+        base=base,
+        proposed=proposed,
+        track=track,
+        after=after,
+        supersedes=supersedes,
+    )
+    with api() as client:
+        added = client.add_idea(campaign_name(client, ref), body)
+    idea = added.idea
+    common.console.print(
+        f'idea#{idea.id} {idea.status} p{idea.priority}: {idea.title}{waits(added.review)}', markup=False
+    )
 
 
 @app.command(name='seed')

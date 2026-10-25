@@ -435,10 +435,707 @@
           }
         }
       }
+    },
+    "/v1/inbox/news": {
+      "get": {
+        "summary": "News",
+        "description": "What needs the orchestrator after a cursor, but what the caller itself wrote. With wait, a long-poll.",
+        "operationId": "news",
+        "parameters": [
+          {
+            "name": "campaign",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The campaign's name, or a path inside its repo.",
+              "title": "Campaign"
+            },
+            "description": "The campaign's name, or a path inside its repo."
+          },
+          {
+            "name": "cwd",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Where the client runs, as an absolute path: a relative path in ``campaign`` is from there.",
+              "title": "Cwd"
+            },
+            "description": "Where the client runs, as an absolute path: a relative path in ``campaign`` is from there."
+          },
+          {
+            "name": "wait",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "maximum": 25,
+              "minimum": 0,
+              "description": "Seconds to hold the request while there is nothing to answer yet.",
+              "default": 0,
+              "title": "Wait"
+            },
+            "description": "Seconds to hold the request while there is nothing to answer yet."
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The cursor to read after: the ``next`` of the last wait. Default: now.",
+              "title": "After"
+            },
+            "description": "The cursor to read after: the ``next`` of the last wait. Default: now."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/News"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/inbox/{comment}": {
+      "get": {
+        "summary": "Thread",
+        "description": "An inbox item in full, and the comments that it cites, that cite it, or that reply to it.",
+        "operationId": "thread",
+        "parameters": [
+          {
+            "name": "comment",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Comment"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Thread"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/campaigns/{campaign}/pause": {
+      "post": {
+        "summary": "Pause",
+        "description": "Pause a campaign: nothing new launches, and nothing is escalated. Running work goes on.",
+        "operationId": "pause",
+        "parameters": [
+          {
+            "name": "campaign",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "The campaign's name.",
+              "title": "Campaign"
+            },
+            "description": "The campaign's name."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PauseBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignAnswer"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/campaigns/{campaign}/resume": {
+      "post": {
+        "summary": "Resume",
+        "description": "Resume a paused campaign. The daemon queues runs and requests roles again at once.",
+        "operationId": "resume",
+        "parameters": [
+          {
+            "name": "campaign",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "The campaign's name.",
+              "title": "Campaign"
+            },
+            "description": "The campaign's name."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignAnswer"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/campaigns/{campaign}/stop": {
+      "post": {
+        "summary": "Stop",
+        "description": "Stop a campaign at once, as when a ``[stop]`` condition holds. The daemon ends its agents as ``ending`` says.",
+        "operationId": "stop",
+        "parameters": [
+          {
+            "name": "campaign",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "The campaign's name.",
+              "title": "Campaign"
+            },
+            "description": "The campaign's name."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StopBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignAnswer"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/campaigns/{campaign}/ideas": {
+      "post": {
+        "summary": "Add Idea",
+        "description": "Add a defined idea, which the daemon schedules in priority order once it is ready.",
+        "operationId": "add_idea",
+        "parameters": [
+          {
+            "name": "campaign",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "The campaign's name.",
+              "title": "Campaign"
+            },
+            "description": "The campaign's name."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IdeaBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdeaAnswer"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/inbox/ack": {
+      "post": {
+        "summary": "Ack",
+        "description": "Acknowledge inbox items, to say that the caller has seen them. Nothing waits for an acknowledgement.",
+        "operationId": "ack",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AckBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Acked"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/inbox/{comment}/reply": {
+      "post": {
+        "summary": "Reply",
+        "description": "Answer an inbox item with a ``decision`` on the root of its thread, which is an inbox item of its own.",
+        "operationId": "reply",
+        "parameters": [
+          {
+            "name": "comment",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Comment"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReplyBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Replied"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
     "schemas": {
+      "AckBody": {
+        "properties": {
+          "ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "ids"
+        ],
+        "title": "AckBody",
+        "description": "The inbox items to acknowledge."
+      },
+      "AckOutcome": {
+        "type": "string",
+        "enum": [
+          "acked",
+          "already",
+          "not_in_inbox"
+        ],
+        "title": "AckOutcome",
+        "description": "What an acknowledgement did to one id."
+      },
+      "AckResult": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/AckOutcome"
+          },
+          "acked_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acked By",
+            "description": "Who acknowledged it: the caller, or whoever did before. Null for an id that is not in the inbox."
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "outcome",
+          "acked_by"
+        ],
+        "title": "AckResult",
+        "description": "What an acknowledgement did to one id."
+      },
+      "Acked": {
+        "properties": {
+          "cursor": {
+            "type": "integer",
+            "title": "Cursor"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/AckResult"
+            },
+            "type": "array",
+            "title": "Results"
+          }
+        },
+        "type": "object",
+        "required": [
+          "cursor",
+          "results"
+        ],
+        "title": "Acked",
+        "description": "What an acknowledgement did to each id, read at ``cursor``."
+      },
+      "AnomalyNews": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "anomaly_requested",
+            "title": "Kind",
+            "default": "anomaly_requested"
+          },
+          "role": {
+            "type": "string",
+            "title": "Role"
+          },
+          "agent_session": {
+            "type": "integer",
+            "title": "Agent Session"
+          },
+          "line": {
+            "type": "string",
+            "title": "Line"
+          }
+        },
+        "type": "object",
+        "required": [
+          "role",
+          "agent_session",
+          "line"
+        ],
+        "title": "AnomalyNews",
+        "description": "An anomaly that the daemon gave to a watchdog."
+      },
       "Batch": {
         "properties": {
           "events": {
@@ -492,6 +1189,24 @@
             "text": "#/components/schemas/Text"
           }
         }
+      },
+      "CampaignAnswer": {
+        "properties": {
+          "cursor": {
+            "type": "integer",
+            "title": "Cursor"
+          },
+          "campaign": {
+            "$ref": "#/components/schemas/CampaignState"
+          }
+        },
+        "type": "object",
+        "required": [
+          "cursor",
+          "campaign"
+        ],
+        "title": "CampaignAnswer",
+        "description": "A campaign after a change, read at ``cursor``: the events after it are the effects of the change."
       },
       "CampaignOverview": {
         "properties": {
@@ -562,8 +1277,7 @@
             "description": "The campaign that it is under. Null for a root."
           },
           "status": {
-            "type": "string",
-            "title": "Status"
+            "$ref": "#/components/schemas/CampaignStatus"
           },
           "stopped_reason": {
             "anyOf": [
@@ -692,6 +1406,15 @@
         "title": "CampaignState",
         "description": "What ``piloop status`` shows of a campaign, as data."
       },
+      "CampaignStatus": {
+        "type": "string",
+        "enum": [
+          "active",
+          "stopped"
+        ],
+        "title": "CampaignStatus",
+        "description": "Whether the daemon still requests work for a campaign. ``stopped`` after a ``[stop]`` condition held."
+      },
       "CommentKind": {
         "type": "string",
         "enum": [
@@ -702,6 +1425,114 @@
         ],
         "title": "CommentKind",
         "description": "Why a comment was written. An ``escalation`` asks for a decision and is always in the human's inbox."
+      },
+      "CommentNews": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "comment",
+            "title": "Kind",
+            "default": "comment"
+          },
+          "comment": {
+            "$ref": "#/components/schemas/CommentView"
+          },
+          "campaign_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Campaign Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "comment",
+          "campaign_name"
+        ],
+        "title": "CommentNews",
+        "description": "A new inbox item that someone else wrote."
+      },
+      "CommentView": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "target": {
+            "type": "string",
+            "title": "Target",
+            "description": "What it is about, as ``idea#12``."
+          },
+          "author": {
+            "type": "string",
+            "title": "Author"
+          },
+          "created": {
+            "type": "string",
+            "title": "Created"
+          },
+          "priority": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Priority",
+            "description": "Null for a comment that is not in the inbox."
+          },
+          "acked_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acked At"
+          },
+          "acked_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acked By"
+          },
+          "body": {
+            "type": "string",
+            "title": "Body"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "target",
+          "author",
+          "created",
+          "priority",
+          "acked_at",
+          "acked_by",
+          "body"
+        ],
+        "title": "CommentView",
+        "description": "A comment, as ``piloop inbox show`` shows it."
       },
       "DaemonState": {
         "properties": {
@@ -735,6 +1566,15 @@
         ],
         "title": "DaemonState",
         "description": "The daemon that answers: its process, and where it listens."
+      },
+      "Ending": {
+        "type": "string",
+        "enum": [
+          "wrap_up",
+          "now"
+        ],
+        "title": "Ending",
+        "description": "How the daemon ends the agents of a stop or a cancel that someone requested."
       },
       "Envelope": {
         "properties": {
@@ -885,6 +1725,214 @@
         ],
         "title": "Head",
         "description": "The head of the trunk: the latest keep."
+      },
+      "IdeaAnswer": {
+        "properties": {
+          "cursor": {
+            "type": "integer",
+            "title": "Cursor"
+          },
+          "idea": {
+            "$ref": "#/components/schemas/IdeaView"
+          },
+          "review": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review",
+            "description": "Why the idea waits for a review, as ``proposed`` although nobody asked: its author's role is held. Else null."
+          }
+        },
+        "type": "object",
+        "required": [
+          "cursor",
+          "idea",
+          "review"
+        ],
+        "title": "IdeaAnswer",
+        "description": "An idea that a change wrote, read at ``cursor``."
+      },
+      "IdeaBody": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "hypothesis": {
+            "type": "string",
+            "title": "Hypothesis",
+            "description": "Why this should help, and by how much. Default: the title.",
+            "default": ""
+          },
+          "plan": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan",
+            "description": "The steps for the implementer."
+          },
+          "provenance": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provenance",
+            "description": "What prompted the idea, with ids or a URL."
+          },
+          "family": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Family",
+            "description": "The mechanism family. Ideas that try the same mechanism share it."
+          },
+          "priority": {
+            "$ref": "#/components/schemas/Priority",
+            "default": 2
+          },
+          "harness": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Harness",
+            "description": "The harness to use instead of the rotation."
+          },
+          "base": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base",
+            "description": "The candidate to start from instead of the head. This makes a branch."
+          },
+          "proposed": {
+            "type": "boolean",
+            "title": "Proposed",
+            "description": "Wait for a review before the daemon schedules the idea.",
+            "default": false
+          },
+          "track": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Track",
+            "description": "The track it works on. Required when the campaign has more than one track."
+          },
+          "after": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "After",
+            "description": "The ideas to wait for. The idea runs from the head when all are done.",
+            "default": []
+          },
+          "supersedes": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Supersedes",
+            "description": "The ideas that this idea refines.",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "title"
+        ],
+        "title": "IdeaBody",
+        "description": "A defined idea, which the daemon schedules in priority order once it is ready."
+      },
+      "IdeaStatus": {
+        "type": "string",
+        "enum": [
+          "seed",
+          "proposed",
+          "ready",
+          "scheduled",
+          "done",
+          "parked",
+          "rejected"
+        ],
+        "title": "IdeaStatus",
+        "description": "The lifecycle of an idea. The scheduler picks up ``ready`` ideas in priority order.\n\nA ``seed`` is a rough idea with pointers. An agent whose role's ``files`` allows it files one (``piloop idea\nseed``). Research develops it into a defined idea (``piloop idea develop``, which makes it ``ready`` or\n``proposed``), or rejects it.\nA ``proposed`` idea is defined and waits for a human to approve it."
+      },
+      "IdeaView": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "campaign": {
+            "type": "integer",
+            "title": "Campaign"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "status": {
+            "$ref": "#/components/schemas/IdeaStatus"
+          },
+          "priority": {
+            "type": "integer",
+            "title": "Priority"
+          },
+          "track": {
+            "type": "string",
+            "title": "Track"
+          },
+          "created_by": {
+            "type": "string",
+            "title": "Created By"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "campaign",
+          "title",
+          "status",
+          "priority",
+          "track",
+          "created_by"
+        ],
+        "title": "IdeaView",
+        "description": "An idea, as the change that wrote it left it."
       },
       "Inbox": {
         "properties": {
@@ -1168,6 +2216,58 @@
         "title": "Named",
         "description": "A campaign, by its id and its name."
       },
+      "News": {
+        "properties": {
+          "next": {
+            "type": "integer",
+            "title": "Next",
+            "description": "The cursor for the next wait. It passes every event that the read examined."
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/NewsItem"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "next",
+          "items"
+        ],
+        "title": "News",
+        "description": "What needs the orchestrator after a cursor: what ends ``piloop inbox wait``."
+      },
+      "NewsItem": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/CommentNews"
+          },
+          {
+            "$ref": "#/components/schemas/StoppedNews"
+          },
+          {
+            "$ref": "#/components/schemas/AnomalyNews"
+          },
+          {
+            "$ref": "#/components/schemas/SeedNews"
+          },
+          {
+            "$ref": "#/components/schemas/VerdictNews"
+          }
+        ],
+        "discriminator": {
+          "propertyName": "kind",
+          "mapping": {
+            "anomaly_requested": "#/components/schemas/AnomalyNews",
+            "campaign_stopped": "#/components/schemas/StoppedNews",
+            "comment": "#/components/schemas/CommentNews",
+            "seed_filed": "#/components/schemas/SeedNews",
+            "verdict": "#/components/schemas/VerdictNews"
+          }
+        }
+      },
       "OpenRun": {
         "properties": {
           "id": {
@@ -1236,6 +2336,32 @@
         "title": "Overview",
         "description": "What ``piloop status`` prints: the daemon, the live keys that ``config.toml`` or a limit sets, and each overview."
       },
+      "PauseBody": {
+        "properties": {
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": "Why, with ids: what the pause waits for."
+          },
+          "evals": {
+            "type": "boolean",
+            "title": "Evals",
+            "description": "Hold the measurements that the daemon starts too: after a new evaluator, or asked.",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "reason"
+        ],
+        "title": "PauseBody",
+        "description": "How to pause a campaign."
+      },
+      "Priority": {
+        "type": "integer",
+        "maximum": 4.0,
+        "minimum": 0.0
+      },
       "ProblemDetail": {
         "properties": {
           "error": {
@@ -1284,6 +2410,42 @@
         "title": "Rendered",
         "description": "One section of what a reader sees: a title and its blocks (``piloop.plugins.section``).\n\nA section provider returns it, the API answers it, and ``piloop status``, a brief and a UI render it."
       },
+      "Replied": {
+        "properties": {
+          "cursor": {
+            "type": "integer",
+            "title": "Cursor"
+          },
+          "comment": {
+            "$ref": "#/components/schemas/CommentView"
+          }
+        },
+        "type": "object",
+        "required": [
+          "cursor",
+          "comment"
+        ],
+        "title": "Replied",
+        "description": "The answer to an inbox item, read at ``cursor``."
+      },
+      "ReplyBody": {
+        "properties": {
+          "body": {
+            "type": "string",
+            "title": "Body"
+          },
+          "priority": {
+            "$ref": "#/components/schemas/Priority",
+            "default": 2
+          }
+        },
+        "type": "object",
+        "required": [
+          "body"
+        ],
+        "title": "ReplyBody",
+        "description": "An answer to an inbox item: a ``decision`` on the root of its thread."
+      },
       "Seed": {
         "properties": {
           "idea": {
@@ -1330,6 +2492,25 @@
         "title": "Seed",
         "description": "A seed that waits for research."
       },
+      "SeedNews": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "seed_filed",
+            "title": "Kind",
+            "default": "seed_filed"
+          },
+          "seed": {
+            "$ref": "#/components/schemas/Seed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "seed"
+        ],
+        "title": "SeedNews",
+        "description": "A seed that someone else filed."
+      },
       "Status": {
         "properties": {
           "cursor": {
@@ -1355,6 +2536,56 @@
         ],
         "title": "Status",
         "description": "What ``piloop status --json`` prints: the daemon, and each campaign read at ``cursor``."
+      },
+      "StopBody": {
+        "properties": {
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": "Why, for ``stopped_reason`` and the closing review.",
+            "default": ""
+          },
+          "ending": {
+            "$ref": "#/components/schemas/Ending",
+            "description": "How the running implementers end. ``now`` also ends those of a stopped campaign that still wind down.",
+            "default": "wrap_up"
+          }
+        },
+        "type": "object",
+        "title": "StopBody",
+        "description": "How to stop a campaign."
+      },
+      "StoppedNews": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "campaign_stopped",
+            "title": "Kind",
+            "default": "campaign_stopped"
+          },
+          "campaign_name": {
+            "type": "string",
+            "title": "Campaign Name"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "campaign_name",
+          "reason"
+        ],
+        "title": "StoppedNews",
+        "description": "A campaign that the daemon stopped."
       },
       "Subject": {
         "properties": {
@@ -1463,6 +2694,27 @@
         "title": "Text",
         "description": "Markdown text: a paragraph, or a document with headings and tables of its own."
       },
+      "Thread": {
+        "properties": {
+          "comment": {
+            "$ref": "#/components/schemas/CommentView"
+          },
+          "linked": {
+            "items": {
+              "$ref": "#/components/schemas/CommentView"
+            },
+            "type": "array",
+            "title": "Linked"
+          }
+        },
+        "type": "object",
+        "required": [
+          "comment",
+          "linked"
+        ],
+        "title": "Thread",
+        "description": "An inbox item, and the comments that it cites, that cite it, or that reply to it."
+      },
       "TrackScore": {
         "properties": {
           "track": {
@@ -1564,6 +2816,36 @@
             "type": "null"
           }
         ]
+      },
+      "VerdictNews": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "verdict",
+            "title": "Kind",
+            "default": "verdict"
+          },
+          "candidate": {
+            "type": "integer",
+            "title": "Candidate"
+          },
+          "verdict": {
+            "type": "string",
+            "title": "Verdict"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "candidate",
+          "verdict",
+          "reason"
+        ],
+        "title": "VerdictNews",
+        "description": "The daemon's verdict on a measured candidate."
       }
     }
   }

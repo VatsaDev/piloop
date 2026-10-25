@@ -141,6 +141,9 @@ class Recording:
         self.peers.append(peer)
         return Caller('gpu1', Access.WORKER)
 
+    def actor(self, headers: Mapping[str, str]) -> str | None:
+        return None
+
     def enroll(self, principal: str, access: Access) -> Enrollment:
         raise NotEnrolled('it admits every caller')
 
@@ -367,6 +370,9 @@ class TrustedHeaders:
         if (user := headers.get('x-user')) is None:
             return Refused('the edge stamped no x-user')
         return Caller(user, Access(headers.get('x-access', 'read')))
+
+    def actor(self, headers: Mapping[str, str]) -> str | None:
+        return headers.get('x-act-as')
 
     def enroll(self, principal: str, access: Access) -> Enrollment:
         raise NotEnrolled('the edge gives keys')
