@@ -166,7 +166,7 @@ def test_a_role_adds_its_incident_prompt_to_an_incident_sweep_and_its_routine_pr
         (repo / name).write_text(text + '\n')
     triage: dict[str, object] = {
         'prompt': 'triage.md',
-        'triggers': [{'provider': 'anomaly'}],
+        'triggers': [{'provider': 'run_failed'}],
         'incident_prompt': 'incident.md',
         'routine_prompt': 'routine.md',
     }

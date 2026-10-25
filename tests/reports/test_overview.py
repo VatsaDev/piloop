@@ -8,7 +8,6 @@ from inline_snapshot import snapshot
 from sqlalchemy.orm import Session
 
 from piloop.agents.results import StartupAnomaly
-from piloop.campaign.anomaly import AnomalyKind
 from piloop.config import CampaignConfig, load_campaign_config
 from piloop.db.models import (
     AgentSession,
@@ -22,7 +21,6 @@ from piloop.db.models import (
     IdeaLink,
     Measurement,
     Run,
-    RunEnd,
     RunStatus,
 )
 from piloop.db.session import Database
@@ -37,13 +35,11 @@ from piloop.ids import (
     TargetKind,
     TargetRef,
 )
-from piloop.plugins.section.anomalies import ANOMALIES_SHOWN, REFS_SHOWN
 from piloop.plugins.section.contract import SECTIONS, Rendering, Surface, defaults, markdown
 from piloop.plugins.section.queue import BLOCKED_SHOWN
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.reports import overview as overview_module
-from piloop.reports.overview import anomalies
-from piloop.text import LINKED_CHARS, block
+from piloop.text import LINKED_CHARS, age, block
 from tests.conftest import RESEARCH, WATCHDOG, cas_of, end_of, home_cas, reconfigured, spent
 
 T = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
@@ -267,11 +263,13 @@ evaluations: 3 · crashed: 0 · median: 3 min · first 5: 3 min · latest 5: 3 m
 | candidate#2 | keep | 3 | 2 | run#1 | 0s | score 3 |
 | candidate#3 | discard | 3 | 0 | run#1 | 0s | score 3 |
 
-## Anomalies the daemon detected
+## Candidates that scored exactly their parent
 
-- [incident] run#2 failed, 1h ago: failed on script (idea#2): boom
-- [incident] agent_session#2 dead at startup, 1h ago: implementer on script failed to start (5.0s): dialog
-- candidate#3 scored exactly its parent, 1h ago: scored what candidate#2 did on score and on 1 of 1 other metrics; 3.0 min of evaluation
+- candidate#3, 1h ago: scored what candidate#2 did on score and on 1 of 1 other metrics; 3.0 min of evaluation
+
+## Incidents given to agents
+
+- None.
 
 ## Inbox (1 unacknowledged; 1 escalation, the oldest comment#1 1h old), decisions and escalations
 
@@ -323,137 +321,8 @@ def test_a_fresh_campaign_has_little_to_say(db: Database, campaign: Campaign) ->
     assert "- No trunk keep: the baseline's verdict was overridden and nothing was kept since." in text
     assert 'median:' not in text, 'the baseline has no recorded seconds'
     assert 'evaluations: 1 · crashed: 0 · waiting for a verdict: 1 candidates' in text
-    assert (
-        '- campaign#1 idle, 2h ago: 1 free implementer slots and no runnable idea; no research sweep pending' in text
-    ), 'not tagged: an idle queue is a cost for the progress review, not an incident'
+    assert '- 1 free implementer slots and no runnable idea since 2h ago; no research sweep pending' in text
     assert '## Inbox (0 unacknowledged), decisions and escalations\n\n- None.' in text
-
-
-def test_no_anomaly_reads_none(db: Database, campaign: Campaign) -> None:
-    with db.session() as s:
-        s.add(Idea(track='score', campaign_id=campaign.id, title='t', hypothesis='h', created_by='human'))
-        s.commit()
-    assert '## Anomalies the daemon detected\n\n- None.' in render(db, campaign)
-
-
-def test_the_idle_queue_counts_from_the_last_run_and_names_pending_research(db: Database, campaign: Campaign) -> None:
-    live_campaign(db, campaign)
-    with db.session() as s:
-        s.get_one(Run, 3).status, s.get_one(Run, 3).end = RunStatus.SUCCEEDED, RunEnd.FINISHED
-        s.get_one(Run, 3).finished_at = at(70)
-        s.add(AgentSession(kind=RESEARCH, campaign_id=campaign.id, started_at=at(100)))
-        s.commit()
-        [idle] = [a for a in found(s, campaign) if a.kind is AnomalyKind.IDLE_QUEUE]
-    assert (idle.at, idle.detail) == (at(70), '1 free implementer slots and no runnable idea; research#5 requested')
-
-
-def test_max_runs_reached_is_not_idle(db: Database, campaign: Campaign) -> None:
-    """Two runs count toward ``max_runs``. The run that failed with no candidate does not count."""
-    live_campaign(db, campaign)
-    cfg = load_campaign_config(
-        Path(campaign.path), plugins={'stop_rule': {'max_runs': 2}}, roles={'implementer': {'max_concurrent': 4}}
-    )
-    with db.session() as s:
-        p = s.get_one(Campaign, campaign.id)
-        assert AnomalyKind.IDLE_QUEUE not in {a.kind for a in anomalies(s, p, cfg)}
-        p.status = CampaignStatus.STOPPED
-        uncapped = load_campaign_config(Path(campaign.path), roles={'implementer': {'max_concurrent': 4}})
-        assert AnomalyKind.IDLE_QUEUE not in {a.kind for a in anomalies(s, p, uncapped)}, 'a stopped campaign'
-
-
-def test_a_run_that_the_daemon_stopped_is_not_a_failed_run(db: Database, campaign: Campaign) -> None:
-    live_campaign(db, campaign)
-    with db.session() as s:
-        run = s.get_one(Run, 3)
-        run.status, run.end, run.finished_at = RunStatus.FAILED, RunEnd.DAEMON_STOPPED, at(70)
-        s.commit()
-        assert TargetRef(TargetKind.RUN, run.id) not in {
-            a.ref for a in found(s, campaign) if a.kind is AnomalyKind.RUN_FAILED
-        }
-
-
-def test_a_run_blocked_on_its_implementers_escalation_is_not_a_failed_run(db: Database, campaign: Campaign) -> None:
-    """The escalation is in the inbox already: an incident sweep would only find it again."""
-    live_campaign(db, campaign)
-    with db.session() as s:
-        run = s.get_one(Run, 3)
-        run.status, run.end, run.error, run.finished_at = RunStatus.FAILED, RunEnd.AWAITING_ANSWER, 'comment#9', at(70)
-        s.commit()
-        assert TargetRef(TargetKind.RUN, run.id) not in {
-            a.ref for a in found(s, campaign) if a.kind is AnomalyKind.RUN_FAILED
-        }
-
-
-def found(s: Session, campaign: Campaign, now: datetime = NOW) -> list[overview_module.Anomaly]:
-    p = s.get_one(Campaign, campaign.id)
-    return anomalies(s, p, CampaignConfig.model_validate(p.config))
-
-
-def test_a_short_life_without_the_launcher_event_is_not_a_startup_death(db: Database, campaign: Campaign) -> None:
-    """The launcher decides that an agent died at startup (``StartupAnomaly``). The overview only reports it."""
-    with db.session() as s:
-        agent(s, s.get_one(Campaign, campaign.id), WATCHDOG, 0, 5)
-        s.commit()
-        assert [a.key for a in found(s, campaign) if a.kind is AnomalyKind.DEAD_AT_STARTUP] == []
-
-
-def test_an_agent_that_investigates_incidents_dead_at_startup_is_no_incident(db: Database, campaign: Campaign) -> None:
-    """An agent of a role with the ``anomaly`` trigger that died at startup is reported, but it requests no agent.
-
-    Otherwise each such agent that dies at startup requests a new one, which can die the same way. The watchdog has the
-    trigger by default; research has not, so a research agent that died at startup is an incident.
-    """
-    with db.session() as s:
-        for kind in (WATCHDOG, RESEARCH):
-            dead = agent(s, s.get_one(Campaign, campaign.id), kind, 0, 35, state=AgentSessionState.KILLED)
-            payload = StartupAnomaly(role=kind, harness='script', run=None, seconds=35.0, error='prompt_lost')
-            s.add(
-                Event(
-                    actor='daemon',
-                    target=TargetRef(TargetKind.AGENT_SESSION, dead.id),
-                    payload=payload,
-                )
-            )
-        s.commit()
-        dead_at_startup = {a.name: a.incident for a in found(s, campaign) if a.kind is AnomalyKind.DEAD_AT_STARTUP}
-        assert dead_at_startup == {'agent_session#1 dead at startup': False, 'agent_session#2 dead at startup': True}
-
-
-def test_a_crashed_measurement_or_an_unmeasured_parent_is_not_same_as_parent(db: Database, campaign: Campaign) -> None:
-    with db.session() as s:
-        p = s.get_one(Campaign, campaign.id)
-        orphan = Candidate(campaign_id=p.id, parent_id=1, tree_sha='x', revision='x', verdict=Outcome.CRASH)
-        s.add(orphan)
-        s.flush()
-        s.add(Measurement(candidate_id=orphan.id, evaluator_id=p.evaluator_id, metrics={}, error='died'))
-        s.commit()
-        assert found(s, campaign) == [a for a in found(s, campaign) if a.kind is not AnomalyKind.SAME_AS_PARENT]
-
-
-def test_the_anomaly_list_shows_the_latest_and_counts_the_rest(db: Database, campaign: Campaign) -> None:
-    with db.session() as s:
-        p = s.get_one(Campaign, campaign.id)
-        for n in range(ANOMALIES_SHOWN + 2):
-            run(s, idea(s, p, f'idea {n}', IdeaStatus.DONE), RunStatus.TIMED_OUT, 1, n, n + 1)
-        idea(s, p, 'next', IdeaStatus.READY)
-        s.commit()
-    text = render(db, campaign)
-    assert 'run#14 failed' in text and 'run#3 failed' in text and 'run#2 failed' not in text
-    assert '- … and 2 older incidents.\n' in text
-    assert 'timed_out on script (idea#14): no error recorded' in text
-
-
-def test_costs_of_one_kind_share_a_line(db: Database, campaign: Campaign) -> None:
-    live_campaign(db, campaign)
-    with db.session() as s:
-        p = s.get_one(Campaign, campaign.id)
-        for n in range(REFS_SHOWN):
-            candidate(s, p, 2, Outcome.DISCARD, 3, 30 + n, run_id=1)
-        s.commit()
-    [line] = [x for x in render(db, campaign).splitlines() if 'scored exactly its parent' in x]
-    assert line == snapshot(
-        '- 9 × scored exactly its parent (candidate#11, candidate#10, candidate#9, candidate#8, candidate#7, candidate#6, candidate#5, candidate#4, …); the latest, 1h ago: scored what candidate#2 did on score and on 1 of 1 other metrics; 3.0 min of evaluation'
-    )
 
 
 def test_blocked_ideas_beyond_the_shown_few_are_counted(db: Database, campaign: Campaign) -> None:
@@ -544,7 +413,7 @@ def test_the_queue_the_live_agents_the_inbox_and_the_events(db: Database, campai
         )
         s.commit()
     text = render(db, campaign)
-    now = text[text.index('## Runs') : text.index('## Anomalies')]
+    now = text[text.index('## Runs') : text.index('## Candidates that scored')]
     assert now == snapshot("""\
 ## Runs
 
@@ -597,12 +466,12 @@ evaluations: 3 · crashed: 0 · median: 3 min · first 5: 3 min · latest 5: 3 m
 
 
 def test_age_floors_to_the_largest_unit() -> None:
-    assert overview_module.age(NOW, NOW) == '0s'
-    assert overview_module.age(NOW - timedelta(seconds=59), NOW) == '59s'
-    assert overview_module.age(NOW - timedelta(minutes=3, seconds=59), NOW) == '3m'
-    assert overview_module.age(NOW - timedelta(hours=23, minutes=59), NOW) == '23h'
-    assert overview_module.age(NOW - timedelta(days=40), NOW) == '40d'
-    assert overview_module.age(NOW + timedelta(hours=1), NOW) == '0s', 'a clock skew is not a negative age'
+    assert age(NOW, NOW) == '0s'
+    assert age(NOW - timedelta(seconds=59), NOW) == '59s'
+    assert age(NOW - timedelta(minutes=3, seconds=59), NOW) == '3m'
+    assert age(NOW - timedelta(hours=23, minutes=59), NOW) == '23h'
+    assert age(NOW - timedelta(days=40), NOW) == '40d'
+    assert age(NOW + timedelta(hours=1), NOW) == '0s', 'a clock skew is not a negative age'
 
 
 SESSION_ID = 'd96a2121-355c-4608-b2f7-8bfc85bba1b5'

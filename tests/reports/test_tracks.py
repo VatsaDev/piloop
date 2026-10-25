@@ -71,7 +71,7 @@ head: candidate#4 · score: 3 · score vs baseline: 2 · size: 8 · size vs base
   - 10-01 13:00 candidate#4 [size] size 8 (-2) idea#3: score 3
 
 """)
-    recent = render(db, campaign).split('## Recent candidates')[1].split('## Anomalies')[0]
+    recent = render(db, campaign).split('## Recent candidates')[1].split('## Candidates that scored')[0]
     assert recent == snapshot("""\
  (4 of 4; each on its track's primary)
 

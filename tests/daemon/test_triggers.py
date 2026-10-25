@@ -10,7 +10,7 @@ import pytest
 from sqlalchemy import select
 
 from piloop.actor import System
-from piloop.campaign.anomaly import AnomalyKind, AnomalyReported
+from piloop.campaign.anomaly import AnomalyReported
 from piloop.campaign.stop import request_cancel
 from piloop.config import load_campaign_config
 from piloop.daemon.main import ACTOR
@@ -37,7 +37,6 @@ from piloop.ids import IMPLEMENTER, AgentSessionId, Ending, IdeaId, IdeaStatus, 
 from piloop.otel import Tracer
 from piloop.plugins.executor.workers import Workers
 from piloop.plugins.verdict_rule.contract import Outcome
-from piloop.reports.overview import anomalies
 from tests.conftest import (
     HARNESS_NOOP,
     HARNESS_PROMPT_TO_FILE,
@@ -166,15 +165,9 @@ def test_an_anomaly_requests_an_incident_sweep_once_and_collapses_while_one_is_p
     assert sched.run_all() == [1], 'requested and launched on the same tick'
     assert sched.run_all() == [], 'the same failure does not fire twice'
     [(agent_session, payload)] = reported_events(db)
-    assert (agent_session, payload.subject, payload.anomaly) == (
-        1,
-        TargetRef(TargetKind.RUN, 1),
-        AnomalyKind.RUN_FAILED,
-    )
+    assert (agent_session, payload.subject, payload.trigger) == (1, TargetRef(TargetKind.RUN, 1), 'run_failed')
     line = payload.line
-    assert line.startswith('- [incident] run#1 failed, ') and line.endswith(
-        ' ago: failed on h (idea#1): no error recorded'
-    )
+    assert line.startswith('- run#1 failed, ') and line.endswith(' ago: failed on h (idea#1): no error recorded')
 
     fail_a_run(db, campaign, 'second', RunStatus.TIMED_OUT)
     assert sched.run_all() == [], 'max_concurrent=1: the sweep for the second failure waits'
@@ -182,8 +175,8 @@ def test_an_anomaly_requests_an_incident_sweep_once_and_collapses_while_one_is_p
     sched.run_all()
     wait_for(db, AgentSessionId(1), AgentSessionState.RUNNING)
     assert agent_sessions(db, WATCHDOG) == [
-        (1, AgentSessionState.RUNNING, 'anomaly: run#1 failed'),
-        (2, AgentSessionState.REQUESTED, 'anomaly: run#2 failed'),
+        (1, AgentSessionState.RUNNING, 'run_failed: run#1 failed'),
+        (2, AgentSessionState.REQUESTED, 'run_failed: run#2 failed'),
     ], 'one pending request absorbs later anomalies'
 
     release.touch()
@@ -191,10 +184,10 @@ def test_an_anomaly_requests_an_incident_sweep_once_and_collapses_while_one_is_p
     assert sched.run_all() == [2], 'the slot frees; the pending request launches'
     sched.wait()
     assert sched.run_all() == [3], 'the anomaly that came while a request was pending gets its own sweep'
-    assert [(w, str(p.subject), p.anomaly) for w, p in reported_events(db)] == [
-        (1, 'run#1', AnomalyKind.RUN_FAILED),
-        (2, 'run#2', AnomalyKind.RUN_FAILED),
-        (3, 'run#3', AnomalyKind.RUN_FAILED),
+    assert [(w, str(p.subject), p.trigger) for w, p in reported_events(db)] == [
+        (1, 'run#1', 'run_failed'),
+        (2, 'run#2', 'run_failed'),
+        (3, 'run#3', 'run_failed'),
     ]
     sched.wait()
     sched.stop(timeout=5)
@@ -219,14 +212,14 @@ def test_an_anomaly_takes_the_tick_and_does_not_reset_the_timer(
     assert sched.run_all() == [2], 'the incident sweep is not a progress review: the timer is still due'
     sched.wait()
     assert agent_sessions(db, WATCHDOG) == [
-        (1, AgentSessionState.EXITED, 'anomaly: run#1 failed'),
+        (1, AgentSessionState.EXITED, 'run_failed: run#1 failed'),
         (2, AgentSessionState.EXITED, 'timer: 30s'),
     ]
     assert sched.run_all() == [], 'the timer counts from the progress review'
 
     incident = (tmp_path / 'agent_sessions' / '1' / 'brief.md').read_text()
     assert incident.index('# Watchdog') < incident.index('## This sweep: an incident') < incident.index('# Demo')
-    assert '## Incidents to investigate\n\n- [incident] run#1 failed' in incident
+    assert '## Incidents to investigate\n\n- run#1 failed' in incident
     assert '## Goal' in incident and '## Research pack' not in incident
     progress = (tmp_path / 'agent_sessions' / '2' / 'brief.md').read_text()
     assert '## This sweep: a progress review' in progress and '## This sweep: an incident' not in progress
@@ -235,15 +228,11 @@ def test_an_anomaly_takes_the_tick_and_does_not_reset_the_timer(
     sched.stop(timeout=5)
 
 
-def test_only_incident_anomalies_request_a_sweep(
+def test_an_idle_queue_requests_no_sweep(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    """An idle queue goes into the progress review, not into an incident sweep."""
+    """An idle queue is a cost that the progress review weighs (the ``idle_queue`` section), not an incident."""
     sched = scheduler(db, runtime, tmp_path)
-    with db.session() as s:
-        p = s.get_one(Campaign, campaign.id)
-        [idle] = anomalies(s, p, load_campaign_config(Path(campaign.path)))
-    assert idle.name == 'campaign#1 idle' and not idle.incident
     assert sched.run_all() == []
     assert agent_sessions(db, WATCHDOG) == []
     sched.stop(timeout=1)

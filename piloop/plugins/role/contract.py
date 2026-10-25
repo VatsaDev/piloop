@@ -188,8 +188,8 @@ class SweepRole(RoleConfig):
     ideas: ``low_water`` is off, and an idea that a sweep of the role adds (``piloop idea add``) is ``proposed``, so it
     waits for a review, also from a sweep that started before the change."""
     incident_prompt: str | None = None
-    """A file that follows ``prompt`` in the brief of an incident sweep, a sweep that got anomalies (the ``anomaly``
-    trigger): a path relative to the repo root, or an absolute path. When unset, the role's own (the watchdog's
+    """A file that follows ``prompt`` in the brief of an incident sweep, a sweep that got incidents from a
+    trigger that investigates, such as ``run_failed``: a path relative to the repo root, or an absolute path. When unset, the role's own (the watchdog's
     ``watchdog_incident.md``), else nothing."""
     routine_prompt: str | None = None
     """A file that follows ``prompt`` in the brief of every other sweep. When unset, the role's own (the watchdog's

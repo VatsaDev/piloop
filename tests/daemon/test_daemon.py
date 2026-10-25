@@ -75,14 +75,14 @@ def test_daemon_end_to_end(
         watchdog = s.get_one(AgentSession, 3)
         assert (watchdog.kind, watchdog.reason, watchdog.state, watchdog.harness) == (
             WATCHDOG,
-            'anomaly: run#2 failed',
+            'run_failed: run#2 failed',
             AgentSessionState.EXITED,
             'script',
         )
         assert watchdog.log_dir == str(home / 'agent_sessions' / '3')
     brief = (home / 'agent_sessions' / '3' / 'brief.md').read_text()
     assert (
-        'Why this agent started (context, not a scope): anomaly: run#2 failed' in brief
+        'Why this agent started (context, not a scope): run_failed: run#2 failed' in brief
         and '## This sweep: an incident' in brief
     )
     assert daemon.scheduler.run_all() == [], 'one sweep per failure'

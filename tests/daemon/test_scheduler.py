@@ -91,8 +91,9 @@ from piloop.plugins.executor.kit.leases import SERVE
 from piloop.plugins.executor.workers import Workers
 from piloop.plugins.role.research import ResearchRole
 from piloop.plugins.runtime.contract import Handle
-from piloop.plugins.trigger.anomaly import AnomalyTrigger
+from piloop.plugins.trigger.dead_at_startup import DeadAtStartup
 from piloop.plugins.trigger.low_water import LowWaterTrigger
+from piloop.plugins.trigger.run_failed import RunFailed
 from piloop.plugins.trigger.seed import SeedTrigger
 from piloop.plugins.trigger.sql import SqlTrigger
 from piloop.plugins.trigger.stalled import StalledTrigger
@@ -2565,7 +2566,8 @@ def test_the_triggers_that_read_no_time_ask_for_no_pass_of_their_own(
         for trigger in (
             SeedTrigger(),
             StalledTrigger(),
-            AnomalyTrigger(),
+            RunFailed(),
+            DeadAtStartup(),
             StoppedTrigger(),
             SqlTrigger(when='SELECT 1'),
         ):

@@ -2,14 +2,9 @@
 
 The sections (``piloop.plugins.section``), ``piloop watch`` (``piloop/watch/panels.py``), the API's status and
 ``piloop wake`` read them here, so they always say the same thing: the summary line, the head's scores, the queue, the
-live agents and their output, the inbox threads, the progress against the stop rule, and the anomalies.
-
-``anomalies`` also drives the ``anomaly`` trigger of the watchdog. An incident anomaly that is not yet assigned to a
-watchdog requests an incident sweep. An ``anomaly.reported`` event on the row of that watchdog records the assignment
-(see ``reported`` and ``assigned``). So each anomaly is investigated once, and a daemon restart does not repeat it.
+live agents and their output, the inbox threads, and the progress against the stop rule.
 """
 
-import math
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -18,22 +13,17 @@ from pathlib import Path
 from typing import assert_never
 
 from covalence import Cid
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, select
 from sqlalchemy.orm import Session
 
-from piloop.agents.results import StartupAnomaly
 from piloop.agents.roles import harness_of
-from piloop.campaign.anomaly import AnomalyKind, AnomalyReported
 from piloop.campaign.ideas import runnable
 from piloop.campaign.inbox import campaign_of
 from piloop.campaign.stop import held, hours, kept, limits, runs, runs_without_keep
 from piloop.config import TRANSCRIPT, CampaignConfig, Metric, Track
-from piloop.db.events import in_order
 from piloop.db.models import (
     LIVE,
-    OPEN_RUNS,
     AgentSession,
-    AgentSessionState,
     Campaign,
     Candidate,
     Event,
@@ -41,11 +31,9 @@ from piloop.db.models import (
     Origin,
     Pause,
     Run,
-    RunEnd,
-    campaign_runs,
     count,
 )
-from piloop.ids import AgentSessionId, CampaignId, CampaignStatus, EvaluatorId, IdeaStatus, TargetKind, TargetRef
+from piloop.ids import CampaignStatus, EvaluatorId, IdeaStatus
 from piloop.plugins.cas.contract import Cas
 from piloop.plugins.metric import Direction
 from piloop.plugins.role.contract import Files
@@ -55,68 +43,16 @@ from piloop.scoring.ledger import (
     baseline,
     head,
     keeps,
-    metrics,
     references,
     score,
-    track_of,
 )
 from piloop.store import chunks
 from piloop.store.tree import Missing
-from piloop.text import NONE, age, cell, metric
+from piloop.text import NONE, cell, metric
 from piloop.usage import UsageReader, human
 from piloop.usage.totals import campaign_tokens
 
 DETAIL_CHARS = 160
-
-
-INCIDENTS = frozenset(
-    {
-        AnomalyKind.RUN_FAILED,
-        AnomalyKind.DEAD_AT_STARTUP,
-    }
-)
-"""Kinds that request an incident sweep. The progress review weighs the other kinds, which are costs, not failures.
-
-An anomaly of an agent that investigates incidents is not an incident (``Anomaly.investigator``).
-"""
-
-
-@dataclass(frozen=True)
-class Anomaly:
-    """One problem that the daemon found, with the time it began and the evidence in one line."""
-
-    kind: AnomalyKind
-    ref: TargetRef
-    """The row that the anomaly is about: ``run#36``, ``agent_session#12``, ``measurement#117``, ``campaign#3``."""
-    at: datetime
-    """When the anomaly began, for example the end of a failed run or the exit of an agent."""
-    detail: str
-    investigator: bool = False
-    """The anomaly is about an agent of a role that investigates incidents (``Trigger.INVESTIGATES``). It is no
-    incident: the agent that it would request could fail the same way, and so on. The startup breaker of the scheduler
-    escalates that fault instead."""
-
-    @property
-    def key(self) -> tuple[TargetRef, AnomalyKind]:
-        """Identify the anomaly across passes: the same row with the same kind is one anomaly."""
-        return self.ref, self.kind
-
-    @property
-    def name(self) -> str:
-        """The anomaly in a few words: ``run#36 failed``."""
-        return f'{self.ref} {self.kind}'
-
-    @property
-    def incident(self) -> bool:
-        return self.kind in INCIDENTS and not self.investigator
-
-    def line(self, now: datetime) -> str:
-        tag = '[incident] ' if self.incident else ''
-        return f'- {tag}{self.name}, {age(self.at, now)} ago: {self.detail}'
-
-    def reported(self, now: datetime) -> AnomalyReported:
-        """The event that gives the anomaly to an agent, on the agent's row."""
-        return AnomalyReported(subject=self.ref, anomaly=self.kind, line=self.line(now))
 
 
 def summary(s: Session, campaign: Campaign, cfg: CampaignConfig) -> str:
@@ -322,34 +258,6 @@ def scored(c: Candidate, evaluator_id: EvaluatorId | None, primary: Metric) -> t
     return NONE if value is None else metric(value), delta
 
 
-def anomalies(s: Session, campaign: Campaign, cfg: CampaignConfig) -> list[Anomaly]:
-    """Return every anomaly of ``campaign``, newest first."""
-    found = [
-        *_failed_runs(s, campaign),
-        *_dead_at_startup(s, campaign, cfg),
-        *_same_as_parent(s, campaign, cfg),
-        *_idle_queue(s, campaign, cfg),
-    ]
-    return sorted(found, key=lambda a: a.at, reverse=True)
-
-
-def reported(s: Session, campaign_id: CampaignId) -> set[tuple[TargetRef, AnomalyKind]]:
-    """Return the keys of the anomalies that are already assigned to a watchdog of the campaign."""
-    rows = in_order(
-        s,
-        AnomalyReported,
-        Event.target_kind == TargetKind.AGENT_SESSION,
-        Event.target_id.in_(select(AgentSession.id).where(AgentSession.campaign_id == campaign_id)),
-    )
-    return {(a.subject, a.anomaly) for _, a in rows}
-
-
-def assigned(s: Session, agent_session_id: AgentSessionId) -> list[str]:
-    """Return the anomaly lines assigned to a watchdog, in order. A progress sweep has none."""
-    rows = in_order(s, AnomalyReported, Event.target == TargetRef(TargetKind.AGENT_SESSION, agent_session_id))
-    return [a.line for _, a in rows]
-
-
 def known(c: Candidate) -> datetime:
     """Return the time of the first successful measurement of the candidate, else its creation time."""
     return min((m.created_at for m in c.measurements if m.error is None), default=c.created_at)
@@ -359,95 +267,6 @@ def latest_events(s: Session, campaign: Campaign, limit: int) -> Sequence[Event]
     """Return the last ``limit`` events of the campaign, newest first."""
     mine = select(Event).where(campaign_of(Event.target_kind, Event.target_id) == campaign.id)
     return s.scalars(mine.order_by(Event.id.desc()).limit(limit)).all()
-
-
-def _failed_runs(s: Session, campaign: Campaign) -> list[Anomaly]:
-    return [
-        Anomaly(
-            AnomalyKind.RUN_FAILED,
-            TargetRef(TargetKind.RUN, run.id),
-            run.finished_at or run.created_at,
-            f'{run.end} on {run.harness} (idea#{run.idea_id}): {cell(run.error or "no error recorded", DETAIL_CHARS)}',
-        )
-        for run in s.scalars(campaign_runs(campaign.id).where(Run.end.in_((RunEnd.FAILED, RunEnd.TIMED_OUT))))
-    ]
-
-
-def _dead_at_startup(s: Session, campaign: Campaign, cfg: CampaignConfig) -> list[Anomaly]:
-    """Find agents of any role that did not start to work (``StartupAnomaly``)."""
-    investigators = {name for name, role in cfg.roles.sweeping().items() if any(t.INVESTIGATES for t in role.triggers)}
-    events = in_order(
-        s,
-        StartupAnomaly,
-        Event.target_kind == TargetKind.AGENT_SESSION,
-        Event.target_id.in_(select(AgentSession.id).where(AgentSession.campaign_id == campaign.id)),
-    )
-    found: list[Anomaly] = []
-    for e, p in events:
-        error = cell(p.error or 'no error recorded', DETAIL_CHARS)
-        detail = f'{p.role} on {p.harness} failed to start ({p.seconds}s): {error}'
-        found.append(Anomaly(AnomalyKind.DEAD_AT_STARTUP, e.target, e.at, detail, p.role in investigators))
-    return found
-
-
-def _same_as_parent(s: Session, campaign: Campaign, cfg: CampaignConfig) -> list[Anomaly]:
-    """Find candidates whose primary score is exactly the score of their parent.
-
-    If the other metrics are also equal (except a timing metric), the change did not affect what the evaluation sees.
-    """
-    evaluator_id = campaign.evaluator_id
-    found: list[Anomaly] = []
-    children = select(Candidate).where(Candidate.campaign_id == campaign.id, Candidate.parent_id.is_not(None))
-    for c in s.scalars(children.order_by(Candidate.id)):
-        assert c.parent is not None
-        primary = track_of(cfg, c).primary.name
-        mine, theirs = metrics(c, evaluator_id), metrics(c.parent, evaluator_id)
-        if primary not in mine or mine[primary] != theirs.get(primary):
-            continue
-        rows = [m for m in c.measurements if m.evaluator_id == evaluator_id and m.error is None]
-        others = [name for name in mine if name != primary]
-        same = sum(mine[name] == theirs.get(name) for name in others)
-        detail = (
-            f'scored what candidate#{c.parent_id} did on {primary} and on {same} of {len(others)} other metrics;'
-            f' {minutes(sum(m.seconds or 0 for m in rows))} of evaluation'
-        )
-        at = min(m.created_at for m in rows)
-        found.append(Anomaly(AnomalyKind.SAME_AS_PARENT, TargetRef(TargetKind.CANDIDATE, c.id), at, detail))
-    return found
-
-
-def _idle_queue(s: Session, campaign: Campaign, cfg: CampaignConfig) -> list[Anomaly]:
-    """Find an active campaign, not paused, with a free implementer slot and no runnable idea, since the last run moved."""
-    if campaign.status is not CampaignStatus.ACTIVE or campaign.paused is not None:
-        return []
-    open_runs = campaign_runs(campaign.id).where(Run.status.in_(OPEN_RUNS))
-    free = cfg.run_slots - count(s, open_runs)
-    if (max_runs := limits(cfg).get(Fact.RUNS)) is not None:
-        free = min(free, math.floor(max_runs) - runs(s, campaign))
-    ready = count(s, select(Idea).where(Idea.campaign_id == campaign.id, runnable()))
-    if free <= 0 or ready:
-        return []
-    moments = [campaign.created_at]
-    for column in (Run.created_at, Run.finished_at):
-        latest = s.scalar(campaign_runs(campaign.id).with_only_columns(func.max(column)))
-        if latest is not None:
-            moments.append(latest)
-    kinds = defining(cfg)
-    pending = s.scalars(
-        select(AgentSession)
-        .where(
-            AgentSession.campaign_id == campaign.id,
-            AgentSession.kind.in_(kinds),
-            AgentSession.state.in_((AgentSessionState.REQUESTED, *LIVE)),
-        )
-        .order_by(AgentSession.id)
-    ).all()
-    sweeps = (
-        ', '.join(f'{w.kind}#{w.id} {w.state}' for w in pending)
-        or f'no {" or ".join(kinds) or "defining"} sweep pending'
-    )
-    detail = f'{free} free implementer slots and no runnable idea; {sweeps}'
-    return [Anomaly(AnomalyKind.IDLE_QUEUE, TargetRef(TargetKind.CAMPAIGN, campaign.id), max(moments), detail)]
 
 
 def defining(cfg: CampaignConfig) -> list[str]:

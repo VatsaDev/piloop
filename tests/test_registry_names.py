@@ -42,7 +42,7 @@ LEAVES: dict[str, frozenset[str] | None] = {
     'usage/tallies/*.py': None,
     'config.py': frozenset({'subprocess', 'pi'}),
     'plugins/role/research.py': frozenset({'claude', 'codex', 'low_water', 'seed', 'stalled'}),
-    'plugins/role/watchdog.py': frozenset({'anomaly', 'cron', 'stopped'}),
+    'plugins/role/watchdog.py': frozenset({'run_failed', 'dead_at_startup', 'leaking_funnel', 'cron', 'stopped'}),
     'plugins/role/scout.py': frozenset({'cron'}),
     'deprecated.py': None,
     'cli/skills.py': frozenset({'claude', 'codex', 'pi'}),

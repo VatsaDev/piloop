@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from piloop.actor import Actor, System
 from piloop.campaign import inbox
-from piloop.campaign.anomaly import AnomalyKind, AnomalyReported
+from piloop.campaign.anomaly import AnomalyReported
 from piloop.db import feed as db_feed
 from piloop.db.events import emit, in_order
 from piloop.db.models import AgentSession, AgentSessionState, Campaign, Comment, Event, Idea, Measurement, Run, utcnow
@@ -217,7 +217,7 @@ def test_news_is_what_happened_since_the_cursor_that_the_orchestrator_did_not_wr
         s.add_all(seeds)  # each insert emits idea.created, signed by its creator
         s.flush()
         run3 = TargetRef(TargetKind.RUN, 3)
-        reported = AnomalyReported(subject=run3, anomaly=AnomalyKind.RUN_FAILED, line='run#3 failed: boom')
+        reported = AnomalyReported(subject=run3, trigger='run_failed', line='run#3 failed: boom')
         emit(s, reported, TargetRef(TargetKind.AGENT_SESSION, watchdog.id), System.DAEMON)
         judged = CandidateJudged(verdict=Outcome.KEEP, score=2.0, reason='score +1 over candidate#1\nmore')
         candidate = TargetRef(TargetKind.CANDIDATE, 1)

@@ -889,9 +889,12 @@ def test_0011_makes_scout_sweeps_scout_rows_and_stored_configs_valid_and_downgra
         assert p.context == ['docs/analysis-*.md'], 'research context is the project context'
         usage = p.harness['mine'].usage
         assert usage is not None and usage.file == '{env:CLAUDE_CONFIG_DIR:~/.claude}/projects/{cwd}/{session_id}.jsonl'
-        assert [TRIGGERS.name_of(t) for t in role_of(p, WatchdogRole).triggers] == ['anomaly', 'cron', 'stopped'], (
-            'the closing review stays'
-        )
+        assert [TRIGGERS.name_of(t) for t in role_of(p, WatchdogRole).triggers] == [
+            'run_failed',
+            'dead_at_startup',
+            'cron',
+            'stopped',
+        ], 'the closing review stays'
         con.execute("INSERT INTO workers (kind, project_id) VALUES ('scout', 2)")
         sql = con.execute("SELECT sql FROM sqlite_master WHERE name = 'workers_kind'").fetchone()[0]
         assert sql + ';' == legacy.rendered(known_role(), legacy.STAGES)[3], (
@@ -910,7 +913,8 @@ def test_0011_makes_scout_sweeps_scout_rows_and_stored_configs_valid_and_downgra
 
 def upgraded(config: dict[str, object]) -> object:
     """``config`` as revisions 0018 (``roles.implementer``), 0034 (no herdr), 0035 (no ``workdir``), 0036 (no Entire),
-    0038 (a trigger's ``provider``) and 0039 (the rules' limits) store it, so that today's piloop reads it."""
+    0038 (a trigger's ``provider``), 0039 (the rules' limits) and 0055 (the incident triggers) store it, so that today's
+    piloop reads it."""
     roles = config.get('roles')
     if isinstance(roles, dict) and 'worker' in roles:
         roles['implementer'] = roles.pop('worker')
@@ -919,7 +923,8 @@ def upgraded(config: dict[str, object]) -> object:
     config = revisions.get_revision('0035').module.upgraded(config)
     config = revisions.get_revision('0036').module.upgraded(config)
     config = revisions.get_revision('0038').module.renamed(config, 'kind', 'provider')
-    return revisions.get_revision('0039').module.upgraded(config)
+    config = revisions.get_revision('0039').module.upgraded(config)
+    return revisions.get_revision('0055').module.upgraded(config)
 
 
 def test_0012_leaves_the_cached_input_out_of_the_input_of_codex_rows_and_downgrades(tmp_path: Path) -> None:
@@ -1768,6 +1773,45 @@ def test_0053_makes_wake_budgets_the_lessons_of_the_roles_sections_and_downgrade
         'scout': 200,
         'quick': 200,
     }
+
+
+def test_0055_makes_the_anomaly_trigger_the_incident_triggers_and_names_the_trigger_of_each_report(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0054')
+    triggers = [{'provider': 'anomaly'}, {'provider': 'cron'}]
+    sections = [{'provider': 'goal'}, {'provider': 'anomalies'}, {'provider': 'inbox'}]
+    config = {'roles': {'watchdog': {'triggers': triggers, 'sections': sections}}, 'status': {'sections': sections}}
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute("INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', ?)", (dumps(config),))
+        for kind in ('failed', 'dead at startup', 'silent while its jobs run'):
+            payload = dumps({'kind': 'anomaly.reported', 'subject': 'run#1', 'anomaly': kind, 'line': '- run#1'})
+            con.execute(
+                "INSERT INTO events (actor, target_kind, target_id, payload) VALUES ('daemon', 'agent_session', 1, ?)",
+                (payload,),
+            )
+    command.upgrade(cfg, '0055')
+    reports = "SELECT json_extract(payload, '$.trigger'), json_extract(payload, '$.anomaly') FROM events"
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        [(stored,)] = con.execute('SELECT config FROM campaigns').fetchall()
+        assert con.execute(reports).fetchall() == [
+            ('run_failed', None),
+            ('dead_at_startup', None),
+            ('silent while its jobs run', None),
+        ]
+    watchdog = loads(stored)['roles']['watchdog']
+    assert [t['provider'] for t in watchdog['triggers']] == ['run_failed', 'dead_at_startup', 'cron']
+    expected = ['goal', 'idle_queue', 'same_as_parent', 'reported', 'inbox']
+    assert [e['provider'] for e in watchdog['sections']] == expected
+    assert [e['provider'] for e in loads(stored)['status']['sections']] == expected
+    command.downgrade(cfg, '0054')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        [(stored,)] = con.execute('SELECT config FROM campaigns').fetchall()
+        assert [a for _, a in con.execute(reports)] == ['failed', 'dead at startup', 'failed']
+    watchdog = loads(stored)['roles']['watchdog']
+    assert (watchdog['triggers'], watchdog['sections']) == (triggers, sections)
 
 
 def test_0040_checks_the_role_of_a_row_against_its_campaign_config_alone_and_downgrades(tmp_path: Path) -> None:

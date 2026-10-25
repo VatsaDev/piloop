@@ -61,7 +61,7 @@ recovery_requeues = 2                     # times an idea is requeued from the l
 # writes = ["comments(finding)"]          # what the brief says the role may write; default: what piloop expects of it
 # files = "seeds"                         # what its agents may file with `piloop idea`: nothing, seeds or ideas
 runs = false                              # a sweeping role: its triggers start it and nothing it commits is scored
-triggers = [{ provider = "anomaly" }, { provider = "cron" }, { provider = "stopped" }]  # an anomaly, the timer below, the stop
+triggers = [{ provider = "run_failed" }, { provider = "dead_at_startup" }, { provider = "leaking_funnel" }, { provider = "cron" }, { provider = "stopped" }]  # incidents, the timer below, the stop
 # sections = [{ provider = "lessons", budget = 400 }, …]  # if not set: the installed sections of its briefs; see the sections
 interval = 1800                           # seconds between two progress reviews of the cron trigger; 0 turns it off
 # incident_prompt = "briefs/incident.md"  # follows the prompt in a sweep that got anomalies; default: watchdog_incident.md

@@ -347,11 +347,11 @@ def test_the_shapes_of_0_1_0_are_rewritten_to_the_models(tmp_path: Path) -> None
             ('WrapUp', '{"reason":"target reached","kind":"agent_session.wrap_up"}'),
             (
                 'AnomalyReported',
-                '{"subject":"agent_session#5","anomaly":"dead at startup","line":"- [incident] worker#5 dead at startup, 4m ago: failed on claude (idea#12): agent exit 1","kind":"anomaly.reported"}',
+                '{"subject":"agent_session#5","line":"- [incident] worker#5 dead at startup, 4m ago: failed on claude (idea#12): agent exit 1","kind":"anomaly.reported","trigger":"dead_at_startup"}',
             ),
             (
                 'AnomalyReported',
-                '{"subject":"run#36","anomaly":"failed","line":"- [incident] run#36 failed, 4m ago: failed on claude (idea#12): agent exit 1","kind":"anomaly.reported"}',
+                '{"subject":"run#36","line":"- [incident] run#36 failed, 4m ago: failed on claude (idea#12): agent exit 1","kind":"anomaly.reported","trigger":"run_failed"}',
             ),
             (
                 'RunQueued',
@@ -442,7 +442,7 @@ def test_the_shapes_of_0_2_0_are_rewritten_to_the_models(tmp_path: Path) -> None
             ('AgentEnded', '{"reason":"target","end":"campaign_stopped","kind":"agent_session.stop_ended"}'),
             (
                 'AnomalyReported',
-                '{"subject":"agent_session#1","anomaly":"silent while its jobs run","line":"- [incident] agent_session#1 silent while its jobs run, 4m ago: failed on claude (idea#12): agent exit 1","kind":"anomaly.reported"}',
+                '{"subject":"agent_session#1","line":"- [incident] agent_session#1 silent while its jobs run, 4m ago: failed on claude (idea#12): agent exit 1","kind":"anomaly.reported","trigger":"silent while its jobs run"}',
             ),
             ('RemeasureRequested', '{"kind":"candidate.remeasure_requested"}'),
             ('IdeaBaseChanged', '{"old":null,"new":7,"kind":"idea.base_candidate_id"}'),

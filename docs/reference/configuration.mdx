@@ -138,7 +138,7 @@ The keys that every `[roles.<name>]` table accepts. Each role's table below adds
 | `mcp` | list\[string\] | `[]` | The MCP servers that the agents of this role get, by the name of their `[mcp.<name>]` table. Every harness in the role's rotation must be able to take them in the invocation of the role's runtime (`[harness.<name>] mcp`). |
 | `writes` | list\[string\] | `[]` | What the agents of this role may write, as their brief states it. Only `files` is enforced. |
 | `files` | `nothing` \| `seeds` \| `ideas` | `"seeds"` | What the agents of this role may file with `piloop idea`: `nothing`, `seeds` or `ideas`. The CLI refuses the rest. |
-| `sections` | list\[object\] \| null | `null` | What the briefs of this role show after the role's context: a list of `{ provider = "<section>", ... }` entries, in order. When unset, every installed section that a brief of this kind of role shows by default, in their order (`Section.SHOWN_IN`, `Section.ORDER`). Built in: `agents`, `anomalies`, `candidates`, `evaluations`, `events`, `goal`, `headline`, `history`, `inbox`, `incidents`, `lessons`, `pack`, `queue`, `runs`, `tools`, `tracks`, `trajectory`. |
+| `sections` | list\[object\] \| null | `null` | What the briefs of this role show after the role's context: a list of `{ provider = "<section>", ... }` entries, in order. When unset, every installed section that a brief of this kind of role shows by default, in their order (`Section.SHOWN_IN`, `Section.ORDER`). Built in: `agents`, `candidates`, `evaluations`, `events`, `goal`, `headline`, `history`, `idle_queue`, `inbox`, `incidents`, `lessons`, `pack`, `queue`, `reported`, `runs`, `same_as_parent`, `tools`, `tracks`, `trajectory`. |
 
 ## Section
 
@@ -197,7 +197,7 @@ escalation for each series of failures: an unknown spend is never read as $0.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `sections` | list\[object\] \| null | `null` | The sections, in order: a list of `{ provider = "<section>", ... }` entries. When unset, every installed section that status shows by default, in their order (`Section.SHOWN_IN`, `Section.ORDER`): the campaign overview. Built in: `agents`, `anomalies`, `candidates`, `evaluations`, `events`, `goal`, `headline`, `history`, `inbox`, `incidents`, `lessons`, `pack`, `queue`, `runs`, `tools`, `tracks`, `trajectory`. |
+| `sections` | list\[object\] \| null | `null` | The sections, in order: a list of `{ provider = "<section>", ... }` entries. When unset, every installed section that status shows by default, in their order (`Section.SHOWN_IN`, `Section.ORDER`): the campaign overview. Built in: `agents`, `candidates`, `evaluations`, `events`, `goal`, `headline`, `history`, `idle_queue`, `inbox`, `incidents`, `lessons`, `pack`, `queue`, `reported`, `runs`, `same_as_parent`, `tools`, `tracks`, `trajectory`. |
 
 ## ImplementerRole
 
@@ -227,10 +227,10 @@ name defines a new role, and needs `prompt` and `triggers`.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `runs` | boolean | `false` | The agents of this role do no runs. Set `runs = true` in a new table to define a role that does runs. |
-| `triggers` | list\[object\] | required | When the daemon requests an agent of this role: a list of `{ provider = "<trigger>", ... }` entries, checked in order on each pass. A package can add triggers. An empty list means that agents start only on request (`piloop launch`). Built in: `anomaly`, `cron`, `low_water`, `seed`, `sql`, `stalled`, `stopped`. |
+| `triggers` | list\[object\] | required | When the daemon requests an agent of this role: a list of `{ provider = "<trigger>", ... }` entries, checked in order on each pass. A package can add triggers. An empty list means that agents start only on request (`piloop launch`). Built in: `cron`, `dead_at_startup`, `leaking_funnel`, `low_water`, `run_failed`, `seed`, `sql`, `stalled`, `stopped`. |
 | `interval` | number | `0` | The number of seconds between two routine sweeps of the `cron` trigger, counted from the start of the last one. A sweep that investigates an anomaly is not a routine sweep. 0 turns the timer off. |
 | `max_ideas` | integer | `1` | The maximum number of new ideas one sweep may insert, as its brief states it. The seeds it develops do not count. `low_water` requests enough sweeps to fill the backlog at this many ideas each. 0 pauses the role's new ideas: `low_water` is off, and an idea that a sweep of the role adds (`piloop idea add`) is `proposed`, so it waits for a review, also from a sweep that started before the change. |
-| `incident_prompt` | string \| null | `null` | A file that follows `prompt` in the brief of an incident sweep, a sweep that got anomalies (the `anomaly` trigger): a path relative to the repo root, or an absolute path. When unset, the role's own (the watchdog's `watchdog_incident.md`), else nothing. |
+| `incident_prompt` | string \| null | `null` | A file that follows `prompt` in the brief of an incident sweep, a sweep that got incidents from a trigger that investigates, such as `run_failed`: a path relative to the repo root, or an absolute path. When unset, the role's own (the watchdog's `watchdog_incident.md`), else nothing. |
 | `routine_prompt` | string \| null | `null` | A file that follows `prompt` in the brief of every other sweep. When unset, the role's own (the watchdog's `watchdog_progress.md`), else nothing. |
 
 ## ResearchRole
@@ -272,7 +272,7 @@ Experimental: the scout.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `writes` | list\[string\] | `["comments(escalation, finding, note)", "lessons on the campaign once it stopped", "seeds via idea seed"]` | What a watchdog may write, as its brief states it. |
-| `triggers` | list\[object\] | `[{"provider": "anomaly"}, {"provider": "cron"}, {"provider": "stopped"}]` | An anomaly requests an incident sweep, the timer requests a progress review, and the campaign's stop requests the closing review. |
+| `triggers` | list\[object\] | `[{"provider": "run_failed"}, {"provider": "dead_at_startup"}, {"provider": "leaking_funnel"}, {"provider": "cron"}, {"provider": "stopped"}]` | A failed run, an agent dead at startup or a leaking funnel requests an incident sweep, the timer requests a progress review, and the campaign's stop requests the closing review. |
 | `interval` | number | `1800` | The number of seconds between two progress reviews, counted from the last review. A sweep that investigates an anomaly is not a review. 0 turns the reviews off. |
 
 ## Trigger
@@ -280,16 +280,6 @@ Experimental: the scout.
 One entry of `[roles.<name>] triggers`: `{ provider = "<trigger>", <parameter> = <value> }`.
 
 The daemon checks the entries in the order of the list.
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-
-## AnomalyTrigger
-
-The daemon detected an incident that no agent of the campaign got yet. The agent gets it to investigate.
-
-Incidents are the incident-class anomalies of `piloop.reports.overview`. The row gets the new anomalies, one `anomaly.reported` event each. For the watchdog, that makes it an incident
-sweep.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
@@ -302,6 +292,28 @@ The first one counts from the registration of the campaign. An `interval` of 0 t
 
 | Key | Type | Default | Description |
 |---|---|---|---|
+
+## DeadAtStartup
+
+An agent of the campaign did not start to work, and no agent got it yet. The agent gets it to investigate.
+
+An agent of a role with a trigger that investigates (`INVESTIGATES`) is left out: the agent that it would request
+could die the same way, and so on. The startup breaker of the daemon pauses the launches instead.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+
+## LeakingFunnel
+
+Fewer than `measured` of the last `window` attempts under the current evaluator reached a measurement.
+
+A gate that most runs cannot pass shows on the first day, not after days: the agent gets it to investigate. It
+fires once for each evaluator. An attempt that is still open does not count.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `window` | integer | `10` | How many of the latest finished attempts it looks at. |
+| `measured` | integer | `5` | It fires when fewer of them than this reached a measurement under the current evaluator. |
 
 ## LowWaterTrigger
 
@@ -334,6 +346,15 @@ no idea that a sweep adds could run sooner.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `buffer` | integer | `2` | The number of ready ideas to keep in addition to one for each run slot (the `max_concurrent` of every role that does runs). With this backlog, a free slot finds an idea at once and does not wait for a sweep. A larger value makes implementers wait less for the role, but the ideas they run are older. |
+
+## RunFailed
+
+A run failed or timed out, and no agent of the campaign got it yet. The agent gets it to investigate.
+
+The row gets one `anomaly.reported` event for each such run. For the watchdog, that makes it an incident sweep.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
 
 ## SeedTrigger
 
@@ -550,6 +571,7 @@ These keys still work. Each one shows a `PiloopDeprecationWarning` that names th
 - `[spend] limit` is `[plugins.stop_rule] max_spend`. A value that `[plugins.stop_rule]` sets too wins.
 - The top-level `confidence` is `[plugins.verdict_rule] confidence`. A value that the table sets too wins.
 - `PILOOP_CAMPAIGN_STOP__<KEY>` and `PILOOP_CAMPAIGN_CONFIDENCE` set keys of the rules' tables. They are `PILOOP_CAMPAIGN_PLUGINS__STOP_RULE__<KEY>` and `PILOOP_CAMPAIGN_PLUGINS__VERDICT_RULE__CONFIDENCE`. The old variable still wins over the file.
+- The `anomaly` trigger is two triggers: `run_failed` and `dead_at_startup`, in its place in the list.
 - `[memory] wake_budget` and `[roles.<name>] wake_budget` are the `budget` of the role's `lessons` section. A role's own value wins over `[memory]`'s. A budget that differs from the role's old default sets the role's `sections` to its defaults with the lessons at that budget, or without them at 0. A role that sets `sections` keeps them. The watchdog's old default was 0: it now reads the lessons too.
 - In `config.toml`, `[storage.backend]` is the `remote` of `[plugins.cas] provider = "cached"`. Its `kind` is the remote's `provider`. `evict_after_days` and `local_max_gb` of `[storage]` move with it. A `[plugins.cas]` table of the file wins: the old keys then go, with the warning, and change nothing.
 - In `config.toml`, `max_evaluations` is `evaluations` in `[plugins.executor.pools.serve]`. A value that `[plugins.executor.pools.serve]` sets too wins.

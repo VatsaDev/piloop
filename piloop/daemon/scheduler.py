@@ -55,7 +55,7 @@ from piloop.agents.results import (
 )
 from piloop.agents.roles import compose_brief, role_of
 from piloop.campaign import spend
-from piloop.campaign.anomaly import AnomalyReported
+from piloop.campaign.anomaly import AnomalyReported, assigned
 from piloop.campaign.campaigns import WORKSPACE, CampaignAdded, vcs_of, workspace_dir
 from piloop.campaign.ideas import defined_by, park_stranded, runnable, supersede, waiting
 from piloop.campaign.memory import sync_documents
@@ -169,9 +169,8 @@ from piloop.plugins.executor.contract import AgentKey, LeftJob, Prompt
 from piloop.plugins.role.contract import ImplementerRole, Stall, SweepRole, ideas_taken
 from piloop.plugins.section.contract import Rendering, markdown
 from piloop.plugins.stop_rule.contract import GO, Fact, Go, Hold, Stop
-from piloop.plugins.trigger.contract import TRIGGERS, Backlog, Fire, Incident, TrackBacklog
+from piloop.plugins.trigger.contract import TRIGGERS, Backlog, Fire, TrackBacklog
 from piloop.plugins.vcs.contract import NotARepository
-from piloop.reports.overview import anomalies, assigned, reported
 from piloop.runtime.factory import RuntimeFactory, handle_for, make_runtime, runtime_for
 from piloop.scoring.ledger import (
     CandidateImported,
@@ -1083,8 +1082,8 @@ class Scheduler:
 
         The triggers fire in the order of the role's list (``piloop.plugins.trigger``): those with ``ON_STOP`` when the
         campaign is ``stopping``, else the others. A fire that needs a row of its
-        own (``Fire.alone``) is requested alone when it comes first, and otherwise waits for a later pass. The others
-        share one batch: the largest count of rows, with every reason. The first row gets the events of the fires. A
+        own (``Fire.alone``) shares its row only with the other such fires, when one comes first, and otherwise waits
+        for a later pass. The others share one batch: the largest count of rows, with every reason. The first row gets the events of the fires. A
         trigger that raises is traced and does not fire. The ``due_in`` of each trigger that did not fire goes into the
         pass's due.
         """
@@ -1113,7 +1112,7 @@ class Scheduler:
                 self._soonest.add(now + due)
         if not fires:
             return
-        fires = fires[:1] if fires[0].alone else [f for f in fires if not f.alone]
+        fires = [f for f in fires if f.alone is fires[0].alone]
         count = max(f.count for f in fires)
         reason = '; '.join(f.reason for f in fires)
         rows = [AgentSession(kind=name, campaign_id=campaign.id, reason=reason) for _ in range(count)]
@@ -1143,18 +1142,8 @@ class Scheduler:
             max_concurrent=role.max_concurrent,
             interval=role.interval,
             backlog=partial(self._backlog, s, campaign, cfg, name),
-            incidents=partial(self._incidents, s, campaign, cfg),
             stall_step=lambda before: runs_without_keep(s, campaign, before) // stall(cfg)[0],
         )
-
-    def _incidents(self, s: Session, campaign: Campaign, cfg: CampaignConfig) -> list[Incident]:
-        """Return the campaign's incident anomalies that no agent has received yet, oldest first."""
-        given = reported(s, campaign.id)
-        now = utcnow()
-        found = [
-            Incident(a.name, a.reported(now)) for a in anomalies(s, campaign, cfg) if a.incident and a.key not in given
-        ]
-        return found[::-1]
 
     def _backlog(self, s: Session, campaign: Campaign, cfg: CampaignConfig, name: RoleName, buffer: int) -> Backlog:
         """Return the campaign's backlog as role ``name`` fills it: ``buffer`` beyond the run slots, its own sweeps."""
@@ -1725,7 +1714,6 @@ class RolePass:
     max_concurrent: int
     interval: float
     backlog: Callable[[int], Backlog]
-    incidents: Callable[[], list[Incident]]
     stall_step: Callable[[datetime | None], int]
 
     def _mine(self) -> Select[AgentSession]:

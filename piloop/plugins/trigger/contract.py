@@ -13,7 +13,7 @@ The daemon makes a pass when an event of a campaign's state arrives, or of a kin
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Annotated, ClassVar, NamedTuple, Protocol
+from typing import TYPE_CHECKING, Annotated, ClassVar, Protocol
 
 from piloop.plugins.host import Capability, Parameters
 
@@ -21,15 +21,6 @@ if TYPE_CHECKING:  # piloop.db.models types campaigns.config with the triggers: 
     from sqlalchemy.orm import Session
 
     from piloop.db.models import AgentSession, AgentSessionState, Campaign, EventModel
-
-
-class Incident(NamedTuple):
-    """An incident-class anomaly that no agent has received yet."""
-
-    name: str
-    """The anomaly in a few words: ``run#36 failed``."""
-    event: EventModel
-    """The event that gives it to the agent that the trigger requests."""
 
 
 @dataclass(frozen=True)
@@ -169,10 +160,6 @@ class Pass(Protocol):
         """
         ...
 
-    def incidents(self) -> list[Incident]:
-        """The campaign's incidents that no agent has received yet, oldest first."""
-        ...
-
     def live(self) -> int:
         """The number of the role's rows that are starting or running."""
         ...
@@ -206,10 +193,10 @@ class Fire:
     count: int = 1
     """The number of rows to request. When several triggers fire together, the largest count wins."""
     alone: bool = False
-    """The row is for this trigger alone, because it changes what the agent does: an incident sweep.
+    """The row is for the fires that change what the agent does, such as the incidents that it investigates.
 
-    Such a fire is requested alone when it is the first fire of the pass. After another fire, it waits for a later
-    pass.
+    When the first fire of the pass is alone, the row is for every fire of the pass that is alone. Otherwise the fires
+    that are alone wait for a later pass.
     """
     events: tuple[EventModel, ...] = ()
     """The events to emit on the first requested row."""

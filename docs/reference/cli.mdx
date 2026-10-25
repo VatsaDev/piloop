@@ -411,10 +411,10 @@ Records a measurement that you made yourself, under the campaign's current evalu
 piloop status [REF] [--json]
 ```
 
-Prints the daemon's state, then for each campaign: the head, the tracks, the trajectory, the progress against
-the stop rule's limits, the open runs, the queue, the running agents with their last line, the recent candidates, the anomalies,
-the inbox, the latest decisions and the recent events. The watchdog and research agents get the same overview in
-their brief.
+Prints the daemon's state, then for each campaign the sections of its `[status] sections`: by default the head, the
+goal, the tracks, the trajectory, the open runs, the queue, the running agents with their last line, the recent
+candidates, the incidents that agents got, the inbox and the recent events. The watchdog and research agents get the
+same sections in their brief.
 
 `--json` prints one JSON document instead: the daemon's pid and the main facts of each campaign, read at one cursor of
 the [event feed](/reference/event-feed).

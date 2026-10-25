@@ -14,9 +14,16 @@ class WatchdogRole(SweepRole):
     ROUTINE_PROMPT = files(__package__) / 'prompts' / 'watchdog_progress.md'
 
     triggers: list[TriggerEntry] = Field(
-        default=[{'provider': 'anomaly'}, {'provider': 'cron'}, {'provider': 'stopped'}], validate_default=True
+        default=[
+            {'provider': 'run_failed'},
+            {'provider': 'dead_at_startup'},
+            {'provider': 'leaking_funnel'},
+            {'provider': 'cron'},
+            {'provider': 'stopped'},
+        ],
+        validate_default=True,
     )
-    """An anomaly requests an incident sweep, the timer requests a progress review, and the campaign's stop requests
+    """A failed run, an agent dead at startup or a leaking funnel requests an incident sweep, the timer requests a progress review, and the campaign's stop requests
     the closing review."""
     interval: float = Field(default=1800, ge=0)
     """The number of seconds between two progress reviews, counted from the last review. A sweep that investigates an

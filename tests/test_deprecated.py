@@ -20,6 +20,7 @@ from piloop import deprecated
 from piloop.config import ConfigError, load_campaign_config
 from piloop.deprecated import PiloopDeprecationWarning
 from piloop.plugins.role.research import ResearchRole
+from piloop.plugins.role.watchdog import WatchdogRole
 from piloop.plugins.section.lessons import Lessons
 from piloop.plugins.stop_rule.contract import STOP_RULES
 from piloop.plugins.stop_rule.limits import Limits
@@ -140,6 +141,17 @@ def test_wake_budget_is_the_budget_of_the_lessons_section_of_each_role(campaign_
     assert lessons == {'implementer': 200, 'watchdog': 400, 'research': None, 'scout': 200}, (
         "[memory]'s budget for every role but the watchdog, whose old default was its own; 0 leaves them out"
     )
+
+
+def test_the_anomaly_trigger_is_the_two_incident_triggers_in_its_place(campaign_path: Path) -> None:
+    write_toml(campaign_path, HARNESS_APPEND)
+    toml = campaign_path / 'piloop.toml'
+    old = 'triggers = [{ provider = "cron" }, { provider = "anomaly" }]\n'
+    toml.write_text(toml.read_text().replace('[roles.watchdog]\n', f'[roles.watchdog]\n{old}'))
+    with pytest.warns(PiloopDeprecationWarning, match='the anomaly trigger is deprecated'):
+        cfg = load_campaign_config(campaign_path)
+    triggers = [TRIGGERS.name_of(t) for t in role_of(cfg, WatchdogRole).triggers]
+    assert triggers == ['cron', 'run_failed', 'dead_at_startup']
 
 
 @dataclass(frozen=True)

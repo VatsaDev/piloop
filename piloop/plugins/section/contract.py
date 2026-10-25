@@ -72,7 +72,7 @@ class Section(Parameters, ABC):
     """The surfaces whose list shows the section, with its defaults, when the list is not set. Empty: only a list that
     names it shows it."""
     ORDER: ClassVar[int] = 500
-    """Where the section goes in a default list: a lower number comes first. The built-in sections leave gaps of 10,
+    """Where the section goes in a default list: a lower number comes first. The built-in sections leave gaps,
     so that a package can put one between two of them."""
 
     @abstractmethod

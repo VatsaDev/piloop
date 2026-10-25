@@ -40,7 +40,7 @@ def status(ref: CampaignRef | None = None, /, *, json_: JsonFlag = False) -> Non
 
     Each campaign shows the sections of its [status] sections: by default the head, the goal and the progress against
     the stop rule, the tracks, the trajectory, the open runs, the queue, the live agents with their last line, the
-    evaluations, the recent candidates, the anomalies, the inbox and the recent events. Without a campaign, it uses
+    evaluations, the recent candidates, the incidents that agents got, the inbox and the recent events. Without a campaign, it uses
     the campaign that the current directory is in, else the only active campaign, else every campaign.
 
     With --json, it prints the daemon's pid and the URL it listens on, and the main facts of each campaign, read at one

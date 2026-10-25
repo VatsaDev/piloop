@@ -216,6 +216,32 @@ def _rule(raw: dict[str, object], rule: str) -> dict[str, object] | None:
     return table if isinstance(table, dict) else None
 
 
+INCIDENT_TRIGGERS = ('run_failed', 'dead_at_startup')
+"""What the ``anomaly`` trigger found: a failed run, and an agent dead at its start."""
+
+
+@bridge('0.5.0', 'the anomaly trigger is run_failed and dead_at_startup: delete anomaly_trigger and INCIDENT_TRIGGERS')
+def anomaly_trigger(toml: Path, raw: dict[str, object], removed_in: Version) -> None:
+    """The ``anomaly`` trigger is two triggers: ``run_failed`` and ``dead_at_startup``, in its place in the list."""
+    for name, role in (_table(raw, 'roles') or {}).items():
+        triggers = role.get('triggers') if isinstance(role, dict) else None
+        if not isinstance(role, dict) or not isinstance(triggers, list):
+            continue
+        old = [t for t in triggers if isinstance(t, dict) and t.get('provider') == 'anomaly']
+        if not old:
+            continue
+        role['triggers'] = [
+            new for t in triggers for new in ([{'provider': n} for n in INCIDENT_TRIGGERS] if t in old else [t])
+        ]
+        warn(
+            toml,
+            f'roles.{name}.triggers',
+            'the anomaly trigger is deprecated; write { provider = "run_failed" }, { provider = "dead_at_startup" }',
+            removed_in=removed_in,
+            nth=_nth(toml, f'roles.{name}', 'triggers'),
+        )
+
+
 LESSONS = 'lessons'
 """The section that ``wake_budget`` sized."""
 OLD_BUDGETS = {'watchdog': 0}

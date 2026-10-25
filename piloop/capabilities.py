@@ -26,8 +26,10 @@ from piloop.plugins.cas.gcs import Gcs
 from piloop.plugins.cas.http import Http
 
 from piloop.plugins.trigger.contract import TRIGGERS, Trigger, TriggerEntry, Pass, Fire
-from piloop.plugins.trigger.contract import Backlog, TrackBacklog, Incident
-from piloop.plugins.trigger.anomaly import AnomalyTrigger
+from piloop.plugins.trigger.contract import Backlog, TrackBacklog
+from piloop.plugins.trigger.run_failed import RunFailed
+from piloop.plugins.trigger.dead_at_startup import DeadAtStartup
+from piloop.plugins.trigger.leaking_funnel import LeakingFunnel
 from piloop.plugins.trigger.cron import CronTrigger
 from piloop.plugins.trigger.seed import SeedTrigger
 from piloop.plugins.trigger.low_water import LowWaterTrigger
@@ -46,7 +48,9 @@ from piloop.plugins.section.queue import Queue
 from piloop.plugins.section.agents import Agents
 from piloop.plugins.section.evaluations import Evaluations
 from piloop.plugins.section.candidates import Candidates
-from piloop.plugins.section.anomalies import Anomalies
+from piloop.plugins.section.idle_queue import IdleQueue
+from piloop.plugins.section.same_as_parent import SameAsParent
+from piloop.plugins.section.reported import Reported
 from piloop.plugins.section.inbox import Inbox
 from piloop.plugins.section.events import Events
 from piloop.plugins.section.tools import Tools

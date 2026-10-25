@@ -13,7 +13,7 @@ Every agent that piloop starts has a **role**, which says what the agent does an
 | Role | What it does | When the daemon starts one | Its worktree |
 |---|---|---|---|
 | **implementer** | Implements one idea and commits. | A ready idea and a free implementer slot. | At the starting point of its run. Its commits are scored. |
-| **watchdog** | Looks for problems and reports them. | On an anomaly, every `interval` seconds, and once when the campaign stops. | At the head. Its commits are not scored. |
+| **watchdog** | Looks for problems and reports them. | On an incident (a failed run, an agent dead at its start, a funnel that most runs leak from), every `interval` seconds, and once when the campaign stops. | At the head. Its commits are not scored. |
 | **research** | Develops seeds into ideas and adds ideas of its own. | A new seed, or a short backlog. | At the head. Its commits are not scored. |
 | **scout** | Searches outside the repo for techniques and files them as seeds. Experimental. | Every `interval` seconds, when you set it. Off by default. | At the head. Its commits are not scored. |
 
@@ -53,7 +53,7 @@ trigger of a sweep role fires, the daemon starts one more agent of that role, an
 
 <Triggers />
 
-The `triggers` key of a role sets its triggers. This watchdog does not investigate anomalies. It reviews the progress
+The `triggers` key of a role sets its triggers. This watchdog does not investigate incidents. It reviews the progress
 every hour, and once when the campaign stops:
 
 ```toml
@@ -138,7 +138,7 @@ of an idea and the verdict count every run of the campaign. A keep of any role m
 - The **implementer** gets one idea, with your `brief.md`, the starting point and the recent results. It edits the
   code and commits. At the end, it writes a `finding` comment on its idea. It files no ideas or seeds.
 - The **watchdog** edits no code and changes no row. It writes comments for the orchestrator, and seeds for research.
-  An **incident sweep** investigates an anomaly: a failed run, or an agent that died at its start. A **progress review** asks if the campaign gets closer to its goal. The last review, when the
+  An **incident sweep** investigates an incident that a trigger found: a failed run (`run_failed`), or an agent that died at its start (`dead_at_startup`). A **progress review** asks if the campaign gets closer to its goal. The last review, when the
   campaign stops, writes the closing report.
 - The **research** agent reads the **research pack**: the metrics, what was tried for each mechanism, the recent ideas
   and their outcomes, the kept lineage, and the findings of every role. `piloop history enwik8` prints it. Research

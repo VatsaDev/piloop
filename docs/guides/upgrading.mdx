@@ -258,6 +258,14 @@ lessons too.
 `piloop status` and the briefs show [sections](/concepts/roles#sections). `GET /v1/overview` answers each campaign's
 `sections`, typed blocks, in place of its `text`. The lessons in a brief come after the context, not before `brief.md`.
 
+### Incidents are triggers
+
+The `anomaly` trigger is two triggers, `run_failed` and `dead_at_startup`. `{ provider = "anomaly" }` still works
+until 0.5.0, as both of them. An idle queue and a candidate that scored exactly its parent are the `idle_queue` and
+`same_as_parent` sections, and the `reported` section lists the incidents that agents got. The watchdog also has the
+new `leaking_funnel` trigger by default: it starts an incident sweep when fewer than 5 of the last 10 attempts were
+measured.
+
 ### Harness tables
 
 A `[harness.<name>]` table for a built-in harness keeps the built-in's keys that it does not set. Before, it replaced
@@ -324,7 +332,7 @@ field does not fail, but it finds nothing: read the new one.
 | `$.error` of `agent_session.stop_ended` | `$.end` |
 | `$.error` of `agent_session.wrap_up` | `$.comment`, the note that carries the prompt; a prompt that did not reach the agent is that note's `comment.undelivered` |
 | `kind = 'comment.delivered'`: the agent's runtime took the prompt | `kind = 'comment.queued'`; `comment.delivered` says that the agent read it |
-| `$.key` of `anomaly.reported` | `$.subject` and `$.anomaly`; the line is `$.line` |
+| `$.key` of `anomaly.reported` | `$.subject` and `$.trigger`, the trigger that found it; the line is `$.line` |
 | `$.kind` of `anomaly.startup` | `$.role` |
 | `$.kind` of `idea.linked` and `idea.unlinked` | `$.link_kind` |
 | `$.kind` of `comment.deleted` | `$.comment_kind` |
