@@ -1,6 +1,7 @@
 """Commits in and out of a worker's repos as bundles in the CAS, and the checkout of a job named by address."""
 
 import subprocess
+import threading
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -11,7 +12,7 @@ from git import GitCommandError, Repo
 from piloop.ids import CampaignId, Revision, RunId
 from piloop.plugins.cas.contract import Cas
 from piloop.plugins.executor.contract import RepoId, Source, Workspace
-from piloop.plugins.executor.kit.clones import WORKSPACE, Clones, Fetch, of_record
+from piloop.plugins.executor.kit.clones import WORKSPACE, Clones, Fetch, of_record, own_clone
 from piloop.plugins.executor.kit.jobs import remote_site
 from piloop.plugins.vcs.git import FETCHED, Git
 from piloop.plugins.vcs.git.bundles import bundle, unbundle
@@ -230,3 +231,30 @@ def test_a_worker_elsewhere_makes_its_clone_on_first_use_and_fills_it_from_bundl
     site.clones.checkout(source, tmp_path / 'wt')
     assert (tmp_path / 'wt' / 'a.txt').read_text() == 'a'
     assert site.clones.path(source) == tmp_path / 'worker' / 'clones' / str(REPO)
+
+
+def test_two_jobs_that_start_at_once_on_a_new_worker_share_its_first_clone(
+    tmp_path: Path, origin: Path, store: Cas, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The second job opened the clone while the first one was still making it, and failed: not a repository."""
+    half_made, tried = threading.Event(), threading.Event()
+    init = Repo.init
+
+    def slow_init(path: Path) -> Repo:
+        (Path(path) / '.git').mkdir(parents=True)  # what a second job sees of a clone that is still being made
+        half_made.set()
+        tried.wait(1)  # the second job tries now, unless it waits for this clone
+        return init(path)
+
+    monkeypatch.setattr(Repo, 'init', slow_init)
+    clones = Clones(store, {REPO: tmp_path / 'clone'}.__getitem__, own_clone, fetch_from(store, origin, []), tmp_path)
+    source = Source(vcs=Git(), repo=REPO, revision=Repo(origin).head.commit.hexsha)
+    first = threading.Thread(target=clones.checkout, args=(source, tmp_path / 'one'))
+    first.start()
+    assert half_made.wait(10)
+    try:
+        clones.checkout(source, tmp_path / 'two')
+    finally:
+        tried.set()
+        first.join(10)
+    assert (tmp_path / 'one' / 'a.txt').read_text() == (tmp_path / 'two' / 'a.txt').read_text() == 'a'

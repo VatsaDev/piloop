@@ -8,6 +8,8 @@ its clone lacks comes through the CAS: the clone names the versions it has, and 
 is the repo of record.
 """
 
+import threading
+from collections import defaultdict
 from collections.abc import Callable, Sequence
 from functools import partial
 from pathlib import Path
@@ -58,6 +60,10 @@ class Clones:
         """The workspace copies of each checkout, by its path, as ``checkout`` made them: ``changed`` reads only those
         whose stat changed. A worker that restarts reads them all."""
         self._seen: Seen = {}
+        self._guard = threading.Lock()
+        self._making: defaultdict[RepoId, threading.Lock] = defaultdict(threading.Lock)
+        """One lock per repo: a worker runs its jobs in threads, and two that start at once must not both make or fill
+        one clone. A clone that is still being made is not a repository yet."""
 
     def path(self, artifact: Source) -> Path:
         """The worker's clone of the artifact's repo."""
@@ -70,12 +76,16 @@ class Clones:
     def checkout(self, source: Source, cwd: Path) -> Materialised:
         """Check ``source`` out at ``cwd``, with its links and workspace.
 
-        Its revision and its ``history`` come from the server first when the clone lacks them.
+        Its revision and its ``history`` come from the server first when the clone lacks them. One job at a time makes
+        and fills a repo's clone.
 
         Return what the links' read-only copies are (``Materialised.copies``, ``rebuilt``).
         """
-        repo = self.repository(source)
-        repo.fetch(self._cas, [source.revision, *source.history], partial(self._fetch, source.repo))
+        with self._guard:
+            making = self._making[source.repo]
+        with making:
+            repo = self.repository(source)
+            repo.fetch(self._cas, [source.revision, *source.history], partial(self._fetch, source.repo))
         repo.checkout(source.revision, cwd)
         links = Materialised()
         for blob in source.links.values():
