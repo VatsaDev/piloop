@@ -315,6 +315,7 @@ def test_successful_run_scores_the_commit(
             'run.started',
             'agent_session.started',
             'lease.queued',
+            'agent_session.running',
             'agent_session.finished',
             'agent_session.job_ended',
             'run.received',

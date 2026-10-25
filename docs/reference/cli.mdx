@@ -119,7 +119,7 @@ piloop limits unset KEY
 ```
 
 Lists, sets or removes a **limit**: a value for a live key of a provider of the home, such as
-`executor.pools.serve.evaluations`, that wins over `config.toml` from the daemon's next tick. The value is JSON, or
+`executor.pools.serve.evaluations`, that wins over `config.toml` at once. The value is JSON, or
 else text. `piloop status` shows each live key with its source:
 
 ```text
@@ -188,7 +188,7 @@ shows in `piloop status`, and the watchdog gets it after `piloop resume`. The ru
 piloop resume REF
 ```
 
-Ends the pause. The daemon queues runs and requests roles again on its next tick.
+Ends the pause. The daemon queues runs and requests roles again at once.
 
 ### piloop campaign stop
 
@@ -196,7 +196,7 @@ Ends the pause. The daemon queues runs and requests roles again on its next tick
 piloop campaign stop REF [--kill] [--reason TEXT]
 ```
 
-Stops a campaign on the daemon's next tick, as a [limit of the stop rule](/concepts/cost#stop-conditions) does, also a
+Stops a campaign at once, as a [limit of the stop rule](/concepts/cost#stop-conditions) does, also a
 paused or held one. With `--kill`, the implementers are ended at once, without the prompt to save their work and stop, and their
 commits are still scored. On a stopped campaign, `--kill` ends the implementers that are still winding down.
 `--reason` goes into `stopped_reason`.
@@ -495,7 +495,7 @@ piloop launch REF ROLE [--harness NAME] [--model MODEL] [--reason TEXT]
 ```
 
 Asks the daemon for one more agent of `ROLE`, a sweeping role: `watchdog`, `research`, `scout` or a
-[role that you defined](/concepts/roles#define-a-role). The daemon starts it on its next tick, within the role's
+[role that you defined](/concepts/roles#define-a-role). The daemon starts it at once, within the role's
 `max_concurrent`.
 Only the daemon starts implementers, because an implementer needs a run.
 
@@ -533,7 +533,7 @@ When the [runtime](/concepts/roles#runtimes) of the agent cannot take it, the co
 piloop run cancel RUN_ID [--wrap-up]
 ```
 
-Cancels a queued or running run on the daemon's next tick. A queued run never starts, and a run whose implementer fails to
+Cancels a queued or running run at once. A queued run never starts, and a run whose implementer fails to
 start is not launched again. A running implementer is ended with
 [every process that it started](/concepts/roles#when-an-agent-ends), also those in sessions of their own. With `--wrap-up`, the implementer is first told to
 save its work and stop, and ended 10 minutes later. The run closes as `cancelled`, unless its implementer left its finding
@@ -545,7 +545,7 @@ before the daemon ended it: a later finding is refused. Its commits are scored, 
 piloop agent cancel AGENT_SESSION_ID [--wrap-up]
 ```
 
-Cancels an agent of any role on the daemon's next tick: a sweep, or an implementer, whose run it cancels as
+Cancels an agent of any role at once: a sweep, or an implementer, whose run it cancels as
 `piloop run cancel` does. A requested agent never starts. A running one is ended with every process that it started,
 at once or, with `--wrap-up`, after it was told to save its work and stop.
 

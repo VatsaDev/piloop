@@ -71,11 +71,11 @@ escalation at priority 0. While the campaign is held, the daemon starts no agent
 evaluations that already run finish, and their commits are scored. A stop rule that reads the spend needs `[spend]`, or
 piloop refuses the configuration.
 
-A hold is not a stop: nothing is dropped. The hold ends on the first tick after the cause ends. To resume after the
+A hold is not a stop: nothing is dropped. The hold ends on the first pass after the cause ends. To resume after the
 limit, raise `max_spend` in `piloop.toml` and run `piloop init`. After a failure, fix the command; it runs again every
 `interval`. A limit does not stop a held campaign.
 
-`piloop campaign stop` stops a held campaign on the next tick. `closing_review` in `[spend]` says what happens to the
+`piloop campaign stop` stops a held campaign at once. `closing_review` in `[spend]` says what happens to the
 closing review of that stop:
 
 | `closing_review` | What the daemon does |

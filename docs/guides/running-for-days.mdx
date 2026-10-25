@@ -67,7 +67,7 @@ See [the CLI](/reference/cli#piloop-pause).
 
 The unit restarts the daemon when it fails. It sets `PILOOP_HOME` and your current `PATH`, because the daemon must
 find the harness CLIs on its `PATH`. It also carries the `PILOOP_*` variables that are set in your shell, such as
-`PILOOP_SECRETS_COMMAND` and `PILOOP_TICK_SECONDS`, `OTEL_EXPORTER_OTLP_ENDPOINT`, and the variables that the usage
+`PILOOP_SECRETS_COMMAND` and `PILOOP_MIGRATION_BACKUPS`, `OTEL_EXPORTER_OTLP_ENDPOINT`, and the variables that the usage
 globs of the harnesses name, such as `CLAUDE_CONFIG_DIR` and `CODEX_HOME`. It carries no other variable, so give API
 keys to the daemon through `PILOOP_SECRETS_COMMAND`. Set the variables before you run `piloop service-unit`. See
 [Secrets](/guides/secrets).

@@ -14,7 +14,7 @@ These are for the orchestrator and the human. The agents' briefs leave them out.
   transaction, so the daemon never takes the idea without it. It is refused while the idea's run is open (the daemon
   took it already), and when it would close a cycle.
 - `supersedes` says that `new` is a sharper version of n.
-  - On its next tick, the daemon sets n to `rejected` if it never ran (no run yet, and still `seed`, `proposed` or
+  - On its next pass, the daemon sets n to `rejected` if it never ran (no run yet, and still `seed`, `proposed` or
     `ready`), with a `note` on n that names `new`.
   - If n ran, the daemon leaves it alone.
 - Both ideas must belong to the same campaign and must differ. A pair can have both kinds.
@@ -39,7 +39,7 @@ Each command takes `--reason '<why>'`, signs the change with your actor and reco
 
 ### Steer
 
-- A `note`, `finding` or `decision` on a running run, or on the idea of one, also reaches its implementer within a tick.
+- A `note`, `finding` or `decision` on a running run, or on the idea of one, also reaches its implementer within seconds.
   The daemon prompts the implementer with one line:
   `[piloop] decision on idea#12 by human: <first line> — full text: SELECT body FROM comments WHERE id=<n>`.
 - The daemon then records `comment.queued` on the implementer, and `comment.delivered` once the implementer read it.
@@ -54,8 +54,7 @@ Each command takes `--reason '<why>'`, signs the change with your actor and reco
 
 ### Ask for an agent
 
-- `INSERT INTO agent_sessions (kind, campaign_id, state) VALUES ('research', <p>, 'requested')`. The daemon starts it on its
-  next tick.
+- `INSERT INTO agent_sessions (kind, campaign_id, state) VALUES ('research', <p>, 'requested')`. The daemon starts it at once.
 - Kinds: the sweeping roles of `piloop.toml`. A role that does runs needs a run, so leave its agents to the
   scheduler.
 - Optional: `harness` and `model` pin the choice. `reason` says why.
@@ -107,7 +106,7 @@ daemon never overwrites a verdict that is not its own.
   with every process that it started. A cancelled run's idea is parked.
 - To continue, raise or change the conditions in `piloop.toml` and run `piloop init <path>`.
 - Or by hand: `UPDATE campaigns SET status='active', stopped_reason=NULL WHERE id=<p>`. With the conditions unchanged, it
-  stops again on the next tick.
+  stops again at once.
 
 ### Spend
 

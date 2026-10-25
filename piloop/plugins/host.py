@@ -159,7 +159,7 @@ class Live:
     """Marks a parameter of a provider that ``piloop limits set`` may change while the daemon runs.
 
     ``agents: Annotated[int | None, Live] = None``. The daemon hands the provider its parameters with the limits
-    applied on its next tick (``piloop.plugins.limits``).
+    applied at once (``piloop.plugins.limits``).
     """
 
 
@@ -674,7 +674,7 @@ def declared() -> tuple[Capability[Parameters], ...]:
     and selects it as any other.
 
     The installed packages do not change while a process runs, so the entry points are read once, until ``close``.
-    Every validation of a ``piloop.toml`` asks for these, and the daemon validates each campaign's on every tick.
+    Every validation of a ``piloop.toml`` asks for these, and the daemon validates each campaign's on every pass.
 
     Raises:
         PluginError: An entry point does not load, does not name a capability, names one of another name, or names a

@@ -105,8 +105,8 @@ because the client that connects first creates the file, and Alembic's own engin
 the file is in WAL mode, the pragma does nothing. ``synchronous=NORMAL`` is the setting that SQLite recommends for
 WAL. A commit survives a process crash, and only a power loss can lose the last transactions. That is acceptable for
 a coordination database whose state can be rebuilt from git, and it saves the fsync on each commit that FULL adds to
-every insert of an agent. ``temp_store=MEMORY`` keeps the sorts for the ``ORDER BY`` of the status and the tick out
-of temporary files. ``cache_size`` stays at SQLite's default: the tables that a tick reads fit in it, and each pooled
+every insert of an agent. ``temp_store=MEMORY`` keeps the sorts for the ``ORDER BY`` of the status and the pass out
+of temporary files. ``cache_size`` stays at SQLite's default: the tables that a pass reads fit in it, and each pooled
 connection pays for its own cache.
 """
 PROC_LOCKS = Path('/proc/locks')

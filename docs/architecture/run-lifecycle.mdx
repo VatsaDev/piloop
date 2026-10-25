@@ -3,7 +3,7 @@ title: One run's life
 description: What the daemon does between a ready idea and the verdict on each of its commits.
 ---
 
-A **run** is one attempt at an idea. The scheduler queues it on a tick. A thread of the daemon then executes it:
+A **run** is one attempt at an idea. The scheduler queues it on a pass. A thread of the daemon then executes it:
 the agent, the scores and the verdicts. The agent and each evaluation are jobs of the
 [executor](/architecture/extension-points#executors). This page shows the built-in `workers`, whose worker takes each
 job on a [lease](/architecture/leases).
@@ -11,7 +11,7 @@ job on a [lease](/architecture/leases).
 ```mermaid
 sequenceDiagram
     autonumber
-    participant S as Scheduler (tick)
+    participant S as Scheduler (pass)
     participant DB as Database
     participant X as Run controller
     participant L as Launcher
@@ -62,19 +62,19 @@ sequenceDiagram
 
 ## The steps
 
-1. **Queue.** On each tick, the scheduler fills the free implementer slots with runnable ideas. An idea is runnable when
+1. **Queue.** On each pass, the scheduler fills the free implementer slots with runnable ideas. An idea is runnable when
    it is `ready` and each of its prerequisites (an `after` link) is `done`. The slot goes to the most urgent idea of
    the track that is furthest below its share. At least one run in `[roles.implementer] explore_every` starts from a
    pinned idea when one is ready. The scheduler inserts a `queued` run, chooses its harness from the rotation, and
    inserts a `requested` agent session row. A [role that does runs](/concepts/roles#define-a-role-that-does-runs) fills its
    own slots in the same way, with the ideas that its `takes` condition selects, before the implementer.
-2. **Take.** In the same tick, the scheduler sets `requested` rows to `starting`, up to `max_concurrent` for each role
+2. **Take.** In the same pass, the scheduler sets `requested` rows to `starting`, up to `max_concurrent` for each role
    and each harness. Each one goes to a thread of the daemon's pool.
 3. **Launch.** The run controller writes the brief. The launcher fills in the harness's argv and submits the agent's
    job. The worker takes it, adds a git worktree at the run's base (the head, or the candidate that the idea
    pins) and calls `Runtime.start`.
 4. **Work.** The agent reads its brief, implements the idea and commits. It reads and writes the database with
-   `piloop sql`. On each tick, the scheduler hands new comments on the run or the idea to the executor, which sends
+   `piloop sql`. On each pass, the scheduler hands new comments on the run or the idea to the executor, which sends
    them to the agent.
 5. **Close.** When the agent ends, times out, or a minute after its finding, when the daemon ends it, the worker reads
    its token usage, commits what is left uncommitted, on its own, as a `recovered` commit, and reports, which closes

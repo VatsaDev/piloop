@@ -5,7 +5,7 @@ import os
 import threading
 import time
 from collections.abc import Collection, Iterator
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import timedelta
 from pathlib import Path
 
@@ -56,6 +56,10 @@ def pool() -> Iterator[ThreadPoolExecutor]:
         yield executor
 
 
+def nobody(_job: Future[None]) -> None:
+    """The archiver's ``ended``: a test runs the archiver itself."""
+
+
 def settle(archiver: Archiver) -> None:
     job = archiver._job
     assert job is not None
@@ -63,8 +67,8 @@ def settle(archiver: Archiver) -> None:
 
 
 def upkept(archiver: Archiver) -> Archiver:
-    """``archiver`` after its first tick, which runs the upkeep: the next tick archives."""
-    archiver.tick()
+    """``archiver`` after its first run, which starts the upkeep: the next run archives."""
+    archiver.run(utcnow())
     settle(archiver)
     return archiver
 
@@ -93,7 +97,7 @@ def test_the_archiver_runs_one_job_at_a_time_and_pauses_after_a_failure(
     add_run(db, first)
     add_run(db, second)
     write(workspace_dir(home, campaign.id) / f'idea{first}' / 'a.txt', 'a')
-    archiver = upkept(Archiver(db, store, home, POLICY, tracer, pool, threading.Event()))
+    archiver = upkept(Archiver(db, store, home, POLICY, tracer, pool, threading.Event(), nobody))
     gate = threading.Event()
     real = archiver_module.archive
 
@@ -104,11 +108,11 @@ def test_the_archiver_runs_one_job_at_a_time_and_pauses_after_a_failure(
         return real(db, store, home, job, live=live, reserve=reserve, stop=stop)
 
     monkeypatch.setattr(archiver_module, 'archive', held)
-    archiver.tick()
-    archiver.tick()  # the first is still running: no second job
+    archiver.run(utcnow())
+    archiver.run(utcnow())  # the first is still running: no second job
     gate.set()
     settle(archiver)
-    archiver.tick()
+    archiver.run(utcnow())
     settle(archiver)
     done = spans_named(spans, 'piloop.archive')
     assert [s.get('idea') for s in done] == [first, second] and done[0].get('files') == 1
@@ -122,17 +126,17 @@ def test_the_archiver_runs_one_job_at_a_time_and_pauses_after_a_failure(
         raise OSError('No space left on device')
 
     monkeypatch.setattr(archiver_module, 'archive', broken)
-    archiver.tick()
+    archiver.run(utcnow())
     settle(archiver)
     [failed] = [s for s in spans.get_finished_spans() if s.name == 'piloop.archive'][-1:]
     assert failed.status.description == 'OSError: No space left on device'
     jobs = archiver._job
-    archiver.tick()
+    archiver.run(utcnow())
     assert archiver._job is jobs, 'paused for policy.retry'
     monkeypatch.setattr(archiver_module, 'archive', real)
     archiver._policy = ArchivePolicy(reserve=0, retry=timedelta(0))
     archiver._pause()
-    archiver.tick()
+    archiver.run(utcnow())
     settle(archiver)
     with db.session() as s:
         assert due(s) is None
@@ -161,17 +165,17 @@ def test_a_stopping_daemon_cancels_the_archiving_in_flight_and_the_next_one_resu
         return real(db, store, home, job, live=live, reserve=reserve, stop=stop)
 
     monkeypatch.setattr(archiver_module, 'archive', stopping)
-    archiver = upkept(Archiver(db, store, home, POLICY, tracer, pool, stop))
-    archiver.tick()
+    archiver = upkept(Archiver(db, store, home, POLICY, tracer, pool, stop, nobody))
+    archiver.run(utcnow())
     settle(archiver)
     first = archiver._job
-    archiver.tick()
+    archiver.run(utcnow())
     assert archiver._job is first, 'nothing starts while the daemon stops'
     with db.session() as s:
         assert due(s) == Job(campaign.id, idea), 'a restarted daemon picks the backlog up where it was'
     monkeypatch.setattr(archiver_module, 'archive', real)
-    restarted = upkept(Archiver(db, store, home, POLICY, tracer, pool, threading.Event()))
-    restarted.tick()
+    restarted = upkept(Archiver(db, store, home, POLICY, tracer, pool, threading.Event(), nobody))
+    restarted.run(utcnow())
     settle(restarted)
     with db.session() as s:
         assert due(s) is None
@@ -201,27 +205,29 @@ def test_with_nothing_due_the_upkeep_prunes_by_age_and_pressure_and_evicts_hourl
             run.finished_at = utcnow() - timedelta(days=9)  # else the idea is due again
         s.commit()
     monkeypatch.setattr(archive_module, 'free', lambda _: 1 << 40)
-    archiver = upkept(Archiver(db, store, home, POLICY, tracer, pool, threading.Event()))
+    archiver = upkept(Archiver(db, store, home, POLICY, tracer, pool, threading.Event(), nobody))
     assert spans_named(spans, 'piloop.store.upkeep') == [
         {'pruned_by_age': 1, 'pruned_by_pressure': 0, 'inputs_evicted': 0, 'uploaded': 0, 'evicted': 0, 'freed': 0}
     ], 'the first tick of a daemon is the upkeep'
     assert sorted(p.name for p in workspace.iterdir()) == ['idea2'], 'the older archiving went by age'
-    archiver.tick()
+    archiver.run(utcnow())
     assert archiver._job is not None and archiver._job.done() and len(spans_named(spans, 'piloop.store.upkeep')) == 1
 
     archiver._policy = ArchivePolicy(reserve=GB, upkeep_every=timedelta(0))
     monkeypatch.setattr(archive_module, 'free', lambda _: 0)
     monkeypatch.setattr(store, 'flush', lambda *, evict: (_ for _ in ()).throw(OSError('remote down')))
-    archiver.tick()
+    archiver.run(utcnow())
     settle(archiver)
     last = [s for s in spans.get_finished_spans() if s.name == 'piloop.store.upkeep'][-1]
     assert dict(last.attributes or {}) == {'pruned_by_age': 0, 'pruned_by_pressure': 1, 'inputs_evicted': 0}
     assert last.status.description == 'OSError: remote down'
     assert files(workspace) == {}, 'the disk is short: the newer archiving went too'
     jobs = archiver._job
-    archiver.tick()
+    archiver.run(utcnow())
     assert archiver._job is jobs, 'a failed upkeep pauses like a failed archiving'
-    Archiver(db, DiskCas(home / 'other'), home, POLICY, tracer, pool, threading.Event()).tick()  # no evict
+    Archiver(db, DiskCas(home / 'other'), home, POLICY, tracer, pool, threading.Event(), nobody).run(
+        utcnow()
+    )  # no evict
 
 
 def test_a_job_the_disk_is_too_full_for_writes_one_disk_anomaly_and_pauses(
@@ -237,8 +243,8 @@ def test_a_job_the_disk_is_too_full_for_writes_one_disk_anomaly_and_pauses(
     """The incident: a 21 GB idea was stored into a disk with less free, ENOSPC, and stored again every 600 s."""
     idea, before = big_idea(db, campaign, home)
     monkeypatch.setattr(archive_module, 'free', lambda _: GB + 100)
-    archiver = upkept(Archiver(db, store, home, ArchivePolicy(reserve=GB), tracer, pool, threading.Event()))
-    archiver.tick()
+    archiver = upkept(Archiver(db, store, home, ArchivePolicy(reserve=GB), tracer, pool, threading.Event(), nobody))
+    archiver.run(utcnow())
     settle(archiver)
     assert files(workspace_dir(home, campaign.id)) == before
     with db.session() as s:
@@ -248,7 +254,7 @@ def test_a_job_the_disk_is_too_full_for_writes_one_disk_anomaly_and_pauses(
         assert short == DiskAnomaly(needed=12000, free=GB + 100, reserve=GB, idea=idea, retry_seconds=600)
     assert events(spans, short.kind)[0]['needed'] == 12000
     jobs = archiver._job
-    archiver.tick()
+    archiver.run(utcnow())
     assert archiver._job is jobs, 'it waits'
 
     def full(*_args: object, **_limits: object) -> Cid:
@@ -257,10 +263,10 @@ def test_a_job_the_disk_is_too_full_for_writes_one_disk_anomaly_and_pauses(
     monkeypatch.setattr(archive_module, 'free', lambda _: 1 << 40)
     monkeypatch.setattr(ObjectsCas, 'put_fileobj', full)
     archiver._paused_until = 0  # the wait is over
-    archiver.tick()
+    archiver.run(utcnow())
     settle(archiver)
     assert len(spans_named(spans, 'piloop.store.upkeep')) == 2, 'after a short job, the upkeep frees room first'
-    archiver.tick()
+    archiver.run(utcnow())
     settle(archiver)
     assert archiver._paused_until > 0, 'a failure pauses for the same policy.retry, never longer'
 
@@ -273,8 +279,8 @@ def test_what_an_archiving_leaves_out_is_on_its_span_with_why(
     add_run(db, idea)
     write(workspace_dir(home, campaign.id) / f'idea{idea}' / 'a.txt', 'a')
     os.mkfifo(workspace_dir(home, campaign.id) / f'idea{idea}' / 'pipe')
-    archiver = upkept(Archiver(db, store, home, POLICY, tracer, pool, threading.Event()))
-    archiver.tick()
+    archiver = upkept(Archiver(db, store, home, POLICY, tracer, pool, threading.Event(), nobody))
+    archiver.run(utcnow())
     settle(archiver)
     assert spans_named(spans, 'piloop.archive')[0]['skipped'] == 1
     assert events(spans, 'archive.skipped') == [
@@ -300,7 +306,7 @@ def test_the_upkeep_reports_a_file_it_cannot_read_and_counts_from_its_end(
     monkeypatch.setattr(archive_module, 'free', lambda _: 0)
     path.chmod(0)
     try:
-        archiver = upkept(Archiver(db, store, home, ArchivePolicy(reserve=GB), tracer, pool, threading.Event()))
+        archiver = upkept(Archiver(db, store, home, ArchivePolicy(reserve=GB), tracer, pool, threading.Event(), nobody))
     finally:
         path.chmod(0o644)
     assert events(spans, 'prune.left') == [
@@ -341,8 +347,8 @@ def test_an_upkeep_slower_than_its_period_still_leaves_the_next_tick_to_a_due_jo
         return real(db, store, home, utcnow() - POLICY.prune_after)
 
     monkeypatch.setattr(archiver_module, 'prune_older', slow)
-    archiver = upkept(Archiver(db, store, home, POLICY, tracer, pool, threading.Event()))
-    archiver.tick()
+    archiver = upkept(Archiver(db, store, home, POLICY, tracer, pool, threading.Event(), nobody))
+    archiver.run(utcnow())
     settle(archiver)
     assert len(spans_named(spans, 'piloop.store.upkeep')) == 1 and spans_named(spans, 'piloop.archive'), (
         'the next tick archives'
@@ -367,7 +373,7 @@ def test_a_stopping_daemon_ends_the_upkeep_between_steps(
         s.add(Archive(campaign_id=campaign.id, created_at=utcnow() - timedelta(days=30)))
         s.commit()
     stop.set()  # the daemon stops while the upkeep runs
-    Archiver(db, store, home, POLICY, tracer, pool, stop)._upkeep()
+    Archiver(db, store, home, POLICY, tracer, pool, stop, nobody)._upkeep()
     assert spans_named(spans, 'piloop.store.upkeep')[0]['stopped'] is True and evicted == []
     with db.session() as s:
         assert s.scalars(select(Archive.pruned_at)).one() is None, 'not even the overdue archiving'

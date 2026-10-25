@@ -40,7 +40,7 @@ def launch(
 ) -> None:
     """Ask the daemon for one more agent of a role.
 
-    The daemon launches it on its next tick, within the role's `max_concurrent`.
+    The daemon launches it at once, within the role's `max_concurrent`.
     """
     with common.session() as s:
         campaign = common.campaign(s, ref)
@@ -173,7 +173,7 @@ def agent_cancel(
     *,
     wrap_up: WrapUp = False,
 ) -> None:
-    """Cancel an agent of any role. The daemon acts on its next tick.
+    """Cancel an agent of any role. The daemon acts at once.
 
     A requested agent never starts. A running one is ended with every process that it started, at once or, with
     `--wrap-up`, after it was told to save its work and stop. For an implementer, this cancels its run (`piloop run cancel`).
@@ -184,14 +184,14 @@ def agent_cancel(
             raise SystemExit(f'agent_session#{agent_session_id} is not requested, starting or running')
         request_cancel(s, agent_session, common.settings.actor, ending=Ending.WRAP_UP if wrap_up else Ending.NOW)
         s.commit()
-    common.console.print(f'cancel requested for agent_session#{agent_session_id}: the daemon acts on its next tick')
+    common.console.print(f'cancel requested for agent_session#{agent_session_id}: the daemon acts at once')
 
 
 @run_app.command(name='cancel')
 def run_cancel(
     run_id: Annotated[RunId, cyclopts.Parameter(help='The id of the run.')], /, *, wrap_up: WrapUp = False
 ) -> None:
-    """Cancel a queued or running run. The daemon acts on its next tick.
+    """Cancel a queued or running run. The daemon acts at once.
 
     A queued run never starts, and a run whose implementer fails to start is not launched again. A running implementer is ended
     with every process that it started, at once or, with `--wrap-up`, after it was told to save its work and stop. The run
@@ -204,4 +204,4 @@ def run_cancel(
             raise SystemExit(f'run#{run_id} is not queued or running')
         request_cancel(s, run, common.settings.actor, ending=Ending.WRAP_UP if wrap_up else Ending.NOW)
         s.commit()
-    common.console.print(f'cancel requested for run#{run_id}: the daemon acts on its next tick')
+    common.console.print(f'cancel requested for run#{run_id}: the daemon acts at once')

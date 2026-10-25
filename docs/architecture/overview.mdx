@@ -68,7 +68,7 @@ flowchart LR
     cli["piloop CLI"]
     db[("SQLite database<br/>$PILOOP_HOME/piloop.db")]
     subgraph daemon["Daemon: piloop serve"]
-        scheduler["Scheduler<br/>one tick every 2 seconds"]
+        scheduler["Scheduler<br/>wakes on events"]
         controller["Run controller"]
         launcher["Launcher"]
         worker["Executor: workers<br/>a worker on leases"]
@@ -104,7 +104,8 @@ flowchart LR
 - **The database** is the contract between every actor. Its tables, CHECK constraints and triggers hold the rules:
   the allowed values, who changed a row last, a log of every change, and full-text search. An authorizer refuses
   schema changes and transactions from `piloop sql`. See the [data model](/architecture/data-model).
-- **The daemon** (`piloop serve`) is one process for each piloop home. On each tick, the **scheduler** checks the
+- **The daemon** (`piloop serve`) is one process for each piloop home. It sleeps until an event or a deadline wakes it.
+  On each pass, the **scheduler** checks the
   triggers of every campaign, queues runs of ready ideas and launches the requested agents. The **run controller** runs
   one run: the agent, the scores, the verdict. The **launcher** hands every agent's job to the executor.
 - **The executor** runs the jobs, in three layers:

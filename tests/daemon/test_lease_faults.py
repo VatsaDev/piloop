@@ -410,7 +410,7 @@ def test_a_real_daemon_killed_during_a_run_is_followed_by_one_that_finishes_it_o
 ) -> None:
     """``kill -9`` of ``piloop serve``: its worker dies with it, the agent does not. The next daemon renews the lease,
     re-attaches, and the run succeeds on lease 1."""
-    cfg = Settings(home=tmp_path / 'home', tick_seconds=0.05)
+    cfg = Settings(home=tmp_path / 'home')
     hold = tmp_path / 'hold'
     hold.touch()
     write_toml(campaign_path, COMMIT_THEN_HOLD.format(hold=hold), implementer_timeout=600)
@@ -420,7 +420,7 @@ def test_a_real_daemon_killed_during_a_run_is_followed_by_one_that_finishes_it_o
     with db.session() as s:
         s.add(Idea(track='score', campaign_id=campaign.id, title='one line', hypothesis='h', created_by='t'))
         s.commit()
-    env = env_for(cfg.home) | {'PILOOP_TICK_SECONDS': '0.05'}
+    env = env_for(cfg.home)
     daemons: list[subprocess.Popen[bytes]] = []
     try:
         with (tmp_path / 'first.log').open('w') as log:
@@ -464,7 +464,7 @@ def test_an_agent_that_a_daemon_before_leases_started_is_adopted_and_its_work_sc
         add_ideas(db, campaign, 'one line')
     else:
         request_watchdog(db, campaign)
-    assert first.tick() == [1]
+    assert first.run_all() == [1]
     wait_until((tmp_path / 'agent.pid').exists)
     first.hand_over(timeout=5)
     with db.session() as s:  # what a daemon before leases leaves

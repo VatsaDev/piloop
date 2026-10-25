@@ -175,7 +175,7 @@ def pause(
 
 
 def resume(ref: CampaignRef, /) -> None:
-    """Resume a paused campaign. The daemon queues runs and requests roles again on its next tick."""
+    """Resume a paused campaign. The daemon queues runs and requests roles again at once."""
     with common.refused(), common.session() as s:
         campaign = common.campaign(s, ref)
         held = ops.resume(s, campaign.id)
@@ -254,7 +254,7 @@ def stop(
     ] = False,
     reason: Annotated[str, cyclopts.Parameter(help='Why, for `stopped_reason` and the closing review.')] = '',
 ) -> None:
-    """Stop a campaign. The daemon stops it on its next tick, as when a `[stop]` condition holds.
+    """Stop a campaign. The daemon stops it at once, as when a `[stop]` condition holds.
 
     This works also while the campaign is paused or held at its `[spend]` limit. A paused campaign gets its closing
     review; a held one as `[spend] closing_review` says. It drops the queued runs and the requested agents, and the
@@ -271,5 +271,5 @@ def stop(
             )
         request_stop(s, campaign, common.settings.actor, reason=reason, ending=Ending.NOW if kill else Ending.WRAP_UP)
         s.commit()
-        how = 'ends its implementers at once' if kill else 'tells its implementers to save their work and stop'
-        common.console.print(f'stop requested for {campaign.name}: the daemon {how} on its next tick', markup=False)
+        how = 'ends its implementers now' if kill else 'tells its implementers to save their work and stop'
+        common.console.print(f'stop requested for {campaign.name}: the daemon {how}', markup=False)

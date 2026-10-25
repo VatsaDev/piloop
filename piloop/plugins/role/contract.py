@@ -140,7 +140,7 @@ class SweepRole(RoleConfig):
     """The agents of this role do no runs. Set ``runs = true`` in a new table to define a role that does runs."""
     triggers: list[TriggerEntry]
     """When the daemon requests an agent of this role: a list of ``{ provider = "<trigger>", ... }`` entries, checked in
-    order on each tick. A package can add triggers. An empty list means that agents start only on request
+    order on each pass. A package can add triggers. An empty list means that agents start only on request
     (``piloop launch``)."""
     interval: float = Field(default=0, ge=0)
     """The number of seconds between two routine sweeps of the ``cron`` trigger, counted from the start of the last

@@ -36,7 +36,7 @@ def test_a_paused_campaign_launches_nothing_requests_nothing_and_escalates_nothi
     add_ideas(db, campaign, 'more lines')
     watchdog = request_watchdog(db, campaign)
     pause(db, evals=False)
-    assert sched.tick() == [] and sched.tick() == []
+    assert sched.run_all() == [] and sched.run_all() == []
     assert statuses(db) == [IdeaStatus.READY], 'no run is queued'
     with db.session() as s:
         agent_sessions = s.scalars(select(AgentSession)).all()
@@ -46,7 +46,7 @@ def test_a_paused_campaign_launches_nothing_requests_nothing_and_escalates_nothi
         assert s.scalars(select(Comment)).all() == [], 'a pause raises no escalation'
         ops.resume(s, CampaignId(1))
         s.commit()
-    launched = sched.tick()
+    launched = sched.run_all()
     assert watchdog in launched and len(launched) == 2, 'the request and the run of the idea'
     assert statuses(db) == [IdeaStatus.SCHEDULED]
     sched.stop(timeout=10)
@@ -69,11 +69,11 @@ def test_a_pause_still_measures_what_the_evaluator_needs_unless_it_holds_the_eva
         s.commit()
     sched = make_scheduler(db, runtime, tmp_path)
     pause(db, evals=True)
-    sched.tick()
+    sched.run_all()
     sched.wait()
     assert measured_by(db, reference) == [], 'held'
     pause(db, evals=False)
-    sched.tick()
+    sched.run_all()
     sched.wait()
     assert measured_by(db, reference) == [(1, 3.0, None)], 'a pause of the launches only still measures'
     sched.stop(timeout=5)
@@ -101,9 +101,9 @@ def test_the_daemon_judges_a_discard_again_with_a_measurement_by_hand(
     sched = make_scheduler(db, runtime, tmp_path)
     gate, asked = Gate(), mocker.spy(RunController, 'rejudge')
     monkeypatch.setattr(sched._controller, 'rejudge', gate.wrap(sched._controller.rejudge))
-    sched.tick()
+    sched.run_all()
     assert gate.entered.wait(10)
-    sched.tick()
+    sched.run_all()
     gate.release.set()
     sched.wait()
     assert asked.call_count == 1, 'one judgement at a time in the campaign slot'
@@ -139,7 +139,7 @@ def test_the_daemon_judges_a_skipped_commit_with_a_measurement_by_hand(
         s.commit()
     assert added.rejudged and 'judges it' in added.effect
     sched = make_scheduler(db, runtime, tmp_path)
-    sched.tick()
+    sched.run_all()
     sched.wait()
     with db.session() as s:
         judged = s.get_one(Candidate, scaffold_id)
@@ -162,7 +162,7 @@ def test_a_skipped_commit_is_measured_on_request_and_judged(
         s.commit()
         scaffold_id = scaffold.id
     sched = make_scheduler(db, runtime, tmp_path)
-    sched.tick()
+    sched.run_all()
     sched.wait()
     with db.session() as s:
         again = s.get_one(Candidate, scaffold_id)
@@ -189,7 +189,7 @@ def test_the_daemon_judges_the_merge_onto_the_head_of_a_hand_keep_off_the_head(
     assert done.rebased is not None and done.rebased.rebased is not None
     merged = done.rebased.rebased
     sched = make_scheduler(db, runtime, tmp_path)
-    sched.tick()
+    sched.run_all()
     sched.wait()
     with db.session() as s:
         c = s.get_one(Candidate, merged)
@@ -221,4 +221,4 @@ def test_a_judgement_again_that_fails_answers_the_request_with_the_error(
             RejudgeFailed(error='OSError: the repo is gone'),
         )
         assert s.get_one(Candidate, worse.id).verdict is Outcome.DISCARD
-        assert rejudges(s, s.get_one(Campaign, campaign.id)) == [], 'not tried on every tick'
+        assert rejudges(s, s.get_one(Campaign, campaign.id)) == [], 'not tried on every pass'

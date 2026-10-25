@@ -40,7 +40,7 @@ def limits_set(
     *,
     reason: Annotated[str, cyclopts.Parameter(help='Why: it shows next to the value.')],
 ) -> None:
-    """Set a live key. It wins over `config.toml` from the daemon's next tick, and holds until `piloop limits unset`.
+    """Set a live key. It wins over `config.toml` at once, and holds until `piloop limits unset`.
 
     The value is JSON (`1`, `null`, `1.5`), or else text.
     """
@@ -55,12 +55,12 @@ def limits_set(
         except limits.Refused as e:
             raise SystemExit(str(e)) from e
         s.commit()
-    common.console.print(f'{key} = {text}: the daemon applies it on its next tick', markup=False)
+    common.console.print(f'{key} = {text}: the daemon applies it at once', markup=False)
 
 
 @app.command(name='unset')
 def limits_unset(key: Annotated[str, cyclopts.Parameter(help='The key of the limit.')], /) -> None:
-    """Remove a limit: `config.toml` holds again from the daemon's next tick."""
+    """Remove a limit: `config.toml` holds again at once."""
     with common.session() as s:
         if not limits.unset_limit(s, key):
             raise SystemExit(f'{key} has no limit: see `piloop limits`')

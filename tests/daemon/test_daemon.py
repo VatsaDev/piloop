@@ -3,6 +3,7 @@ import re
 import shutil
 import signal
 import subprocess
+import threading
 from pathlib import Path
 
 import pytest
@@ -55,7 +56,7 @@ def test_daemon_end_to_end(
     monkeypatch.setattr('piloop.agents.results.STARTUP_SECONDS', 0)  # the failing implementer worked, then left nothing
     home = tmp_path / 'home'
     runtime = ScriptRuntime()
-    daemon = Daemon(Settings(home=home, tick_seconds=0.05))
+    daemon = Daemon(Settings(home=home))
     mocker.patch.object(workers_of(daemon.controller).worker, 'runtime_factory', factory(runtime))
     campaign = register(daemon.db, campaign_path)
     with daemon.db.session() as s:
@@ -63,21 +64,21 @@ def test_daemon_end_to_end(
         s.commit()
 
     daemon.scheduler.reap()
-    assert daemon.scheduler.tick() == [1]
+    assert daemon.scheduler.run_all() == [1]
     daemon.scheduler.wait()
     with daemon.db.session() as s:
         run = s.get_one(Run, 1)
         assert (run.status, run.updated_by) == (RunStatus.SUCCEEDED, ACTOR.signature)
-    assert daemon.scheduler.tick() == [], 'a successful run does not wake the watchdog'
+    assert daemon.scheduler.run_all() == [], 'a successful run does not wake the watchdog'
 
     write_toml(campaign_path, HARNESS_NOOP)
     with daemon.db.session() as s:
         s.get_one(Campaign, campaign.id).config = load_campaign_config(campaign_path)
         s.add(Idea(track='score', campaign_id=campaign.id, title='bad', hypothesis='bad', created_by='t', max_runs=1))
         s.commit()
-    assert daemon.scheduler.tick() == [2]
+    assert daemon.scheduler.run_all() == [2]
     daemon.scheduler.wait()
-    assert daemon.scheduler.tick() == [3], 'the failure requests a watchdog sweep, launched on the same tick'
+    assert daemon.scheduler.run_all() == [3], 'the failure requests a watchdog sweep, launched on the same tick'
     daemon.scheduler.wait()
     with daemon.db.session() as s:
         watchdog = s.get_one(AgentSession, 3)
@@ -93,23 +94,15 @@ def test_daemon_end_to_end(
         'Why this agent started (context, not a scope): anomaly: run#2 failed' in brief
         and '## This sweep: an incident' in brief
     )
-    assert daemon.scheduler.tick() == [], 'one sweep per failure'
+    assert daemon.scheduler.run_all() == [], 'one sweep per failure'
     daemon.shutdown(timeout=5)
 
 
 def test_serve_runs_until_interrupted(tmp_path: Path, mocker: MockerFixture) -> None:
-    daemon = Daemon(Settings(home=tmp_path / 'home', tick_seconds=0.01))
-    ticks = {'n': 0}
-
-    def tick() -> list[int]:
-        ticks['n'] += 1
-        if ticks['n'] == 3:
-            raise KeyboardInterrupt
-        return []
-
-    mocker.patch.object(daemon.scheduler, 'tick', side_effect=tick)
+    daemon = Daemon(Settings(home=tmp_path / 'home'))
+    loop = mocker.patch.object(daemon.scheduler, 'serve', side_effect=KeyboardInterrupt)
     daemon.serve()
-    assert ticks['n'] == 3
+    assert loop.called
     assert not (tmp_path / 'home' / 'serve.pid').exists()
 
 
@@ -119,13 +112,13 @@ def test_a_start_stores_the_manifests_of_0_2_again_and_goes_on_when_one_cannot_b
     """The archive whose JSON manifest the store holds gets a DASL one; the next keeps its row, and the start says why."""
     home = tmp_path / 'home'
     shutil.copytree(FIXTURE / 'local', home / 'store')
-    daemon = Daemon(Settings(home=home, tick_seconds=0.01))
+    daemon = Daemon(Settings(home=home))
     with daemon.db.session() as s:
         s.add(Campaign(name='c', path='/c', config=bare_config('c')))
         s.flush()
         s.add_all([Archive(campaign_id=1, manifest=MANIFEST), Archive(campaign_id=1, manifest=Cid.of(b'gone'))])
         s.commit()
-    mocker.patch.object(daemon.scheduler, 'tick', side_effect=KeyboardInterrupt)
+    mocker.patch.object(daemon.scheduler, 'serve', side_effect=KeyboardInterrupt)
     daemon.serve()
     db = Database(Settings(home=home).database_url, actor=ACTOR)
     with db.session() as s:
@@ -136,25 +129,27 @@ def test_a_start_stores_the_manifests_of_0_2_again_and_goes_on_when_one_cannot_b
     assert 'error=ManifestNotMigrated: archive 2' in start
 
 
-def test_serve_reaps_the_children_an_in_place_restart_handed_over_on_every_tick(
-    tmp_path: Path, mocker: MockerFixture
-) -> None:
+def test_serve_reaps_the_children_an_in_place_restart_handed_over_as_each_exits(tmp_path: Path) -> None:
     early = os.posix_spawn('/bin/sh', ['sh', '-c', 'exit 0'], os.environ)
     late = os.posix_spawn('/bin/sh', ['sh', '-c', 'sleep 0.8'], os.environ)
-    daemon = Daemon(Settings(home=tmp_path / 'home', tick_seconds=0.05), Inherited({early, late}))
-    ticks = {'n': 0}
+    daemon = Daemon(Settings(home=tmp_path / 'home'), Inherited({early, late}))
 
-    def tick() -> list[int]:
-        ticks['n'] += 1
-        if ticks['n'] == 30:
-            raise KeyboardInterrupt
-        return []
+    def reaped(pid: int) -> bool:
+        try:
+            os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            return True
+        return False
 
-    mocker.patch.object(daemon.scheduler, 'tick', side_effect=tick)
-    daemon.serve()
-    for pid in (early, late):
-        with pytest.raises(ChildProcessError):
-            os.waitpid(pid, os.WNOHANG)  # already reaped by the daemon
+    def stop_once_reaped() -> None:
+        wait_until(lambda: reaped(early) and reaped(late))
+        daemon.scheduler.interrupt()
+
+    stopping = threading.Thread(target=stop_once_reaped)
+    stopping.start()
+    daemon.serve()  # signals need the main thread
+    stopping.join(30)
+    assert reaped(early) and reaped(late)
 
 
 def test_serve_merges_what_the_secrets_command_prints_into_its_environment_before_anything_runs(
@@ -163,10 +158,10 @@ def test_serve_merges_what_the_secrets_command_prints_into_its_environment_befor
     monkeypatch.setenv('FAKE_EXA_KEY', 'before-rotation')  # restored, so the merged values leave with the test
     monkeypatch.setenv('FAKE_XAI_KEY', 'unset-by-the-test')
     command = "printf 'FAKE_EXA_KEY=exa-secret\\nFAKE_XAI_KEY=xai-secret\\n'"
-    daemon = Daemon(Settings(home=tmp_path / 'home', tick_seconds=0.01, secrets_command=command))
+    daemon = Daemon(Settings(home=tmp_path / 'home', secrets_command=command))
     seen = {}
     mocker.patch.object(daemon.scheduler, 'reap', side_effect=lambda: seen.update(exa=os.environ['FAKE_EXA_KEY']))
-    mocker.patch.object(daemon.scheduler, 'tick', side_effect=KeyboardInterrupt)
+    mocker.patch.object(daemon.scheduler, 'serve', side_effect=KeyboardInterrupt)
     daemon.serve()
     assert seen == {'exa': 'exa-secret'}, 'merged before the reap, so before any child starts'
     assert os.environ['FAKE_XAI_KEY'] == 'xai-secret'
@@ -185,28 +180,27 @@ def test_a_failing_secrets_command_fails_the_start_naming_the_command(tmp_path: 
 
 
 def test_serve_stops_on_sigterm_and_restores_the_handler(tmp_path: Path, mocker: MockerFixture) -> None:
-    cfg = Settings(home=tmp_path / 'home', tick_seconds=0.01)
+    cfg = Settings(home=tmp_path / 'home')
     daemon = Daemon(cfg)
     previous = signal.getsignal(signal.SIGTERM)
-    ticks = {'n': 0}
+    served = {'n': 0}
 
-    def tick() -> list[int]:
-        ticks['n'] += 1
+    def serve() -> None:
+        served['n'] += 1
         assert cfg.pid_file.read_text() == str(os.getpid())
         assert signal.getsignal(signal.SIGTERM) is not previous
-        if ticks['n'] == 3:
-            os.kill(os.getpid(), signal.SIGTERM)
-        return []
+        os.kill(os.getpid(), signal.SIGTERM)
+        real_serve()  # the handler interrupted it: the loop returns
 
     def stop(timeout: float) -> None:
         os.kill(os.getpid(), signal.SIGTERM)  # a second SIGTERM during shutdown must not fire the default action
         real_stop(timeout)
 
-    mocker.patch.object(daemon.scheduler, 'tick', side_effect=tick)
-    real_stop = daemon.scheduler.stop
+    real_serve, real_stop = daemon.scheduler.serve, daemon.scheduler.stop
+    mocker.patch.object(daemon.scheduler, 'serve', side_effect=serve)
     mocker.patch.object(daemon.scheduler, 'stop', side_effect=stop)
     daemon.serve()
-    assert ticks['n'] == 3
+    assert served['n'] == 1
     assert signal.getsignal(signal.SIGTERM) is previous
     assert not cfg.pid_file.exists()
 
@@ -214,19 +208,18 @@ def test_serve_stops_on_sigterm_and_restores_the_handler(tmp_path: Path, mocker:
 def test_the_restart_signal_hands_the_agents_over_then_execs_serve_in_place(
     tmp_path: Path, mocker: MockerFixture
 ) -> None:
-    cfg = Settings(home=tmp_path / 'home', tick_seconds=0.01)
+    cfg = Settings(home=tmp_path / 'home')
     daemon = Daemon(cfg)
     previous = signal.getsignal(RESTART_SIGNAL)
     execv = mocker.patch('piloop.daemon.main.os.execv')
     shutdown = mocker.spy(daemon, 'shutdown')
     hand_over, stop = mocker.spy(daemon.scheduler, 'hand_over'), mocker.spy(daemon.scheduler, 'stop')
 
-    def tick() -> list[int]:
+    def serve() -> None:
         assert not execv.called
         os.kill(os.getpid(), RESTART_SIGNAL)
-        return []
 
-    mocker.patch.object(daemon.scheduler, 'tick', side_effect=tick)
+    mocker.patch.object(daemon.scheduler, 'serve', side_effect=serve)
     daemon.serve()
     assert shutdown.called and not cfg.pid_file.exists(), 'shut down as on SIGTERM, lock released'
     assert hand_over.called and not stop.called, 'its agents are left for the new code'
@@ -240,10 +233,10 @@ def test_a_restart_whose_shutdown_fails_still_execs(tmp_path: Path, mocker: Mock
     Without the exec, the threads of the runs in flight keep the old process and its lock alive. The new daemon's
     ``reap`` fails the runs that the old one could not. A stop on SIGTERM that raises keeps the lock instead.
     """
-    cfg = Settings(home=tmp_path / 'home', tick_seconds=0.01)
+    cfg = Settings(home=tmp_path / 'home')
     daemon = Daemon(cfg)
     execv = mocker.patch('piloop.daemon.main.os.execv')
-    mocker.patch.object(daemon.scheduler, 'tick', side_effect=lambda: os.kill(os.getpid(), RESTART_SIGNAL))
+    mocker.patch.object(daemon.scheduler, 'serve', side_effect=lambda: os.kill(os.getpid(), RESTART_SIGNAL))
     mocker.patch.object(daemon.scheduler, 'hand_over', side_effect=OperationalError('SELECT', {}, Exception('locked')))
     with pytest.raises(OperationalError):
         daemon.serve()
@@ -254,10 +247,10 @@ def test_a_restart_whose_shutdown_fails_still_execs(tmp_path: Path, mocker: Mock
     assert execv.call_args.args == (SERVE_ARGV[0], SERVE_ARGV)
 
     execv.reset_mock()
-    cfg = Settings(home=tmp_path / 'stopped', tick_seconds=0.01)
+    cfg = Settings(home=tmp_path / 'stopped')
     daemon = Daemon(cfg)
     previous = signal.getsignal(signal.SIGTERM)
-    mocker.patch.object(daemon.scheduler, 'tick', side_effect=lambda: os.kill(os.getpid(), signal.SIGTERM))
+    mocker.patch.object(daemon.scheduler, 'serve', side_effect=lambda: os.kill(os.getpid(), signal.SIGTERM))
     mocker.patch.object(daemon.scheduler, 'stop', side_effect=OperationalError('INSERT', {}, Exception('locked')))
     with pytest.raises(OperationalError):
         daemon.serve()
@@ -287,7 +280,7 @@ def test_an_in_place_restart_leaves_the_agents_running_and_the_new_daemon_finish
     hold = tmp_path / 'hold'
     hold.touch()
     write_toml(campaign_path, HARNESS_HELD.format(hold=hold), implementer_timeout=60)
-    cfg = Settings(home=tmp_path / 'home', tick_seconds=0.01)
+    cfg = Settings(home=tmp_path / 'home')
     first = Daemon(cfg)
     campaign = register(first.db, campaign_path)
     with first.db.session() as s:
@@ -297,12 +290,12 @@ def test_an_in_place_restart_leaves_the_agents_running_and_the_new_daemon_finish
         s.commit()
     execv = mocker.patch('piloop.daemon.main.os.execv')
     under_way = cfg.home / 'runs' / '1' / 'agent.pid'
-    tick = first.scheduler.tick
-    mocker.patch.object(
-        first.scheduler,
-        'tick',
-        side_effect=lambda: os.kill(os.getpid(), RESTART_SIGNAL) if under_way.exists() else tick(),
-    )
+
+    def restart_once_under_way() -> None:
+        wait_until(under_way.exists)
+        os.kill(os.getpid(), RESTART_SIGNAL)
+
+    threading.Thread(target=restart_once_under_way, daemon=True).start()
     first.serve()
     assert execv.called
     agent = int(under_way.read_text())

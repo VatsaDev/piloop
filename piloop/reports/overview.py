@@ -128,7 +128,7 @@ class Anomaly:
 
     @property
     def key(self) -> tuple[TargetRef, AnomalyKind]:
-        """Identify the anomaly across ticks: the same row with the same kind is one anomaly."""
+        """Identify the anomaly across passes: the same row with the same kind is one anomaly."""
         return self.ref, self.kind
 
     @property

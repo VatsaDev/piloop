@@ -53,7 +53,7 @@ def test_research_sweep_inserts_ideas_signed_with_its_implementer_id(
     controller = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     scheduler = Scheduler(db, controller, Tracer(None), tmp_path, factory(runtime))
 
-    assert scheduler.tick() == [1], 'a free implementer slot, no idea for it: low water requests a research sweep'
+    assert scheduler.run_all() == [1], 'a free implementer slot, no idea for it: low water requests a research sweep'
     scheduler.wait()
     scheduler.stop(timeout=5)
 
@@ -161,7 +161,7 @@ def test_a_seed_sweep_develops_one_seed_and_rejects_the_other_however_full_the_b
     controller = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     scheduler = Scheduler(db, controller, Tracer(None), tmp_path, factory(runtime))
 
-    assert scheduler.tick() == [1], 'the one slot is busy and the backlog is at its target, but two seeds wait'
+    assert scheduler.run_all() == [1], 'the one slot is busy and the backlog is at its target, but two seeds wait'
     assert last_reason(db) == '2 new seeds to develop'
     scheduler.wait()
     scheduler.stop(timeout=5)
@@ -206,7 +206,7 @@ def test_with_several_tracks_research_reads_them_and_which_are_short_of_their_sh
         s.commit()
     controller = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     scheduler = Scheduler(db, controller, Tracer(None), tmp_path, factory(runtime))
-    assert scheduler.tick() == [1]
+    assert scheduler.run_all() == [1]
     scheduler.wait()
     scheduler.stop(timeout=5)
     brief = (tmp_path / 'projects' / str(campaign.id) / 'workspace' / 'brief-seen.txt').read_text()

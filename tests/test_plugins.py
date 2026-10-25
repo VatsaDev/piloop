@@ -48,7 +48,7 @@ from piloop.runtime.factory import RUNTIME_TABLES, make_runtime
 from piloop.settings import HOME_PLUGINS, Settings
 from tests.conftest import example, package
 from tests.daemon.test_roles import PLUGIN, installed
-from tests.fixtures.plugin import Checked, EveryTick, NoUnitRegression, Typed
+from tests.fixtures.plugin import Checked, EveryPass, NoUnitRegression, Typed
 
 
 @pytest.fixture(autouse=True)
@@ -240,7 +240,7 @@ class Reentrant(EntryPoint):
 
 
 def test_an_entry_point_that_needs_its_own_capability_while_it_loads_fails(monkeypatch: pytest.MonkeyPatch) -> None:
-    installed(monkeypatch, [Reentrant('loop', f'{PLUGIN}:EveryTick', TRIGGERS.group)])
+    installed(monkeypatch, [Reentrant('loop', f'{PLUGIN}:EveryPass', TRIGGERS.group)])
     with pytest.raises(
         PluginError,
         match=r'^the triggers are needed while they load: an entry point of piloop.triggers uses its own capability,'
@@ -537,4 +537,4 @@ def test_a_capability_selects_the_table_of_its_file_else_its_default_else_nothin
 
 
 def test_a_role_takes_trigger_objects_as_its_defaults_do() -> None:
-    assert SweepRole(prompt='p.md', triggers=[EveryTick()]).triggers == [EveryTick()]
+    assert SweepRole(prompt='p.md', triggers=[EveryPass()]).triggers == [EveryPass()]

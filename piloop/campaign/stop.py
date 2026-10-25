@@ -1,6 +1,6 @@
 """Stop conditions: decide when a campaign's stop rule, or a request, ends the campaign.
 
-The scheduler checks every active campaign once per tick. The reason goes into ``campaigns.stopped_reason`` and into
+The scheduler checks every active campaign once per pass. The reason goes into ``campaigns.stopped_reason`` and into
 the trigger of the closing watchdog. A stop or a cancel that someone asks for is an event that the daemon acts on and
 answers (``piloop.db.requests``).
 """
@@ -61,7 +61,7 @@ class Ending(StrEnum):
 class StopRequested(EventModel):
     """Someone asked to stop a campaign (``piloop campaign stop``).
 
-    On its next tick, the daemon stops an active campaign as for a ``[stop]`` condition (``check``). It ends the
+    On its next pass, the daemon stops an active campaign as for a ``[stop]`` condition (``check``). It ends the
     campaign's implementers as ``ending`` says, also when the campaign was stopped already. An ask
     (``piloop.db.requests``).
     """
@@ -344,6 +344,18 @@ def runs(s: Session, campaign: Campaign) -> int:
     return _over_runs(s, campaign, func.count(Run.id), counted() | (attempt() & unsettled())) or 0
 
 
+def hours_due(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime) -> datetime | None:
+    """When ``hours`` reaches the limit that the stop rule sets on it, for a campaign that runs and is not paused.
+
+    None without such a limit, before the first run, or while time does not count. The pass then checks the rule.
+    """
+    limit = limits(cfg).get(Fact.HOURS)
+    if limit is None or campaign.status is not CampaignStatus.ACTIVE or campaign.paused is not None:
+        return None
+    spent = hours(s, campaign, now)
+    return None if spent is None else now + timedelta(hours=max(limit - spent, 0))
+
+
 def hours(s: Session, campaign: Campaign, now: datetime) -> float | None:
     """Return the hours from the start of the campaign's first run to ``now``, or None if no run started.
 
@@ -376,7 +388,7 @@ def runs_without_keep(s: Session, campaign: Campaign, before: datetime | None = 
 
     The window starts when the run of the latest keep finished, or when the campaign was last set ``active`` again
     after a stop (``piloop init``, or an UPDATE), whichever is later. A reactivated campaign gets a fresh window, so
-    a ``plateau`` stop does not fire again on the next tick. An evaluator change alone does not reset the window.
+    a ``plateau`` stop does not fire again at once. An evaluator change alone does not reset the window.
     """
     last_keep = s.scalar(
         keeps(campaign).join(Run, Candidate.run_id == Run.id).with_only_columns(func.max(Run.finished_at))

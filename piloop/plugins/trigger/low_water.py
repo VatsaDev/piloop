@@ -1,7 +1,9 @@
+from datetime import datetime, timedelta
+
 from pydantic import Field
 
-from piloop.db.models import AgentSessionState, utcnow
-from piloop.plugins.trigger.contract import Backlog, Fire, Tick, Trigger
+from piloop.db.models import AgentSession, AgentSessionState
+from piloop.plugins.trigger.contract import Backlog, Fire, Pass, Trigger
 from piloop.plugins.trigger.kit.reasons import futile, news
 
 
@@ -38,26 +40,45 @@ class LowWaterTrigger(Trigger):
     that does runs). With this backlog, a free slot finds an idea at once and does not wait for a sweep. A larger value
     makes implementers wait less for the role, but the ideas they run are older."""
 
-    def fire(self, tick: Tick) -> Fire | None:
-        backlog = tick.backlog(self.buffer)
-        if backlog.short <= 0 or futile(tick, backlog):
+    def fire(self, p: Pass) -> Fire | None:
+        backlog = p.backlog(self.buffer)
+        if backlog.short <= 0 or futile(p, backlog):
             return None
-        batch = min(-(-backlog.short // backlog.per_sweep), tick.max_concurrent - backlog.sweeps)
-        reason = self._reason(tick, backlog)
+        batch = min(-(-backlog.short // backlog.per_sweep), p.max_concurrent - backlog.sweeps)
+        reason = self._reason(p, backlog)
         return None if reason is None else Fire(reason, count=batch)
 
-    def _reason(self, tick: Tick, backlog: Backlog) -> str | None:
-        if (reason := news(tick, str(backlog))) is not None:
+    def _reason(self, p: Pass, backlog: Backlog) -> str | None:
+        if (reason := news(p, str(backlog))) is not None:
             return reason
-        assert tick.last is not None  # Without a row, every backlog is news.
-        if tick.cancel(tick.last) is not None:
+        assert p.last is not None  # Without a row, every backlog is news.
+        if p.cancel(p.last) is not None:
             return None
-        empty = tick.empty_sweeps((AgentSessionState.EXITED, AgentSessionState.KILLED))
+        empty = p.empty_sweeps(ENDED)
         if not empty:
             return str(backlog)
-        latest = empty[0]
-        assert latest.ended_at is not None  # An exited or killed row has ended.
-        rest = (2 ** len(empty) - 1) * (latest.ended_at - latest.started_at)
-        if utcnow() - latest.ended_at < rest:
+        rest, rested = _rest(empty)
+        if p.now < rested:
             return None
         return f'{backlog}; rested {rest.total_seconds():.0f}s after {len(empty)} sweeps that defined no idea'
+
+    def due_in(self, p: Pass) -> timedelta | None:
+        """While the role rests after empty sweeps and the backlog is short: when the rest ends."""
+        if p.last is None or p.last.state not in ENDED:
+            return None
+        empty = p.empty_sweeps(ENDED)
+        if not empty:
+            return None
+        _, rested = _rest(empty)
+        return rested - p.now if rested > p.now else None
+
+
+ENDED = (AgentSessionState.EXITED, AgentSessionState.KILLED)
+
+
+def _rest(empty: list[AgentSession]) -> tuple[timedelta, datetime]:
+    """How long the role rests after ``empty``, and until when. ``empty``: its latest ended sweeps without an idea."""
+    latest = empty[0]
+    assert latest.ended_at is not None  # An exited or killed row has ended.
+    rest = (2 ** len(empty) - 1) * (latest.ended_at - latest.started_at)
+    return rest, latest.ended_at + rest

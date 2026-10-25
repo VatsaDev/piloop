@@ -19,6 +19,7 @@ from piloop.agents.launcher import PROMPT, Launcher, fill
 from piloop.agents.results import (
     NEVER_WORKED,
     AgentSessionFinished,
+    AgentSessionRunning,
     AgentSessionStarted,
     DaemonStopped,
     Ended,
@@ -247,6 +248,7 @@ def test_launch_runs_the_row_through_its_lifecycle(
         (1, LeaseWorkerJoined(worker=SERVE, pool=SERVE)),
         (1, AgentSessionStarted(role=WATCHDOG, harness='script', model='watchdog-model', reason='test')),
         (1, LeaseQueued(lease=1, lease_kind=LeaseKind.AGENT)),
+        (1, AgentSessionRunning(machine=None)),
         (1, AgentSessionFinished(role=WATCHDOG, reason='test', state=AgentSessionState.EXITED, error=None)),
     ]
     [ended] = [payload.ended for _, payload in events if isinstance(payload, JobEnded)]

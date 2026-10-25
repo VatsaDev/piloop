@@ -43,14 +43,18 @@ from tests.conftest import at_head, hold_lock, register, wait_for_agent_session_
 from tests.db.test_migrations import alembic
 
 PILOOP = [sys.executable, '-m', 'piloop']
+LOADED = '300'
+"""Seconds that a restart may take in a test: the parallel suite loads the host, and the default 30 s is too short."""
 
 
 def env_for(home: Path) -> dict[str, str]:
-    return child_env() | {'PILOOP_HOME': str(home), 'PILOOP_TICK_SECONDS': '0.05', 'COLUMNS': '200'}
+    return child_env() | {'PILOOP_HOME': str(home), 'COLUMNS': '200'}
 
 
 def piloop(home: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run([*PILOOP, *args], capture_output=True, text=True, env=env_for(home), timeout=60)
+    return subprocess.run(
+        [*PILOOP, *args], capture_output=True, text=True, env=env_for(home), timeout=float(LOADED) + 60
+    )
 
 
 def alive(pid: int) -> bool:
@@ -192,7 +196,7 @@ def test_restart_execs_the_same_process_keeping_its_environment(tmp_path: Path) 
     assert started.returncode == 0, started.stderr
     pid = int(cfg.pid_file.read_text())
 
-    restarted = piloop(cfg.home, 'restart')
+    restarted = piloop(cfg.home, 'restart', '--timeout', LOADED)
     assert (restarted.returncode, restarted.stdout.strip()) == (0, f'daemon pid {pid} restarted')
     assert running_pid(cfg) == pid and alive(pid), 'the same process, so systemd or launchd still holds it'
     assert (proc.environment(pid) or {}).get('PILOOP_TEST_MARKER') == 'from-the-unit'
@@ -342,7 +346,6 @@ def test_the_service_unit_carries_the_settings_of_the_shell_and_no_other_variabl
 ) -> None:
     carried = {
         'PILOOP_SECRETS_COMMAND': "op inject -i '%h/keys'",
-        'PILOOP_TICK_SECONDS': '0.5',
         'PILOOP_CLI': 'my <cli> & "co"',
         'PILOOP_CAMPAIGN_RUNTIME': 'subprocess',
         'OTEL_EXPORTER_OTLP_ENDPOINT': 'http://localhost:4318',
@@ -436,7 +439,7 @@ def test_listen_serves_while_the_daemon_runs_through_a_restart_and_stops_with_it
     unrouted = '/v1/executor/none'  # 404 from a server, a connection error from a closed port
     assert httpx.post(_urls(cfg)[0] + unrouted).status_code == 404
 
-    assert piloop(cfg.home, 'restart').returncode == 0
+    assert piloop(cfg.home, 'restart', '--timeout', LOADED).returncode == 0
     wait_until(lambda: len(_urls(cfg)) == 2)
     assert httpx.post(_urls(cfg)[1] + unrouted).status_code == 404, 'the exec keeps --listen'
     assert piloop(cfg.home, 'stop').returncode == 0

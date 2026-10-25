@@ -1,10 +1,10 @@
 """Record the SELECTs of piloop's hot paths on a populated database, for ``tests/test_plans.py``.
 
-The hot paths are the real functions: the triggers and the take of a scheduler tick, the stop conditions, the
+The hot paths are the real functions: the triggers and the take of a scheduler pass, the stop conditions, the
 overview and history renderers, and the orchestrator's inbox wait. They run under a listener that records every
 SELECT that the ORM sends. The example queries of the procedures (``piloop schema``) are added too. The test
 runs ``EXPLAIN QUERY PLAN`` on each statement against a small populated file, and fails on a SCAN of a table that
-grows. So the rule "index what the tick and the status filter on" is checked by a test.
+grows. So the rule "index what the pass and the status filter on" is checked by a test.
 """
 
 import json
@@ -283,7 +283,7 @@ class HotPaths:
     """The hot paths of the daemon and the CLI, as callables over one session that is rolled back.
 
     The rollback makes sure that nothing is requested or launched. Entering yields origin → body: the two phases of a
-    scheduler tick (per campaign, rolled back after each, so every run of the body sees the same database), the stop
+    scheduler pass (per campaign, rolled back after each, so every run of the body sees the same database), the stop
     conditions with all four configured, the status and history renderers for every campaign, and one inbox wait.
     """
 
@@ -303,16 +303,16 @@ class HotPaths:
         def each(body: Callable[[Campaign, CampaignConfig], object]) -> Callable[[], object]:
             return lambda: [body(p, cfg) for p, cfg in rows]
 
-        def tick(p: Campaign, cfg: CampaignConfig) -> None:
+        def pass_over(p: Campaign, cfg: CampaignConfig) -> None:
             answer = check(s, p, cfg)
             if not isinstance(answer, Hold):
-                scheduler._triggers(s, p, cfg, answer, None)
+                scheduler._triggers(s, p, cfg, answer, None, utcnow())
             s.flush()
-            scheduler._take(s, p, cfg)
+            scheduler._take(s, p, cfg, utcnow())
             s.rollback()
 
         return {
-            'scheduler.tick': each(tick),
+            'scheduler.pass': each(pass_over),
             'stop.check': each(lambda p, _cfg: check(s, p, stopping)),
             'overview.overview': each(lambda p, cfg: overview.overview(s, p, cfg, utcnow())),
             'history.renderables': each(lambda p, cfg: history.renderables(s, p, cfg, table_box=box.SIMPLE)),

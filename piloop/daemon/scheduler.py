@@ -1,12 +1,13 @@
-"""The daemon loop: check each role's triggers for each campaign, launch requested agents and reap stale state.
+"""The daemon's jobs: check each role's triggers for each campaign, launch requested agents and reap stale state.
 
-A tick has two phases. First, the triggers (https://piloop.autoresearch.inc/concepts/roles) insert ``agent_sessions`` rows in state ``requested``. Then the
+Each job is a consumer of the daemon's loop (``piloop.daemon.loop``): the events that wake it are next to ``consumers``.
+The pass over the campaigns has two phases. First, the triggers (https://piloop.autoresearch.inc/concepts/roles) insert ``agent_sessions`` rows in state ``requested``. Then the
 requested rows launch in id order, as far as the role's ``max_concurrent`` allows, while the executor has a free agent
 slot (``Executor.capacity``). A free slot goes to the campaign with the fewest live agents, as the evaluation queue
 gives its slots. Anyone can insert a requested row by hand, for example the CLI or an agent. Such a row launches in
 the same second phase.
 
-Before both phases, the tick sends new comments to the running agents through the executor (``Executor.prompt``). An
+Before both phases, another job sends new comments to the running agents through the executor (``Executor.prompt``). An
 agent gets the ``note``, ``finding`` and ``decision`` comments on itself (``piloop prompt``), and an implementer also
 those on its run or its idea that were written since the run started, one ``[piloop]`` line each (``steer_line``). An
 event on the agent records each outcome (``PromptOutcome``): ``comment.queued``, then ``comment.delivered`` or
@@ -27,7 +28,7 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from functools import partial
 from pathlib import Path
-from queue import Empty, SimpleQueue
+from queue import SimpleQueue
 from typing import Literal
 
 from pydantic import Field, ValidationError
@@ -39,11 +40,23 @@ from piloop.actor import Agent, System
 from piloop.agents import scout
 from piloop.agents.launcher import rotate
 from piloop.agents.refill import usage_of
-from piloop.agents.results import AgentEnded, PromptOutcome, StartupAnomaly, WrapUp, queue_prompt
+from piloop.agents.results import (
+    AgentEnded,
+    AgentSessionFinished,
+    AgentSessionRunning,
+    AgentSessionStarted,
+    Identified,
+    JobEnded,
+    PromptOutcome,
+    StartupAnomaly,
+    WorkspaceConflict,
+    WrapUp,
+    queue_prompt,
+)
 from piloop.agents.roles import compose_brief, role_of
 from piloop.campaign import spend
 from piloop.campaign.anomaly import AnomalyReported
-from piloop.campaign.campaigns import WORKSPACE, vcs_of, workspace_dir
+from piloop.campaign.campaigns import WORKSPACE, CampaignAdded, vcs_of, workspace_dir
 from piloop.campaign.ideas import defined_by, park_stranded, runnable, supersede, waiting
 from piloop.campaign.memory import sync_documents
 from piloop.campaign.spend import SpendError
@@ -59,6 +72,7 @@ from piloop.campaign.stop import (
     cancelled,
     check as check_stop,
     held as held_now,
+    hours_due,
     limits,
     park_cancelled,
     requested,
@@ -70,10 +84,16 @@ from piloop.campaign.stop import (
     unclosed,
 )
 from piloop.config import CampaignConfig, ClosingReview, Spend
-from piloop.daemon.archiver import Archiver, Archiving
+from piloop.daemon.archiver import Archiver, Archiving, DiskAnomaly
+from piloop.daemon.loop import Consumer, Kinds, Loop, Soonest, Turn
 from piloop.daemon.run_controller import (
     RUNS,
+    RecoveryRequeued,
     RunController,
+    RunFinished,
+    RunReceived,
+    RunRelaunched,
+    RunStarted,
     branches,
     close_run,
     finding_of,
@@ -105,9 +125,34 @@ from piloop.db.models import (
     count,
     utcnow,
 )
-from piloop.db.requests import pending
+from piloop.db.requests import RequestAnswered, pending
 from piloop.db.session import Database
 from piloop.db.triggers import DAEMON_ACTOR
+from piloop.db.triggers.changelog import (
+    AgentSessionRequested,
+    CampaignConfigChanged,
+    CampaignParentChanged,
+    CampaignPausedChanged,
+    CampaignStatusChanged,
+    CampaignTypeChanged,
+    CandidateDeleted,
+    CommentAcked,
+    CommentDeleted,
+    Commented,
+    EvaluationCancelled,
+    IdeaBaseChanged,
+    IdeaCreated,
+    IdeaDeleted,
+    IdeaLinked,
+    IdeaPriorityChanged,
+    IdeaStatusChanged,
+    IdeaTrackChanged,
+    LimitSet,
+    LimitUnset,
+    OriginChanged,
+    RunBriefChanged,
+    VerdictChanged,
+)
 from piloop.ids import (
     AgentSessionId,
     CandidateId,
@@ -132,7 +177,21 @@ from piloop.reports.overview import anomalies, assigned, overview, reported
 from piloop.reports.pack import pack
 from piloop.reports.wake import lessons_overview
 from piloop.runtime.factory import RuntimeFactory, handle_for, make_runtime, runtime_for
-from piloop.scoring.ledger import checkout_candidate, due, head, head_unmeasured, rejudges, score
+from piloop.scoring.ledger import (
+    CandidateImported,
+    CandidateJudged,
+    MeasurementRecorded,
+    Rebased,
+    RejudgeFailed,
+    RejudgeRequested,
+    RemeasureRequested,
+    checkout_candidate,
+    due,
+    head,
+    head_unmeasured,
+    rejudges,
+    score,
+)
 from piloop.usage import Usage
 
 AGENT_SESSIONS = 'agent_sessions'
@@ -154,6 +213,10 @@ WRAP_UP_PROMPT = (
 EventModel.retire('agent_session.jobs_left')  # 0.2.0 listed the jobs of an idle implementer; its finding ends it now
 FINDING_GRACE_SECONDS = 60
 """The seconds after its finding that the daemon ends an implementer, and every process it left: a last commit takes seconds."""
+PROMPT_RETRY = timedelta(seconds=2)
+"""How soon a comment that the executor did not take (a locked database) is pushed again."""
+KILL_RETRY = timedelta(seconds=10)
+"""How soon the kill of an agent that the daemon ended goes again while the agent has not ended: a kill can fail."""
 FOUND = 'left its finding'
 """The ``reason`` of the ``AgentEnded`` of an implementer that the daemon ended after its finding."""
 TIMEOUT = 'role timeout'
@@ -215,6 +278,86 @@ class TimeCut(StrEnum):
     STOP = "the campaign's stop, {timeout:.0f}s after you started"
 
 
+LIMITS: Kinds = frozenset({LimitSet, LimitUnset})
+"""A live limit that changes: it can give the executor more slots. Its own events say so too (``capacity_events``)."""
+EVALUATIONS: Kinds = frozenset({EvaluationCancelled, MeasurementRecorded, *LIMITS})
+"""What wakes the evaluation queue: a cancel to stop, a slot that an evaluation freed, or more slots."""
+WINDING: Kinds = frozenset({Commented, StopRequested, CancelRequested, CampaignStatusChanged, AgentSessionRunning})
+"""What wakes the wind-down: a finding, a stop or a cancel, and an agent that runs, to tell it."""
+ARCHIVING: Kinds = frozenset({IdeaStatusChanged, CampaignStatusChanged, RunFinished, AgentSessionFinished})
+"""What makes a workspace due for its archiving: an idea or a campaign that ends, a run or a sweep that ends."""
+CAMPAIGN_STATE: Kinds = frozenset(
+    {
+        CampaignAdded,
+        CampaignStatusChanged,
+        CampaignPausedChanged,
+        CampaignConfigChanged,
+        StopRequested,
+        AgentSessionRequested,
+        AgentSessionStarted,
+        AgentSessionRunning,
+        AgentSessionFinished,
+        StartupAnomaly,
+        RunFinished,
+        IdeaCreated,
+        IdeaStatusChanged,
+        IdeaPriorityChanged,
+        IdeaTrackChanged,
+        IdeaBaseChanged,
+        IdeaLinked,
+        IdeaDeleted,
+        CandidateJudged,
+        VerdictChanged,
+        OriginChanged,
+        CandidateDeleted,
+        CandidateImported,
+        Rebased,
+        RemeasureRequested,
+        RejudgeRequested,
+        MeasurementRecorded,
+        *LIMITS,
+    }
+)
+"""What the pass over the campaigns reads: their ideas, runs, candidates and agents, their status and config, and the
+slots, with the executor's ``capacity_events``. Every fact of a stop rule (``Fact``) changes with one of these, or with time (``hours_due``)."""
+IGNORED: Kinds = frozenset(
+    {
+        PromptOutcome,
+        CommentAcked,
+        CommentDeleted,
+        Identified,
+        JobEnded,
+        AgentEnded,
+        WorkspaceConflict,
+        WrapUp,
+        AnomalyReported,
+        DiskAnomaly,
+        CampaignTypeChanged,
+        CampaignParentChanged,
+        RunBriefChanged,
+        RunStarted,
+        RunReceived,
+        RunRelaunched,
+        RecoveryRequeued,
+        RejudgeFailed,
+        LaunchPaused,
+        LaunchResumed,
+        RunQueued,
+        RunRerouted,
+        CampaignClosed,
+        RequestAnswered,
+    }
+)
+"""What wakes no job of the daemon: what it wrote itself in the pass that acts on it, what only a reader reads, and
+history. ``tests/daemon/test_loop.py`` fails on a kind of core that is neither routed nor here. A provider's own kinds
+wake nothing, unless its capability routes them (``Executor.capacity_events``)."""
+
+
+def campaign_kinds() -> Kinds:
+    """What wakes the pass over the campaigns: their state, and what each trigger reads beyond it (``WAKES_ON``)."""
+    return CAMPAIGN_STATE.union(*(p.model.WAKES_ON for p in TRIGGERS.providers().values()))
+
+
 @dataclass(frozen=True)
 class TimeLeft:
     """The time an implementer has left before its ``timeout`` ends it, in ``minutes``."""
@@ -226,7 +369,7 @@ class TimeLeft:
 
 
 class Scheduler:
-    """The daemon loop. There is one instance per daemon. ``tick`` is safe to call from a loop or from tests."""
+    """The daemon's jobs, as the consumers of its loop (``piloop.daemon.loop``). There is one instance per daemon."""
 
     def __init__(
         self,
@@ -236,8 +379,12 @@ class Scheduler:
         home: Path,
         runtime_factory: RuntimeFactory = make_runtime,
         archiving: Archiving | None = None,
+        also: Sequence[Consumer] = (),
+        now: Callable[[], datetime] = utcnow,
     ) -> None:
+        """``also``: consumers of the process to run after the scheduler's own. ``now``: the clock."""
         self._db = db
+        self._now = now
         self._controller = controller
         self._tracer = tracer
         self._home = home
@@ -254,14 +401,21 @@ class Scheduler:
         """Scoring outside an implementer: a run's resumed scoring by run id, or a campaign's re-measure by campaign id."""
         self._stop = threading.Event()
         self._wake: SimpleQueue[None] = SimpleQueue()
-        """Ends the wait of ``serve_forever`` between ticks (``interrupt``)."""
+        """Ends the loop (``interrupt``): a signal handler may put to it, where it may not set an ``Event``."""
+        self._spend_due: datetime | None = None
+        """When the next ``[spend]`` reading is due: the campaigns' pass then reads it."""
+        self._soonest = Soonest()
+        """The earliest due that the campaigns' pass found so far."""
+        self._launched: list[AgentSessionId] = []
+        """What the latest campaigns' pass launched."""
         self._archiver = (
-            Archiver(db, archiving.cas, home, archiving.policy, tracer, self._pool, self._stop)
+            Archiver(db, archiving.cas, home, archiving.policy, tracer, self._pool, self._stop, self._archived)
             if archiving is not None
             else None
         )
         """Archives the workspaces in the background. The daemon always passes ``archiving``; a test that does not
         archives nothing."""
+        self.loop = Loop(db, (*self.consumers(), *also), now)
 
     def reap(self) -> None:
         """Hand the jobs that a previous daemon process left to the executor (``Executor.adopt``). Fail the rest.
@@ -445,32 +599,59 @@ class Scheduler:
         except Exception as e:  # The agent can be gone already. The database row is what matters.
             self._tracer.event('agent_session.kill_failed', agent_session=agent_session.id, error=str(e))
 
-    def tick(self) -> list[AgentSessionId]:
-        """Send new comments to running implementers, run every campaign's triggers and launch requested agents.
+    def consumers(self) -> tuple[Consumer, ...]:
+        """The daemon's jobs, in the order that a turn of its loop runs them, with the events that wake each one."""
+        capacity = self._controller.executor.capacity_events()
+        return (
+            Consumer('limits', LIMITS, self._limits),
+            Consumer('executor', self._controller.executor.upkeep_events(), self._upkeep),
+            Consumer('evaluations', EVALUATIONS | capacity, self._evaluations),
+            Consumer('prompts', frozenset({Commented, AgentSessionRunning}), self._prompts),
+            Consumer('wind_down', WINDING, self._wind_down),
+            Consumer('spend', frozenset({CampaignStatusChanged}), self._read_spend),
+            Consumer('archiver', ARCHIVING, self._archive),
+            Consumer('campaigns', campaign_kinds() | capacity, self._campaigns),
+        )
 
-        Returns the ids of the launched agent sessions. Before the triggers, the tick rejects the ideas that a newer idea
-        superseded (``piloop.campaign.ideas.supersede``), and parks those after a prerequisite that ended without a keep
-        (``park_stranded``). This also happens for a stopped campaign, which requests
-        nothing and is measured again only on request (``ledger.due``). Then the tick asks the stop rule
-        (``piloop.campaign.stop.check``) of each active campaign, and of each stopped one whose closing review waits
-        for a hold (``spend.review_waits``). A campaign that it holds gets only the first step. A paused campaign
-        (``piloop pause``) gets no triggers, does not stop at a limit of its stop rule, and launches nothing, and with
-        ``all`` it is not measured again either. A stop request stops a held or paused campaign too. A stopped
-        campaign launches its closing review, and what a human requests, whatever the pause; while the stop rule
-        holds, as ``[spend] closing_review`` says (``launches``). The
-        archiver starts the next archiving of a workspace that is due, or its upkeep, on a background thread
-        (``piloop.daemon.archiver``). First of all, the executor gets the live limits that changed (``RunController.configure``).
-        """
-        self._collect()
+    def run_all(self, now: datetime | None = None) -> list[AgentSessionId]:
+        """Run every consumer once, as the loop does when it starts, and return the agent sessions that it launched."""
+        self.loop.run_all(Turn(now or self._now()))
+        return self._launched
+
+    def _limits(self, _turn: Turn) -> None:
+        """Hand the executor the live limits that changed (``RunController.configure``)."""
         self._controller.configure()
-        self._controller.executor.tick(utcnow())
+
+    def _upkeep(self, turn: Turn) -> datetime | None:
+        return self._controller.executor.upkeep(turn.now, turn.absent)
+
+    def _evaluations(self, _turn: Turn) -> None:
+        """Stop the evaluations that someone cancelled, and submit those that a slot freed for."""
         self._controller.stop_cancelled()
         self._controller.dispatch()
-        self._push_comments()
-        self._wind_down()
-        self._read_spend()
-        if self._archiver is not None:
-            self._archiver.tick()
+
+    def _archive(self, turn: Turn) -> datetime | None:
+        return self._archiver.run(turn.now) if self._archiver is not None else None
+
+    def _campaigns(self, turn: Turn) -> datetime | None:
+        """Pass over every campaign: its ideas, its stop rule, its remeasures, its triggers, and the launches.
+
+        Returns when a pass must come for time alone: the earliest ``due_in`` of a trigger, the end of a ``max_hours``
+        or of a startup pause, or the next spend reading.
+
+        Before the triggers, the pass rejects the ideas that a newer idea superseded (``piloop.campaign.ideas.supersede``),
+        and parks those after a prerequisite that ended without a keep (``park_stranded``). This also happens for a
+        stopped campaign, which requests nothing and is measured again only on request (``ledger.due``). Then the pass
+        asks the stop rule (``piloop.campaign.stop.check``) of each active campaign, and of each stopped one whose
+        closing review waits for a hold (``spend.review_waits``). A campaign that it holds gets only the first step. A
+        paused campaign (``piloop pause``) gets no triggers, does not stop at a limit of its stop rule, and launches
+        nothing, and with ``all`` it is not measured again either. A stop request stops a held or paused campaign too.
+        A stopped campaign launches its closing review, and what a human requests, whatever the pause; while the stop
+        rule holds, as ``[spend] closing_review`` says (``launches``).
+        """
+        self._collect()
+        self._soonest = Soonest()
+        self._soonest.add(self._spend_due)
         launching: list[tuple[Campaign, CampaignConfig]] = []
         with self._db.session() as s:
             for campaign in s.scalars(select(Campaign)).all():
@@ -485,22 +666,23 @@ class Scheduler:
                     reason = f'after idea#{prerequisite}, which ended without a keep'
                     self._tracer.event('idea.parked', campaign=campaign.name, idea=idea_id, reason=reason)
                 answer = check_stop(s, campaign, cfg) if asked(s, campaign, cfg) else GO
+                self._soonest.add(hours_due(s, campaign, cfg, turn.now))
                 held = answer.reason if isinstance(answer, Hold) else None
                 if held is None and campaign.paused is not Pause.ALL:
                     self._remeasure(s, campaign)
                 if campaign.status is CampaignStatus.ACTIVE:
                     # A stop request wins over a hold and a pause.
                     if (stop := requested(s, campaign)) is not None:
-                        self._triggers(s, campaign, cfg, stop, held)
+                        self._triggers(s, campaign, cfg, stop, held, turn.now)
                     elif not isinstance(answer, Hold) and campaign.paused is None:
-                        self._triggers(s, campaign, cfg, answer, None)
+                        self._triggers(s, campaign, cfg, answer, None, turn.now)
                 s.flush()
                 if campaign.status is CampaignStatus.STOPPED and unclosed(s, campaign) and settled(s, campaign):
-                    self._close_campaign(s, campaign, cfg, cfg.roles.sweeping())
+                    self._close_campaign(s, campaign, cfg, cfg.roles.sweeping(), turn.now)
                     held = held_now(s, campaign, cfg)  # a closing review may wait for the hold
                 if launches(campaign, cfg, held):
                     launching.append((campaign, cfg))
-            launched = self._launch(s, launching)
+            launched = self._launch(s, launching, turn.now)
             s.commit()
         unsubmitted = self._controller.launcher.unsubmitted
         for agent_session_id, run_id in launched:
@@ -513,9 +695,19 @@ class Scheduler:
             future = self._futures[agent_session_id] = self._pool.submit(body)
             # a body that ends before it submits (a run that fails first) must not hold the slot
             future.add_done_callback(lambda _, i=agent_session_id: unsubmitted.discard(i))
-        return [agent_session_id for agent_session_id, _ in launched]
+            future.add_done_callback(self._ended)
+        self._launched = [agent_session_id for agent_session_id, _ in launched]
+        return self._soonest.at
 
-    def _read_spend(self) -> None:
+    def _ended(self, _future: Future[None]) -> None:
+        """A thread of an agent or of scoring ended: the next turn forgets it and fills its slot."""
+        self.loop.wake('campaigns')
+
+    def _archived(self, _future: Future[None]) -> None:
+        """The archiver's job ended: the next turn starts the next one."""
+        self.loop.wake('archiver')
+
+    def _read_spend(self, turn: Turn) -> datetime | None:
         """Run the ``[spend] command`` of each campaign whose ``interval`` is up, and record the result.
 
         That is each active campaign, and each stopped one whose closing review waits for the hold to end
@@ -527,15 +719,21 @@ class Scheduler:
         """
         with self._db.session() as s:
             todo: list[tuple[int, Path, Spend, float | None]] = []
+            later: list[datetime] = []
             for campaign in s.scalars(select(Campaign)):
                 try:
                     cfg = campaign.config
                 except ValidationError:
-                    continue  # The tick records this error for each campaign.
-                if cfg.spend is None or not spend.due(campaign, cfg.spend):
+                    continue  # The campaigns' pass records this error for each campaign.
+                if cfg.spend is None:
                     continue
-                if campaign.status is CampaignStatus.ACTIVE or spend.review_waits(s, campaign, cfg):
-                    todo.append((campaign.id, Path(campaign.path), cfg.spend, limits(cfg).get(Fact.SPEND)))
+                if not (campaign.status is CampaignStatus.ACTIVE or spend.review_waits(s, campaign, cfg)):
+                    continue
+                if (at := spend.next_at(campaign, cfg.spend)) is not None and at > turn.now:
+                    later.append(at)
+                    continue
+                todo.append((campaign.id, Path(campaign.path), cfg.spend, limits(cfg).get(Fact.SPEND)))
+                later.append(turn.now + timedelta(seconds=cfg.spend.interval))
         for campaign_id, path, budget, limit in todo:
             try:
                 reading: float | SpendError = spend.read(budget.command, path)
@@ -545,6 +743,9 @@ class Scheduler:
                 spend.record(s, s.get_one(Campaign, campaign_id), budget, limit, reading)
                 s.commit()
             self._tracer.event('spend.read', campaign=campaign_id, reading=str(reading))
+        # a reading is a fact of the stop rule: the campaigns' pass shares this due, and runs right after the reading
+        self._spend_due = min(later, default=None)
+        return self._spend_due
 
     def _remeasure(self, s: Session, campaign: Campaign) -> None:
         """Measure what the current evaluator must measure (``ledger.due``), one candidate at a time per campaign.
@@ -560,13 +761,19 @@ class Scheduler:
         if again := rejudges(s, campaign):
             self._tracer.event('candidate.rejudge', campaign=campaign.name, candidate=again[0].id, left=len(again))
             self._scoring[key] = self._pool.submit(self._controller.rejudge, again[0].id)
+            self._scoring[key].add_done_callback(self._ended)
             return
         if not (todo := due(s, campaign)):
             return
         self._tracer.event('candidate.remeasure', campaign=campaign.name, candidate=todo[0].id, left=len(todo))
         self._scoring[key] = self._pool.submit(self._controller.remeasure, todo[0].id)
+        self._scoring[key].add_done_callback(self._ended)
 
-    def _push_comments(self) -> None:
+    def _prompts(self, turn: Turn) -> datetime | None:
+        """Push the new comments (``_push_comments``). One that the executor did not take is tried again soon."""
+        return turn.now + PROMPT_RETRY if self._push_comments() else None
+
+    def _push_comments(self) -> list[int]:
         """Hand each running agent's executor the comments that the agent has no outcome for (``Executor.prompt``).
 
         The events table records each outcome: ``PromptOutcome`` events on the agent, with the comment id. A
@@ -574,7 +781,7 @@ class Scheduler:
         again, and the executor answers it as it did the first time. An agent whose row is still ``starting`` (brief
         composed, process not yet up) gets the comments once it runs. A failed delivery is recorded and not retried: the
         comment is in the brief of the idea's next run anyway, and the agent would fail the same way each time.
-        A tick that sends something makes one span.
+        A push that sends something makes one span. Returns the comments that the executor did not take, to try again.
         """
         with self._db.session() as s:
             running = s.scalars(
@@ -586,18 +793,21 @@ class Scheduler:
                 for c in self._unseen(s, w)
                 if c.id not in self._prompted
             ]
+        refused: list[int] = []
         if not pending:
-            return
+            return refused
         with self._tracer.span('piloop.push', comments=len(pending)):
             for agent_session_id, prompt in pending:
                 self._prompted.add(prompt.id)
                 try:
                     self._controller.executor.prompt(AgentKey(agent_session_id), prompt)
-                except Exception as e:  # the executor did not take it (a locked database): the next tick tries again
+                except Exception as e:  # the executor did not take it (a locked database): it is tried again
                     self._prompted.discard(prompt.id)
+                    refused.append(prompt.id)
                     self._tracer.event(
                         'comment.unsent', comment=prompt.id, agent_session=agent_session_id, error=str(e)
                     )
+        return refused
 
     def _unseen(self, s: Session, agent_session: AgentSession) -> list[Comment]:
         """Return the comments for the agent that have no outcome yet: on the agent, or on an implementer's run or idea.
@@ -627,7 +837,7 @@ class Scheduler:
         ).all()
         return [c for c in comments if c.id not in settled and c.author not in own]
 
-    def _wind_down(self) -> None:
+    def _wind_down(self, turn: Turn) -> datetime | None:
         """End the implementers that left their finding, and wind down those of stopped campaigns and cancelled agents.
 
         An implementer is ended ``FINDING_GRACE_SECONDS`` after its finding, with every process that it left running: it
@@ -645,11 +855,14 @@ class Scheduler:
 
         A cancelled run or agent of any role (a pending ``CancelRequested``) is ended at once, or after the wrap-up prompt
         and the grace period when the cancel asked for it. Its run ends ``RunEnd.CANCELLED``. A cancelled request never
-        starts, and its queued run fails. Both park the run's idea. A starting agent is left for a later tick, once it
+        starts, and its queued run fails. Both park the run's idea. A starting agent is left for a later pass, once it
         runs; if its start fails, the run is not launched again (``RunController._relaunch``). An ``ending`` agent gets
-        its kill again on each tick until it ends: a kill can fail. Then the stops and cancels that are carried out are
-        answered (``stop.answer_done``).
+        its kill again every ``KILL_RETRY`` until it ends: a kill can fail. Then the stops and cancels that are carried
+        out are answered (``stop.answer_done``).
+
+        Returns when a grace period or a wrap-up lead ends, or when to send an ending agent's kill again.
         """
+        now, soonest = turn.now, Soonest()
         with self._db.session() as s:
             cancels = {
                 agent_session.id: (request, cancel)
@@ -669,7 +882,9 @@ class Scheduler:
                 .where(Campaign.status == CampaignStatus.STOPPED)
             )
             implementers = select(AgentSession).where(AgentSession.run_id.is_not(None), AgentSession.state.in_(winding))
-            found = [w.id for w in s.scalars(implementers) if self._found(s, w)]
+            graces = {w.id: self._finding_grace(s, w) for w in s.scalars(implementers)}
+            found = [i for i, at in graces.items() if at is not None and at <= now]
+            soonest.add(*graces.values())
             agent_sessions = s.scalars(
                 select(AgentSession)
                 .where(
@@ -686,6 +901,7 @@ class Scheduler:
                     continue
                 if agent_session.state is AgentSessionState.ENDING:
                     self._kill(s, agent_session)
+                    soonest.add(now + KILL_RETRY)
                     continue
                 if (cancel := cancels.get(agent_session.id)) is not None:
                     request, asked = cancel
@@ -697,8 +913,8 @@ class Scheduler:
                     reason, end = campaign.stopped_reason or 'campaign stopped', RunEnd.CAMPAIGN_STOPPED
                     what, cause = 'The campaign stopped', reason
                     on_campaign = Event.target == TargetRef(TargetKind.CAMPAIGN, campaign.id)
-                    now = [stop for _, stop in pending(s, StopRequested, on_campaign) if stop.ending is Ending.NOW]
-                    ending = Ending.NOW if now else Ending.WRAP_UP
+                    at_once = [stop for _, stop in pending(s, StopRequested, on_campaign) if stop.ending is Ending.NOW]
+                    ending = Ending.NOW if at_once else Ending.WRAP_UP
                 if agent_session.state is AgentSessionState.REQUESTED:
                     self._close(s, agent_session, reason)
                     if agent_session.run_id is not None:
@@ -709,33 +925,42 @@ class Scheduler:
                         Event.target == TargetRef(TargetKind.AGENT_SESSION, agent_session.id), has(WrapUp)
                     )
                 )
+                grace = timedelta(seconds=STOP_GRACE_SECONDS)
                 if ending is Ending.NOW:
                     self._end(s, agent_session, reason, end)
                 elif told is None:
                     text = WRAP_UP_PROMPT.format(what=what, cause=cause, minutes=STOP_GRACE_SECONDS / 60)
                     self._wrap_up(s, agent_session, reason, text)
-                elif utcnow() - told >= timedelta(seconds=STOP_GRACE_SECONDS):
+                    soonest.add(now + grace)
+                elif now - told >= grace:
                     self._end(s, agent_session, reason, end)
+                else:
+                    soonest.add(told + grace)
             for agent_session in s.scalars(implementers.where(AgentSession.state == AgentSessionState.RUNNING)):
-                if (left := self._time_left(s, agent_session)) is not None:
+                left = self._time_left(s, agent_session, now)
+                if isinstance(left, TimeLeft):
                     cause = left.cut.value.format(timeout=left.timeout)
                     text = WRAP_UP_PROMPT.format(what='Your time is almost up', cause=cause, minutes=left.minutes)
                     self._wrap_up(s, agent_session, TIMEOUT, text)
+                else:  # when its lead comes, or None once it was told
+                    soonest.add(left)
             answer_done(s)
             s.commit()
+        return soonest.at
 
     @staticmethod
-    def _found(s: Session, implementer: AgentSession) -> bool:
-        """Whether the implementer left its finding ``FINDING_GRACE_SECONDS`` ago or more."""
+    def _finding_grace(s: Session, implementer: AgentSession) -> datetime | None:
+        """When the grace after the implementer's finding ends (``FINDING_GRACE_SECONDS``), or None without one."""
         assert implementer.run_id is not None
         finding = finding_of(s, s.get_one(Run, implementer.run_id), implementer)
-        return finding is not None and utcnow() - finding.created_at >= timedelta(seconds=FINDING_GRACE_SECONDS)
+        return None if finding is None else finding.created_at + timedelta(seconds=FINDING_GRACE_SECONDS)
 
     @staticmethod
-    def _time_left(s: Session, implementer: AgentSession) -> TimeLeft | None:
-        """The time an implementer that was not told to wrap up has left, once it is ``wrap_up_lead`` or less.
+    def _time_left(s: Session, implementer: AgentSession, now: datetime) -> TimeLeft | datetime | None:
+        """What an implementer that was not told to wrap up has left, once it is ``wrap_up_lead`` or less.
 
-        Its timeout is its role's, cut at the campaign's stop (``stop.timeout``), as when it started.
+        Its timeout is its role's, cut at the campaign's stop (``stop.timeout``), as when it started. Before the lead,
+        when it comes. None when it was told, or has no timeout to wrap up before.
         """
         campaign = s.get_one(Campaign, implementer.campaign_id)
         cfg = campaign.config
@@ -744,9 +969,12 @@ class Scheduler:
         if role is None or implementer.started_at is None or s.scalar(told.limit(1)) is not None:
             return None
         timeout = agent_timeout(s, campaign, cfg, role.timeout, implementer.started_at)
-        left = timeout - (utcnow() - implementer.started_at).total_seconds()
+        left = timeout - (now - implementer.started_at).total_seconds()
+        lead = wrap_up_lead(timeout)
+        if left > lead:
+            return now + timedelta(seconds=left - lead)
         cut = TimeCut.ROLE if timeout == role.timeout else TimeCut.STOP
-        return TimeLeft(timeout, round(left / 60, 1), cut) if left <= wrap_up_lead(timeout) else None
+        return TimeLeft(timeout, round(left / 60, 1), cut)
 
     def _wrap_up(self, s: Session, agent_session: AgentSession, reason: str, text: str) -> None:
         """Leave the wrap-up prompt as a note on the agent, which its executor delivers (``_push_comments``).
@@ -775,14 +1003,14 @@ class Scheduler:
         self._kill(s, agent_session)
 
     def _kill(self, s: Session, agent_session: AgentSession) -> None:
-        """Commit, then send the kill of an ``ending`` agent to its executor. Sent on each tick until it ends."""
+        """Commit, then send the kill of an ``ending`` agent to its executor. Sent on each wind-down until it ends."""
         # before the kill: the run that the kill ends reads it when it closes, and the executor writes in a session of
         # its own, which waits for this one's write lock
         s.commit()
         self._controller.executor.cancel(AgentKey(agent_session.id))
 
     def _triggers(
-        self, s: Session, campaign: Campaign, cfg: CampaignConfig, answer: Go | Stop, held: str | None
+        self, s: Session, campaign: Campaign, cfg: CampaignConfig, answer: Go | Stop, held: str | None, now: datetime
     ) -> None:
         """Stop the campaign if the answer is a stop. Otherwise queue runs and check every role's triggers.
 
@@ -798,7 +1026,7 @@ class Scheduler:
         if isinstance(answer, Go):
             self._queue(s, campaign, cfg)
             for name, role in cfg.roles.sweeping().items():
-                self._request(s, campaign, cfg, name, role)
+                self._request(s, campaign, cfg, name, role, now)
             return
         reason = answer.reason
         campaign.status, campaign.stopped_reason = CampaignStatus.STOPPED, reason
@@ -808,14 +1036,14 @@ class Scheduler:
         answer_done(s)  # a stop with ``now`` waits for ``_wind_down`` to end the running implementers
         if held is not None and cfg.spend is not None and cfg.spend.closing_review is ClosingReview.SKIP:
             spend.review_skipped(s, campaign, held)
-            self._close_campaign(s, campaign, cfg, {})
+            self._close_campaign(s, campaign, cfg, {}, now)
 
     def _close_campaign(
-        self, s: Session, campaign: Campaign, cfg: CampaignConfig, sweeping: Mapping[RoleName, SweepRole]
+        self, s: Session, campaign: Campaign, cfg: CampaignConfig, sweeping: Mapping[RoleName, SweepRole], now: datetime
     ) -> None:
         """Close a stopped campaign: sync its ``[memory]`` documents, fire the ``stopped`` triggers of ``sweeping``.
 
-        The tick closes a campaign that the daemon stopped once it ``settled``, with every sweeping role: by default,
+        The pass closes a campaign that the daemon stopped once it ``settled``, with every sweeping role: by default,
         the watchdog's closing review, which can then search the campaign's reports. ``[spend] closing_review =
         "skip"`` closes it at the stop, with none. The stop and the close are events (``unclosed``), so a daemon that
         restarts in between still closes it, once.
@@ -828,7 +1056,7 @@ class Scheduler:
         else:
             self._tracer.event('documents.synced', campaign=campaign.name, result=synced.line())
         for name, role in sweeping.items():
-            self._request(s, campaign, cfg, name, role, stopping=True)
+            self._request(s, campaign, cfg, name, role, now, stopping=True)
         s.flush()  # the status change's event first: the close comes after the stop
         emit(s, CampaignClosed(), TargetRef(TargetKind.CAMPAIGN, campaign.id), System.DAEMON)
 
@@ -850,6 +1078,7 @@ class Scheduler:
         cfg: CampaignConfig,
         name: RoleName,
         role: SweepRole,
+        now: datetime,
         *,
         stopping: bool = False,
     ) -> None:
@@ -857,9 +1086,10 @@ class Scheduler:
 
         The triggers fire in the order of the role's list (``piloop.plugins.trigger``): those with ``ON_STOP`` when the
         campaign is ``stopping``, else the others. A fire that needs a row of its
-        own (``Fire.alone``) is requested alone when it comes first, and otherwise waits for a later tick. The others
+        own (``Fire.alone``) is requested alone when it comes first, and otherwise waits for a later pass. The others
         share one batch: the largest count of rows, with every reason. The first row gets the events of the fires. A
-        trigger that raises is traced and does not fire.
+        trigger that raises is traced and does not fire. The ``due_in`` of each trigger that did not fire goes into the
+        pass's due.
         """
         latest = s.scalars(
             select(AgentSession)
@@ -869,11 +1099,12 @@ class Scheduler:
         ).first()
         if latest is not None and latest.state is AgentSessionState.REQUESTED:
             return  # One pending request per role is enough.
-        tick = self._tick(s, campaign, cfg, name, role)
+        p = self._pass(s, campaign, cfg, name, role, now)
         fires: list[Fire] = []
         for trigger in (t for t in role.triggers if t.ON_STOP is stopping):
             try:
-                fire = trigger.fire(tick)
+                fire = trigger.fire(p)
+                due = trigger.due_in(p) if fire is None else None
             except Exception as e:  # A trigger of a package, or a query that the schema no longer runs.
                 self._tracer.event(
                     'trigger.failed', campaign=campaign.name, role=name, trigger=TRIGGERS.name_of(trigger), error=str(e)
@@ -881,6 +1112,8 @@ class Scheduler:
                 continue
             if fire is not None:
                 fires.append(fire)
+            elif due is not None:
+                self._soonest.add(now + due)
         if not fires:
             return
         fires = fires[:1] if fires[0].alone else [f for f in fires if not f.alone]
@@ -894,16 +1127,19 @@ class Scheduler:
                 emit(s, event, TargetRef(TargetKind.AGENT_SESSION, rows[0].id), System.DAEMON)
         self._tracer.event('agent_session.requested', campaign=campaign.name, kind=name, reason=reason, count=count)
 
-    def _tick(self, s: Session, campaign: Campaign, cfg: CampaignConfig, name: RoleName, role: SweepRole) -> RoleTick:
-        """Return what the triggers of role ``name`` read in this tick."""
+    def _pass(
+        self, s: Session, campaign: Campaign, cfg: CampaignConfig, name: RoleName, role: SweepRole, now: datetime
+    ) -> RolePass:
+        """Return what the triggers of role ``name`` read in this pass."""
         last = s.scalars(
             select(AgentSession)
             .where(AgentSession.campaign_id == campaign.id, AgentSession.kind == name)
             .order_by(AgentSession.id.desc())
             .limit(1)
         ).first()
-        return RoleTick(
+        return RolePass(
             s=s,
+            now=now,
             campaign=campaign,
             role=name,
             last=last,
@@ -989,7 +1225,7 @@ class Scheduler:
         When an exploration run is due (``_explore``), the slot goes first to an idea pinned to an alternative base.
         Otherwise it goes to the most urgent idea of the track furthest below its share (``_pick``). An idea pinned to
         a harness at its cap (``_full``) waits. When every harness of a role's rotation is at its cap, the role queues
-        nothing more in this tick.
+        nothing more in this pass.
         """
         self._park_strays(s, campaign, cfg)
         live = [t.name for t in cfg.all_tracks if t.share > 0]
@@ -1176,14 +1412,14 @@ class Scheduler:
         return {harness for harness, cap in cfg.max_concurrent.items() if agents[harness] >= cap}
 
     def _launch(
-        self, s: Session, launching: Sequence[tuple[Campaign, CampaignConfig]]
+        self, s: Session, launching: Sequence[tuple[Campaign, CampaignConfig]], now: datetime
     ) -> list[tuple[AgentSessionId, RunId | None]]:
         """Take the requested agents of ``launching`` while the executor has a free agent slot (``_take``).
 
         Each slot goes to the campaign with the fewest live agents, so that a campaign with many requests never holds
         back another. Returns ``(agent_session_id, run_id)`` pairs.
         """
-        # before the executor's count: a job submitted in between then counts twice, for one tick, never in neither
+        # before the executor's count: a job submitted in between then counts twice, for one pass, never in neither
         unsubmitted = len(self._controller.launcher.unsubmitted)
         free = self._controller.executor.capacity().agents
         if free is not None:
@@ -1193,7 +1429,7 @@ class Scheduler:
         taken: list[tuple[AgentSessionId, RunId | None]] = []
         while left and (free is None or free > 0):
             campaign, cfg = nxt = min(left, key=lambda entry: (live[entry[0].id], entry[0].id))
-            got = self._take(s, campaign, cfg, most=None if free is None else 1)
+            got = self._take(s, campaign, cfg, now, most=None if free is None else 1)
             if free is None or not got:
                 left.remove(nxt)
             else:
@@ -1203,7 +1439,7 @@ class Scheduler:
         return taken
 
     def _take(
-        self, s: Session, campaign: Campaign, cfg: CampaignConfig, *, most: int | None = None
+        self, s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime, *, most: int | None = None
     ) -> list[tuple[AgentSessionId, RunId | None]]:
         """Mark requested rows ``starting``, up to each role's ``max_concurrent``, and ``most`` in all.
 
@@ -1218,7 +1454,8 @@ class Scheduler:
         breaker holds (``_paused``).
         """
         taken: list[tuple[AgentSessionId, RunId | None]] = []
-        if self._paused(s, campaign):
+        if (resumes := self._paused(s, campaign, now)) is not None:
+            self._soonest.add(resumes)
             return taken
         roles = cfg.roles.all()
         unknown = select(AgentSession).where(
@@ -1280,8 +1517,8 @@ class Scheduler:
         run.model = agent_session.model = cfg.role_models(agent_session.kind)[harness]
         return True
 
-    def _paused(self, s: Session, campaign: Campaign) -> bool:
-        """Return True if ``STARTUP_BREAKER`` agents of the campaign failed at startup within ``STARTUP_WINDOW``.
+    def _paused(self, s: Session, campaign: Campaign, now: datetime) -> datetime | None:
+        """Return when launches resume if ``STARTUP_BREAKER`` agents failed at startup in ``STARTUP_WINDOW``, else None.
 
         Requested rows wait, and launch when those failures are older than the window. The window is the back-off.
         Each pause posts one escalation (priority 1) with the load average and the failures' errors, which end with
@@ -1294,7 +1531,7 @@ class Scheduler:
             StartupAnomaly,
             Event.target_kind == TargetKind.AGENT_SESSION,
             Event.target_id.in_(agent_sessions),
-            Event.at >= utcnow() - STARTUP_WINDOW,
+            Event.at >= now - STARTUP_WINDOW,
         )
         on_campaign = TargetRef(TargetKind.CAMPAIGN, campaign.id)
         latest = s.scalars(
@@ -1307,13 +1544,13 @@ class Scheduler:
         if len(deaths) < STARTUP_BREAKER:
             if pause is not None:
                 emit(s, LaunchResumed(comment=pause.comment), on_campaign, System.DAEMON)
-            return False
+            return None
         escalation = s.get(Comment, pause.comment) if pause is not None else None
         if pause is None or escalation is None:
             self._escalate_pause(s, campaign, deaths)
         else:
             escalation.body = pause_body(deaths, pause.load)
-        return True
+        return deaths[-STARTUP_BREAKER][0].at + STARTUP_WINDOW
 
     def _escalate_pause(self, s: Session, campaign: Campaign, deaths: Sequence[tuple[Event, StartupAnomaly]]) -> None:
         load = ' / '.join(f'{x:.1f}' for x in os.getloadavg())
@@ -1467,24 +1704,22 @@ class Scheduler:
         self._collect()
         return sorted(self._futures)
 
-    def serve_forever(self, tick_seconds: float, *, also: Callable[[], object] = lambda: None) -> None:
-        """Tick, and call ``also`` after each tick, until ``stop`` or ``interrupt`` is called."""
-        while self._wake.empty():
-            self.tick()
-            also()
-            try:
-                self._wake.get(timeout=tick_seconds)
-            except Empty:
-                continue
-            return
+    def serve(self) -> None:
+        """Run the loop until ``stop`` or ``interrupt`` is called."""
+        self.loop.serve(self._stopped)
+
+    def _stopped(self) -> bool:
+        return self._stop.is_set() or not self._wake.empty()
 
     def interrupt(self) -> None:
-        """Make ``serve_forever`` return after its current tick, or at once from its wait. Safe in a signal handler.
+        """Make ``serve`` return after its current turn, or at once from its wait. Safe in a signal handler.
 
         A handler runs on the main thread, also inside the loop's wait. ``Event.set`` there could wait forever for the
-        lock that the interrupted ``Event.wait`` holds. ``SimpleQueue.put`` is reentrant: it cannot.
+        lock that an interrupted ``Event.wait`` holds. ``SimpleQueue.put`` is reentrant, and so is the database's
+        notify, whose condition has a reentrant lock.
         """
         self._wake.put(None)
+        self._db.notify()
 
     def wait(self, timeout: float = WAIT_SECONDS) -> None:
         """Wait for the agents and the scoring in flight to finish. It returns as soon as they have.
@@ -1503,7 +1738,7 @@ class Scheduler:
         self._collect()
 
     def hand_over(self, timeout: float) -> None:
-        """Stop ticking and leave every agent running for the next daemon process. This is an in-place restart.
+        """Stop the loop and leave every agent running for the next daemon process. This is an in-place restart.
 
         As with ``stop``, nothing starts after this and the evaluators are killed. But no agent is killed and no row is
         written. The next daemon's ``reap`` re-attaches to the agents and resumes the scoring that stops here. This
@@ -1521,7 +1756,7 @@ class Scheduler:
         return self._archiver.running() if self._archiver is not None else []
 
     def stop(self, timeout: float) -> None:
-        """Stop ticking, kill the agents in flight, fail their runs and release the thread pool.
+        """Stop the loop, kill the agents in flight, fail their runs and release the thread pool.
 
         The executor stops first: no job is submitted after it, and it stops every job. Each job still reports, which
         closes its agent's row as stopped and lets its run keep what it made. ``timeout`` limits the wait for them.
@@ -1537,10 +1772,11 @@ class Scheduler:
 
 
 @dataclass(frozen=True)
-class RoleTick:
-    """The ``Tick`` of one sweeping role of one campaign: what its triggers read in this tick."""
+class RolePass:
+    """The ``Pass`` of one sweeping role of one campaign: what its triggers read in this pass."""
 
     s: Session
+    now: datetime
     campaign: Campaign
     role: RoleName
     last: AgentSession | None
@@ -1565,11 +1801,11 @@ class RoleTick:
         return cancel[1] if cancel is not None else None
 
     def empty_sweeps(self, states: tuple[AgentSessionState, ...]) -> list[AgentSession]:
-        """See ``Tick.empty_sweeps``.
+        """See ``Pass.empty_sweeps``.
 
         The new-results back-off of ``low_water`` skips killed sweeps. A killed sweep stopped early, so its empty
         result says nothing about what was left to propose. The idle rest counts killed sweeps. Otherwise, a harness
-        that dies every time would be launched again on every tick.
+        that dies every time would be launched again on every pass.
         """
         signed = defined_by(self.s, self.campaign.id)
         ended = self.s.scalars(self._mine().where(AgentSession.state.in_(states)).order_by(AgentSession.id.desc()))
@@ -1634,7 +1870,7 @@ def free_harness(rotation: Sequence[str], turn: str, full: Collection[str]) -> s
 
 
 def launches(campaign: Campaign, cfg: CampaignConfig, held: str | None) -> bool:
-    """Whether the tick launches the campaign's requested agents, given why the stop rule holds (``held``).
+    """Whether the pass launches the campaign's requested agents, given why the stop rule holds (``held``).
 
     An active campaign launches when nothing holds it: no hold and no pause. A stopped campaign launches its closing
     review and what a human requests, paused or not. While the stop rule holds, it launches unless ``[spend]

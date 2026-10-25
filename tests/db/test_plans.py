@@ -29,7 +29,7 @@ from scripts.db_volume import (
 from tests.conftest import at_head
 
 HOT_PATHS = {
-    'scheduler.tick',
+    'scheduler.pass',
     'stop.check',
     'overview.overview',
     'history.renderables',

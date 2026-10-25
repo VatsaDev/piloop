@@ -31,6 +31,7 @@ from piloop.plugins.host import BUILT_IN, CAPABILITIES, Capability, Parameters, 
 from piloop.plugins.runtime.contract import NotSteerable
 
 HELPERS: set[object] = {
+    capabilities.EventModel,  # what a provider's events subclass, as an executor's capacity_events
     capabilities.MissingProvider,
     capabilities.Live,
     NotSteerable,

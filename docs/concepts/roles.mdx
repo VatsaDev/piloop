@@ -46,7 +46,8 @@ account limits the request rate.
 
 ## Triggers
 
-A **trigger** is a condition that the daemon checks on each **tick**, a pass of its loop every 2 seconds. When a
+A **trigger** is a condition that the daemon checks on each **pass** over the campaigns: when something changes in a
+campaign, and when a trigger's time comes, as for `cron`. When a
 trigger of a sweep role fires, the daemon starts one more agent of that role, and the agent's brief says why:
 
 <Triggers />
@@ -143,7 +144,7 @@ A search tool for X needs an MCP server in the scout's `mcp`. See [MCP servers](
 piloop launch enwik8 research --reason "second opinion on idea#2"
 ```
 
-The daemon starts the agent on its next tick, within `max_concurrent`. `--harness` and `--model` choose the agent's
+The daemon starts the agent at once, within `max_concurrent`. `--harness` and `--model` choose the agent's
 harness and model.
 
 ## Runtimes

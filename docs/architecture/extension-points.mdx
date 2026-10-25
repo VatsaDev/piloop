@@ -190,7 +190,11 @@ daemon calls its `open(host)` once, when it starts, to make the `Executor`:
   report says which prompts the agent read (`read` and `unread`).
 - `routes()` are the HTTP routes that its workers on other machines call, under `/v1/executor/`. The server of
   `piloop serve --listen` serves them, and a [network](#networks) says who may call them.
-- `tick`, `stop`, `hand_over` and `close` are the daemon's periodic call, its stop, its in-place restart and its end.
+- `capacity_events()` are the executor's own events that say that its capacity grew, such as a worker that joins. The
+  daemon launches what waits when one comes.
+- `upkeep(now, absent)` is the executor's housekeeping. It returns when it next has some, and the daemon calls it then.
+  `absent` is how long the daemon was away past that time, as in a suspend: no work expires for it.
+- `stop`, `hand_over` and `close` are the daemon's stop, its in-place restart and its end.
 
 A job's end goes to `host.results`: `finished` or `lost`, in a session that the executor commits. Core raises
 `Settled` for a job whose row is closed already. An executor whose workers can report late uses
@@ -358,7 +362,7 @@ printf '# Planner\nFor each new escalation, write a finding with a plan of three
 piloop init .
 ```
 
-The daemon now checks the query on each tick. When it returns a row, the daemon requests a `planner` agent, and
+The daemon now checks the query on each pass. When it returns a row, the daemon requests a `planner` agent, and
 `piloop status` lists it as `planner#<agent session id>`. The agent signs its comments `planner#<agent session id>`.
 
 ### Example: a role that does runs
@@ -401,13 +405,13 @@ A plugin can add roles and triggers. This plugin adds a trigger, `no_keep`, that
 was kept for some hours. It also adds a role, `auditor`, that uses this trigger:
 
 ```python
-from datetime import timedelta
+from datetime import datetime, timedelta
 from importlib.resources import files
 
 from sqlalchemy import func, select
 
-from piloop.capabilities import Fire, Outcome, SweepRole, Tick, Trigger, TriggerEntry
-from piloop.db.models import Candidate, utcnow
+from piloop.capabilities import Fire, Outcome, Pass, SweepRole, Trigger, TriggerEntry
+from piloop.db.models import Candidate
 
 
 class NoKeep(Trigger):
@@ -415,15 +419,19 @@ class NoKeep(Trigger):
 
     hours: float = 6
 
-    def fire(self, tick: Tick) -> Fire | None:
+    def fire(self, p: Pass) -> Fire | None:
+        return Fire(f'no keep for {self.hours:g} hours') if p.now >= self._due(p) else None
+
+    def due_in(self, p: Pass) -> timedelta | None:
+        return max(self._due(p) - p.now, timedelta(0))
+
+    def _due(self, p: Pass) -> datetime:
         keeps = select(func.max(Candidate.created_at)).where(
-            Candidate.campaign_id == tick.campaign.id, Candidate.verdict == Outcome.KEEP
+            Candidate.campaign_id == p.campaign.id, Candidate.verdict == Outcome.KEEP
         )
-        latest = tick.s.scalar(keeps) or tick.campaign.created_at
-        started = tick.last.started_at if tick.last is not None else latest
-        if utcnow() - max(latest, started) < timedelta(hours=self.hours):
-            return None
-        return Fire(f'no keep for {self.hours:g} hours')
+        latest = p.s.scalar(keeps) or p.campaign.created_at
+        started = p.last.started_at if p.last is not None else latest
+        return max(latest, started) + timedelta(hours=self.hours)
 
 
 class Auditor(SweepRole):
@@ -470,10 +478,12 @@ code of its own comes from a plugin: see `no_keep` above.
 ### The contract
 
 A trigger is an entry of `[roles.<name>] triggers`: `{ provider = "<trigger>", <parameter> = <value> }`. A plugin's
-trigger is a subclass of `Trigger`: its fields are its parameters. On each tick, for each sweeping role
-without a pending request, the daemon calls `fire(tick)` of each trigger of the role in order. It returns a `Fire`
-(the reason, how many agents) or None, and reads with `tick` (a `Tick`: the session, the campaign, the role and the
-queries of the built-in triggers). The rows that it reads are the models of `piloop.db.models`, the
+trigger is a subclass of `Trigger`: its fields are its parameters. On each pass, for each sweeping role
+without a pending request, the daemon calls `fire(p)` of each trigger of the role in order. It returns a `Fire`
+(the reason, how many agents) or None, and reads with `p` (a `Pass`: the session, the time, the campaign, the role and
+the queries of the built-in triggers). A pass comes when something changes in the campaign, or in what a trigger names
+in `WAKES_ON`, and when the time that a trigger's `due_in` returns comes. A trigger that compares a time returns when
+the comparison turns: there is no pass on a timer. The rows that it reads are the models of `piloop.db.models`, the
 [data model](/architecture/data-model). A trigger with `ON_STOP` fires only once after a stop, when the
 campaign's last runs are judged.
 
@@ -579,7 +589,7 @@ one.
 
 ## Stop conditions
 
-On each tick (every 2 seconds by default), the daemon asks the stop rule of each active campaign whether the campaign
+On each pass, the daemon asks the stop rule of each active campaign whether the campaign
 goes on, holds, or stops. piloop gives the rule a `StopCase`: the facts that the rule asked for. The rule returns one
 of three answers:
 
@@ -589,7 +599,7 @@ of three answers:
 | `Hold(reason)` | It starts no agent and no evaluation for the campaign. Work that runs finishes, and piloop scores it. `piloop status` shows `launches held: <reason>`. |
 | `Stop(reason)` | It stops the campaign. [Cost and spend limits](/concepts/cost#stop-conditions) says what a stop does. |
 
-A hold is not a pause. piloop asks the rule again on each tick, and the hold ends when the rule answers `Go`. piloop
+A hold is not a pause. piloop asks the rule again on each pass, and the hold ends when the rule answers `Go`. piloop
 does not stop a paused campaign, but it holds one.
 
 The built-in rule is `limits`. It holds the campaign while the spend of `[spend]` is unknown or at `max_spend`. Else
@@ -622,7 +632,7 @@ A stop rule is a [pure](#pure-plugins) provider, a subclass of `StopRule`. Its f
 parameters. Import the types from `piloop.capabilities`.
 
 - `limits() -> dict[Fact, float]`: the limit that the rule sets on each fact that it limits.
-- `reads() -> list[Fact]`: the facts that the rule needs. Most facts cost database queries on every tick, so piloop
+- `reads() -> list[Fact]`: the facts that the rule needs. Most facts cost database queries on every pass, so piloop
   gets only these. By default, the facts of `limits()`.
 - `check(case: StopCase) -> Go | Hold | Stop`: the answer. `Hold` and `Stop` have a `reason`.
 

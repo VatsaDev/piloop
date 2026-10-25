@@ -213,7 +213,7 @@ can infer, and each mechanism that the reader does not act on. These rules apply
 3. Use one example on a page, and grow it. Before: `my-campaign`, Titanic and enwik8 on one page. After: enwik8 in
    each block.
 4. Define a term in bold where it first appears, in the same sentence. Link to its page after that. Before: "on each
-   tick", with no definition. After: "on each **tick**, a pass of the daemon's loop every 2 seconds".
+   pass", with no definition. After: "on each **pass** over the campaigns, when something changes in one".
 5. Use one word for one thing. Before: "worker", "worker agent" and "agent" for one role. After: "implementer".
 6. Write one idea for each sentence, in most sentences 20 words or fewer, in the active voice and the present tense.
    Use the imperative for instructions. Before: "A run whose agent could not be launched, or that ended within two

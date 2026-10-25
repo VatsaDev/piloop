@@ -21,6 +21,7 @@ from piloop.campaign.stop import (
     StopRequested,
     check as check_campaign,
     hours,
+    hours_due,
     request_stop,
     requested,
     runs,
@@ -298,7 +299,7 @@ def test_max_runs_caps_the_runs_queued_in_one_tick(
     configure(db, campaign, max_implementers=4, max_runs=1)
     add_ideas(db, campaign, 'a', 'b', 'c', 'd')
     sched = make_scheduler(db, runtime, tmp_path)
-    assert sched.tick() == [1], 'four free slots, but max_runs leaves room for one run'
+    assert sched.run_all() == [1], 'four free slots, but max_runs leaves room for one run'
     sched.wait()
     with db.session() as s:
         assert s.scalars(select(Run.id)).all() == [1]
@@ -313,7 +314,7 @@ def test_max_runs_leaves_room_for_the_remaining_runs_only(
     add_run(db, campaign)
     add_ideas(db, campaign, 'a', 'b')
     sched = make_scheduler(db, runtime, tmp_path)
-    assert sched.tick() == [1], 'two runs already: max_runs 3 leaves room for one more'
+    assert sched.run_all() == [1], 'two runs already: max_runs 3 leaves room for one more'
     sched.wait()
     with db.session() as s:
         assert s.scalar(select(func.count(Run.id))) == 3
@@ -327,6 +328,22 @@ def test_max_hours_since_the_first_run_started(db: Database, campaign: Campaign)
     assert reason(db, campaign) is None
     add_run(db, campaign, started_at=timedelta(hours=12, minutes=30))
     assert reason(db, campaign) == 'max_hours: 12.5h since the first run'
+
+
+def test_the_pass_comes_back_when_max_hours_is_reached(db: Database, campaign: Campaign) -> None:
+    """``max_hours`` is the one limit that time alone reaches: the pass returns when it will."""
+    configure(db, campaign, max_hours=12)
+    now = utcnow()
+    with db.session() as s:
+        row = s.get_one(Campaign, campaign.id)
+        assert hours_due(s, row, row.config, now) is None, 'no run yet: no clock'
+    add_run(db, campaign, started_at=timedelta(hours=11))
+    with db.session() as s:
+        row = s.get_one(Campaign, campaign.id)
+        due = hours_due(s, row, row.config, now)
+        assert due is not None and abs(due - (now + timedelta(hours=1))) < timedelta(minutes=1)
+        row.paused, row.paused_reason = Pause.ALL, 'night'
+        assert hours_due(s, row, row.config, now) is None, 'paused time does not count'
 
 
 def test_the_time_a_campaign_was_paused_does_not_count_toward_max_hours(db: Database, campaign: Campaign) -> None:
@@ -537,7 +554,7 @@ def test_stopping_drains_the_requests_and_queued_runs_pending_at_that_moment(
         s.commit()
     sched = make_scheduler(db, runtime, tmp_path)
 
-    assert sched.tick() == [3], 'only the closing watchdog launches'
+    assert sched.run_all() == [3], 'only the closing watchdog launches'
     sched.wait()
     with db.session() as s:
         assert [(w.kind, w.state, w.error, w.ended_at is not None) for w in s.scalars(select(AgentSession))] == [
@@ -552,7 +569,7 @@ def test_stopping_drains_the_requests_and_queued_runs_pending_at_that_moment(
         assert (event.target_id, finished) == (2, RunFinished(end=RunEnd.CAMPAIGN_STOPPED, error=None))
         s.add(AgentSession(kind=RESEARCH, campaign_id=campaign.id, reason='by hand, after the stop'))
         s.commit()
-    assert sched.tick() == [4], 'a request made after the stop is explicit and launches'
+    assert sched.run_all() == [4], 'a request made after the stop is explicit and launches'
     sched.wait()
     sched.stop(timeout=5)
     with db.session() as s:
@@ -576,7 +593,7 @@ def test_a_requested_stop_ends_the_campaign_as_a_stop_condition_does(
         request_stop(s, s.get_one(Campaign, campaign.id), System.HUMAN, reason='machine needed', ending=Ending.WRAP_UP)
         s.commit()
     sched = make_scheduler(db, runtime, tmp_path)
-    assert sched.tick() == [2], 'only the closing watchdog launches'
+    assert sched.run_all() == [2], 'only the closing watchdog launches'
     sched.wait()
     assert campaign_state(db, campaign) == (CampaignStatus.STOPPED, 'stopped by human: machine needed')
     with db.session() as s:
@@ -584,7 +601,7 @@ def test_a_requested_stop_ends_the_campaign_as_a_stop_condition_does(
         assert s.get_one(AgentSession, 2).reason == 'campaign stopped: stopped by human: machine needed'
         s.get_one(Campaign, campaign.id).status = CampaignStatus.ACTIVE
         s.commit()
-    assert sched.tick() == [3], 'reactivated: the old request stops nothing, and the queued idea runs'
+    assert sched.run_all() == [3], 'reactivated: the old request stops nothing, and the queued idea runs'
     sched.wait()
     sched.stop(timeout=5)
     assert campaign_state(db, campaign)[0] is CampaignStatus.ACTIVE
@@ -641,7 +658,7 @@ def test_a_requested_stop_ends_a_held_campaign_and_by_default_its_closing_review
     """
     idea = stop_while_held(db, campaign, hold)
     sched = make_scheduler(db, runtime, tmp_path)
-    assert sched.tick() == [1], 'only the closing review launches'
+    assert sched.run_all() == [1], 'only the closing review launches'
     assert campaign_state(db, campaign) == (CampaignStatus.STOPPED, 'stopped by human: over budget')
     with db.session() as s:
         assert (s.get_one(Run, 1).end, s.get_one(Idea, idea).status) == (RunEnd.CAMPAIGN_STOPPED, IdeaStatus.READY)
@@ -661,7 +678,7 @@ def test_closing_review_skip_ends_the_stop_at_once_with_an_escalation(
 
     monkeypatch.setattr('piloop.daemon.scheduler.sync_documents', sync)
     sched = make_scheduler(db, runtime, tmp_path)
-    assert sched.tick() == []
+    assert sched.run_all() == []
     assert campaign_state(db, campaign) == (CampaignStatus.STOPPED, 'stopped by human: over budget')
     assert closing_reviews(db, campaign) == [], 'no closing review is requested'
     assert synced == ['demo'], 'the [memory] documents are synced, as at every close'
@@ -674,7 +691,7 @@ def test_closing_review_skip_ends_the_stop_at_once_with_an_escalation(
         assert last.body.endswith('[spend] closing_review = "skip".')
         s.get_one(Campaign, campaign.id).spend_at = None
         s.commit()
-    sched.tick()
+    sched.run_all()
     with db.session() as s:
         assert s.get_one(Campaign, campaign.id).spend_at is None, (
             'no review waits: the spend of a stopped campaign is not read'
@@ -688,14 +705,14 @@ def test_closing_review_wait_starts_the_review_once_the_spend_hold_lifts(
     """The daemon goes on reading the spend of a stopped campaign whose closing review waits."""
     stop_while_held(db, campaign, 'spend', 'wait')
     sched = make_scheduler(db, runtime, tmp_path)
-    assert sched.tick() == []
+    assert sched.run_all() == []
     assert campaign_state(db, campaign)[0] is CampaignStatus.STOPPED
     assert closing_reviews(db, campaign) == [AgentSessionState.REQUESTED], 'requested, waiting for the hold'
     (Path(campaign.path).parent / 'bill').write_text('3')
     with db.session() as s:
         s.get_one(Campaign, campaign.id).spend_at = None  # the next reading is due
         s.commit()
-    assert sched.tick() == [1], 'a spend below the limit: the review starts'
+    assert sched.run_all() == [1], 'a spend below the limit: the review starts'
     sched.wait()
     sched.stop(timeout=5)
 
@@ -713,27 +730,27 @@ def test_the_closing_review_waits_until_the_stopped_campaigns_runs_are_judged_an
         request_stop(s, s.get_one(Campaign, campaign.id), System.HUMAN, reason='done', ending=Ending.WRAP_UP)
         s.commit()
     sched = make_scheduler(db, runtime, tmp_path)
-    assert sched.tick() == []
+    assert sched.run_all() == []
     assert campaign_state(db, campaign) == (CampaignStatus.STOPPED, 'stopped by human: done')
     assert closing_reviews(db, campaign) == [], 'its run is still open'
     with db.session() as s:
         run = s.get_one(Run, running)
         run.status, run.end, run.finished_at, run.scoring = RunStatus.SUCCEEDED, RunEnd.FINISHED, utcnow(), True
         s.commit()
-    assert sched.tick() == [], 'its commits are still judged'
+    assert sched.run_all() == [], 'its commits are still judged'
     sched.stop(timeout=5)
     with db.session() as s:
         s.get_one(Run, running).scoring = False
         s.commit()
     restarted = make_scheduler(db, runtime, tmp_path)
-    assert restarted.tick() == [1], 'settled: the closing review launches'
+    assert restarted.run_all() == [1], 'settled: the closing review launches'
     restarted.wait()
-    assert restarted.tick() == [], 'once'
+    assert restarted.run_all() == [], 'once'
     with db.session() as s:
         s.get_one(Campaign, campaign.id).status = CampaignStatus.ACTIVE
         request_stop(s, s.get_one(Campaign, campaign.id), System.HUMAN, reason='again', ending=Ending.WRAP_UP)
         s.commit()
-    assert restarted.tick() == [2], 'stopped again: a closing review again'
+    assert restarted.run_all() == [2], 'stopped again: a closing review again'
     restarted.wait()
     restarted.stop(timeout=5)
 
@@ -747,11 +764,11 @@ def test_the_closing_sweep_is_each_stopped_trigger_and_none_without_one(
     configure(db, campaign, harness=HARNESS_WORSE, roles={'watchdog': {'triggers': []}, 'closer': closer}, max_runs=1)
     add_ideas(db, campaign, 'a')
     sched = make_scheduler(db, runtime, tmp_path)
-    assert sched.tick() == [1]
+    assert sched.run_all() == [1]
     sched.wait()
-    assert sched.tick() == [2], 'the closer, and no watchdog'
+    assert sched.run_all() == [2], 'the closer, and no watchdog'
     sched.wait()
-    assert sched.tick() == [], 'it fires once'
+    assert sched.run_all() == [], 'it fires once'
     sched.stop(timeout=5)
     with db.session() as s:
         rows = [(w.kind, w.reason) for w in s.scalars(select(AgentSession).where(AgentSession.id > 1))]
@@ -769,15 +786,15 @@ def test_a_stopped_campaign_gets_one_closing_watchdog_and_no_trigger_requests(
     configure(db, campaign, harness=HARNESS_WORSE, max_runs=1)
     add_ideas(db, campaign, 'a', 'b')
     sched = make_scheduler(db, runtime, tmp_path, tracer)
-    assert sched.tick() == [1], 'below max_runs: the queue trigger creates run 1, which commits a measured discard'
+    assert sched.run_all() == [1], 'below max_runs: the queue trigger creates run 1, which commits a measured discard'
     sched.wait()
     assert campaign_state(db, campaign) == (CampaignStatus.ACTIVE, None)
 
-    assert sched.tick() == [2], 'the closing watchdog launches on the tick that stops the campaign'
+    assert sched.run_all() == [2], 'the closing watchdog launches on the tick that stops the campaign'
     assert campaign_state(db, campaign) == (CampaignStatus.STOPPED, 'max_runs: 1 runs')
     sched.wait()
-    assert sched.tick() == []
-    sched.tick()
+    assert sched.run_all() == []
+    sched.run_all()
     with db.session() as s:
         assert [
             (w.kind, w.reason)
@@ -806,7 +823,7 @@ def test_a_stopped_campaign_gets_one_closing_watchdog_and_no_trigger_requests(
     with db.session() as s:
         s.add(AgentSession(kind=RESEARCH, campaign_id=campaign.id, reason='by hand'))
         s.commit()
-    assert sched.tick() == [3], 'a hand-inserted request is explicit and launches'
+    assert sched.run_all() == [3], 'a hand-inserted request is explicit and launches'
     sched.wait()
     sched.stop(timeout=5)
     with db.session() as s:
@@ -832,7 +849,7 @@ def test_a_stop_syncs_the_memory_documents_before_the_closing_watchdog_whose_bri
     Path(campaign.path, 'docs').mkdir()
     Path(campaign.path, 'docs', 'report.md').write_text('# Closing report\n')
     sched = make_scheduler(db, runtime, tmp_path, tracer)
-    [watchdog] = sched.tick()
+    [watchdog] = sched.run_all()
     sched.wait()
     sched.stop(timeout=5)
     with db.session() as s:
@@ -874,7 +891,7 @@ def test_a_stop_whose_document_sync_fails_still_stops_and_launches_the_closing_w
 
     monkeypatch.setattr('piloop.daemon.scheduler.sync_documents', broken)
     sched = make_scheduler(db, runtime, tmp_path, tracer)
-    [watchdog] = sched.tick()
+    [watchdog] = sched.run_all()
     sched.wait()
     sched.stop(timeout=5)
     with db.session() as s:
@@ -987,9 +1004,9 @@ def test_a_stop_rule_from_a_plugin_replaces_the_built_in_one_through_piloop_toml
             s.commit()
         add_ideas(db, campaign, 'a', 'b')
         sched = make_scheduler(db, runtime, tmp_path)
-        assert sched.tick() == [1]
+        assert sched.run_all() == [1]
         sched.wait()
-        sched.tick()
+        sched.run_all()
         assert campaign_state(db, campaign) == (CampaignStatus.STOPPED, 'after_keeps: 1 keeps')
         sched.stop(timeout=5)
         assert STOP_RULES.sources()['after_keeps'].release == 'piloop-stop-after-keeps 0.1.0'

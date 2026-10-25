@@ -97,7 +97,7 @@ def pause(s: Session, campaign_id: CampaignId, *, evals: bool, reason: str) -> C
 
 
 def resume(s: Session, campaign_id: CampaignId) -> Pause:
-    """Resume a paused campaign, and return what it held. The daemon schedules it again on its next tick.
+    """Resume a paused campaign, and return what it held. The daemon schedules it again at once.
 
     Raises:
         Refused: the campaign is not paused.
@@ -329,7 +329,7 @@ def _stays(candidate: Candidate) -> str:
 
 
 def measuring_held(s: Session, campaign: Campaign, cfg: CampaignConfig) -> str:
-    """Return `` once …``: when the daemon measures the campaign, as the scheduler's tick decides, or '' for now.
+    """Return `` once …``: when the daemon measures the campaign, as the scheduler's pass decides, or '' for now.
 
     A stopped campaign is measured too, but only what someone asked for (``ledger.due``).
     """

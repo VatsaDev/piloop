@@ -10,7 +10,7 @@ import threading
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import partial
 from pathlib import Path
 from typing import Self
@@ -20,7 +20,7 @@ from pydantic import Field, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from piloop.db.models import LIVE_LEASES, Lease, LeaseKind, LeaseWorker, WorkerInstance, WorkerInstanceState
+from piloop.db.models import LIVE_LEASES, EventModel, Lease, LeaseKind, LeaseWorker, WorkerInstance, WorkerInstanceState
 from piloop.net import Route
 from piloop.otel import Tracer
 from piloop.plugins.cas.contract import Cas
@@ -35,10 +35,17 @@ from piloop.plugins.executor.contract import (
     LeftJob,
     Prompt,
 )
-from piloop.plugins.executor.kit import jobs
+from piloop.plugins.executor.kit import jobs, scaling
 from piloop.plugins.executor.kit.capacity import HostSample, Pool, Provisioner
 from piloop.plugins.executor.kit.client import Local
-from piloop.plugins.executor.kit.leases import DEFAULT_POOLS, SERVE, Leases, Timing
+from piloop.plugins.executor.kit.leases import (
+    DEFAULT_POOLS,
+    SERVE,
+    Leases,
+    LeaseWorkerJoined,
+    LeaseWorkerRelieved,
+    Timing,
+)
 from piloop.plugins.executor.kit.relay import Relay, Runner
 from piloop.plugins.executor.kit.remote import Remote, lease_routes
 from piloop.plugins.executor.kit.scaling import Scaler
@@ -139,9 +146,17 @@ class WorkersExecutor:
         """The lease routes (``remote.lease_routes``), which workers on other machines call (``piloop worker``)."""
         return lease_routes(self.leases, self._changed, self._cas, self._send, self._cli)
 
-    def tick(self, now: datetime) -> datetime | None:
+    def capacity_events(self) -> frozenset[type[EventModel]]:
+        """A worker that joins or comes back, and one whose host is no longer under pressure."""
+        return frozenset({LeaseWorkerJoined, LeaseWorkerRelieved})
+
+    def upkeep_events(self) -> frozenset[type[EventModel]]:
+        """What the scaler of the provisioned pools acts on (``scaling.WAKES``): a job that waits, a worker lost."""
+        return frozenset(topic.model for topic in scaling.WAKES)
+
+    def upkeep(self, now: datetime, absent: timedelta) -> datetime | None:
         """Expire the leases of a silent worker (``Leases.expire``), scale the provisioned pools, and return when next."""
-        due = [d for d in (self.leases.expire(now), self.scaler.tick(now)) if d is not None]
+        due = [d for d in (self.leases.expire(now, absent), self.scaler.upkeep(now)) if d is not None]
         return min(due, default=None)
 
     def stop(self, timeout: float) -> None:

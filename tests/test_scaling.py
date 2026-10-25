@@ -5,6 +5,7 @@ A server here is its database, its leases, its network and a ``Scaler`` over the
 Each pass gets its time, so a test moves the clock by passing a later one.
 """
 
+import threading
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -406,26 +407,33 @@ def test_the_pool_starts_none_past_its_worker_hours_of_the_last_day(
     assert len(PLATFORMS[platform].machines) == 1
 
 
-def test_the_tick_runs_a_pass_on_a_queued_lease_or_at_its_deadline_and_one_at_a_time(
+def test_the_upkeep_runs_a_pass_on_a_queued_lease_or_at_its_deadline_and_one_at_a_time(
     db: Database, campaign: Campaign, platform: str, tmp_path: Path
 ) -> None:
     s = server(db, tmp_path / 'home', pools(platform))
     PLATFORMS[platform].down = True
-    s.scaler.tick(utcnow())  # the first pass is due at once
+    s.scaler.upkeep(utcnow())  # the first pass is due at once
     s.scaler.join(10)
-    retry = s.scaler.tick(utcnow())
+    retry = s.scaler.upkeep(utcnow())
     assert retry is not None and retry <= later(TIMING.renew), 'a platform that does not answer fails the pass'
     PLATFORMS[platform].down = False
-    s.scaler.tick(later(TIMING.renew))
+    s.scaler.upkeep(later(TIMING.renew))
     s.scaler.join(10)
-    deadline = s.scaler.tick(utcnow())
+    deadline = s.scaler.upkeep(utcnow())
     assert deadline is not None and deadline > later(scaling.RESYNC_SECONDS - 5), 'nothing to do until the next list'
     waiting(db, campaign, tmp_path)
-    s.scaler.tick(utcnow())
+    s.scaler.upkeep(utcnow())
     s.scaler.join(10)
     assert len(PLATFORMS[platform].machines) == 1, 'the queued lease woke it'
-    queue_more = s.scaler.tick(utcnow())
-    assert queue_more == s.scaler.tick(utcnow()), 'nothing new: no pass'
+    queue_more = s.scaler.upkeep(utcnow())
+    assert queue_more == s.scaler.upkeep(utcnow()), 'nothing new: no pass'
+    s.scaler.join(10)
+    held = threading.Event()
+    s.scaler._pass = threading.Thread(target=held.wait, args=(10,))  # a pass that the platform holds
+    s.scaler._pass.start()
+    now = utcnow()
+    assert s.scaler.upkeep(now) == now + scaling.PASS_POLL, 'a pass in flight: back soon, for the deadline that it sets'
+    held.set()
     s.scaler.join(10)
 
 

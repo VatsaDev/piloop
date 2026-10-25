@@ -1,7 +1,7 @@
 # piloop-stop-after-keeps
 
 A plugin that adds a [stop rule](https://piloop.autoresearch.inc/architecture/extension-points#stop-conditions). On each
-tick (every 2 seconds by default), the daemon asks the stop rule whether the campaign goes on, holds, or stops. This
+pass, the daemon asks the stop rule whether the campaign goes on, holds, or stops. This
 rule stops the campaign after a number of keeps. Use it for a campaign that wants a few good changes and no more. It
 is the built-in rule `limits` with one more limit, so `max_hours`, `max_spend` and the other limits still apply. The
 rule imports only its contract and the built-in rule, so it is a pure plugin.

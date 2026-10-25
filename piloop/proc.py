@@ -8,6 +8,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 
 import psutil
 
@@ -84,9 +85,10 @@ class Inherited:
     """The children that a process already had when it began: an in-place restart (``exec``) hands them over.
 
     ``piloop restart`` execs the daemon while its threads still wait on subprocesses (an agent's turn, ``git``).
-    They stay children of the pid, but the new program has no ``Popen`` for them, so each one that exits stays a zombie
-    until the pid exits: the campaign build's daemon had 26 after two restarts. ``reap`` waits for the ones that have
-    exited, and only for these pids, so it never takes the exit status of a child that a ``Popen`` of this program owns.
+    They stay children of the pid, but the new program has no ``Popen`` for them, so each one that exits would stay a
+    zombie until the pid exits: the campaign build's daemon had 26 after two restarts. ``watch`` waits for each one in a
+    thread of its own, and only for these pids, so it never takes the exit status of a child that a ``Popen`` of this
+    program owns.
     """
 
     def __init__(self, pids: set[int]) -> None:
@@ -97,16 +99,12 @@ class Inherited:
         """The children of this process now. Take it before this program starts any child of its own."""
         return cls({child.pid for child in psutil.Process().children()})
 
-    def reap(self) -> int:
-        """Wait for each inherited child that has exited, without blocking. Return how many were reaped."""
-        reaped = 0
+    def watch(self) -> None:
+        """Reap each inherited child when it exits: one thread for each, that waits for it."""
         for pid in sorted(self._pids):
-            try:
-                done, _ = os.waitpid(pid, os.WNOHANG)
-            except ChildProcessError:  # not a child any more: reaped elsewhere
-                self._pids.discard(pid)
-                continue
-            if done:
-                self._pids.discard(pid)
-                reaped += 1
-        return reaped
+            threading.Thread(target=_reap, args=(pid,), name=f'inherited-{pid}', daemon=True).start()
+
+
+def _reap(pid: int) -> None:
+    with contextlib.suppress(ChildProcessError):  # not a child any more: reaped elsewhere
+        os.waitpid(pid, 0)

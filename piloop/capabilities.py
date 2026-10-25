@@ -25,7 +25,7 @@ from piloop.plugins.cas.s3 import S3
 from piloop.plugins.cas.gcs import Gcs
 from piloop.plugins.cas.http import Http
 
-from piloop.plugins.trigger.contract import TRIGGERS, Trigger, TriggerEntry, Tick, Fire
+from piloop.plugins.trigger.contract import TRIGGERS, Trigger, TriggerEntry, Pass, Fire
 from piloop.plugins.trigger.contract import Backlog, TrackBacklog, Incident
 from piloop.plugins.trigger.anomaly import AnomalyTrigger
 from piloop.plugins.trigger.cron import CronTrigger
@@ -54,6 +54,7 @@ from piloop.plugins.stop_rule.contract import Progress, Fact
 from piloop.plugins.stop_rule.contract import Go, GO, Hold, Stop
 from piloop.plugins.stop_rule.limits import Limits
 
+from piloop.db.models import EventModel
 from piloop.plugins.executor.contract import EXECUTORS, Executor, ExecutorConfig, Host
 from piloop.plugins.executor.contract import Results, Settled
 from piloop.plugins.executor.contract import AgentJob, EvaluationJob, LeftJob

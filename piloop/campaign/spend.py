@@ -9,7 +9,7 @@ agent is active.
 
 import math
 import subprocess
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from subprocess import PIPE
 
@@ -23,7 +23,7 @@ from piloop.ids import TargetKind, TargetRef
 from piloop.proc import STDERR_IN_ERROR, child_env, kill_group
 
 TIMEOUT = 60
-"""The seconds that the spend command can take. The daemon's tick waits for it, so a hung command fails."""
+"""The seconds that the spend command can take. The daemon's spend reading waits for it, so a hung command fails."""
 NOTICE_PRIORITY = 1
 ESCALATION_PRIORITY = 0
 """An escalation from the guard stops all launches, so it is the most urgent item in the inbox."""
@@ -33,9 +33,9 @@ class SpendError(Exception):
     """The spend command did not print a spend. It failed, timed out or printed something else."""
 
 
-def due(campaign: Campaign, spend: Spend) -> bool:
-    """Return True if the command never ran, or last ran ``interval`` or more seconds ago."""
-    return campaign.spend_at is None or utcnow() - campaign.spend_at >= timedelta(seconds=spend.interval)
+def next_at(campaign: Campaign, spend: Spend) -> datetime | None:
+    """When the command runs next: ``interval`` after its last run. None if it never ran, so it runs now."""
+    return None if campaign.spend_at is None else campaign.spend_at + timedelta(seconds=spend.interval)
 
 
 def read(command: list[str], cwd: Path) -> float:

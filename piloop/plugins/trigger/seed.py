@@ -1,7 +1,9 @@
+from datetime import timedelta
+
 from sqlalchemy import select
 
 from piloop.db.models import Idea, IdeaStatus, count
-from piloop.plugins.trigger.contract import Fire, Tick, Trigger
+from piloop.plugins.trigger.contract import Fire, Pass, Trigger
 from piloop.plugins.trigger.kit.reasons import retry
 
 
@@ -14,18 +16,21 @@ class SeedTrigger(Trigger):
     seed filed in that moment waits for the next sweep.
     """
 
-    def fire(self, tick: Tick) -> Fire | None:
-        if tick.live() >= tick.max_concurrent:
+    def fire(self, p: Pass) -> Fire | None:
+        if p.live() >= p.max_concurrent:
             return None
-        seeds = select(Idea).where(Idea.campaign_id == tick.campaign.id, Idea.status == IdeaStatus.SEED)
-        waiting = count(tick.s, seeds)
+        seeds = select(Idea).where(Idea.campaign_id == p.campaign.id, Idea.status == IdeaStatus.SEED)
+        waiting = count(p.s, seeds)
         if not waiting:
             return None
-        last = tick.last
-        fresh = waiting if last is None else count(tick.s, seeds.where(Idea.created_at > last.started_at))
+        last = p.last
+        fresh = waiting if last is None else count(p.s, seeds.where(Idea.created_at > last.started_at))
         if fresh:
             return Fire(f'{fresh} new seeds to develop')
         assert last is not None  # With no row yet, every waiting seed is fresh.
-        if (retrying := retry(tick)) is not None:
+        if (retrying := retry(p)) is not None:
             return Fire(f'{waiting} seeds to develop; {retrying}')
+        return None
+
+    def due_in(self, p: Pass) -> timedelta | None:
         return None

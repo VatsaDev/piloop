@@ -17,7 +17,7 @@ class Limits(StopRule):
 
     ``[plugins.stop_rule]`` sets the limits. One is enough. Without one, the campaign has no end.
 
-    The daemon checks the limits on every tick, before it requests anything. When one is reached, the campaign is
+    The daemon checks the limits on every pass, before it requests anything. When one is reached, the campaign is
     ``stopped`` (``campaigns.status``, ``stopped_reason``). Running implementers are told to save their work and stop, and
     are ended 10 minutes later. What they saved is scored. Most harnesses read the message only when the turn ends: an
     implementer that is ended before it left its finding ends its run ``campaign_stopped``, which does not count toward
@@ -26,7 +26,7 @@ class Limits(StopRule):
     and the triggers request nothing more. The daemon files no seeds for the campaign either. An agent that you request with ``piloop launch`` after
     the stop still starts.
 
-    ``piloop campaign stop`` stops a campaign the same way on the next tick, whatever the limits are. With ``--kill``,
+    ``piloop campaign stop`` stops a campaign the same way at once, whatever the limits are. With ``--kill``,
     the implementers are ended at once instead of told. ``piloop init`` resumes a stopped campaign when its limits
     changed.
 

@@ -441,8 +441,6 @@ class Leases:
         self._results = results
         self.timing = timing
         self.pools = pools
-        self._expired_at: datetime | None = None
-        """When ``expire`` last ran, to tell a gap in the scheduler's ticks (a suspend) from a silent worker."""
 
     def register(
         self, worker: str, pool: str, version: str, runners: Sequence[str], host: HostSample
@@ -741,17 +739,16 @@ class Leases:
                 s.get_one(Lease, lease_id).receipt = {**receipt, 'settled': str(e)}
                 s.commit()
 
-    def expire(self, now: datetime | None = None) -> datetime | None:
-        """Mark silent workers unreachable, and expire the leases past their time. Return the next expiry.
+    def expire(self, now: datetime | None = None, absent: timedelta = timedelta(0)) -> datetime | None:
+        """Mark silent workers unreachable, and expire the leases past their time. Return when it next has to.
 
-        The scheduler runs this on every tick. The returned time is when it next has something to do, for a daemon
-        that wakes on deadlines. A gap since the last tick longer than ``Timing.grace`` is the daemon's own absence (a
-        laptop asleep, a stopped process), not a worker's silence: every live lease then gets a full period, as at a
-        start (``renew_all``), and nothing expires.
+        That is the earliest expiry of a live lease, or the earliest time that a worker with one becomes unreachable.
+        ``absent`` is how long the daemon was away past its plan (a laptop asleep, a stopped process): longer than
+        ``Timing.grace`` is the daemon's own absence, not a worker's silence, so every live lease then gets a full
+        period, as at a start (``renew_all``), and nothing expires.
         """
         now = now or utcnow()
-        last, self._expired_at = self._expired_at, now
-        if last is not None and now - last > timedelta(seconds=self.timing.grace):
+        if absent > timedelta(seconds=self.timing.grace):
             self.renew_all(now)
             return now + timedelta(seconds=self.timing.toleration)
         live = Lease.state.in_(LIVE_LEASES)
@@ -779,7 +776,12 @@ class Leases:
             with contextlib.suppress(StaleLease):  # a report or a heartbeat came first, in the meantime
                 self._lose(lease_id, reason, lambda s, lease_id=lease_id: self._still_expired(s, lease_id, now))
         with self._db.session() as s:
-            return s.scalar(select(func.min(Lease.expires_at)).where(live))
+            expiry = s.scalar(select(func.min(Lease.expires_at)).where(live))
+            reachable = LeaseWorker.no_lease.is_distinct_from(NoLease.UNREACHABLE)
+            holding = LeaseWorker.id.in_(select(Lease.worker).where(live))
+            heard = s.scalar(select(func.min(LeaseWorker.seen_at)).where(reachable, holding))
+        silent = heard + timedelta(seconds=self.timing.grace) if heard is not None else None
+        return min((t for t in (expiry, silent) if t is not None), default=None)
 
     def _still_expired(self, s: Session, lease_id: int, now: datetime) -> Lease:
         """Return the lease if it is still live and past its expiry at ``now``, in the transaction that expires it."""

@@ -49,7 +49,7 @@ def waiting() -> ColumnElement[bool]:
 
     They become runnable when those prerequisites finish. ``low_water`` counts them as backlog, together with the
     runnable ideas, because no research sweep is needed before they run. Without this, a long run with many ideas
-    ``after`` it starts a sweep on every tick.
+    ``after`` it starts a sweep on every pass.
     """
     return (Idea.status == IdeaStatus.READY) & ~unblocked() & ~_blocked_by(IdeaStatus.DONE, IdeaStatus.SCHEDULED)
 
@@ -120,7 +120,7 @@ def park_stranded(s: Session, campaign_id: CampaignId) -> dict[IdeaId, IdeaId]:
 def supersede(s: Session, campaign_id: CampaignId) -> dict[IdeaId, IdeaId]:
     """Reject each idea of the campaign that a newer idea supersedes and that never ran.
 
-    The daemon runs this on each tick. An idea never ran if it has no ``runs`` row and is ``seed``, ``proposed`` or
+    The daemon runs this on each pass. An idea never ran if it has no ``runs`` row and is ``seed``, ``proposed`` or
     ``ready``. A superseded idea that ran keeps its status and its candidates, even if a failed attempt put it back
     to ``ready``. The new idea is judged against those candidates. Research cannot change the status of other ideas.
     It inserts a superseding idea instead, and this function rejects the old one.

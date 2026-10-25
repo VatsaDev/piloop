@@ -241,7 +241,7 @@ class RunController:
     def configure(self) -> None:
         """Hand the executor its config with the live limits applied (``Executor.configure``), when one changed.
 
-        The daemon calls it on each tick, so a limit holds from the next one. Limits that its parameters refuse (a
+        The daemon calls it on each pass, so a limit holds from the next one. Limits that its parameters refuse (a
         ``config.toml`` that changed under them) leave the parameters as they were, and the event says why.
         """
         with self._db.session() as s:
@@ -282,7 +282,7 @@ class RunController:
         """Submit the next evaluations of the queue while the executor has free slots, in the queue's order.
 
         The order and the fairness are the queue's (``queue.waiting``), whichever the executor. Called after each
-        request, after each evaluation that ends, and on each tick.
+        request, after each evaluation that ends, and on each pass.
         """
         with self.launcher.lock:
             if self.launcher.cancelled.is_set():
@@ -690,7 +690,7 @@ class RunController:
         """Judge again a candidate that someone measured by hand (``ledger.rejudges``), with all its measurements.
 
         Never raises. When the judgement fails, for example because the repo is gone, a ``RejudgeFailed`` event records
-        the error, and the request is answered, so it is not tried on every tick.
+        the error, and the request is answered, so it is not tried on every pass.
         """
         with self._db.session() as s:
             candidate = s.get_one(Candidate, candidate_id)

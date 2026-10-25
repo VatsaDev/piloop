@@ -138,6 +138,13 @@ def test_the_actor_is_read_from_its_signature(tmp_path: Path, monkeypatch: pytes
     assert Settings(home=tmp_path).actor == System.HUMAN
 
 
+def test_tick_seconds_of_config_toml_is_dropped_with_a_warning(tmp_path: Path) -> None:
+    """The daemon wakes on events now: a ``tick_seconds`` of 0.2 does nothing, and a home that sets it still loads."""
+    (tmp_path / 'config.toml').write_text('tick_seconds = 2\n')
+    with pytest.warns(PiloopDeprecationWarning, match=r'tick_seconds is deprecated and does nothing; delete it'):
+        Settings(home=tmp_path)
+
+
 def test_max_evaluations_of_config_toml_or_the_environment_is_the_evaluations_of_the_executor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

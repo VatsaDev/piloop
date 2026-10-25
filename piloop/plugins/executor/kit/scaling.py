@@ -22,8 +22,9 @@ The ``worker_instances`` row of an instance commits before its start, and its cr
 at the first pass and then every ``RESYNC_SECONDS``: an instance that it lists with this server's owner and no row is
 an orphan, and is stopped. Every change of a row is an ``instance.*`` event on it.
 
-The pass runs on a thread of its own, at most one at a time, so a slow platform never holds the daemon's tick. The tick
-starts one when the feed has a change that the pass acts on (``WAKES``), or at the pass's next deadline.
+The pass runs on a thread of its own, at most one at a time, so a slow platform never holds the daemon's loop. The
+executor's upkeep starts one when the feed has a change that the pass acts on (``WAKES``), or at the pass's next
+deadline.
 """
 
 import math
@@ -112,6 +113,8 @@ class InstanceEnded(EventModel):
     reason: str | None = None
 
 
+PASS_POLL = timedelta(seconds=1)
+"""How soon the upkeep looks again while a pass runs, for the deadline that the pass sets."""
 WAKES = (Topic(LeaseQueued), Topic(LeaseExpired), Topic(LeaseUnreachable), Topic(WorkerDrained))
 """The events that start a pass: a job waits, a worker went silent or lost a lease, a worker was drained."""
 
@@ -207,16 +210,22 @@ class Scaler:
             cursor = feed.newest(s)
         return cls(db, pools, opened, network, tracer, timing, argv, _cursor=cursor)
 
-    def tick(self, now: datetime) -> datetime | None:
-        """Start a pass when the feed has a change that it acts on, or at its deadline, and return the next deadline."""
-        if not self.opened or (self._pass is not None and self._pass.is_alive()):
-            return self._next
+    def upkeep(self, now: datetime) -> datetime | None:
+        """Start a pass when the feed has a change that it acts on, or at its deadline, and return the next deadline.
+
+        While a pass runs, the next deadline is soon: the one that the pass sets is known only once it ends.
+        """
+        if not self.opened:
+            return None
+        if self._pass is not None and self._pass.is_alive():
+            return now + PASS_POLL
         with self.db.session() as s:
             page = feed.after(s, self._cursor, WAKES, limit=1)
         woken, self._cursor = bool(page.ids), page.next
         if woken or self._next is None or now >= self._next:
             self._pass = threading.Thread(target=self._guarded, args=(now,), name='scaling', daemon=True)
             self._pass.start()
+            return now + PASS_POLL
         return self._next
 
     def join(self, timeout: float) -> None:
@@ -227,7 +236,7 @@ class Scaler:
     def _guarded(self, now: datetime) -> None:
         try:
             self._next = self.reconcile(now)
-        except Exception as e:  # the database is locked, a platform that fails: the next tick tries again
+        except Exception as e:  # the database is locked, a platform that fails: the next pass tries again
             self.tracer.event('scaling.failed', error=f'{type(e).__name__}: {e}')
             self._next = now + timedelta(seconds=self.timing.renew)
 

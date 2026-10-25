@@ -1,15 +1,18 @@
 """The triggers of the roles: the conditions that make the daemon request an agent (https://piloop.autoresearch.inc/concepts/roles#triggers).
 
 A trigger is a provider of ``TRIGGERS``: its fields are its parameters, from its entry in ``[roles.<name>] triggers``. On each
-tick, for each campaign and each sweeping role without a pending request, the scheduler calls ``Trigger.fire`` of each
-trigger of the role, in the order of the list. Once a stopped campaign's last runs are judged, it calls only the
-triggers with ``ON_STOP``, and while the campaign runs, only the others. A package adds a trigger with an entry point
-in the group of ``TRIGGERS``.
+**pass** over the campaigns, for each campaign and each sweeping role without a pending request, the scheduler calls
+``Trigger.fire`` of each trigger of the role, in the order of the list. Once a stopped campaign's last runs are judged,
+it calls only the triggers with ``ON_STOP``, and while the campaign runs, only the others. A package adds a trigger with
+an entry point in the group of ``TRIGGERS``.
+
+The daemon makes a pass when an event of a campaign's state arrives, or of a kind that a trigger reads
+(``WAKES_ON``), and when the time comes that a trigger asked for (``due_in``). It does not make one on a timer.
 """
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Annotated, ClassVar, NamedTuple, Protocol
 
 from piloop.plugins.host import Capability, Parameters
@@ -112,8 +115,8 @@ class Backlog:
         return f'{self.idle} free implementer slots without a runnable idea; {backlog}' if self.idle > 0 else backlog
 
 
-class Tick(Protocol):
-    """What a trigger reads to decide. The scheduler makes one for each sweeping role of each campaign on each tick.
+class Pass(Protocol):
+    """What a trigger reads to decide. The scheduler makes one for each sweeping role of each campaign on each pass.
 
     A trigger reads with ``s`` and writes nothing. "The role's rows" are the ``agent_sessions`` rows of the role in the
     campaign.
@@ -121,12 +124,17 @@ class Tick(Protocol):
 
     @property
     def s(self) -> Session:
-        """The tick's session."""
+        """The pass's session."""
+        ...
+
+    @property
+    def now(self) -> datetime:
+        """The time of the pass. A trigger that compares a time reads this, not the clock."""
         ...
 
     @property
     def campaign(self) -> Campaign:
-        """The campaign of the tick."""
+        """The campaign of the pass."""
         ...
 
     @property
@@ -200,8 +208,8 @@ class Fire:
     alone: bool = False
     """The row is for this trigger alone, because it changes what the agent does: an incident sweep.
 
-    Such a fire is requested alone when it is the first fire of the tick. After another fire, it waits for a later
-    tick.
+    Such a fire is requested alone when it is the first fire of the pass. After another fire, it waits for a later
+    pass.
     """
     events: tuple[EventModel, ...] = ()
     """The events to emit on the first requested row."""
@@ -215,14 +223,26 @@ class Trigger(Parameters, ABC):
 
     ON_STOP: ClassVar[bool] = False
     """The daemon checks the trigger once after each stop, when the stopped campaign's last runs are judged, instead of
-    on every tick while it runs."""
+    on every pass while it runs."""
+    WAKES_ON: ClassVar[frozenset[type[EventModel]]] = frozenset()
+    """The event models that make the daemon check the trigger, beyond those of its campaign's state: its ideas,
+    runs, candidates and agents, its status and config. A trigger that reads anything else, such as the events of a
+    plugin, names them here."""
     INVESTIGATES: ClassVar[bool] = False
     """The agent that the trigger requests gets incidents to investigate. An agent of a role with such a trigger that
     dies at startup is then no incident: the agent that it would request could die the same way, and so on."""
 
     @abstractmethod
-    def fire(self, tick: Tick) -> Fire | None:
+    def fire(self, p: Pass) -> Fire | None:
         """Return the request that the trigger makes now, or None."""
+
+    @abstractmethod
+    def due_in(self, p: Pass) -> timedelta | None:
+        """How long until ``fire`` can answer otherwise with time alone, or None when only events change its answer.
+
+        The daemon makes a pass then. A trigger that compares a time with ``p.now`` returns when that comparison
+        turns; without it, the trigger is checked again only on the next event.
+        """
 
 
 TRIGGERS = Capability('trigger', Trigger)

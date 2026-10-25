@@ -90,7 +90,7 @@ def restart(
 ) -> None:
     """Restart the running daemon on the installed code, in the same process.
 
-    Running agents keep running. The daemon stops its ticks, then the same process execs `piloop serve`. The new start
+    Running agents keep running. The daemon stops its loop, then the same process execs `piloop serve`. The new start
     re-attaches to every agent and finishes their runs. The process keeps its pid and its environment, so systemd,
     launchd or the terminal that started it still holds it. To change the environment of a service unit, use the
     restart of the service manager. A re-attached agent of the subprocess runtime takes no more notes (`piloop prompt`).

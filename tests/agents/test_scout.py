@@ -70,16 +70,16 @@ def test_a_scout_sweep_fires_on_its_interval_as_a_row_of_its_own_beside_research
     configure(db, campaign, research={'max_ideas': 0}, scout={'interval': 60})
     sched = scheduler(db, runtime, tmp_path)
     occupy(db, campaign)
-    assert sched.tick() == [], 'registered a moment ago: not due'
+    assert sched.run_all() == [], 'registered a moment ago: not due'
     scout_due(db, campaign, 61)
     add_ideas(db, campaign, 1, by='watchdog#9', status=IdeaStatus.SEED)
-    assert sorted(sched.tick()) == [1, 2], 'a seed sweep and a scout sweep, each in a slot of its own role'
+    assert sorted(sched.run_all()) == [1, 2], 'a seed sweep and a scout sweep, each in a slot of its own role'
     assert agent_sessions(db, RESEARCH)[0][2] == '1 new seeds to develop'
     assert agent_sessions(db, SCOUT)[0][2] == 'timer: 60s'
     sched.wait()
-    assert sched.tick() == [], 'the last scout started a moment ago'
+    assert sched.run_all() == [], 'the last scout started a moment ago'
     backdate(db, AgentSessionId(2), 61)
-    assert sched.tick() == [3]
+    assert sched.run_all() == [3]
     sched.wait()
     sched.stop(timeout=5)
 
@@ -91,7 +91,7 @@ def test_a_scout_sweep_reads_its_context_signs_as_a_scout_and_files_only_seeds_a
     occupy(db, campaign)
     scout_due(db, campaign, 61)
     sched = scheduler(db, runtime, tmp_path)
-    assert sched.tick() == [1]
+    assert sched.run_all() == [1]
     sched.wait()
     sched.stop(timeout=5)
 
@@ -239,7 +239,7 @@ def test_a_scout_requested_by_hand_while_its_timer_is_off_files_the_default_numb
         s.add(AgentSession(kind=SCOUT, campaign_id=campaign.id, reason='by hand'))
         s.commit()
     sched = scheduler(db, runtime, tmp_path)
-    assert sched.tick() == [1]
+    assert sched.run_all() == [1]
     sched.wait()
     sched.stop(timeout=5)
     brief = (tmp_path / 'projects' / str(campaign.id) / 'workspace' / 'brief-seen.txt').read_text()

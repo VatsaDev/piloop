@@ -91,6 +91,14 @@ class AgentSessionStarted(EventModel):
     """The row's ``reason``: why it was requested."""
 
 
+class AgentSessionRunning(EventModel):
+    """Its executor started the agent: its row is ``running``, so it gets its comments and its wrap-up."""
+
+    kind: Literal['agent_session.running'] = 'agent_session.running'
+    machine: str | None
+    """Where it runs: None in ``piloop serve``."""
+
+
 class AgentSessionFinished(EventModel):
     """An agent's row closed: its process ended, or its job never started or was lost."""
 
@@ -332,6 +340,7 @@ class CampaignResults:
             w.handle, w.machine = handle, machine
             if w.state is AgentSessionState.STARTING:  # a row that the daemon ended meanwhile stays ending
                 w.state = AgentSessionState.RUNNING
+                emit(s, AgentSessionRunning(machine=machine), TargetRef(TargetKind.AGENT_SESSION, w.id), System.DAEMON)
             learn(s, w, session_id)
 
         self._apply(guard, change)

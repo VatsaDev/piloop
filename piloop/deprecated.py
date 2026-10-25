@@ -268,6 +268,14 @@ def max_evaluations(toml: Path, raw: dict[str, object], removed_in: Version) -> 
     )
 
 
+@bridge('0.4.0', 'tick_seconds in config.toml does nothing: delete the tick_seconds bridge', CONFIG_BRIDGES)
+def tick_seconds(toml: Path, raw: dict[str, object], removed_in: Version) -> None:
+    """In ``config.toml``, ``tick_seconds`` does nothing: the daemon wakes on events, not on a timer."""
+    if raw.pop('tick_seconds', None) is None:
+        return
+    warn(toml, 'tick_seconds', 'tick_seconds is deprecated and does nothing; delete it', removed_in=removed_in)
+
+
 OLD_MAX_EVALUATIONS_ENV = 'PILOOP_MAX_EVALUATIONS'
 
 

@@ -465,6 +465,11 @@ class EventModel(BaseModel):
         EventModel._retired_kinds.add(kind)
 
     @classmethod
+    def registered(cls) -> dict[str, type[EventModel]]:
+        """Every kind that a loaded module registers, with its model."""
+        return dict(EventModel._registry)
+
+    @classmethod
     def retired_kinds(cls) -> frozenset[str]:
         """The kinds that are retired."""
         return frozenset(EventModel._retired_kinds)
@@ -682,7 +687,7 @@ class Idea(Tracked, Base):
     __tablename__ = 'ideas'
     __table_args__ = (
         UniqueConstraint('campaign_id', 'title'),
-        # the queue: the tick and the widget read the ``ready`` ideas of one campaign in priority order
+        # the queue: the pass and the widget read the ``ready`` ideas of one campaign in priority order
         Index('ix_ideas_campaign_status_priority', 'campaign_id', 'status', 'priority'),
         *text_checks(
             'ideas', 'title', 'hypothesis', 'created_by', 'track', nullable=('plan', 'harness', 'provenance', 'family')
@@ -1097,7 +1102,7 @@ class WorkerInstance(Base):
 class Limit(Base):
     """A live limit (``piloop limits set``): a value for one ``Live`` key of a provider's parameters, over ``config.toml``.
 
-    The daemon applies the rows on its next tick, without a restart. The table is in core's schema, as the leases are.
+    The daemon applies the rows at once, without a restart. The table is in core's schema, as the leases are.
     """
 
     __tablename__ = 'limits'
@@ -1310,7 +1315,7 @@ class AgentSession(Tracked, Base):
 
     __tablename__ = 'agent_sessions'
     __table_args__ = (
-        # the launch queue of the tick: the requested and active rows of a campaign for each role, and its latest row
+        # the launch queue of the pass: the requested and active rows of a campaign for each role, and its latest row
         Index('ix_agent_sessions_campaign_kind_state', 'campaign_id', 'kind', 'state'),
         # the session behind the candidates of a run (every kept-lineage row), and the FK action when a run is deleted
         Index('ix_agent_sessions_run', 'run_id'),

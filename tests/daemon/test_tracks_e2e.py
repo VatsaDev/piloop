@@ -87,7 +87,7 @@ def test_two_tracks_rebase_a_keep_that_lost_the_race_and_refuse_one_past_the_oth
     repo.git.add('-A')
     repo.git.commit('-qm', 'baseline')
     runtime = ScriptRuntime()
-    daemon = Daemon(Settings(home=tmp_path / 'home', tick_seconds=0.05))
+    daemon = Daemon(Settings(home=tmp_path / 'home'))
     workers_of(daemon.controller).worker.runtime_factory = factory(runtime)
     campaign = register(daemon.db, path)
     with daemon.db.session() as s:
@@ -96,7 +96,7 @@ def test_two_tracks_rebase_a_keep_that_lost_the_race_and_refuse_one_past_the_oth
         s.commit()
 
     daemon.scheduler.reap()
-    assert len(daemon.scheduler.tick()) == 2, 'one slot per track'
+    assert len(daemon.scheduler.run_all()) == 2, 'one slot per track'
     deadline = time.monotonic() + 120  # four evaluations and a rebase; a macOS runner is slow
     while _verdicts(daemon) != [Outcome.KEEP, Outcome.KEEP]:
         assert time.monotonic() < deadline, 'the cost keep never landed'
@@ -131,7 +131,7 @@ def test_two_tracks_rebase_a_keep_that_lost_the_race_and_refuse_one_past_the_oth
         s.add(Idea(campaign_id=campaign.id, track='accuracy', title='heavy accuracy', hypothesis='h', created_by='t'))
         s.commit()
 
-    assert len(daemon.scheduler.tick()) == 1
+    assert len(daemon.scheduler.run_all()) == 1
     daemon.scheduler.wait()
     with daemon.db.session() as s:
         heavy = s.scalars(select(Candidate).order_by(Candidate.id.desc()).limit(1)).one()

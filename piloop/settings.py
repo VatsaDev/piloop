@@ -79,10 +79,6 @@ class Settings(BaseSettings):
     """The queue of messages for this agent's turn, set by a runtime that keeps one. ``piloop agent messages`` takes
     them."""
 
-    tick_seconds: float = 2
-    """The number of seconds between two ticks. On each tick, the daemon checks the triggers of every campaign and
-    launches the requested agents."""
-
     plugins: dict[str, dict[str, JsonValue]] = {}
     """``[plugins.<capability>]``: the provider of each capability of this home that ``config.toml`` selects, and its
     parameters. ``providers`` validates them."""

@@ -1,7 +1,6 @@
-from datetime import timedelta
+from datetime import datetime, timedelta
 
-from piloop.db.models import utcnow
-from piloop.plugins.trigger.contract import Fire, Tick, Trigger
+from piloop.plugins.trigger.contract import Fire, Pass, Trigger
 
 
 class CronTrigger(Trigger):
@@ -10,11 +9,17 @@ class CronTrigger(Trigger):
     The first one counts from the registration of the campaign. An ``interval`` of 0 turns it off.
     """
 
-    def fire(self, tick: Tick) -> Fire | None:
-        if tick.interval <= 0:
+    def fire(self, p: Pass) -> Fire | None:
+        if p.interval <= 0 or p.now < _next(p):
             return None
-        routine = tick.routine() if tick.last is not None else None
-        since = routine.started_at if routine is not None else tick.campaign.created_at
-        if utcnow() - since < timedelta(seconds=tick.interval):
-            return None
-        return Fire(f'timer: {tick.interval:g}s')
+        return Fire(f'timer: {p.interval:g}s')
+
+    def due_in(self, p: Pass) -> timedelta | None:
+        return None if p.interval <= 0 else max(_next(p) - p.now, timedelta(0))
+
+
+def _next(p: Pass) -> datetime:
+    """When the role's next routine sweep is due."""
+    routine = p.routine() if p.last is not None else None
+    since = routine.started_at if routine is not None else p.campaign.created_at
+    return since + timedelta(seconds=p.interval)

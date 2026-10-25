@@ -19,7 +19,7 @@ protect it, is the executor's choice.
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Literal, NewType, Protocol, Self
 
@@ -27,6 +27,7 @@ from covalence import Cid
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, TypeAdapter
 from sqlalchemy.orm import Session
 
+from piloop.db.models import EventModel
 from piloop.db.session import Database
 from piloop.ids import AgentSessionId, CampaignId, CandidateId, CommentId, Revision, RunId
 from piloop.mcp import McpServer
@@ -413,6 +414,17 @@ class Executor[C: ExecutorConfig](Protocol):
         """
         ...
 
+    def upkeep_events(self) -> frozenset[type[EventModel]]:
+        """The events of this executor after which its ``upkeep`` runs at once, without waiting for its time."""
+        ...
+
+    def capacity_events(self) -> frozenset[type[EventModel]]:
+        """The events of this executor that say its capacity grew: core then launches what waits for a slot.
+
+        A job that ends needs none, since core's own events say it. Empty for an executor whose slots change only so.
+        """
+        ...
+
     def configure(self, config: C) -> None:
         """Take ``config``, the one that opened it with the live limits applied. The daemon calls it when one changes."""
         ...
@@ -444,8 +456,11 @@ class Executor[C: ExecutorConfig](Protocol):
         """The routes that its workers on other machines call, under ``/v1/executor/`` (``piloop serve --listen``)."""
         ...
 
-    def tick(self, now: datetime) -> datetime | None:
-        """The daemon's periodic call: do the executor's own housekeeping, and return when it next has some."""
+    def upkeep(self, now: datetime, absent: timedelta) -> datetime | None:
+        """Do the executor's own housekeeping, and return when it next has some: the daemon calls it then.
+
+        ``absent`` is how long the daemon was away past that time (a suspend): no work expires for it.
+        """
         ...
 
     def stop(self, timeout: float) -> None:

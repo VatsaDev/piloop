@@ -2,7 +2,7 @@
 
 A **limit** is a row of ``limits``: a dotted key, the capability then the path in its provider's fields
 (``executor.pools.serve.evaluations``), a value, a reason and who set it. It wins over ``config.toml``. The daemon
-hands the executor its provider with the limits applied (``applied``, then ``Executor.configure``) on its next tick,
+hands the executor its provider with the limits applied (``applied``, then ``Executor.configure``) at once,
 so a busy GPU takes fewer evaluations without a restart.
 
 Only a key that the provider marks ``Live`` takes a limit, and only a value that its parameters accept.
@@ -89,7 +89,7 @@ def live(model: BaseModel, prefix: str) -> Iterator[tuple[str, object]]:
 def set_limit(
     s: Session, plugins: Mapping[str, Parameters], key: str, value: JsonValue, *, reason: str, actor: str
 ) -> Limit:
-    """Set the limit of ``key``, for the daemon's next tick. The caller commits.
+    """Set the limit of ``key``, for the daemon's next pass. The caller commits.
 
     Raises:
         Refused: ``key`` is not a ``Live`` key of the selected provider's parameters, or they refuse ``value``.

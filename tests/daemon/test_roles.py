@@ -125,15 +125,15 @@ def test_a_role_that_piloop_toml_defines_runs_on_its_sql_trigger_with_its_prompt
     configure(db, campaign, harness, reviewer=reviewer)
     kinds: list[str] = []
     sched = scheduler(db, recording(runtime, kinds), tmp_path)
-    assert sched.tick() == [], 'no decision yet: the query returns no row'
+    assert sched.run_all() == [], 'no decision yet: the query returns no row'
 
     decide(db, campaign, 'keep the cache')
-    assert sched.tick() == [1]
+    assert sched.run_all() == [1]
     wait_for(db, AgentSessionId(1), AgentSessionState.RUNNING)
-    assert sched.tick() == [], 'the decision is older than the running reviewer'
+    assert sched.run_all() == [], 'the decision is older than the running reviewer'
     decide(db, campaign, 'drop the cache')
-    assert sched.tick() == [], 'max_concurrent = 1: the second reviewer waits'
-    assert sched.tick() == [], 'one pending request is enough'
+    assert sched.run_all() == [], 'max_concurrent = 1: the second reviewer waits'
+    assert sched.run_all() == [], 'one pending request is enough'
     reason = f'sql: {REVIEW}'
     assert agent_sessions(db, 'reviewer') == [
         (1, AgentSessionState.RUNNING, reason),
@@ -141,7 +141,7 @@ def test_a_role_that_piloop_toml_defines_runs_on_its_sql_trigger_with_its_prompt
     ]
     release.touch()
     sched.wait()
-    assert sched.tick() == [2], 'the slot is free'
+    assert sched.run_all() == [2], 'the slot is free'
     sched.wait()
     sched.stop(timeout=5)
 
@@ -175,12 +175,12 @@ def test_a_role_adds_its_incident_prompt_to_an_incident_sweep_and_its_routine_pr
     configure(db, campaign, '#!/bin/sh\ntrue\n', triage=triage, watchdog={'triggers': []})
     sched = scheduler(db, recording(runtime, []), tmp_path)
     fail_a_run(db, campaign, 'broken')
-    assert sched.tick() == [1]
+    assert sched.run_all() == [1]
     sched.wait()
     with db.session() as s:
         s.add(AgentSession(kind='triage', campaign_id=campaign.id, reason='by hand'))
         s.commit()
-    assert sched.tick() == [2]
+    assert sched.run_all() == [2]
     sched.wait()
     sched.stop(timeout=5)
     incident, routine = ((tmp_path / 'agent_sessions' / str(w) / 'brief.md').read_text() for w in (1, 2))
@@ -203,7 +203,7 @@ def test_a_role_that_defines_ideas_is_told_how_many_its_sweep_may_add(
     }
     configure(db, campaign, '#!/bin/sh\ntrue\n', ideator=ideator, research={'triggers': []}, watchdog={'triggers': []})
     sched = scheduler(db, recording(runtime, []), tmp_path)
-    assert sched.tick() == [1], 'no runnable idea: the backlog is short'
+    assert sched.run_all() == [1], 'no runnable idea: the backlog is short'
     sched.wait()
     sched.stop(timeout=5)
     brief = (tmp_path / 'agent_sessions' / '1' / 'brief.md').read_text()
@@ -259,7 +259,7 @@ def test_a_role_that_does_runs_takes_its_ideas_with_its_own_prompt_and_its_commi
     (deep,) = add_ideas(db, campaign, 'deep', priority=1)
     (cheap,) = add_ideas(db, campaign, 'cheap', priority=3)
     sched = scheduler(db, recording(runtime, []), tmp_path)
-    assert sorted(sched.tick()) == [1, 2]
+    assert sorted(sched.run_all()) == [1, 2]
     sched.wait()
     sched.stop(timeout=5)
     assert runs_by_role(db) == [(1, 'quick', cheap, 'quick'), (2, 'implementer', deep, 'implementer')]
@@ -297,7 +297,7 @@ def test_a_queued_run_of_a_role_that_piloop_toml_no_longer_has_fails_and_its_ide
     sched = scheduler(db, recording(runtime, []), tmp_path)
     queue(db, sched, campaign)
     configure(db, campaign, HARNESS_APPEND)
-    assert sched.tick() == []
+    assert sched.run_all() == []
     with db.session() as s:
         run, agent_session, idea = s.get_one(Run, 1), s.get_one(AgentSession, 1), s.get_one(Idea, cheap)
         assert (run.status, run.end) == (RunStatus.FAILED, RunEnd.ROLE_REMOVED)
@@ -306,7 +306,7 @@ def test_a_queued_run_of_a_role_that_piloop_toml_no_longer_has_fails_and_its_ide
             'no [roles.quick] in piloop.toml',
         )
         assert idea.status is IdeaStatus.READY, 'the removed role was not an attempt at the idea'
-    assert sched.tick() == [2]
+    assert sched.run_all() == [2]
     sched.wait()
     sched.stop(timeout=5)
     assert runs_by_role(db)[1:] == [(2, 'implementer', cheap, 'implementer')]
@@ -325,12 +325,12 @@ def test_a_built_in_role_takes_other_triggers(
     )
     sched = scheduler(db, recording(runtime, []), tmp_path)
     fail_a_run(db, campaign, 'broken')
-    assert sched.tick() == [], 'no anomaly trigger, and the timer is not due'
+    assert sched.run_all() == [], 'no anomaly trigger, and the timer is not due'
     with db.session() as s:
         s.get_one(Campaign, campaign.id).created_at = utcnow().replace(year=2000)
         s.commit()
     decide(db, campaign, 'look again')
-    assert sched.tick() == [1, 2]
+    assert sched.run_all() == [1, 2]
     sched.wait()
     sched.stop(timeout=5)
     assert agent_sessions(db, RESEARCH) == [(1, AgentSessionState.EXITED, f'sql: {REVIEW}')]
@@ -348,7 +348,7 @@ def test_a_request_for_a_role_that_piloop_toml_no_longer_has_is_refused(
         s.commit()
     configure(db, campaign, '#!/bin/sh\ntrue\n')
     sched = scheduler(db, recording(runtime, []), tmp_path)
-    assert sched.tick() == []
+    assert sched.run_all() == []
     sched.stop(timeout=5)
     with db.session() as s:
         row = s.get_one(AgentSession, 1)
@@ -366,7 +366,7 @@ def test_a_hand_over_leaves_a_sweep_running_and_the_next_scheduler_re_attaches_t
         s.add(AgentSession(kind=WATCHDOG, campaign_id=campaign.id, reason='by hand'))
         s.commit()
     first = scheduler(db, recording(runtime, []), tmp_path)
-    assert first.tick() == [1]
+    assert first.run_all() == [1]
     wait_until((tmp_path / 'agent.pid').exists)
     first.hand_over(timeout=5)
     second = scheduler(db, recording(ScriptRuntime(), []), tmp_path)
@@ -382,7 +382,7 @@ def test_a_hand_over_leaves_a_sweep_running_and_the_next_scheduler_re_attaches_t
 
 
 ENTRY_POINTS = [
-    EntryPoint('every_tick', f'{PLUGIN}:EveryTick', TRIGGER_GROUP),
+    EntryPoint('every_pass', f'{PLUGIN}:EveryPass', TRIGGER_GROUP),
     EntryPoint('broken', f'{PLUGIN}:Broken', TRIGGER_GROUP),
     EntryPoint('auditor', f'{PLUGIN}:Auditor', ROLE_GROUP),
     EntryPoint('quick', f'{PLUGIN}:Quick', ROLE_GROUP),
@@ -433,20 +433,20 @@ def test_a_package_adds_a_role_and_triggers_through_entry_points(
     """
     cfg = load_campaign_config(Path(campaign.path))
     auditor = cfg.roles.sweeping()[RoleName('auditor')]
-    assert (auditor.timeout, TRIGGERS.name_of(auditor.triggers[0])) == (5, 'every_tick')
+    assert (auditor.timeout, TRIGGERS.name_of(auditor.triggers[0])) == (5, 'every_pass')
     toml = Path(campaign.path) / 'piloop.toml'
     toml.write_text(toml.read_text() + '\n[roles.auditor]\ntimeout = 9\n')
     assert load_campaign_config(Path(campaign.path)).roles.sweeping()[RoleName('auditor')].timeout == 9, (
         'the table goes over'
     )
     configure(
-        db, campaign, '#!/bin/sh\ntrue\n', auditor={'triggers': [{'provider': 'broken'}, {'provider': 'every_tick'}]}
+        db, campaign, '#!/bin/sh\ntrue\n', auditor={'triggers': [{'provider': 'broken'}, {'provider': 'every_pass'}]}
     )
     sched = scheduler(db, recording(runtime, []), tmp_path)
-    assert sched.tick() == [1]
+    assert sched.run_all() == [1]
     sched.wait()
     sched.stop(timeout=5)
-    assert agent_sessions(db, 'auditor') == [(1, AgentSessionState.EXITED, 'every tick for auditor')]
+    assert agent_sessions(db, 'auditor') == [(1, AgentSessionState.EXITED, 'every pass for auditor')]
     brief = (tmp_path / 'agent_sessions' / '1' / 'brief.md').read_text()
     assert brief.startswith('# Audit\n')
     assert 'trigger.failed Ns campaign=demo role=auditor trigger=broken error=the probe is down' in console_lines(
@@ -493,7 +493,7 @@ def test_a_package_role_takes_its_defaults_and_a_roles_value_that_is_not_a_table
             EntryPoint('not_a_trigger', f'{PLUGIN}:NOT_A_TRIGGER', TRIGGER_GROUP),
             'is not a subclass of piloop.plugins.trigger.contract.Trigger',
         ),
-        (EntryPoint('cron', f'{PLUGIN}:EveryTick', TRIGGER_GROUP), "'cron' is a trigger already, from piloop "),
+        (EntryPoint('cron', f'{PLUGIN}:EveryPass', TRIGGER_GROUP), "'cron' is a trigger already, from piloop "),
         (
             EntryPoint('auditor', f'{PLUGIN}:NOT_A_ROLE', ROLE_GROUP),
             'is not a subclass of piloop.plugins.role.contract.RoleConfig',
@@ -510,7 +510,7 @@ def test_an_entry_point_of_the_wrong_kind_fails_with_its_name(
     monkeypatch: pytest.MonkeyPatch, entry: EntryPoint, error: str
 ) -> None:
     """The daemon's composition fails before it starts anything, and registers nothing."""
-    installed(monkeypatch, [EntryPoint('every_tick', f'{PLUGIN}:EveryTick', TRIGGER_GROUP), entry])
+    installed(monkeypatch, [EntryPoint('every_pass', f'{PLUGIN}:EveryPass', TRIGGER_GROUP), entry])
     try:
         with pytest.raises(PluginError, match=f'entry point {entry.name} = {entry.value} in {entry.group}.*{error}'):
             compose(*plugins_module.declared())
@@ -554,12 +554,12 @@ def test_example_plugins_replace_the_built_in_runtime_and_cas_through_the_config
         s.commit()
     cas = f'[plugins.cas]\nprovider = "sqlite"\npath = "{tmp_path / "blobs.sqlite"}"\n'
     (tmp_path / 'config.toml').write_text(f'{cas}[runtimes.nice]\nniceness = 5\n')
-    home = Settings(home=tmp_path, tick_seconds=0.05)
+    home = Settings(home=tmp_path)
     assert isinstance(CAS.selected(home.providers).open(home.home), Covalence)
     daemon = Daemon(home)
     try:
         daemon.scheduler.reap()
-        assert daemon.scheduler.tick() == [1]
+        assert daemon.scheduler.run_all() == [1]
         daemon.scheduler.wait()
     finally:
         daemon.shutdown(timeout=5)

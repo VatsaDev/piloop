@@ -91,19 +91,19 @@ def test_notices_once_then_at_the_limit_nothing_starts_until_the_limit_is_raised
     scheduler = make_scheduler(db, runtime, tmp_path)
 
     file.write_text('150')
-    assert scheduler.tick() == [1], 'below the limit: launches go on'
+    assert scheduler.run_all() == [1], 'below the limit: launches go on'
     assert daemon_comments(db) == [
         ('note', 1, 'Spend notice: $150.00 spent, past the $100.00 notice. The limit is $300.00.')
     ], 'the first reading posts the notices it is already past'
-    assert scheduler.tick() == [] and len(daemon_comments(db)) == 1, 'the interval is not up: no new reading'
+    assert scheduler.run_all() == [] and len(daemon_comments(db)) == 1, 'the interval is not up: no new reading'
 
     bill(db, campaign, file, '160')
-    assert scheduler.tick() == [], 'below the limit, but the first run still holds the one slot'
+    assert scheduler.run_all() == [], 'below the limit, but the first run still holds the one slot'
     assert len(daemon_comments(db)) == 1, 'each notice once'
 
     bill(db, campaign, file, '1012')
     request_watchdog(db, campaign)
-    assert scheduler.tick() == [], 'at the limit nothing launches, not even a row inserted by hand'
+    assert scheduler.run_all() == [], 'at the limit nothing launches, not even a row inserted by hand'
     assert daemon_comments(db)[1:] == [
         ('note', 1, 'Spend notice: $1,012.00 spent, past the $200.00 notice. The limit is $300.00.'),
         (
@@ -126,7 +126,7 @@ def test_notices_once_then_at_the_limit_nothing_starts_until_the_limit_is_raised
             ' · $1,012.00/$300.00 spend (launches held: spend limit reached)'
         )
     bill(db, campaign, file, '1013')
-    assert scheduler.tick() == [] and len(daemon_comments(db)) == 3, 'one escalation for the limit'
+    assert scheduler.run_all() == [] and len(daemon_comments(db)) == 3, 'one escalation for the limit'
 
     (Path(campaign.path) / 'piloop.toml').write_text(
         (Path(campaign.path) / 'piloop.toml').read_text()
@@ -135,7 +135,7 @@ def test_notices_once_then_at_the_limit_nothing_starts_until_the_limit_is_raised
     with db.session() as s:
         sync(s, s.get_one(Campaign, campaign.id))  # This is what `piloop init` does.
         s.commit()
-    assert len(scheduler.tick()) == 2, 'the limit raised: the watchdog and the next run launch'
+    assert len(scheduler.run_all()) == 2, 'the limit raised: the watchdog and the next run launch'
     scheduler.wait()
 
 
@@ -147,12 +147,12 @@ def test_a_failing_command_holds_launches_with_one_escalation_per_streak(
     add_ideas(db, campaign, 'idea')
     scheduler = make_scheduler(db, runtime, tmp_path)
 
-    assert scheduler.tick() == [], 'no bill yet: the spend is unknown, not $0'
+    assert scheduler.run_all() == [], 'no bill yet: the spend is unknown, not $0'
     [(kind, priority, body)] = daemon_comments(db)
     assert (kind, priority) == ('escalation', 0)
     assert body.startswith('Spend unknown: the [spend] command failed (exit 1: cat: ')
     bill(db, campaign, file, 'oops')
-    assert scheduler.tick() == [] and len(daemon_comments(db)) == 1, 'still failing: no second escalation'
+    assert scheduler.run_all() == [] and len(daemon_comments(db)) == 1, 'still failing: no second escalation'
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
         assert p.spend_error == "printed 'oops', not a number of USD"
@@ -161,10 +161,10 @@ def test_a_failing_command_holds_launches_with_one_escalation_per_streak(
         )
 
     bill(db, campaign, file, '12')
-    assert scheduler.tick() == [1], 'a reading again: launches resume'
+    assert scheduler.run_all() == [1], 'a reading again: launches resume'
     scheduler.wait()
     bill(db, campaign, file, 'oops')
-    scheduler.tick()
+    scheduler.run_all()
     assert len(daemon_comments(db)) == 2, 'a new streak, a new escalation'
 
 

@@ -874,7 +874,7 @@ def test_limits_set_a_live_key_that_status_shows_with_its_source_and_unset_remov
     run_cli(['limits'])
     assert 'executor.pools.serve.evaluations = 2  (default)' in out().splitlines()
     run_cli(['limits', 'set', 'executor.pools.serve.evaluations=1', '--reason', 'the GPU is busy'])
-    assert out().strip() == 'executor.pools.serve.evaluations = 1: the daemon applies it on its next tick'
+    assert out().strip() == 'executor.pools.serve.evaluations = 1: the daemon applies it at once'
     with pytest.raises(SystemExit, match='executor.renew_seconds is not a live key'):
         run_cli(['limits', 'set', 'executor.renew_seconds=5', '--reason', 'r'])
     with pytest.raises(SystemExit, match='write KEY=VALUE'):
@@ -1160,10 +1160,10 @@ def test_campaign_stop_and_cancels_are_requests_that_the_daemon_acts_on(campaign
     run_cli(['agent', 'cancel', '1', '--wrap-up'])
     run_cli(['campaign', 'stop', 'demo', '--reason', 'machine needed'])
     assert out().splitlines() == [
-        'cancel requested for run#1: the daemon acts on its next tick',
-        'cancel requested for agent_session#3: the daemon acts on its next tick',
-        'cancel requested for agent_session#1: the daemon acts on its next tick',
-        'stop requested for demo: the daemon tells its implementers to save their work and stop on its next tick',
+        'cancel requested for run#1: the daemon acts at once',
+        'cancel requested for agent_session#3: the daemon acts at once',
+        'cancel requested for agent_session#1: the daemon acts at once',
+        'stop requested for demo: the daemon tells its implementers to save their work and stop',
     ]
     with pytest.raises(SystemExit, match='run#9 is not queued or running'):
         run_cli(['run', 'cancel', '9'])
@@ -1193,7 +1193,7 @@ def test_campaign_stop_and_cancels_are_requests_that_the_daemon_acts_on(campaign
     with pytest.raises(SystemExit, match=r'demo is stopped already \(by hand\); --kill ends its implementers at once'):
         run_cli(['campaign', 'stop', 'demo'])
     run_cli(['campaign', 'stop', 'demo', '--kill'])
-    assert out().strip() == 'stop requested for demo: the daemon ends its implementers at once on its next tick'
+    assert out().strip() == 'stop requested for demo: the daemon ends its implementers now'
 
 
 def test_launch_requests_an_implementer(campaign_path: Path, out) -> None:
@@ -1237,7 +1237,6 @@ def test_serve_builds_a_daemon(mocker: MockerFixture) -> None:
 
 
 def test_serve_detach_status_stop(out, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv('PILOOP_TICK_SECONDS', '0.05')
     run_cli(['status'])
     assert out().strip() == 'daemon: not running'
     run_cli(['serve', '--detach'])
@@ -1267,7 +1266,6 @@ def test_serve_detach_status_stop(out, monkeypatch: pytest.MonkeyPatch) -> None:
 def test_status_shows_where_the_daemon_listens_and_a_restart_keeps_a_free_port(
     out, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv('PILOOP_TICK_SECONDS', '0.05')
     run_cli(['serve', '--detach', '--listen', '127.0.0.1:0'])
     pid = int(out().split()[3].rstrip(','))
     reaper = threading.Thread(target=os.waitpid, args=(pid, 0))
@@ -1279,7 +1277,7 @@ def test_status_shows_where_the_daemon_listens_and_a_restart_keeps_a_free_port(
     assert out().splitlines()[0].endswith(f', listening on {url}')
     run_cli(['status', '--json'])
     assert json.loads(out())['daemon'] == {'pid': pid, 'listen': url}
-    run_cli(['restart'])
+    run_cli(['restart', '--timeout', '300'])  # the suite loads the host: a restart takes longer than 30 s there
     out()
     wait_until(lambda: listening(common.settings) is not None)
     assert listening(common.settings) == url, 'the port that :0 took'
@@ -1515,7 +1513,6 @@ def test_upgrade_refuses_a_checkout_that_is_not_a_uv_tool(fake_bins) -> None:
 def test_upgrade_reinstalls_migrates_and_restarts_the_daemon(
     fake_bins, out, monkeypatch: pytest.MonkeyPatch, capfd
 ) -> None:
-    monkeypatch.setenv('PILOOP_TICK_SECONDS', '0.05')
     write_receipt(GIT_RECEIPT)
     calls = fake_bins('uv', 'pi')
     run_cli(['serve', '--detach'])
@@ -1747,7 +1744,6 @@ def test_restart_and_upgrade_keep_the_daemon_running_when_the_code_would_not_sta
     fake_bins, out, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An in-place restart execs `piloop serve`: one that would exit at once would leave the agents without a daemon."""
-    monkeypatch.setenv('PILOOP_TICK_SECONDS', '0.05')
     write_receipt(GIT_RECEIPT)
     fake_bins('uv')
     run_cli(['serve', '--check'])

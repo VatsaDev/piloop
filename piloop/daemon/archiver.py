@@ -1,4 +1,4 @@
-"""The daemon's archiver: at most one archiving or upkeep at a time, on the daemon's pool, never blocking a tick.
+"""The daemon's archiver: at most one archiving or upkeep at a time, on the daemon's pool, never blocking the loop.
 
 What is due, and how it is stored, pruned and restored, is ``piloop.campaign.archive``. This module decides when, by
 an ``ArchivePolicy`` that the daemon builds from ``[storage]`` and that tests build as they need.
@@ -10,7 +10,8 @@ import time
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
+from functools import partial
 from pathlib import Path
 from typing import Literal, NamedTuple
 
@@ -91,31 +92,41 @@ class Archiver:
         tracer: Tracer,
         pool: ThreadPoolExecutor,
         stop: threading.Event,
+        ended: Callable[[Future[None]], object],
     ) -> None:
+        """``ended``: called when a job ends, so that the daemon runs ``run`` again."""
         self._db, self._cas, self._home, self._policy, self._tracer = db, cas, home, policy, tracer
-        self._pool, self._stop = pool, stop
+        self._pool, self._stop, self._ended = pool, stop, ended
         self._job: Future[None] | None = None
         self._paused_until = -math.inf
         self._upkept_at = -math.inf
 
-    def tick(self) -> None:
+    def run(self, now: datetime) -> datetime | None:
         """Start the upkeep when it is time, else the next due archiving. Nothing while a job runs or after a failure.
 
         The upkeep goes first: it is what frees room (pruning, eviction) for a job that the disk was too full for, so a
-        job that stays due must not keep it waiting.
+        job that stays due must not keep it waiting. Returns when to run again: the end of a pause, or the next upkeep.
+        A job that ends calls ``ended``, and an idea or a campaign that ends makes an archiving due.
         """
         if self._stop.is_set() or (self._job is not None and not self._job.done()):
-            return
-        now = time.monotonic()
-        if now < self._paused_until:
-            return
-        if now - self._upkept_at >= self._policy.upkeep_every.total_seconds():
-            self._job = self._pool.submit(self._upkeep)
-            return
+            return None
+        mono = time.monotonic()
+        if mono < self._paused_until:
+            return now + timedelta(seconds=self._paused_until - mono)
+        upkeep_in = self._upkept_at + self._policy.upkeep_every.total_seconds() - mono
+        if upkeep_in <= 0:
+            self._submit(self._upkeep)
+            return None
         with self._db.session() as s:
             job = due(s)
         if job is not None:
-            self._job = self._pool.submit(self._archive, job)
+            self._submit(partial(self._archive, job))
+            return None
+        return now + timedelta(seconds=upkeep_in)
+
+    def _submit(self, body: Callable[[], None]) -> None:
+        self._job = self._pool.submit(body)
+        self._job.add_done_callback(self._ended)
 
     def running(self) -> list[Future[None]]:
         """The job in flight, if any: a stopping daemon waits for it before it lets another daemon start."""
@@ -171,7 +182,7 @@ class Archiver:
     def _upkeep(self) -> None:
         try:
             self._prune_and_evict()
-        finally:  # counted from the end: a slow upkeep still leaves the next ticks to the archive jobs
+        finally:  # counted from the end: a slow upkeep still leaves the next turns to the archive jobs
             self._upkept_at = time.monotonic()
 
     def _prune_and_evict(self) -> None:
@@ -205,7 +216,7 @@ class Archiver:
             return step()
         except Cancelled:
             return None
-        except Exception as e:  # the next tick must not retry at once; the span says what failed
+        except Exception as e:  # the next pass must not retry at once; the span says what failed
             self._pause()
             error(e)
             return None

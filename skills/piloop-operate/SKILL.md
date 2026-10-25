@@ -220,7 +220,7 @@ PILOOP_ACTOR=orchestrator piloop resume <name>
 
 - A comment on the idea goes into its next brief.
 - A `note`, `finding` or `decision` comment (any kind except an escalation) on the idea, or on its *running* run, is
-  queued for that implementer on the next tick. It gets only the first line (up to 200 characters) and a query for
+  queued for that implementer at once. It gets only the first line (up to 200 characters) and a query for
   the full text, so put the instruction in the first line.
 - `comment.queued` on the implementer says that the comment waits for it, and `comment.delivered` that it read it. It
   reads only between two tool calls. `comment.undelivered` says why it never did.
@@ -380,7 +380,7 @@ without a priority), out of the inbox.
   `research`, or a role that `piloop.toml` defines.
   Or insert a request:
   `INSERT INTO agent_sessions (kind, campaign_id, state, reason) VALUES ('research', <p>, 'requested', '…')`.
-  The daemon launches it on the next tick, within the `max_concurrent` of the role.
+  The daemon launches it at once, within the `max_concurrent` of the role.
 - When an agent's process exits, the agent ends. The daemon records the outcome on its
   `agent_sessions` row.
 

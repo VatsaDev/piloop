@@ -1,4 +1,6 @@
-from piloop.plugins.trigger.contract import Fire, Tick, Trigger
+from datetime import timedelta
+
+from piloop.plugins.trigger.contract import Fire, Pass, Trigger
 from piloop.plugins.trigger.kit.reasons import futile, news
 
 
@@ -13,11 +15,14 @@ class StalledTrigger(Trigger):
     is busy, while its ``max_ideas`` is 0, or while the queue holds its ideas for the head (``Backlog.on_hold``).
     """
 
-    def fire(self, tick: Tick) -> Fire | None:
-        step = tick.stall_step(None)
-        if step == 0 or futile(tick, tick.backlog(0)):
+    def fire(self, p: Pass) -> Fire | None:
+        step = p.stall_step(None)
+        if step == 0 or futile(p, p.backlog(0)):
             return None
-        if tick.last is not None and tick.stall_step(tick.last.started_at) >= step:
+        if p.last is not None and p.stall_step(p.last.started_at) >= step:
             return None
-        reason = news(tick, f'stalled, step {step}')
+        reason = news(p, f'stalled, step {step}')
         return None if reason is None else Fire(reason)
+
+    def due_in(self, p: Pass) -> timedelta | None:
+        return None

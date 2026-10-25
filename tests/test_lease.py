@@ -316,8 +316,8 @@ def test_a_silent_worker_is_unreachable_after_the_grace_period_and_its_leases_ex
     take(leases, 'w1', [])
     now = utcnow()
     expiry = leases.expire(now + timedelta(seconds=49))
-    toleration = timedelta(seconds=300)
-    assert expiry is not None and before + toleration <= expiry <= now + toleration, 'the next deadline'
+    grace = timedelta(seconds=50)
+    assert expiry is not None and before + grace <= expiry <= now + grace, 'the next deadline: when it goes silent'
     assert events(db, LeaseUnreachable) == []
     leases.expire(now + timedelta(seconds=51))
     leases.expire(now + timedelta(seconds=52))
@@ -328,9 +328,8 @@ def test_a_silent_worker_is_unreachable_after_the_grace_period_and_its_leases_ex
     Local(leases, 'w1').heartbeat({lease_id: None}, HOST)
     assert worker_row(db, 'w1').no_lease is None, 'heard again'
     heard = utcnow()
-    for seconds in range(10, 301, 10):  # the scheduler's ticks: no gap that looks like its own absence
-        leases.expire(heard + timedelta(seconds=seconds))
-    assert leases.expire(heard + timedelta(seconds=301)) is None
+    leases.expire(heard + timedelta(seconds=51))  # unreachable again: a due of its own, not an absence
+    assert leases.expire(heard + timedelta(seconds=301)) is None, 'expired: nothing left to wait for'
     row = lease_row(db, lease_id)
     assert row.state is LeaseState.EXPIRED and str(row.receipt['lost']).startswith('worker lost: w1 was silent for')
     [(_, _, payload)] = events(db, LeaseExpired)
@@ -473,12 +472,11 @@ def test_the_fence_and_the_write_are_one_transaction_so_an_expiry_cannot_slip_be
 def test_a_daemon_that_was_away_longer_than_the_grace_period_renews_the_leases_before_it_expires_any(
     db: Database, campaign: Campaign, tmp_path: Path, leases: Leases, recorder: Recorder
 ) -> None:
-    """A laptop asleep for an hour: no tick ran, and the daemon's own absence is no worker's silence."""
+    """A laptop asleep for an hour: the loop woke an hour past its plan, and its own absence is no worker's silence."""
     lease_id = queue(db, agent_job(db, campaign, tmp_path))
     take(leases, 'w1', [])
     now = utcnow()
-    leases.expire(now)
-    leases.expire(now + timedelta(hours=1))  # the first tick after the resume
+    leases.expire(now + timedelta(hours=1), absent=timedelta(hours=1))  # the first turn after the resume
     assert (lease_row(db, lease_id).state, recorder.calls) == (LeaseState.ACQUIRED, [])
     assert events(db, LeaseUnreachable) == [], 'and not unreachable either'
 

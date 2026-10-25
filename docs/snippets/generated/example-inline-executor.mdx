@@ -17,7 +17,7 @@ import subprocess
 import threading
 from collections.abc import Callable, Sequence
 from contextlib import suppress
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import partial
 
 from piloop.capabilities import (
@@ -27,6 +27,7 @@ from piloop.capabilities import (
     Capacity,
     EvaluationJob,
     EvaluationReport,
+    EventModel,
     ExecutorConfig,
     Handle,
     Host,
@@ -107,7 +108,15 @@ class InlineExecutor:
         """None: every job runs in the daemon."""
         return []
 
-    def tick(self, now: datetime) -> datetime | None:
+    def upkeep_events(self) -> frozenset[type[EventModel]]:
+        """None: it has no upkeep."""
+        return frozenset()
+
+    def capacity_events(self) -> frozenset[type[EventModel]]:
+        """None: a slot frees only when a job ends."""
+        return frozenset()
+
+    def upkeep(self, now: datetime, absent: timedelta) -> datetime | None:
         """Nothing to do: a thread reports its own job."""
         return None
 

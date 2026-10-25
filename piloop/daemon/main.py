@@ -100,7 +100,7 @@ class Daemon:
         except plugins.PluginError as e:
             raise SystemExit(f'the daemon does not start: {e}') from e
         self._inherited = inherited or Inherited(set())
-        """The children an in-place restart handed over (``piloop.proc.Inherited``): reaped on every tick."""
+        """The children an in-place restart handed over (``piloop.proc.Inherited``): reaped as each one exits."""
         self.db = Database(cfg.database_url, actor=ACTOR)
         try:
             self._backup = migrate(self.db.engine, backups=cfg.migration_backups, daemon=running_pid(cfg))
@@ -145,7 +145,7 @@ class Daemon:
         self._restart = False
 
     def serve(self) -> None:
-        """Lock the pid file, reap, then tick until Ctrl-C or SIGTERM.
+        """Lock the pid file, reap, then run the loop until Ctrl-C or SIGTERM.
 
         On ``RESTART_SIGNAL``, stop the same way, then exec ``piloop serve``. The exec keeps the pid, the environment
         and the service manager's hold on the process. So ``piloop upgrade`` and ``piloop restart`` start the installed
@@ -170,8 +170,8 @@ class Daemon:
                 self._listen(span)
                 self._migrate_manifests(span)
                 self.scheduler.reap()
-                span.set(inherited_reaped=self._inherited.reap())
-            self.scheduler.serve_forever(self._cfg.tick_seconds, also=self._inherited.reap)
+                self._inherited.watch()
+            self.scheduler.serve()
         except KeyboardInterrupt:
             pass
         finally:

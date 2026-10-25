@@ -2,6 +2,7 @@
 its own with a provider and a verdict rule that calls it, and objects of the wrong type."""
 
 from abc import ABC, abstractmethod
+from datetime import timedelta
 from importlib.resources import files
 from typing import Annotated
 
@@ -10,25 +11,31 @@ from piloop.plugins.role.contract import ImplementerRole, SweepRole
 from piloop.plugins.runtime.contract import RUNTIMES, Handle, RuntimeName
 from piloop.plugins.runtime.subprocess import Subprocess, SubprocessRuntime
 from piloop.plugins.stop_rule.contract import GO, Fact, Go, Hold, Stop, StopCase, StopRule
-from piloop.plugins.trigger.contract import Fire, Tick, Trigger, TriggerEntry
+from piloop.plugins.trigger.contract import Fire, Pass, Trigger, TriggerEntry
 from piloop.plugins.verdict_rule.bootstrap import Bootstrap
 from piloop.plugins.verdict_rule.contract import Case, Judgement, Outcome, VerdictRule
 
 
-class EveryTick(Trigger):
-    """``every_tick``: fires on every tick, with ``label`` as the reason."""
+class EveryPass(Trigger):
+    """``every_pass``: fires on every pass, with ``label`` as the reason."""
 
-    label: str = 'every tick'
+    label: str = 'every pass'
 
-    def fire(self, tick: Tick) -> Fire | None:
-        return Fire(f'{self.label} for {tick.role}')
+    def fire(self, p: Pass) -> Fire | None:
+        return Fire(f'{self.label} for {p.role}')
+
+    def due_in(self, p: Pass) -> timedelta | None:
+        return None
 
 
 class Broken(Trigger):
     """``broken``: a trigger whose check always fails."""
 
-    def fire(self, tick: Tick) -> Fire | None:
+    def fire(self, p: Pass) -> Fire | None:
         raise RuntimeError('the probe is down')
+
+    def due_in(self, p: Pass) -> timedelta | None:
+        return None
 
 
 class Typed(Subprocess):
@@ -58,10 +65,10 @@ class GoesOn(StopRule):
 
 
 class Auditor(SweepRole):
-    """``auditor``: a sweep on every tick."""
+    """``auditor``: a sweep on every pass."""
 
     PROMPT = files(__package__) / 'auditor.md'
-    triggers: list[TriggerEntry] = [EveryTick(label='audit')]
+    triggers: list[TriggerEntry] = [EveryPass(label='audit')]
     timeout: float = 5
 
 
@@ -118,6 +125,6 @@ class Undecided(VerdictRule):
     """A verdict rule without ``decide``."""
 
 
-NOT_A_TRIGGER = 'every_tick'
+NOT_A_TRIGGER = 'every_pass'
 NOT_A_ROLE = 'auditor'
 NOT_A_RUNTIME = 'typed'

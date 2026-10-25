@@ -1,14 +1,14 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from pydantic import field_validator
 
 from piloop.db.sql import sql_error
-from piloop.plugins.trigger.contract import Fire, Tick, Trigger
+from piloop.plugins.trigger.contract import Fire, Pass, Trigger
 
 
-def since(tick: Tick) -> datetime:
+def since(p: Pass) -> datetime:
     """Return when the role's latest row started, or when the campaign was registered if the role has no row yet."""
-    return tick.last.started_at if tick.last is not None else tick.campaign.created_at
+    return p.last.started_at if p.last is not None else p.campaign.created_at
 
 
 SQL_PARAMETERS = ('campaign', 'since')
@@ -34,10 +34,14 @@ class SqlTrigger(Trigger):
             raise ValueError(f'the query does not run on the piloop database: {error}')
         return when
 
-    def fire(self, tick: Tick) -> Fire | None:
+    def fire(self, p: Pass) -> Fire | None:
         params: dict[str, object] = {
-            'campaign': tick.campaign.id,
-            'since': since(tick).strftime('%Y-%m-%d %H:%M:%S.%f'),
+            'campaign': p.campaign.id,
+            'since': since(p).strftime('%Y-%m-%d %H:%M:%S.%f'),
         }
-        row = tick.s.connection().exec_driver_sql(self.when, params).first()
+        row = p.s.connection().exec_driver_sql(self.when, params).first()
         return None if row is None else Fire(f'sql: {" ".join(self.when.split())}')
+
+    def due_in(self, p: Pass) -> timedelta | None:
+        """A query can read the time, but its answer cannot say when: pair it with ``cron`` for that."""
+        return None

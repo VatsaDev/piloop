@@ -1,12 +1,12 @@
 """The contract of a stop rule: the types that piloop gives a stop rule, and the types that the rule returns.
 
-On each tick of the daemon, piloop asks the stop rule of each active campaign whether the campaign goes on, holds, or
+On each pass of the daemon, piloop asks the stop rule of each active campaign whether the campaign goes on, holds, or
 stops. It asks in two steps. First it calls ``reads``: the rule names the facts that it needs. piloop gets only those
 facts. Then it calls ``check`` with a ``StopCase``: those facts. The rule returns one answer:
 
 - ``Go``: piloop starts what the campaign needs.
 - ``Hold``: piloop starts no agent and no evaluation for the campaign. Work that runs finishes. The hold is not a
-  pause: on each tick piloop asks again, and the hold ends when the rule answers ``Go``.
+  pause: on each pass piloop asks again, and the hold ends when the rule answers ``Go``.
 - ``Stop``: piloop stops the campaign.
 
 The rule reads nothing else: it is a pure provider. ``[plugins.stop_rule] provider`` in ``piloop.toml`` selects the
@@ -27,7 +27,7 @@ from piloop.plugins.metric import Direction
 
 
 class Fact(StrEnum):
-    """A fact of the campaign. Most facts cost queries on every tick, so a rule names the ones it reads."""
+    """A fact of the campaign. Most facts cost queries on every pass, so a rule names the ones it reads."""
 
     HEAD = 'head'
     RUNS = 'runs'
@@ -40,7 +40,7 @@ class Fact(StrEnum):
 
 @dataclass(frozen=True)
 class Progress:
-    """Where the campaign is, counted on this tick. A fact that the rule does not read is None."""
+    """Where the campaign is, counted on this pass. A fact that the rule does not read is None."""
 
     head: float | None = None
     """``head``: the primary metric at the head under the current evaluator. Also None without a head, or when the
