@@ -8,7 +8,7 @@ from typing import Self, assert_never
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from piloop import deprecated
-from piloop.mcp import MCP, RENDERERS
+from piloop.mcp import MCP, RENDERERS, EnvName
 from piloop.usage import UsageSpec
 
 SESSION_ID = '{session_id}'
@@ -86,6 +86,15 @@ CLAUDE_HOME = '{env:CLAUDE_CONFIG_DIR:~/.claude}'
 CODEX_HOME = '{env:CODEX_HOME:~/.codex}'
 
 
+class SecretRef(BaseModel):
+    """``{ secret = "NAME" }``: the value of the secret ``NAME`` (``piloop secret set``), in place of a literal."""
+
+    model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
+
+    secret: EnvName
+    """The name of the secret."""
+
+
 def takes_session_id(args: list[str]) -> bool:
     """Whether an argument list passes a piloop-minted session id to the agent."""
     return any(SESSION_ID in a for a in args)
@@ -112,6 +121,8 @@ class Harness(BaseModel):
     When ``headless`` contains ``{session_id}``, piloop creates the session id. Otherwise the runtime
     reports it, or reads it with ``session_id_pattern``.
     When the agent ends, ``usage`` uses this id to find the session file and read the tokens the agent spent.
+
+    A table named after a built-in harness changes the keys that it sets, and keeps the built-in's other keys.
     """
 
     model_config = ConfigDict(extra='forbid', use_attribute_docstrings=True)
@@ -142,6 +153,20 @@ class Harness(BaseModel):
     """The renderer that expands the ``{mcp}`` element of the argv into the role's ``[mcp.<name>]`` servers. Each
     renderer also keeps the user's own servers out, where its harness allows it.
     When unset, the harness takes no servers, and a role that lists servers cannot use it."""
+    env: dict[EnvName, str | SecretRef] = {}
+    """Variables of the agent's environment: a value, or a secret, ``{ secret = "NAME" }``. For example a model
+    gateway, ``{ ANTHROPIC_BASE_URL = "https://gw.example.com", ANTHROPIC_API_KEY = { secret = "ANTHROPIC_API_KEY" }
+    }``. When unset, the agent uses the login of the machine that runs it."""
+
+    @property
+    def literals(self) -> dict[str, str]:
+        """The variables of ``env`` that have a value."""
+        return {name: value for name, value in self.env.items() if isinstance(value, str)}
+
+    @property
+    def secrets(self) -> dict[EnvName, EnvName]:
+        """The variables of ``env`` that take a secret, with the secret's name."""
+        return {name: value.secret for name, value in self.env.items() if isinstance(value, SecretRef)}
 
     def refuses_servers(self) -> str | None:
         """Return why ``headless`` cannot take MCP servers, or None when it can."""

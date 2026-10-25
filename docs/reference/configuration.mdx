@@ -83,6 +83,8 @@ When `headless` contains `{session_id}`, piloop creates the session id. Otherwis
 reports it, or reads it with `session_id_pattern`.
 When the agent ends, `usage` uses this id to find the session file and read the tokens the agent spent.
 
+A table named after a built-in harness changes the keys that it sets, and keeps the built-in's other keys.
+
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `executable` | string | required | The program to run. |
@@ -93,6 +95,7 @@ When the agent ends, `usage` uses this id to find the session file and read the 
 | `home` | string \| null | `null` | The directory where the agent keeps its config and sessions, as `{env:NAME:default}`. piloop's tests move it to a temporary directory through `NAME`. |
 | `session_env` | list\[string\] | `[]` | The variables the agent sets for the processes of its session. piloop clears them for every agent, so an agent started from inside such a session is not its child. |
 | `mcp` | string \| null | `null` | The renderer that expands the `{mcp}` element of the argv into the role's `[mcp.<name>]` servers. Each renderer also keeps the user's own servers out, where its harness allows it. When unset, the harness takes no servers, and a role that lists servers cannot use it. Built in: `claude`, `codex`, `pi`. |
+| `env` | dict\[string, string \| [SecretRef](#secretref)\] | `{}` | Variables of the agent's environment: a value, or a secret, `{ secret = "NAME" }`. For example a model gateway, `{ ANTHROPIC_BASE_URL = "https://gw.example.com", ANTHROPIC_API_KEY = { secret = "ANTHROPIC_API_KEY" } }`. When unset, the agent uses the login of the machine that runs it. |
 
 ## UsageSpec
 
@@ -108,6 +111,14 @@ names when the config loads.
 | `file` | string \| null | `null` | For `jsonl`: a glob of the session file. piloop substitutes `{home}`, `{env:NAME:default}` (the environment variable `NAME`, or `default` when it is unset; a default may start with `~`), `{cwd}` (the agent's cwd, encoded as `cwd` says) and `{session_id}`. Examples: `{home}/.pi/agent/sessions/{cwd}/*_{session_id}.jsonl`, `{env:CLAUDE_CONFIG_DIR:~/.claude}/projects/{cwd}/*.jsonl`. The service unit of the daemon (`piloop service-unit`) carries every variable that a placeholder names. When the glob matches nothing, piloop tries again with `*` for `{cwd}`. This searches one level of folders, not deeper, and the session id makes the match unique. When several files match, piloop takes the newest one. |
 | `cwd` | string | `"none"` | For `jsonl`: how the harness names the folder of the agent's cwd. `dash_separators_wrapped` turns `/home/me/repo` into `--home-me-repo--`. `dash_non_alnum` turns it into `-home-me-repo`. `none` means that the folders are not named after the cwd, and matches any folder (`*`). |
 | `tally` | string \| null | `null` | For `jsonl`: the file format, which says which records have token counts, how they add up, and which records hold the agent's own text. Built in: `claude`, `codex`, `pi`. |
+
+## SecretRef
+
+`{ secret = "NAME" }`: the value of the secret `NAME` (`piloop secret set`), in place of a literal.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `secret` | string | required | The name of the secret. |
 
 ## RoleConfig
 
@@ -132,8 +143,9 @@ The keys that every `[roles.<name>]` table accepts. Each role's table below adds
 
 `[mcp.<name>]`: one MCP server, either streamable HTTP (`url`) or stdio (`command`).
 
-Do not write API keys here. Name the environment variables that hold them. piloop passes these variables from the
-daemon's environment to the agent, and the harness puts their values into the header or the server's environment.
+Do not write API keys here. Name the environment variables that hold them: each is the name of a secret
+(`piloop secret set`). piloop puts the secrets in the agent's environment, and the harness puts their values into
+the header or the server's environment.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
@@ -479,6 +491,12 @@ The server's certificate chain and its private key, as PEM files.
 |---|---|---|---|
 | `cert` | string | required | The certificate, then the chain of its issuers. |
 | `key` | string | required | The certificate's private key, unencrypted. |
+
+#### `[plugins.secrets]`
+
+Selects the secrets provider.
+
+With `provider = "local"`, the table has no other key.
 
 ### `[runtimes.<name>]`
 

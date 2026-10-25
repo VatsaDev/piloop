@@ -89,6 +89,8 @@ HELPERS: set[object] = {
     capabilities.NotARepository,
     capabilities.UnknownRevision,
     capabilities.GitRepository,  # what a built-in provider's open makes
+    capabilities.values,  # what an executor calls at an agent's start
+    capabilities.Owner,  # a type alias
 }
 """What a provider raises, calls or returns that no signature of a contract names."""
 
@@ -240,10 +242,11 @@ def test_the_example_plugins_import_piloop_only_from_the_module() -> None:
     for plugin in plugins:
         own = plugin.__name__.split('.')[0]
         outside = {m for m in _imports(Path(plugin.__file__ or '')) if m.split('.')[0] not in sys.stdlib_module_names}
-        # covalence is the library of piloop's CAS: a provider may return its stores as they are
-        assert {m for m in outside if m.split('.')[0] not in {own, 'covalence'}} == {'piloop.capabilities'}, (
-            plugin.__name__
-        )
+        # covalence is the library of piloop's CAS: a provider may return its stores as they are. pydantic's
+        # SecretStr is what a contract passes a secret's value in
+        assert {m for m in outside if m.split('.')[0] not in {own, 'covalence', 'pydantic'}} == {
+            'piloop.capabilities'
+        }, plugin.__name__
 
 
 def test_a_pure_example_plugin_uses_only_pure_contracts_and_pure_providers() -> None:

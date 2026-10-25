@@ -12,6 +12,8 @@ from contextlib import suppress
 from datetime import datetime, timedelta
 from functools import partial
 
+from pydantic import SecretStr
+
 from piloop.capabilities import (
     AgentJob,
     AgentKey,
@@ -35,6 +37,7 @@ from piloop.capabilities import (
     remove,
     run_agent,
     run_evaluation,
+    values,
 )
 
 
@@ -63,7 +66,7 @@ class InlineExecutor:
         return Capacity(agents=None, evaluations=None)
 
     def submit(self, job: AgentJob | EvaluationJob) -> None:
-        running = _Job(self, key_of(job))
+        running = _Job(self, job)
         with self._lock:
             if self.stopping:
                 raise RuntimeError('the executor stops: it takes no more jobs')
@@ -157,9 +160,10 @@ class InlineExecutor:
 class _Job:
     """``Control`` for one job: how to stop it, and its start and session id."""
 
-    def __init__(self, executor: InlineExecutor, key: JobKey) -> None:
+    def __init__(self, executor: InlineExecutor, job: AgentJob | EvaluationJob) -> None:
         self._executor = executor
-        self.key = key
+        self.job = job
+        self.key = key_of(job)
         self.thread: threading.Thread | None = None
         self.runtime: Runtime | None = None
         self.steer: Callable[[str], None] | None = None
@@ -212,3 +216,9 @@ class _Job:
 
     def queued(self) -> list[list[Prompt]]:
         return self.prompts
+
+    def secrets(self) -> dict[str, SecretStr]:
+        assert isinstance(self.job, AgentJob)
+        host = self._executor.host
+        with host.db.session() as s:
+            return values(s, host.secrets, self.job.agent_session, self.job.secrets.values())

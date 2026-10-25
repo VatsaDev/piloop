@@ -23,6 +23,8 @@ codex = "gpt-6.1-sol"
 # executable = "my-agent"                 # keys: executable, headless, resume, session_id_pattern,
 # headless = ["--model", "{model}", "{prompt}"]  # mcp, home, session_env,
 #                                         # and [harness.<name>.usage] with reader, file, cwd and tally; see the reference
+# env = { ANTHROPIC_BASE_URL = "https://gw.example.com", ANTHROPIC_API_KEY = { secret = "ANTHROPIC_API_KEY" } }
+#                                         # more variables of its agents: a value, or a secret (`piloop secret set`)
 
 # [mcp.exa]                               # an MCP server that a role can list in its `mcp` key; see the MCP servers guide
 # url = "https://mcp.exa.ai/mcp"          # a streamable HTTP server (keys: url, headers_env, bearer_token_env)

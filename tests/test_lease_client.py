@@ -15,9 +15,10 @@ import httpx2 as httpx
 import pytest
 from covalence import Cid
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 from pytest_mock import MockerFixture
 
+from piloop.actor import System
 from piloop.db.models import Campaign, LeaseState, NoLease, TokenScope
 from piloop.db.session import Database
 from piloop.ids import CampaignId, CommentId, Revision
@@ -44,6 +45,7 @@ from piloop.plugins.executor.kit.leases import (
 from piloop.plugins.executor.kit.remote import Remote, SendAsked, lease_routes
 from piloop.plugins.network.contract import NetworkHost
 from piloop.plugins.network.https import Https, HttpsNetwork
+from piloop.plugins.secrets.contract import SECRETS, set_secret
 from piloop.plugins.vcs.contract import MAX_HAVE
 from tests.conftest import Dial, disk, home_cas, wait_until
 from tests.fixtures.netfault import CutResponse, Proxy
@@ -203,6 +205,35 @@ def test_a_worker_cannot_act_on_another_workers_lease(
     assert lease_row(db, lease).state is LeaseState.ACQUIRED, 'still w1s'
 
 
+def test_a_worker_gets_the_values_of_the_secrets_that_its_agents_job_names_on_its_live_lease_only(
+    connect: Connect, db: Database, campaign: Campaign, tmp_path: Path
+) -> None:
+    """The names come from the job in the CAS, never from the worker. The campaign's secret wins over the home's."""
+    with db.session() as s:
+        for owner, name, value in [(None, 'KEY', 'home'), (campaign.id, 'KEY', 'campaign'), (None, 'OTHER', 'o')]:
+            set_secret(s, SECRETS.selected({}), System.HUMAN, owner, name, SecretStr(value))
+        s.commit()
+    w1, w2 = connect('w1'), connect('w2')
+    w1.register(INFO)
+    w2.register(INFO)
+    job = agent_job(db, campaign, tmp_path).model_copy(update={'secrets': {'API_KEY': 'KEY', 'GONE': 'UNSET'}})
+    lease = queue(db, job)
+    assert isinstance(w1.acquire(uuid4().hex, HOST), Grant)
+    found = w1.secrets(lease)
+    assert {name: value.get_secret_value() for name, value in found.items()} == {'KEY': 'campaign'}
+    with pytest.raises(StaleLease):
+        w2.secrets(lease)
+    evaluation = queue(db, evaluation_job(db, campaign, tmp_path))
+    assert isinstance(w1.acquire(uuid4().hex, HOST), Grant)
+    with pytest.raises(StaleLease, match='an evaluation, which has no secrets'):
+        w1.secrets(evaluation)
+    with pytest.raises(StaleLease, match='there is no lease#99'):
+        w1.secrets(99)
+    w1.report(lease, uuid4().hex, DONE)
+    with pytest.raises(StaleLease, match='is reported'):
+        w1.secrets(lease)
+
+
 def test_a_worker_reads_work_for_every_worker_and_only_its_own_prompts_and_revokes(
     connect: Connect, db: Database, campaign: Campaign, tmp_path: Path, leases: Leases, recorder: Recorder
 ) -> None:
@@ -321,7 +352,7 @@ def test_a_revoked_token_and_the_servers_own_name_are_dismissed(remote: Callable
 
 def test_a_worker_of_another_protocol_is_dismissed_with_the_servers_version(remote: Callable[..., Remote]) -> None:
     with pytest.raises(
-        Dismissed, match=r'\(426\): the server runs piloop .+, with protocol 6, and the worker protocol 1'
+        Dismissed, match=r'\(426\): the server runs piloop .+, with protocol 7, and the worker protocol 1'
     ):
         remote().register(INFO.model_copy(update={'protocol': 1}))
 

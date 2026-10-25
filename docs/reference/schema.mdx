@@ -247,6 +247,16 @@ CREATE TABLE lessons (
 	CONSTRAINT lessonstatus CHECK (status IN ('dead', 'promising', 'untested'))
 );
 CREATE INDEX ix_lessons_campaign_family ON lessons (campaign_id, family);
+CREATE TABLE secrets (
+	id INTEGER NOT NULL,
+	campaign_id INTEGER,
+	name VARCHAR NOT NULL,
+	value VARCHAR NOT NULL,
+	PRIMARY KEY (id),
+	UNIQUE (campaign_id, name),
+	FOREIGN KEY(campaign_id) REFERENCES campaigns (id)
+);
+CREATE UNIQUE INDEX ux_secrets_home_name ON secrets (name) WHERE campaign_id IS NULL;
 CREATE TABLE techniques (
 	id INTEGER NOT NULL,
 	campaign_id INTEGER NOT NULL,

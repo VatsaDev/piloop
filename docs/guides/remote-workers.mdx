@@ -99,7 +99,8 @@ piloop limits set executor.pools.gpu.provisioner.max=0 --reason "the GPU budget 
 
 ## What an agent on a worker gets
 
-- The environment of the worker, with the keys that its [MCP servers](/guides/mcp-servers) need.
+- The environment of the worker, and the [secrets](/guides/secrets) that its job names, which the server sends when
+  the job starts.
 - A clone of the campaign's repo and a copy of the shared [workspace](/concepts/campaigns#shared-files). Its commits
   and its workspace writes come back when it ends.
 - Its `piloop` commands, which the worker relays to the server while the agent's lease is live.

@@ -89,10 +89,9 @@ class Settings(BaseSettings):
     writes none. Each copy is about the size of the database."""
 
     secrets_command: str | None = None
-    """A shell command that prints ``NAME=value`` lines: the API keys that the ``[mcp.<name>]`` servers name, from
-    wherever you keep them. The daemon runs it when it starts and on every ``piloop restart``. The keys go into the
-    daemon's environment only, never into a file or a log. When unset, the daemon has only the environment that
-    ``piloop serve`` started with."""
+    """A shell command that prints ``NAME=value`` lines, which the daemon adds to its environment when it starts and on
+    every ``piloop restart``. ``piloop secret set`` replaces it (``Daemon._load_secrets``): until then, a secret that the
+    home lacks is read from that environment."""
 
     otel_exporter_otlp_endpoint: str | None = Field(default=None, validation_alias='OTEL_EXPORTER_OTLP_ENDPOINT')
     """The standard OTLP endpoint. piloop exports traces only when this is set."""

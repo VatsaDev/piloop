@@ -136,6 +136,9 @@ def home_plugins() -> str:
         for provider, model in capability.builtins().items():
             if isinstance(model, type) and issubclass(model, BaseModel):
                 schema = json_schema(model)
+                if not schema.get('properties'):
+                    out += f'\nWith `provider = "{provider}"`, the table has no other key.\n'
+                    continue
                 out += f'\nWith `provider = "{provider}"`:\n\n{table(schema, schema.get("$defs", {}))}'
                 for inner in [m for m in _nested(model, []) if m.__name__ in schema.get('$defs', {})]:
                     nested = json_schema(inner)

@@ -43,10 +43,9 @@ reference](/reference/configuration#mcpserver) has every key.
 A server names the environment variables that hold its keys. It never holds a key. So `piloop.toml` is safe to
 commit.
 
-piloop copies each named variable from the daemon's environment into the agent's environment. The harness then puts
-the value into the header or into the server's environment. A variable that the daemon does not have makes the launch
-fail, with an error that names the variable. See [Secrets](/guides/secrets) for how to give the daemon its keys.
-`piloop doctor` lists the missing variables by name.
+Each variable is the name of a [secret](/guides/secrets), which piloop puts in the agent's environment. The harness
+then puts the value into the header or into the server's environment. A secret that is not set makes the launch fail,
+with an error that names it. `piloop doctor` lists the missing secrets by name.
 
 <Warning>
   The keys are in the agent's environment. An agent can read them with its shell tool. Codex agents are the exception:

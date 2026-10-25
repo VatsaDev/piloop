@@ -5,9 +5,9 @@ can one that runs jobs inline. What the executor does around a job (track it, st
 ``Control``; the machine it runs on is its ``Site``. Like Airflow's ``run_workload``: one way to run a unit of work,
 whichever executor placed it.
 
-The steps of an agent's job: make its place and its artifact (a checkout, ``Clones``), write the brief, render the MCP
-servers with the variables of this machine, start the agent, watch it to its end, save its transcript, read its
-usage, and bring its versions back. What it made goes back by address: the report names
+The steps of an agent's job: make its place and its artifact (a checkout, ``Clones``), write the brief, put the values
+of its secrets in its environment, render the MCP servers, start the agent, watch it to its end, save its transcript,
+read its usage, and bring its versions back. What it made goes back by address: the report names
 its versions, its log files (``Site.files``) and what it wrote in the shared workspace in the CAS. The checkout stays:
 the executor removes it (``remove``) once the report is out, so a worker that restarts in between finds the ended agent
 there.
@@ -18,7 +18,7 @@ import shlex
 import subprocess
 import time
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from functools import partial
@@ -26,10 +26,12 @@ from pathlib import Path
 from typing import Protocol, assert_never
 
 from covalence import Cid
+from pydantic import SecretStr
 
+from piloop import deprecated
 from piloop.config import BRIEF_FILE, TRANSCRIPT
 from piloop.ids import CommentId
-from piloop.mcp import RENDERERS, Launch, expand, forwarded_env
+from piloop.mcp import RENDERERS, EnvName, Launch, expand
 from piloop.otel import Span
 from piloop.plugins.cas.contract import Cas
 from piloop.plugins.executor.contract import (
@@ -197,6 +199,10 @@ class Control(Protocol):
         """The prompts that the agent's runtime took, one list for each ``Runtime.prompt``, oldest first."""
         ...
 
+    def secrets(self) -> dict[EnvName, SecretStr]:
+        """The values of the agent's secrets (``AgentJob.secrets``) that the home has, by name: asked at its start."""
+        ...
+
 
 def run_agent(job: AgentJob, runtime: Runtime, control: Control, site: Site, span: Span) -> AgentReport | None:
     """Make the artifact, start the agent, watch it to its end, and return its report.
@@ -212,8 +218,8 @@ def run_agent(job: AgentJob, runtime: Runtime, control: Control, site: Site, spa
         log_dir.mkdir(parents=True, exist_ok=True)
         if site.cas.get_file(job.brief_cid, log_dir / BRIEF_FILE) is None:
             raise LookupError(f'the CAS lacks the brief {job.brief_cid}')
-        spec = rendered(job, job.spec.at(cwd, log_dir, site.env()))
-    except Exception as e:  # a full disk, a locked index, a missing variable: a fault of the host, not of the agent
+        spec = rendered(job, job.spec.at(cwd, log_dir, site.env()), control.secrets())
+    except Exception as e:  # a full disk, a locked index, a missing secret: a fault of the host, not of the agent
         span.error(e)
         return _unstarted(job, site, f'{type(e).__name__}: {e}', started_at)
     if not control.begin():
@@ -476,16 +482,51 @@ def _track(control: Control, proc: subprocess.Popen[bytes] | None) -> None:
         kill_group(proc)
 
 
-def rendered(job: AgentJob, spec: AgentSpec) -> AgentSpec:
-    """The spec with the values of the servers' variables from this machine's environment, and ``{mcp}`` expanded.
+class MissingSecrets(LookupError):
+    """An agent's job needs secrets that the home does not have. The message names them, never a value."""
+
+
+def rendered(job: AgentJob, spec: AgentSpec, found: Mapping[str, SecretStr]) -> AgentSpec:
+    """The spec with the values of the job's secrets from ``found`` (``Control.secrets``), and ``{mcp}`` expanded.
+
+    piloop's own variables in the spec win over a secret of the same name.
 
     Raises:
-        McpError: a variable is not set here, or the servers cannot be given to this agent.
+        MissingSecrets: a secret is not set.
+        McpError: the servers cannot be given to this agent.
     """
-    env = spec.env | forwarded_env(job.servers, child_env())
+    env = secret_env(job.secrets, found, child_env()) | spec.env
     if job.mcp is None:
         return replace(spec, env=env)
     mcp = RENDERERS[job.mcp].render(
         Launch(job.servers, spec.executable, spec.cwd, spec.log_dir, child_env() | env, spec.args)
     )
     return replace(spec, args=expand(spec.args, mcp), resume_args=expand(spec.resume_args, mcp), env=env | mcp.env)
+
+
+def secret_env(
+    wanted: Mapping[EnvName, EnvName], found: Mapping[str, SecretStr], machine: Mapping[str, str]
+) -> dict[str, str]:
+    """The variables of ``wanted`` (``AgentJob.secrets``), each with the value of its secret in ``found``.
+
+    Raises:
+        MissingSecrets: a secret is neither in ``found`` nor, for now, in ``machine``, the environment of this machine.
+    """
+    env: dict[str, str] = {}
+    missing: list[str] = []
+    for variable, secret in wanted.items():
+        match found.get(secret):
+            case SecretStr() as value:
+                env[variable] = value.get_secret_value()
+            case None if secret in machine:
+                deprecated.until(
+                    '0.5.0',
+                    'a secret from the environment of the machine that runs the job: delete this case,'
+                    ' Settings.secrets_command, Daemon._load_secrets and the environment in doctor._secrets_of',
+                )
+                env[variable] = machine[secret]
+            case _:
+                missing.append(secret)
+    if missing:
+        raise MissingSecrets(f'the secrets {", ".join(sorted(set(missing)))} are not set: `piloop secret set <NAME>`')
+    return env

@@ -37,7 +37,7 @@ from pydantic_settings import (
 from piloop import deprecated
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
 from piloop.ids import IMPLEMENTER, ROLE_NAME, RoleName, TrackName
-from piloop.mcp import McpServer, ServerName
+from piloop.mcp import EnvName, McpServer, ServerName, env_names
 from piloop.plugins.host import Plugins, PluginTables, Scope
 from piloop.plugins.metric import Direction
 from piloop.plugins.role.contract import ROLES, ImplementerRole, RoleConfig, SweepRole, new_role
@@ -332,6 +332,19 @@ class CampaignConfig(BaseModel):
     parameters, the other keys of the table. A capability without a table, or a table without ``provider``,
     has its default provider."""
 
+    @field_validator('harness', mode='before')
+    @classmethod
+    def _over_built_ins(cls, tables: object) -> object:
+        """A table named after a built-in harness keeps the built-in's keys that it does not set."""
+        if not isinstance(tables, dict):
+            return tables
+        return {
+            name: built.model_dump(exclude_defaults=True) | table
+            if isinstance(table, dict) and (built := DEFAULT_HARNESSES.get(name)) is not None
+            else table
+            for name, table in tables.items()
+        }
+
     @model_validator(mode='after')
     def _check(self) -> Self:
         self._check_tracks()
@@ -409,6 +422,16 @@ class CampaignConfig(BaseModel):
     def role_servers(self, name: RoleName) -> dict[str, McpServer]:
         """The MCP servers that the agents of a role get, by name."""
         return {server: self.mcp[server] for server in self.role(name).mcp}
+
+    def role_secrets(self, name: RoleName, harness: str) -> dict[EnvName, EnvName]:
+        """The variables of an agent of a role on ``harness`` that take a secret, with the secret's name.
+
+        Each variable of the role's MCP servers is the secret of its own name, unless the harness's ``env`` gives it a
+        value or another secret.
+        """
+        definition = self.harness_for(harness)
+        servers = env_names(self.role_servers(name).values())
+        return {n: n for n in servers if n not in definition.env} | definition.secrets
 
     def role(self, name: RoleName) -> RoleConfig:
         """The ``[roles.<name>]`` table. The keys that only one role has need ``self.roles.<name>``.

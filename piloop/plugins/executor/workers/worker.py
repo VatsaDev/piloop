@@ -30,9 +30,10 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import assert_never
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, SecretStr
 
 from piloop.db.models import NoLease
+from piloop.mcp import EnvName
 from piloop.otel import Tracer
 from piloop.plugins.executor.contract import (
     AgentJob,
@@ -752,3 +753,6 @@ class _Control:
         with self._worker._lock:
             running = self._worker._jobs.get(self._lease)
             return list(running.queued) if running is not None else []
+
+    def secrets(self) -> dict[EnvName, SecretStr]:
+        return self._worker.client.secrets(self._lease)

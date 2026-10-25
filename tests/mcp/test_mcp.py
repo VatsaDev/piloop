@@ -23,8 +23,6 @@ from piloop.mcp import (
     codex,
     env_names,
     expand,
-    forwarded_env,
-    missing_env,
 )
 from tests.conftest import RESEARCH, write_script
 
@@ -59,16 +57,9 @@ def test_a_server_is_http_or_stdio_and_names_variables_where_they_belong(table: 
         McpServer.model_validate(table)
 
 
-def test_the_variables_servers_need_are_forwarded_by_name_and_a_missing_one_fails_naming_it() -> None:
+def test_the_variables_that_servers_need_are_named_each_once() -> None:
     assert XAI.env_names == ['XAI_API_KEY', 'EXA_API_KEY']
-    assert env_names([EXA, FIRECRAWL, XAI, OPEN]) == ['EXA_API_KEY', 'FIRECRAWL_API_KEY', 'XAI_API_KEY'], 'each once'
-    assert missing_env([EXA, XAI], ['EXA_API_KEY']) == ['XAI_API_KEY']
-    environ = {'EXA_API_KEY': 'e', 'XAI_API_KEY': 'x', 'OTHER': 'o'}
-    assert forwarded_env({'exa': EXA, 'xai': XAI}, environ) == {'EXA_API_KEY': 'e', 'XAI_API_KEY': 'x'}
-    assert forwarded_env({}, environ) == {}
-    with pytest.raises(McpError, match=r"servers \['exa', 'fc'\] need FIRECRAWL_API_KEY in the environment") as e:
-        forwarded_env({'exa': EXA, 'fc': FIRECRAWL}, {'EXA_API_KEY': 'secret-value'})
-    assert 'secret-value' not in str(e.value)
+    assert env_names([EXA, FIRECRAWL, XAI, OPEN]) == ['EXA_API_KEY', 'FIRECRAWL_API_KEY', 'XAI_API_KEY']
 
 
 def test_expand_replaces_only_the_whole_mcp_element() -> None:

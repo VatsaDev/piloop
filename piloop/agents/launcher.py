@@ -164,8 +164,9 @@ class Launcher:
             kind, reason = w.kind, w.reason
             span.set(kind=kind, harness=harness, model=model, reason=reason, session_id=session_id)
             prompt = PROMPT.format(path=f'{{log_dir}}/{BRIEF_FILE}')
-            # the worker adds its PATH and its piloop (``jobs.Site.env``), and the variables that the MCP servers name
+            # the worker adds its PATH and its piloop (``jobs.Site.env``), and the values of the secrets
             env = {
+                **definition.literals,
                 'PILOOP_ACTOR': Agent(role=kind, session=agent_session_id).signature,
                 **dict.fromkeys(SESSION_ENV | {*definition.session_env}, ''),
             }
@@ -195,6 +196,7 @@ class Launcher:
                 spec=spec,
                 mcp=definition.mcp,
                 servers=cfg.role_servers(kind),
+                secrets=cfg.role_secrets(kind, harness),
                 usage=definition.usage,
                 session_id=session_id,
                 capture=capture,

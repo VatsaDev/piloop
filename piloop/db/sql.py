@@ -1,9 +1,10 @@
 """Raw SQL access for agents: any statement except a schema change.
 
 The same rules apply to every client (``piloop sql``, the watchdog, any agent). SQLite's authorizer denies DDL,
-ATTACH, transactions, writes to ``alembic_version``, ``session_actor`` and ``tokens``, and all PRAGMAs except the
-read-only ones that describe the schema. The connection is in autocommit mode, because a forgotten BEGIN would lock
-the database. Everything else is allowed, DELETE included. The schema enforces the rules on the data.
+ATTACH, transactions, writes to ``alembic_version``, ``session_actor``, ``tokens`` and ``secrets``, and all PRAGMAs
+except the read-only ones that describe the schema. ``secrets.value`` reads as NULL. The connection is in autocommit
+mode, because a forgotten BEGIN would lock the database. Everything else is allowed, DELETE included. The schema
+enforces the rules on the data.
 
 Anyone can read the full-text indexes (``ideas_fts``, ``comments_fts``, ``documents_fts``) with ``MATCH``,
 ``bm25()`` and ``snippet()``, but only their sync triggers write them. The authorizer sees the name of the trigger behind each
@@ -87,7 +88,11 @@ MIGRATION_TABLE = 'alembic_version'
 ACTOR_TABLE = 'session_actor'
 TOKENS_TABLE = 'tokens'
 """An agent that could write a token could call the server as a worker."""
-PROTECTED_TABLES = {MIGRATION_TABLE, ACTOR_TABLE, TOKENS_TABLE}
+SECRETS_TABLE = 'secrets'
+"""An agent writes its campaign's secrets through ``piloop secret``, which checks that the campaign is its own."""
+PROTECTED_TABLES = {MIGRATION_TABLE, ACTOR_TABLE, TOKENS_TABLE, SECRETS_TABLE}
+HIDDEN_COLUMNS = frozenset({(SECRETS_TABLE, 'value')})
+"""Columns that read as NULL: an agent gets a secret's value in its environment only."""
 ACTOR_TRIGGERS = (Path(__file__).parent / 'actor_triggers.sql').read_text()
 WRITES = {sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE}
 BUSY_TIMEOUT_MS = 5000
@@ -136,6 +141,8 @@ def _authorize(action: int, arg1: str | None, arg2: str | None, _db: str | None,
         return sqlite3.SQLITE_OK if arg1 in READ_ONLY_PRAGMAS else sqlite3.SQLITE_DENY
     if action in WRITES and arg1 in PROTECTED_TABLES:
         return sqlite3.SQLITE_DENY
+    if action == sqlite3.SQLITE_READ and (arg1, arg2) in HIDDEN_COLUMNS:
+        return sqlite3.SQLITE_IGNORE
     if action in WRITES and arg1 in FTS_TABLES and source not in FTS_TRIGGER_NAMES:
         return sqlite3.SQLITE_DENY
     if action == sqlite3.SQLITE_INSERT and arg1 in APPEND_ONLY and source not in EVENT_TRIGGER_NAMES:

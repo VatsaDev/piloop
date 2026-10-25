@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import sqlite3
+from collections.abc import Mapping
 from contextlib import closing
 from importlib.metadata import distribution
 from pathlib import Path
@@ -11,14 +12,17 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.script import ScriptDirectory
+from pydantic import SecretStr
 from pytest_mock import MockerFixture
 
+from piloop.actor import System
 from piloop.cli import doctor, skills, upgrade
 from piloop.cli.doctor import checks, report
 from piloop.config import CampaignConfig
 from piloop.db.models import Campaign, CampaignStatus
 from piloop.db.session import Database
 from piloop.plugins.host import Check, Severity
+from piloop.plugins.secrets.contract import SECRETS, set_secret
 from piloop.settings import Settings
 from piloop.version import Version, code_digest, installed
 from tests.cli.test_cli import git_check
@@ -66,8 +70,8 @@ def test_a_healthy_install_passes_every_check(
         f'ok    cli: {installed()}; not checked for a newer one: installed from file:///src/piloop: update that checkout',
         'ok    daemon: not running',
         f'ok    database: {tmp_path}/piloop.db at schema {HEAD}, current',
-        'ok    plugins: 5 CAS providers, 1 executor, 1 network, 1 provisioner, 4 roles, 1 runtime, 1 stop rule, 7 triggers, 1 vcs provider, 1 verdict rule; all built in',
-        'ok    secrets: from the environment of this shell only (PILOOP_SECRETS_COMMAND unset)',
+        'ok    plugins: 5 CAS providers, 1 executor, 1 network, 1 provisioner, 4 roles, 1 runtime, 1 secrets provider, 1 stop rule, 7 triggers, 1 vcs provider, 1 verdict rule; all built in',
+        'ok    secrets: from `piloop secret set` (PILOOP_SECRETS_COMMAND unset)',
         f'ok    campaign demo: {campaign.path}/piloop.toml loads',
         f'ok    skills (pi): current in {cfg.agent_skills_dir}',
         'ok    harnesses: on PATH: script',
@@ -212,63 +216,67 @@ def test_a_missing_harness_is_named(cfg: Settings, db: Database, campaign: Campa
     )
 
 
-def test_mcp_servers_are_checked_for_their_commands_and_the_variables_they_name_by_name_only(
+def test_mcp_servers_are_checked_for_their_commands_and_their_secrets_by_name_only(
     cfg: Settings, db: Database, campaign: Campaign, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     servers = {
         'exa': {'url': 'https://mcp.exa.ai/mcp', 'headers_env': {'x-api-key': 'EXA_API_KEY'}},
         'xai': {'command': ['xai-server'], 'env': ['XAI_API_KEY', 'EXA_API_KEY']},
     }
-    with db.session() as s:
-        row = s.get_one(Campaign, campaign.id)
-        row.config = reconfigured(row.config, mcp=servers)
-        s.commit()
+    give_watchdog(
+        db, campaign, servers, {'GATEWAY_URL': 'https://gw.example.com', 'GATEWAY_KEY': {'secret': 'TEAM_KEY'}}
+    )
+    for name in ('EXA_API_KEY', 'XAI_API_KEY', 'TEAM_KEY'):
+        monkeypatch.delenv(name, raising=False)
     assert 'mcp demo' not in by_name(Settings(home=tmp_path / 'empty')), 'no campaigns, nothing to check'
     assert by_name(cfg)['mcp demo'] == Check(
         'mcp demo', 'not on PATH: xai-server', 'install them, or fix the [mcp.*] tables'
     )
     on_path(tmp_path, 'xai-server')
-    fix = (
-        'print them from PILOOP_SECRETS_COMMAND, or set them in the environment `piloop serve` runs in;'
-        ' then restart the daemon'
-    )
-    assert by_name(cfg)['mcp demo'] == Check('mcp demo', 'this shell lacks EXA_API_KEY, XAI_API_KEY', fix)
-    monkeypatch.setenv('EXA_API_KEY', 'exa-value')
-    for holder in hold_lock(cfg.pid_file):
-        found = by_name(cfg)['mcp demo']
-        assert found == Check('mcp demo', f'the daemon (pid {holder.pid}) lacks XAI_API_KEY', fix), (
+    assert by_name(cfg)['mcp demo'] == Check('mcp demo', '2 server(s) (watchdog: exa, xai)')
+    fix = '`piloop secret set <NAME>` for each'
+    assert by_name(cfg)['secrets demo'] == Check('secrets demo', 'not set: EXA_API_KEY, TEAM_KEY, XAI_API_KEY', fix)
+    with db.session() as s:
+        set_secret(s, SECRETS.selected({}), System.HUMAN, None, 'EXA_API_KEY', SecretStr('exa-value'))
+        set_secret(s, SECRETS.selected({}), System.HUMAN, campaign.id, 'TEAM_KEY', SecretStr('team-value'))
+        s.commit()
+    for _holder in hold_lock(cfg.pid_file):
+        monkeypatch.setenv('XAI_API_KEY', 'xai-value')
+        assert by_name(cfg)['secrets demo'].found == 'not set: XAI_API_KEY', (
             "the daemon's environment, not this shell's"
         )
-        monkeypatch.setenv('XAI_API_KEY', 'xai-value')
-        assert by_name(cfg)['mcp demo'].found == f'the daemon (pid {holder.pid}) lacks XAI_API_KEY'
-    monkeypatch.setattr('piloop.cli.doctor.running_pid', lambda _cfg: 2**30)
+    assert by_name(cfg)['secrets demo'] == Check(
+        'secrets demo',
+        'XAI_API_KEY from the environment of this shell',
+        '`piloop secret set` each of them: piloop 0.5.0 reads secrets from `piloop secret` only',
+        Severity.WARN,
+    )
     with db.session() as s:
-        row = s.get_one(Campaign, campaign.id)
-        roles = CampaignConfig.model_validate(row.config).roles.model_dump(mode='json')
-        roles['watchdog']['mcp'] = ['exa', 'xai']
-        script = {'executable': 'script', 'headless': ['{mcp}', '{prompt}'], 'mcp': 'claude'}
-        row.config = reconfigured(row.config, harness={'script': script}, roles=roles, harnesses=['script'])
+        set_secret(s, SECRETS.selected({}), System.HUMAN, None, 'XAI_API_KEY', SecretStr('xai-value'))
         s.commit()
-    found = by_name(cfg)['mcp demo']
-    assert found == Check('mcp demo', '2 server(s) (watchdog: exa, xai), 2 variable(s) set in this shell'), (
+    assert by_name(cfg)['secrets demo'] == Check('secrets demo', '3 set')
+    monkeypatch.setattr('piloop.cli.doctor.running_pid', lambda _cfg: 2**30)
+    assert by_name(cfg)['secrets'].found == 'from `piloop secret set` (PILOOP_SECRETS_COMMAND unset)', (
         'no process with that pid: this shell'
     )
     assert 'value' not in ' '.join(report(checks(cfg)))
 
 
-def test_secrets_come_from_the_daemons_secrets_command_which_doctor_runs_reporting_names_only(
+def test_the_secrets_command_is_deprecated_and_doctor_runs_it_reporting_names_only(
     cfg: Settings, db: Database, campaign: Campaign, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    with db.session() as s:
-        row = s.get_one(Campaign, campaign.id)
-        row.config = reconfigured(row.config, mcp={'xai': {'command': ['sh'], 'env': ['XAI_API_KEY', 'EXA_API_KEY']}})
-        s.commit()
+    give_watchdog(db, campaign, {'xai': {'command': ['sh'], 'env': ['XAI_API_KEY', 'EXA_API_KEY']}})
+    for name in ('EXA_API_KEY', 'XAI_API_KEY'):
+        monkeypatch.delenv(name, raising=False)
     shell = Settings(home=cfg.home, secrets_command="printf 'XAI_API_KEY=%s%s' xai value")
     found = by_name(shell)
     assert found['secrets'] == Check(
-        'secrets', "PILOOP_SECRETS_COMMAND of this shell (printf 'XAI_API_KEY=%s%s' xai value) prints XAI_API_KEY"
+        'secrets',
+        "PILOOP_SECRETS_COMMAND of this shell (printf 'XAI_API_KEY=%s%s' xai value) prints XAI_API_KEY",
+        '`piloop secret set` each of them, then unset PILOOP_SECRETS_COMMAND: piloop 0.5.0 removes it',
+        Severity.WARN,
     )
-    assert found['mcp demo'].found == 'this shell lacks EXA_API_KEY', 'what the command prints counts as set'
+    assert found['secrets demo'].found == 'not set: EXA_API_KEY', 'what the command prints counts as set'
 
     monkeypatch.setenv('PILOOP_SECRETS_COMMAND', 'exit 7')
     for holder in hold_lock(cfg.pid_file):
@@ -278,8 +286,21 @@ def test_secrets_come_from_the_daemons_secrets_command_which_doctor_runs_reporti
             f'PILOOP_SECRETS_COMMAND of the daemon (pid {holder.pid}) (exit 7) failed: exit 7',
             'fix the command; `piloop serve` refuses to start while it fails',
         ), "the daemon's command, not this shell's"
-        assert found['mcp demo'].found == f'the daemon (pid {holder.pid}) lacks XAI_API_KEY, EXA_API_KEY'
+        assert found['secrets demo'].found == 'not set: EXA_API_KEY, XAI_API_KEY'
     assert 'xaivalue' not in ' '.join(report(checks(shell)))
+
+
+def give_watchdog(
+    db: Database, campaign: Campaign, servers: Mapping[str, object], env: Mapping[str, object] | None = None
+) -> None:
+    """Give the watchdog ``servers`` on a harness that takes them, with ``env``."""
+    script = {'executable': 'script', 'headless': ['{mcp}', '{prompt}'], 'mcp': 'claude', 'env': dict(env or {})}
+    with db.session() as s:
+        row = s.get_one(Campaign, campaign.id)
+        roles = CampaignConfig.model_validate(row.config).roles.model_dump(mode='json')
+        roles['watchdog']['mcp'] = list(servers)
+        row.config = reconfigured(row.config, mcp=dict(servers), harness={'script': script}, roles=roles)
+        s.commit()
 
 
 GIT_URL = 'https://example.com/piloop'

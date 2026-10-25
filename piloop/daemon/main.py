@@ -7,6 +7,7 @@ from functools import partial
 from types import FrameType
 from typing import TYPE_CHECKING
 
+from piloop import deprecated
 from piloop.actor import System
 from piloop.campaign.archive import ManifestNotMigrated, migrate_manifests
 from piloop.daemon.archiver import ArchivePolicy, Archiving
@@ -28,6 +29,7 @@ from piloop.plugins import host as plugins
 from piloop.plugins.cas import contract as cas
 from piloop.plugins.executor.contract import EXECUTORS
 from piloop.plugins.network import contract as network
+from piloop.plugins.secrets.contract import SECRETS
 from piloop.proc import Inherited
 from piloop.runtime.factory import make_runtime, runtimes
 from piloop.settings import CONFIG_FILE, Settings, settings
@@ -135,6 +137,7 @@ class Daemon:
             reserve=cfg.storage.reserve,
             runtime_factory=opened,
             network=self.network,
+            secrets=SECRETS.selected(cfg.providers),
         )
         self.scheduler = Scheduler(
             self.db,
@@ -194,6 +197,7 @@ class Daemon:
             self._cfg.code_file.unlink(missing_ok=True)
             os.close(lock)
 
+    @deprecated.until('0.5.0', 'secrets_command: agents take their secrets from [plugins.secrets]; delete this method')
     def _load_secrets(self) -> str | None:
         """Add the secrets command's output to this process's environment, and return the variable names.
 

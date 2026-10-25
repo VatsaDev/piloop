@@ -43,7 +43,7 @@ from enum import StrEnum
 from typing import Annotated, Literal, assert_never
 
 from covalence import Cid
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter
 from sqlalchemy import ColumnElement, exists, func, select, update
 from sqlalchemy.orm import Session, aliased
 
@@ -71,6 +71,7 @@ from piloop.db.models import (
 )
 from piloop.db.session import Database, read_transaction, write_transaction
 from piloop.ids import HOME, AgentSessionId, CommentId, TargetKind, TargetRef
+from piloop.mcp import EnvName
 from piloop.plugins.cas.contract import BlobAddress, Cas
 from piloop.plugins.executor.contract import (
     JOB,
@@ -91,6 +92,7 @@ from piloop.plugins.executor.contract import (
     Settled,
 )
 from piloop.plugins.executor.kit.capacity import HostSample, Pool, add, admits, less, pressure, slots, times
+from piloop.plugins.secrets.contract import SECRETS, SecretsProvider, values
 
 SERVE = 'serve'
 """The id of the worker inside ``piloop serve``, and its pool. The id is stable, so the next daemon's worker finds its
@@ -446,13 +448,18 @@ class Leases:
         cas: Cas,
         timing: Timing = DEFAULT_TIMING,
         pools: Mapping[str, Pool] = DEFAULT_POOLS,
+        secrets: SecretsProvider | None = None,
     ) -> None:
-        """``cas`` holds the jobs: ``submit`` puts each one there, and the workers read it from there."""
+        """``cas`` holds the jobs: ``submit`` puts each one there, and the workers read it from there.
+
+        ``secrets`` holds the values that an agent's job starts with (``secrets``): the default provider when None.
+        """
         self._db = db
         self._results = results
         self._cas = cas
         self.timing = timing
         self.pools = pools
+        self._secrets = secrets if secrets is not None else SECRETS.selected({})
 
     def register(
         self, worker: str, pool: str, version: str, runners: Sequence[str], host: HostSample
@@ -681,6 +688,25 @@ class Leases:
         if not isinstance(job, AgentJob):
             raise StaleLease(f'stale_lease: lease#{lease_id} is an evaluation, which relays nothing')
         return job
+
+    def secrets(self, lease_id: int, worker: str) -> dict[EnvName, SecretStr]:
+        """The values of the secrets of the agent's job on ``worker``'s live lease ``lease_id``, by name.
+
+        Only those that the job names (``AgentJob.secrets``), read from the job in the CAS: never a name that the worker
+        sends. Those that the home lacks are left out.
+
+        Raises:
+            StaleLease: no such live lease of ``worker``, or an evaluation's.
+        """
+        with self._db.session() as s:
+            if s.get(Lease, lease_id) is None:
+                raise StaleLease(f'stale_lease: there is no lease#{lease_id}')
+            live = self._live(s, lease_id, worker)
+            if live.agent_session_id is None:
+                raise StaleLease(f'stale_lease: lease#{lease_id} is an evaluation, which has no secrets')
+            job = read_job(self._cas, live.id, live.job_cid)
+            assert isinstance(job, AgentJob)  # an agent session's lease
+            return values(s, self._secrets, job.agent_session, job.secrets.values())
 
     def report(
         self, lease_id: int, worker: str, request_id: str, report: AgentReport | EvaluationReport

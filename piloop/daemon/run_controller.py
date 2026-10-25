@@ -90,6 +90,7 @@ from piloop.plugins.executor.contract import (
 )
 from piloop.plugins.network.contract import NETWORKS, Network, NetworkHost
 from piloop.plugins.runtime.contract import ExitStatus
+from piloop.plugins.secrets.contract import SECRETS, SecretsProvider
 from piloop.plugins.vcs.contract import Repository, RunVersion, Transfer, Version
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.reports.history import history
@@ -205,6 +206,7 @@ class RunController:
         cas: Cas | None = None,
         reserve: int = StorageSettings().reserve,
         network: Network | None = None,
+        secrets: SecretsProvider | None = None,
     ) -> None:
         self._db = db
         self._tracer = tracer
@@ -231,6 +233,7 @@ class RunController:
             runtime_factory,
             reserve,
             network,
+            secrets if secrets is not None else SECRETS.selected({}),
         )
         self.executor: Executor[ExecutorConfig] = self._config.open(host)
         self.launcher = Launcher(db, tracer, home, self.executor)

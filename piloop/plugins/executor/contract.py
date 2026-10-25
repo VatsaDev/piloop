@@ -30,13 +30,14 @@ from sqlalchemy.orm import Session
 from piloop.db.models import EventModel
 from piloop.db.session import Database
 from piloop.ids import AgentSessionId, CampaignId, CandidateId, CommentId, Revision, RunId
-from piloop.mcp import McpServer
+from piloop.mcp import EnvName, McpServer
 from piloop.net import Route
 from piloop.otel import Tracer
 from piloop.plugins.cas.contract import BlobAddress, Cas
 from piloop.plugins.host import Capability, Choice, Parameters, Scope
 from piloop.plugins.network.contract import Network
 from piloop.plugins.runtime.contract import AgentExit, AgentStart
+from piloop.plugins.secrets.contract import SecretsProvider
 from piloop.plugins.vcs.contract import VCS, Repository, Transfer, Vcs
 from piloop.runtime.factory import RuntimeFactory
 from piloop.usage import Usage, UsageSpec
@@ -106,8 +107,8 @@ class AgentJob(BaseModel):
     """The description of an agent's job: everything a worker needs, so it reads no campaign table.
 
     It names no path of the machine that made it. The worker makes the job's ``place`` under its own home: the log
-    directory, with the worktree in it. Secrets go by name: the MCP ``servers`` name the variables, and the worker takes
-    their values from its own environment and renders the servers into the argv (``{mcp}``).
+    directory, with the worktree in it. Secrets go by name (``secrets``): the worker asks for their values when it
+    starts the job (``Control.secrets``), and renders the MCP ``servers`` into the argv (``{mcp}``).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -130,6 +131,9 @@ class AgentJob(BaseModel):
     """The renderer of the harness's MCP servers (``Harness.mcp``), or None for a harness that takes none."""
     servers: dict[str, McpServer] = Field(default_factory=dict)
     """The MCP servers of the agent's role, which name their variables, never their values."""
+    secrets: dict[EnvName, EnvName] = Field(default_factory=dict)
+    """The variables of the agent's environment that take a secret, with the secret's name: the harness's references
+    (``Harness.secrets``), and each variable of the ``servers``, the secret of its own name."""
     usage: UsageSpec | None = None
     """How to read the session's tokens when it ends (``Harness.usage``)."""
     session_id: str | None = None
@@ -390,6 +394,8 @@ class Host:
     inputs that no job uses (``Site.evict_inputs``)."""
     network: Network
     """The server's network: what gives a machine that the executor starts its credential (``Network.enroll``)."""
+    secrets: SecretsProvider
+    """The home's secrets: an agent's job gets the values of its ``AgentJob.secrets`` at its start (``values``)."""
 
 
 @dataclass(frozen=True)

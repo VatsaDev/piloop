@@ -63,6 +63,7 @@ stop_rule = "piloop.plugins.stop_rule.contract:STOP_RULES"
 executor = "piloop.plugins.executor.contract:EXECUTORS"
 network = "piloop.plugins.network.contract:NETWORKS"
 vcs = "piloop.plugins.vcs.contract:VCS"
+secrets = "piloop.plugins.secrets.contract:SECRETS"
 
 [project.entry-points."piloop.runtimes"]
 subprocess = "piloop.plugins.runtime.subprocess:Subprocess"
@@ -100,6 +101,9 @@ modal = "piloop.plugins.provisioner.modal:Modal"
 
 [project.entry-points."piloop.vcs"]
 git = "piloop.plugins.vcs.git:Git"
+
+[project.entry-points."piloop.secrets"]
+local = "piloop.plugins.secrets.local:LocalSecrets"
 
 [project.entry-points."piloop.roles"]
 implementer = "piloop.plugins.role.implementer:ImplementerRole"

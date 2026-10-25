@@ -94,3 +94,6 @@ from piloop.plugins.provisioner.contract import Launch, Instance, InstanceState
 from piloop.plugins.provisioner.contract import StartRefused
 from piloop.plugins.provisioner.kit.conformance import check_provisioning
 from piloop.plugins.provisioner.modal import Modal
+
+from piloop.plugins.secrets.contract import SECRETS, SecretsProvider, SecretKey, Owner, values
+from piloop.plugins.secrets.local import LocalSecrets

@@ -12,6 +12,7 @@ from git import Repo
 from inline_snapshot import snapshot
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import StatusCode
+from pydantic import SecretStr
 from pytest_mock import MockerFixture
 from sqlalchemy import select
 
@@ -34,19 +35,21 @@ from piloop.agents.roles import PILOOP_HINT, SQL_HINT, Role, compose_brief, read
 from piloop.config import CampaignConfig, Roles, load_campaign_config
 from piloop.daemon.run_controller import RunController
 from piloop.db.events import emit, in_order
-from piloop.db.models import AgentSession, AgentSessionState, Campaign, Event, LeaseKind
+from piloop.db.models import AgentSession, AgentSessionState, Campaign, Event, Lease, LeaseKind
 from piloop.db.session import Database
 from piloop.db.triggers.changelog import AgentSessionRequested
 from piloop.harnesses import DEFAULT_HARNESSES
-from piloop.ids import IMPLEMENTER, AgentSessionId, RoleName, TargetKind, TargetRef
+from piloop.ids import IMPLEMENTER, AgentSessionId, CampaignId, RoleName, TargetKind, TargetRef
 from piloop.mcp import MCP
 from piloop.otel import Tracer
-from piloop.plugins.executor.contract import RepoId, Source
+from piloop.plugins.cas.contract import CAS
+from piloop.plugins.executor.contract import AgentJob, RepoId, Source
 from piloop.plugins.executor.kit.capacity import HostSample
-from piloop.plugins.executor.kit.leases import SERVE, Answer, LeaseQueued, Leases, LeaseWorkerJoined
+from piloop.plugins.executor.kit.leases import SERVE, Answer, LeaseQueued, Leases, LeaseWorkerJoined, read_job
 from piloop.plugins.executor.workers import Workers
 from piloop.plugins.role.watchdog import WatchdogRole
 from piloop.plugins.runtime.contract import AgentExit, AgentSpec, ExitStatus
+from piloop.plugins.secrets.contract import SECRETS, set_secret
 from piloop.plugins.vcs.contract import Part
 from piloop.plugins.vcs.git import Git
 from piloop.usage import Usage
@@ -776,7 +779,8 @@ def test_the_mcp_element_expands_to_the_roles_servers_and_their_env_reaches_the_
 ) -> None:
     use_harness(db, campaign, RECORDS_ARGV_AND_ENV, mcp='pi', headless=['--no-extensions', MCP, '{prompt}'])
     give_watchdog_servers(db, campaign, {'probe': {'command': ['cat'], 'env': ['PROBE_KEY']}})
-    monkeypatch.setenv('PROBE_KEY', 'probe-value')
+    monkeypatch.delenv('PROBE_KEY', raising=False)
+    put_secret(db, None, 'PROBE_KEY', 'probe-value')
     specs: list[AgentSpec] = []
     start = runtime.start
     monkeypatch.setattr(runtime, 'start', lambda spec: specs.append(spec) or start(spec))
@@ -789,7 +793,7 @@ def test_the_mcp_element_expands_to_the_roles_servers_and_their_env_reaches_the_
         'mcpServers': {'probe': {'command': 'cat', 'args': [], 'env': {'PROBE_KEY': '${PROBE_KEY}'}}}
     }
     [spec] = specs
-    assert spec.env['PROBE_KEY'] == 'probe-value', 'the worker forwards the variables that the servers name'
+    assert spec.env['PROBE_KEY'] == 'probe-value', 'each variable that a server names is the secret of its name'
     assert 'probe-value' not in ' '.join(spec.args) and 'probe-value' not in config.read_text()
     assert 'PI_MCP_CONFIG_MODE=exclusive' in (tmp_path / 'w' / 'env.txt').read_text().splitlines()
     assert agent_session(db, agent_session_id).error is None
@@ -807,7 +811,7 @@ def test_an_agent_knows_when_its_timeout_ends(
     assert before + timeout - 1 <= int(env['PILOOP_DEADLINE']) <= time.time() + timeout
 
 
-def test_a_variable_a_roles_server_names_but_the_daemon_lacks_fails_the_launch_naming_it(
+def test_a_secret_that_the_home_lacks_fails_the_launch_naming_it_and_until_0_5_comes_from_the_environment(
     campaign: Campaign, db: Database, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     use_harness(db, campaign, RECORDS_ARGV_AND_ENV, mcp='pi', headless=['--no-extensions', MCP, '{prompt}'])
@@ -817,10 +821,36 @@ def test_a_variable_a_roles_server_names_but_the_daemon_lacks_fails_the_launch_n
     launch(db, runtime, tmp_path, agent_session_id)
     w = agent_session(db, agent_session_id)
     assert w.state is AgentSessionState.KILLED and w.error is not None
-    assert w.error.startswith(
-        "McpError: MCP servers ['probe'] need PROBE_TOKEN in the environment piloop serve runs in"
-    )
+    assert w.error.startswith('MissingSecrets: the secrets PROBE_TOKEN are not set: `piloop secret set <NAME>`')
     assert not (tmp_path / 'w' / 'argv.txt').exists(), 'never started'
+    monkeypatch.setenv('PROBE_TOKEN', 'from-the-environment')
+    launch(db, runtime, tmp_path, request(db, campaign))
+    assert 'PROBE_TOKEN=from-the-environment' in (tmp_path / 'w' / 'env.txt').read_text().splitlines()
+
+
+def test_a_harness_env_gives_values_and_secrets_and_a_campaigns_secret_wins_over_the_homes(
+    campaign: Campaign, db: Database, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env = {
+        'GATEWAY_URL': 'https://gw.example.com',
+        'GATEWAY_KEY': {'secret': 'TEAM_KEY'},
+        'PILOOP_ACTOR': 'spoofed',
+    }
+    use_harness(db, campaign, RECORDS_ARGV_AND_ENV, env=env)
+    monkeypatch.delenv('TEAM_KEY', raising=False)
+    put_secret(db, None, 'TEAM_KEY', 'home-key')
+    put_secret(db, campaign.id, 'TEAM_KEY', 'campaign-key')
+    other = put_secret(db, None, 'OTHER_KEY', 'unasked')
+    agent_session_id = request(db, campaign)
+    launch(db, runtime, tmp_path, agent_session_id)
+    seen = (tmp_path / 'w' / 'env.txt').read_text().splitlines()
+    assert {'GATEWAY_URL=https://gw.example.com', 'GATEWAY_KEY=campaign-key'} <= set(seen)
+    assert f'PILOOP_ACTOR=watchdog#{agent_session_id}' in seen, "piloop's own variables win"
+    assert other not in ' '.join(seen) and 'TEAM_KEY=' not in ' '.join(seen), 'only what the job names, by variable'
+    with db.session() as s:
+        job = read_job(CAS.selected({}).open(tmp_path), *s.execute(select(Lease.id, Lease.job_cid)).one())
+    assert isinstance(job, AgentJob) and job.secrets == {'GATEWAY_KEY': 'TEAM_KEY'}
+    assert 'campaign-key' not in job.model_dump_json(), 'the job in the CAS names secrets, never their values'
 
 
 def test_servers_that_cannot_be_rendered_fail_the_launch_on_the_row(
@@ -886,6 +916,8 @@ def research_argv(
             harness: {
                 'executable': str(Path(campaign.path).parent / 'harness.sh'),
                 'headless': [a for a in DEFAULT_HARNESSES[harness].headless if a != MCP],
+                'resume': [],
+                'mcp': None,
             }
         },
         roles={'research': research},
@@ -922,3 +954,11 @@ def test_the_research_table_overrides_its_model_and_effort(
     args = research_argv(db, campaign, runtime, tmp_path, mocker, harness, model={harness: 'mine'}, effort='low')
     flag, value = EFFORT_FLAG[harness]
     assert {('--model', 'mine'), (flag, value.format('low'))} <= set(zip(args, args[1:], strict=False))
+
+
+def put_secret(db: Database, owner: CampaignId | None, name: str, value: str) -> str:
+    """Set a secret as the human does (``piloop secret set``), and return its value."""
+    with db.session() as s:
+        set_secret(s, SECRETS.selected({}), System.HUMAN, owner, name, SecretStr(value))
+        s.commit()
+    return value

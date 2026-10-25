@@ -17,8 +17,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from pydantic import ValidationError
+from sqlalchemy import create_engine
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import Session
 
-from piloop import mcp
 from piloop.actor import Actor
 from piloop.campaign.campaigns import check_takes
 from piloop.cli import skills, upgrade
@@ -27,7 +29,9 @@ from piloop.daemon.main import preflight, unbound_failures
 from piloop.daemon.serve import SECRETS_COMMAND_ENV, SecretsError, running_pid, secrets
 from piloop.db.models import CampaignStatus, utcnow
 from piloop.db.session import head, schema_mismatch
+from piloop.ids import CampaignId
 from piloop.plugins.host import Check, PluginError, Severity, declared
+from piloop.plugins.secrets.contract import SECRETS, SecretKey
 from piloop.plugins.vcs.contract import VCS
 from piloop.proc import child_env, environment
 from piloop.reports.overview import age
@@ -41,6 +45,7 @@ CHANGELOG = 'https://github.com/hiloopai/piloop/blob/main/CHANGELOG.md'
 class StoredCampaign:
     """A registered campaign as ``piloop doctor`` reads it: its repo, its status and its stored config."""
 
+    id: CampaignId
     name: str
     path: str
     status: CampaignStatus
@@ -70,10 +75,16 @@ def checks(cfg: Settings) -> list[Check]:
         campaigns = stored_campaigns(cfg.home / 'piloop.db')
         stored = [c.config for c in campaigns if isinstance(c.config, CampaignConfig)]
         env = whose, names | supplied
+        held = _stored_secrets(cfg)
         found = [
             *first,
             *map(_campaign, campaigns),
-            *(_mcp(c.name, c.config, env) for c in campaigns if isinstance(c.config, CampaignConfig) and c.config.mcp),
+            *(_mcp(c.name, c.config) for c in campaigns if isinstance(c.config, CampaignConfig) and c.config.mcp),
+            *(
+                _secrets_of(c, needed, held, env)
+                for c in campaigns
+                if isinstance(c.config, CampaignConfig) and (needed := _needed(c.config))
+            ),
             *_skills(cfg),
             _harnesses(stored),
             *(check for provider in VCS.providers().values() for check in provider.model.checks()),
@@ -188,9 +199,9 @@ def _daemon_env(cfg: Settings) -> tuple[str, set[str], str | None]:
 
 
 def _secrets(whose: str, command: str | None) -> tuple[Check, set[str]]:
-    """Check where the daemon's secrets come from. Run its secrets command here for the names; never show values."""
+    """Check the deprecated secrets command. Run it here for the names; never show values."""
     if command is None:
-        return Check('secrets', f'from the environment of {whose} only ({SECRETS_COMMAND_ENV} unset)'), set()
+        return Check('secrets', f'from `piloop secret set` ({SECRETS_COMMAND_ENV} unset)'), set()
     try:
         names = set(secrets(command))
     except SecretsError as e:
@@ -199,35 +210,58 @@ def _secrets(whose: str, command: str | None) -> tuple[Check, set[str]]:
             f'{SECRETS_COMMAND_ENV} of {whose} ({command}) failed: {e}',
             'fix the command; `piloop serve` refuses to start while it fails',
         ), set()
-    return Check('secrets', f'{SECRETS_COMMAND_ENV} of {whose} ({command}) prints {", ".join(sorted(names))}'), names
+    return Check(
+        'secrets',
+        f'{SECRETS_COMMAND_ENV} of {whose} ({command}) prints {", ".join(sorted(names))}',
+        f'`piloop secret set` each of them, then unset {SECRETS_COMMAND_ENV}: piloop 0.5.0 removes it',
+        Severity.WARN,
+    ), names
 
 
-def _mcp(name: str, config: CampaignConfig, env: tuple[str, set[str]]) -> Check:
-    """Check that the campaign's MCP servers can start: their commands are on PATH and their variables are set.
-
-    The config load checked their form already. Variables are reported by name. Values are never shown.
-    """
+def _mcp(name: str, config: CampaignConfig) -> Check:
+    """Check that the commands of the campaign's MCP servers are on PATH. ``_secrets_of`` checks their keys."""
     what = f'mcp {name}'
     servers = config.mcp.values()
     missing_exe = sorted({s.command[0] for s in servers if s.command and shutil.which(s.command[0]) is None})
     if missing_exe:
         return Check(what, f'not on PATH: {", ".join(missing_exe)}', 'install them, or fix the [mcp.*] tables')
-    whose, names = env
-    if missing := mcp.missing_env(servers, names):
-        return Check(
-            what,
-            f'{whose} lacks {", ".join(missing)}',
-            f'print them from {SECRETS_COMMAND_ENV}, or set them in the environment `piloop serve` runs in; then'
-            ' restart the daemon',
-        )
     roles = '; '.join(
         f'{kind}: {", ".join(listed)}' for kind, role in config.roles.all().items() if (listed := role.mcp)
     )
-    variables = mcp.env_names(servers)
-    return Check(
-        what,
-        f'{len(config.mcp)} server(s) ({roles or "no role lists one"}), {len(variables)} variable(s) set in {whose}',
+    return Check(what, f'{len(config.mcp)} server(s) ({roles or "no role lists one"})')
+
+
+def _needed(config: CampaignConfig) -> list[str]:
+    """The secrets that the agents of the campaign's roles get, on each harness of their rotation."""
+    return sorted(
+        {
+            secret
+            for role in config.roles.all()
+            for harness in config.role_harnesses(role)
+            for secret in config.role_secrets(role, harness).values()
+        }
     )
+
+
+def _secrets_of(campaign: StoredCampaign, needed: list[str], held: list[SecretKey], env: tuple[str, set[str]]) -> Check:
+    """Check that the secrets that the campaign's agents need are set, by name, never by value.
+
+    A secret that only the environment of the daemon has works until 0.5.0.
+    """
+    what = f'secrets {campaign.name}'
+    have = {k.name for k in held if k.owner in (None, campaign.id)}
+    whose, environ = env
+    missing = [n for n in needed if n not in have and n not in environ]
+    if missing:
+        return Check(what, f'not set: {", ".join(missing)}', '`piloop secret set <NAME>` for each')
+    if from_env := [n for n in needed if n not in have]:
+        return Check(
+            what,
+            f'{", ".join(from_env)} from the environment of {whose}',
+            '`piloop secret set` each of them: piloop 0.5.0 reads secrets from `piloop secret` only',
+            Severity.WARN,
+        )
+    return Check(what, f'{len(needed)} set')
 
 
 def _skills(cfg: Settings) -> list[Check]:
@@ -264,10 +298,28 @@ def stored_campaigns(path: Path) -> list[StoredCampaign]:
         return []
     with closing(_read_only(path)) as con:
         try:
-            rows = con.execute('SELECT name, path, status, config FROM campaigns ORDER BY id').fetchall()
+            rows = con.execute('SELECT id, name, path, status, config FROM campaigns ORDER BY id').fetchall()
         except sqlite3.OperationalError:  # never migrated, so there is no campaigns table
             return []
-    return [StoredCampaign(name, repo, CampaignStatus(status), _stored(config)) for name, repo, status, config in rows]
+    return [
+        StoredCampaign(CampaignId(id_), name, repo, CampaignStatus(status), _stored(config))
+        for id_, name, repo, status, config in rows
+    ]
+
+
+def _stored_secrets(cfg: Settings) -> list[SecretKey]:
+    """The secrets of the home's provider, by name, read-only. None of a database without the table."""
+    path = cfg.home / 'piloop.db'
+    if not path.is_file():
+        return []
+    engine = create_engine(f'sqlite:///file:{path}?mode=ro&uri=true')
+    try:
+        with Session(engine) as s:
+            return SECRETS.selected(cfg.providers).names(s)
+    except OperationalError:  # a schema before the secrets: the database check says what to run
+        return []
+    finally:
+        engine.dispose()
 
 
 def _stored(config: str) -> CampaignConfig | ValidationError:

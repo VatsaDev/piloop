@@ -65,10 +65,12 @@ catches up with an upgrade that you already made.
 - The database has the current schema.
 - The providers that packages add load, and none of them reuses a name. When they do not, the checks after this one
   do not run.
-- `PILOOP_SECRETS_COMMAND`, when it is set, runs and prints `NAME=value` lines. The check shows the names only.
+- `PILOOP_SECRETS_COMMAND`, when it is set, runs and prints `NAME=value` lines. The check shows the names only, and
+  warns that the command is deprecated.
 - The `piloop.toml` of every campaign loads.
-- The commands of each campaign's stdio MCP servers are on your `PATH`, and the variables that its servers need are
-  set. The check does not start the servers.
+- The commands of each campaign's stdio MCP servers are on your `PATH`. The check does not start the servers.
+- The secrets that each campaign's MCP servers and harnesses need are set. One that only the environment of the
+  daemon has is a warning.
 - Every harness on your `PATH` has the skills of this CLI.
 - The harnesses that your campaigns use are on your `PATH`.
 - git on your `PATH` is 2.40 or later.
@@ -226,6 +228,14 @@ were converted when you upgraded to 0.2.0. While a `PILOOP_PROJECT_<KEY>` variab
 
 `[storage.backend]` and `max_evaluations` of `config.toml` still load, with a warning, until 0.4.0.
 [Deprecated keys](/reference/configuration#deprecated-keys) says what to write instead.
+
+`PILOOP_SECRETS_COMMAND` works until 0.5.0. [Secrets](/guides/secrets#piloop_secrets_command) says how to move its keys.
+
+### Harness tables
+
+A `[harness.<name>]` table for a built-in harness keeps the built-in's keys that it does not set. Before, it replaced
+the built-in, and a key that it left out took its default: no `resume`, no `usage`, no `mcp`. To define a harness from
+scratch, give it a name of its own.
 
 ### How a run ended
 

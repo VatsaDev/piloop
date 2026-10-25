@@ -100,6 +100,16 @@ piloop token create NAME | list | revoke NAME
 then: piloop keeps only its hash. `list` shows the names, never the tokens. `revoke` deletes a token, and its next call
 gets 401.
 
+### piloop secret
+
+```text
+piloop secret set NAME [--campaign CAMPAIGN] | list | rm NAME [--campaign CAMPAIGN]
+```
+
+`set` reads a value on stdin, or asks for it on a terminal, and stores it as the secret `NAME`: the home's, or with
+`--campaign` that campaign's. `list` shows the names, never the values. `rm` deletes one. See
+[Secrets](/guides/secrets).
+
 ### piloop stop
 
 ```text

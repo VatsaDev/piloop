@@ -17,6 +17,7 @@ import pytest
 from covalence import Cid
 from git import Repo
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from pydantic import SecretStr
 from pytest_mock import MockerFixture
 from sqlalchemy import delete, select
 from sqlalchemy.exc import OperationalError
@@ -58,7 +59,7 @@ from piloop.plugins.executor.contract import (
 from piloop.plugins.executor.kit.capacity import HostSample, sample
 from piloop.plugins.executor.kit.client import Dismissed, Local, Registration, WorkerInfo
 from piloop.plugins.executor.kit.door import AgentCall, Relayed
-from piloop.plugins.executor.kit.jobs import local_site, remote_site, send_of_record
+from piloop.plugins.executor.kit.jobs import STOPPED, local_site, remote_site, send_of_record
 from piloop.plugins.executor.kit.leases import (
     SERVE,
     Answer,
@@ -199,6 +200,31 @@ def test_a_start_that_fails_is_reported_as_a_failed_start(
     assert isinstance(outcome, NotStarted) and 'spawn_failed' in str(outcome.reason)
     w, lease = rows(db, agent_session_id)
     assert (w.state, lease.state, w.handle) == (AgentSessionState.KILLED, LeaseState.REPORTED, {})
+
+
+def test_a_worker_that_stops_while_its_agent_gets_its_secrets_starts_nothing(
+    db: Database,
+    campaign: Campaign,
+    runtime: ScriptRuntime,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mocker: MockerFixture,
+) -> None:
+    use(db, campaign, '#!/bin/sh\necho done\n')
+    ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
+    worker = workers_of(ex).worker
+    asked = Local.secrets
+
+    def stopping(client: Local, lease: int) -> dict[str, SecretStr]:
+        worker.stop()
+        return asked(client, lease)
+
+    monkeypatch.setattr(Local, 'secrets', stopping)
+    start = mocker.spy(runtime, 'start')
+    agent_session_id = request_agent(db, campaign)
+    outcome = launch(ex, agent_session_id, tmp_path)
+    assert outcome == NotStarted(STOPPED) and start.call_count == 0
+    assert rows(db, agent_session_id)[1].state is LeaseState.REPORTED
 
 
 def test_a_restarted_worker_re_attaches_to_its_agent_and_reports_it(

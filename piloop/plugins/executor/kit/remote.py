@@ -17,6 +17,7 @@ After the GitHub Actions runner (``acquirejob``, ``renewjob``) and Buildkite age
 ``finish``). A grant names its job by address in the CAS, and the job names its data so: the worker reads and writes the
 CAS itself, and no bytes come through these routes. ``send`` asks the server to put the versions that the worker's
 clone lacks into the CAS, and answers their addresses (``transfers``).
+``secrets`` answers the values of the secrets that an agent's job names, which never go into the CAS.
 """
 
 import math
@@ -27,13 +28,15 @@ from functools import partial
 from http import HTTPStatus
 from importlib.metadata import version
 from time import monotonic
+from typing import Annotated
 
 import httpx2 as httpx
 from covalence import Cid
-from pydantic import BaseModel, Field, RootModel, ValidationError
+from pydantic import BaseModel, Field, PlainSerializer, RootModel, SecretStr, ValidationError
 
 from piloop.db.models import NoLease
 from piloop.ids import Revision
+from piloop.mcp import EnvName
 from piloop.net import MAX_POLL_SECONDS, Changed, Polled, Refusal, Route
 from piloop.net.tokens import Caller
 from piloop.otel import Tracer
@@ -163,6 +166,20 @@ class Queued(BaseModel):
     error: str | None
 
 
+class SecretsAsked(BaseModel):
+    """The body of ``secrets``."""
+
+    lease: int
+
+
+type Revealed = Annotated[SecretStr, PlainSerializer(SecretStr.get_secret_value, when_used='json')]
+"""A secret's value in the answer of ``secrets``: pydantic writes a ``SecretStr`` as stars otherwise."""
+
+
+class SecretValues(RootModel[dict[EnvName, Revealed]]):
+    """The answer of ``secrets``: the values of the job's secrets that the home has, by name."""
+
+
 class SendAsked(Polled):
     """The body of ``send``: versions of a repo of record, the versions that the worker's clone has, and the wait."""
 
@@ -192,6 +209,7 @@ def lease_routes(leases: Leases, changed: Changed, cas: Cas, send: Send, cli: Ru
         Route('lost', Lost, _as_caller(leases, _lost)),
         Route.long_poll('messages', Read, _as_caller(leases, _messages), changed),
         Route('queued', Queued, _as_caller(leases, _queued)),
+        Route('secrets', SecretsAsked, _as_caller(leases, _secrets)),
         Route.long_poll('send', SendAsked, partial(_send, send), changed),
         Route('cli', LeaseCall, _as_caller(leases, partial(_cli, cli))),
     ]
@@ -275,6 +293,10 @@ def _queued(worker: Local, body: Queued) -> None:
     worker.queued(body.message, body.error)
 
 
+def _secrets(worker: Local, body: SecretsAsked) -> SecretValues:
+    return SecretValues(worker.secrets(body.lease))
+
+
 class RefusalBody(BaseModel):
     """The body of a refusal (``net.Refusal``), or FastAPI's ``{"detail": …}``, which has no ``error``."""
 
@@ -341,6 +363,9 @@ class Remote:
 
     def queued(self, message: int, error: str | None) -> None:
         self._post('queued', Queued(message=message, error=error))
+
+    def secrets(self, lease: int) -> dict[EnvName, SecretStr]:
+        return SecretValues.model_validate_json(self._post('secrets', SecretsAsked(lease=lease))).root
 
     def send(self, repo: RepoId, revisions: Sequence[Revision], have: Sequence[Revision]) -> list[Cid]:
         """``Clones``' fetch: the server puts what ``revisions`` have beyond ``have`` into the CAS, and names it.

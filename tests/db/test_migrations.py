@@ -122,6 +122,7 @@ def test_head_has_every_table_and_trigger_and_matches_the_models(tmp_path: Path)
             'limits',
             'measurements',
             'runs',
+            'secrets',
             'sqlite_sequence',
             'techniques',
             'tokens',

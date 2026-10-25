@@ -65,6 +65,23 @@ def test_a_piloop_toml_with_the_removed_entire_agent_says_where_to_read_why(camp
         load_campaign_config(campaign_path, harness={'x': harness})
 
 
+def test_a_table_of_a_built_in_harness_changes_only_its_keys_and_env_takes_values_and_secrets(
+    campaign_path: Path,
+) -> None:
+    env = {'ANTHROPIC_BASE_URL': 'https://gw.example.com', 'ANTHROPIC_API_KEY': {'secret': 'TEAM_KEY'}}
+    claude = load_campaign_config(campaign_path, harness={'claude': {'env': env}}).harness_for('claude')
+    built_in = DEFAULT_HARNESSES['claude']
+    assert claude.model_copy(update={'env': {}}) == built_in, 'the built-in keys that the table does not set'
+    assert (claude.literals, claude.secrets) == (
+        {'ANTHROPIC_BASE_URL': 'https://gw.example.com'},
+        {'ANTHROPIC_API_KEY': 'TEAM_KEY'},
+    )
+    with pytest.raises(ConfigError, match='harness'):
+        load_campaign_config(campaign_path, harness=['claude'])
+    with pytest.raises(ConfigError, match='harness.claude.env.ANTHROPIC_API_KEY'):
+        load_campaign_config(campaign_path, harness={'claude': {'env': {'ANTHROPIC_API_KEY': {'value': 'sk-1'}}}})
+
+
 def test_a_harness_key_that_only_herdr_read_says_where_to_read_why(campaign_path: Path) -> None:
     with pytest.raises(
         ConfigError,

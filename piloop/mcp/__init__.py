@@ -5,12 +5,12 @@ harness. A harness definition names a *renderer* (``Harness.mcp``). The renderer
 separate modules (``claude``, ``codex``, ``pi``) that register themselves in ``RENDERERS``, as the usage tallies do.
 Each one expands the ``{mcp}`` element of its harness's argv, so a change for one harness does not touch the others.
 
-API keys are never written down. A server names the environment variables that hold them. Each renderer writes those
-*names* in its harness's own expansion syntax, and the launcher copies the variables from the daemon's environment
-into the agent's (``forwarded_env``), as it does PATH. No value goes into a file, an argv or a log.
+API keys are never written down. A server names the environment variables that hold them, each the name of a secret
+(``piloop.plugins.secrets``). Each renderer writes those *names* in its harness's own expansion syntax, and the agent's
+job puts the secrets' values in the agent's environment. No value goes into a file, an argv or a log.
 """
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Self
@@ -30,8 +30,9 @@ type EnvName = Annotated[str, StringConstraints(pattern=r'^[A-Za-z_][A-Za-z0-9_]
 class McpServer(BaseModel):
     """``[mcp.<name>]``: one MCP server, either streamable HTTP (``url``) or stdio (``command``).
 
-    Do not write API keys here. Name the environment variables that hold them. piloop passes these variables from the
-    daemon's environment to the agent, and the harness puts their values into the header or the server's environment.
+    Do not write API keys here. Name the environment variables that hold them: each is the name of a secret
+    (``piloop secret set``). piloop puts the secrets in the agent's environment, and the harness puts their values into
+    the header or the server's environment.
     """
 
     model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
@@ -82,26 +83,6 @@ class McpError(RuntimeError):
 def env_names(servers: Iterable[McpServer]) -> list[str]:
     """The environment variables that ``servers`` need, each once, in order."""
     return list(dict.fromkeys(name for s in servers for name in s.env_names))
-
-
-def missing_env(servers: Iterable[McpServer], names: Iterable[str]) -> list[str]:
-    """The variables that ``servers`` need and that are not in ``names``."""
-    have = set(names)
-    return [name for name in env_names(servers) if name not in have]
-
-
-def forwarded_env(servers: Mapping[str, McpServer], environ: Mapping[str, str]) -> dict[str, str]:
-    """The variables that the servers need, taken from ``environ`` (the daemon's) for the agent's environment.
-
-    Raises:
-        McpError: A variable is not set. The message names the variable and never shows a value.
-    """
-    if missing := missing_env(servers.values(), environ):
-        raise McpError(
-            f'MCP servers {sorted(servers)} need {", ".join(missing)} in the environment piloop serve runs in;'
-            ' set them there and restart the daemon'
-        )
-    return {name: environ[name] for name in env_names(servers.values())}
 
 
 @dataclass(frozen=True)
