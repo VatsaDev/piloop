@@ -290,9 +290,9 @@ under `Deprecated` when the pull request title says that the key is deprecated.
 Check a change against these rules before you ask for a review. Each one comes from a review, and the line under it is
 what that review said.
 
-1. **Core is machinery. Policy is a capability.** Core is the database and its events, the plugin host, the store
-   interface, and the operations that apply results. A decision about what to do, how to judge or where to run is a
-   capability with a built-in provider.
+1. **Core is machinery. Policy is a capability.** Core is the database and its event feed, leases, the plugin host,
+   the interfaces of the API and the store, and the operations that apply results. A decision about what to do, how
+   to judge or where to run is a capability with a built-in provider.
    Not: the head and the bar decided in `scoring/ledger.py`, "policy still hardcoded outside a capability".
 2. **A capability is a concept that a user names, and there are few of them.** A small decision goes into the
    capability that it serves. A provider calls the built-in provider and changes one thing. It does not copy it.
@@ -301,28 +301,32 @@ what that review said.
    generically. A provider declares its own keys.
    Not: a line per rule in `cli/plugins.py`, "why is this hardcoded?", and "if this is a plugin why would it touch
    config.py - shouldn't the config be pulled from the plugin?"
-4. **A seam leaks nothing of a provider.** Write for hundreds of providers. A caller asks the contract, never a name,
+4. **Core has the bare interfaces. A plugin owns its details:** where its data comes from, and how it is shown. Adding
+   or changing a plugin edits no core contract and no core default list.
+   Not: the lines of `piloop status` and of each brief, listed in core, "our core stuff should just have the bare
+   apis/interfaces, plugins deal with details like how we get that information/display it etc."
+5. **A seam leaks nothing of a provider.** Write for hundreds of providers. A caller asks the contract, never a name,
    and no provider's own concepts get into the contract or into core.
    Not: `piloop attach` that checks for Herdr, "rewrite this as if we may eventually have hundreds of runtimes".
-5. **A helper lives with the capability that it serves,** not at the top level of `piloop/`.
+6. **A helper lives with the capability that it serves,** not at the top level of `piloop/`.
    Not: `piloop/leases.py` and `piloop/jobs.py`, which only executors use.
-6. **Typed values, not strings or flags.** Use a union or an enum, and `match` it exhaustively. Return a reason, not a
+7. **Typed values, not strings or flags.** Use a union or an enum, and `match` it exhaustively. Return a reason, not a
    bool.
    Not: `partition('#')` on the actor, "is there no better/type safe solution here?", and "does this bool make sense?
    or should we have a reason or something?"
-7. **A `match` or a table, not a chain.** An ordered table of conditions and outcomes replaces a long `if` chain or a
+8. **A `match` or a table, not a chain.** An ordered table of conditions and outcomes replaces a long `if` chain or a
    pile of lambdas.
    Not: the end status of a run from a chain of `if`s, "this long list of conditionals feels really messy".
-8. **One meaning for each name.** Rename what means two things. A name that no release shipped gets no alias.
+9. **One meaning for each name.** Rename what means two things. A name that no release shipped gets no alias.
    Not: `RunExecutor` next to the executor capability, against "one noun per concept".
-9. **Compat code has a release that deletes it.** Mark each shim, alias and bridge with `deprecated.until` (see
-   [Mark compat code](#mark-compat-code)).
-   Not: `# TODO: delete once no agent of 0.1.0 can still run (0.3.0)`.
-10. **Copy a proven interface.** Depend on an OSS library where one exists. Otherwise model the seam on a proven one,
+10. **Compat code has a release that deletes it.** Mark each shim, alias and bridge with `deprecated.until` (see
+    [Mark compat code](#mark-compat-code)).
+    Not: `# TODO: delete once no agent of 0.1.0 can still run (0.3.0)`.
+11. **Copy a proven interface.** Depend on an OSS library where one exists. Otherwise model the seam on a proven one,
     such as pluggy, Airflow or Kubernetes, and name it.
     Not: type checks written by hand in the plugin host, "do we have to implement this ourselves or is there OSS we
     can depend on for this?"
-11. **Less is more, and only what ships.** Show an example first. Write no comment that repeats the code, and no
+12. **Less is more, and only what ships.** Show an example first. Write no comment that repeats the code, and no
     design proposal in `docs/` (see [Documentation](#documentation)).
     Not: "no need to include this comment, code is self documenting".
 

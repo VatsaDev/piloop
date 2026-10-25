@@ -50,8 +50,9 @@ Each example plugin on this page is a package in
 [`examples/plugins/`](https://github.com/hiloopai/piloop/tree/main/examples/plugins). piloop's tests install each
 one and select it in the configuration.
 
-Some parts of piloop are not capabilities, and you cannot replace them: the
-[overview](/architecture/overview#what-you-can-replace) lists them.
+Core has only the mechanisms, which you cannot replace: the
+[overview](/architecture/overview#what-you-can-replace) lists them. Data sources, policy and presentation are
+capabilities, so a plugin adds or changes them without a change to core.
 
 A plugin can also do two more things:
 

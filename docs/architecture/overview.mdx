@@ -130,10 +130,15 @@ A **capability** is a part of piloop that makes one kind of decision, for exampl
 capability has a **built-in provider**: the implementation that piloop includes. You can select another provider in
 the configuration, or add one with a plugin, a Python package that you install next to piloop.
 
+Core is only mechanism, and the plugins own the rest: where data comes from, how piloop decides, and what it shows. A
+new plugin changes no part of core.
+
 | Part of piloop | Can you replace it? |
 |---|---|
-| The SQLite database and its log of events | No. |
+| The SQLite database and its event feed | No. |
+| [Leases](/architecture/leases), which hand jobs to workers | No. An executor uses them. |
 | The plugin host: the part of piloop that loads plugins | No. |
+| The interfaces of the API | No. |
 | The interface of the CAS | No. A CAS provider can change where its blobs go. |
 | The operations that apply a job's result | No. An executor calls them. |
 | Each capability: executor, network, runtime, CAS, role, trigger, verdict rule, stop rule | Yes. |
