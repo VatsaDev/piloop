@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from piloop.actor import Agent, System
 from piloop.campaign import ops
 from piloop.config import load_campaign_config
-from piloop.db.events import emit, has, in_order
+from piloop.db.events import in_order
 from piloop.db.models import (
     Campaign,
     CampaignStatus,
@@ -36,6 +36,7 @@ from piloop.db.models import (
     RunEnd,
     RunStatus,
 )
+from piloop.db.requests import RequestAnswered
 from piloop.db.session import Database
 from piloop.db.triggers.changelog import (
     CampaignParentChanged,
@@ -45,13 +46,12 @@ from piloop.db.triggers.changelog import (
     IdeaTrackChanged,
     VerdictChanged,
 )
-from piloop.ids import CampaignId, CandidateId, IdeaId, TargetKind, TargetRef, TrackName
+from piloop.ids import CampaignId, CandidateId, IdeaId, TargetKind, TrackName
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring.ledger import (
-    CandidateJudged,
     MeasurementRecorded,
-    RejudgeFailed,
     RejudgeRequested,
+    answer_rejudge,
     head,
     rejudges,
     unjudged,
@@ -352,16 +352,14 @@ def test_a_measurement_by_hand_is_recorded_and_asks_the_daemon_to_judge_its_cand
     requested = RejudgeRequested(measurement=measurement.id)
     assert kinds(me, TargetKind.CANDIDATE, c) == [('candidate.rejudge_requested', ACTOR.signature, requested)]
     with me.session() as s:
-        judged = CandidateJudged(verdict=Outcome.DISCARD, score=None, reason='judged again')
-        emit(s, judged, TargetRef(TargetKind.CANDIDATE, c), System.DAEMON)
+        answer_rejudge(s, c)
         s.commit()
-        assert rejudges(s, s.get_one(Campaign, 1)) == [], 'a later judgement answers the request'
+        assert rejudges(s, s.get_one(Campaign, 1)) == [], 'judging it again answers the request'
+        [(asked, _)] = in_order(s, RejudgeRequested)
+        assert [a.ask for _, a in in_order(s, RequestAnswered)] == [asked.id] and asked.actor == ACTOR.signature
         ops.add_measurement(s, c, ops.Report(metrics={}, error='timeout'), actor=ACTOR)
         s.commit()
         assert [x.id for x in rejudges(s, s.get_one(Campaign, 1))] == [c], 'a failed one counts too'
-        emit(s, RejudgeFailed(error='gone'), TargetRef(TargetKind.CANDIDATE, c), System.DAEMON)
-        s.commit()
-        assert rejudges(s, s.get_one(Campaign, 1)) == [], 'so does a failure'
 
 
 def test_a_measurement_by_hand_of_a_keep_or_of_someones_verdict_leaves_the_verdict(
@@ -377,10 +375,7 @@ def test_a_measurement_by_hand_of_a_keep_or_of_someones_verdict_leaves_the_verdi
         human = ops.add_measurement(s, mine, ops.Report(metrics={'score': 1.0, 'size': 5.0}), actor=ACTOR)
         assert (human.rejudged, human.effect) == (False, 'its verdict stays: discard, set by human')
         s.commit()
-        assert s.scalars(select(Event).where(has(RejudgeRequested))).all() == []
-        emit(s, RejudgeRequested(measurement=keep.measurement.id), TargetRef(TargetKind.CANDIDATE, mine), ACTOR)
-        s.commit()
-        assert rejudges(s, s.get_one(Campaign, 1)) == [], 'a request for a verdict that someone set is dropped'
+        assert in_order(s, RejudgeRequested) == [], 'nothing to judge again'
         with pytest.raises(ops.Refused, match='the report has no size: give every metric, or the error'):
             ops.add_measurement(s, CandidateId(1), ops.Report(metrics={'score': 1.0}), actor=ACTOR)
         with pytest.raises(ops.Refused, match='piloop.toml has no metric accuracy: its metrics are score, size'):

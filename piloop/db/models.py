@@ -1345,7 +1345,11 @@ class Event(Base):
     """
 
     __tablename__ = 'events'
-    __table_args__ = (Index('ix_events_target', 'target_kind', 'target_id', 'id'),)
+    __table_args__ = (
+        Index('ix_events_target', 'target_kind', 'target_id', 'id'),
+        # the asks of a kind and whether a newer one exists (``piloop.db.requests.pending``)
+        Index('ix_events_kind', 'kind', 'target_kind', 'target_id', 'id'),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     at: Mapped[datetime] = mapped_column(default=utcnow, server_default=NOW)

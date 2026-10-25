@@ -2,12 +2,14 @@
 
 import re
 
+import pytest
 from inline_snapshot import snapshot
 from sqlalchemy import func, select
 
 from piloop.actor import System
 from piloop.campaign import inbox
 from piloop.campaign.anomaly import AnomalyKind, AnomalyReported
+from piloop.db import feed as db_feed
 from piloop.db.events import emit, in_order
 from piloop.db.models import (
     AgentSession,
@@ -252,6 +254,25 @@ def test_news_is_what_happened_since_the_cursor_that_the_orchestrator_did_not_wr
         assert [i.id for i, _ in inbox.seeds(s)] == [1, 2, 3] and [
             i.id for i, _ in inbox.seeds(s, campaign_id=other.id)
         ] == [3]
+
+
+def test_news_reads_only_what_wakes_a_page_at_a_time_until_a_page_has_a_line(
+    db: Database, campaign: Campaign, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(inbox, 'PAGE', 1)
+    with db.session() as s:
+        cursor = s.scalar(select(func.max(Event.id))) or 0
+        on_campaign = TargetRef(TargetKind.CAMPAIGN, campaign.id)
+        for n in range(3):
+            s.add(Comment(target=on_campaign, author='watchdog#1', priority=1, body=f'acked {n}', acked_at=utcnow()))
+        emit(s, IdeaCreated(), TargetRef(TargetKind.IDEA, 99), System.HUMAN)  # a deleted idea: no line
+        s.add(Comment(target=on_campaign, author='watchdog#1', priority=1, body='open'))
+        s.add(Comment(target=on_campaign, author='watchdog#1', body='a note: an event, but not of the inbox'))
+        s.commit()
+        last, lines = inbox.news(s, cursor, me=System.ORCHESTRATOR)
+        assert lines == ['comment#4 note p1 on campaign#1 (demo) by watchdog#1: open']
+        newest = db_feed.newest(s)
+        assert last < newest and inbox.news(s, last, me=System.ORCHESTRATOR) == (newest, []), 'it passes the note'
 
 
 def test_a_reply_answers_the_root_of_the_thread_and_wakes_the_orchestrator_but_not_its_author(

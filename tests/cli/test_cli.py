@@ -22,6 +22,7 @@ from pytest_mock import MockerFixture
 from rich.console import Console
 from rich.table import Table
 from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session
 
 from piloop.actor import Actor, Agent, System
 from piloop.agents.results import PromptOutcome
@@ -33,7 +34,7 @@ from piloop.cli import agents as agents_cli, campaign as campaign_cli, common, i
 from piloop.config import ConfigError
 from piloop.daemon.main import Daemon
 from piloop.daemon.serve import acquire, listening, running_pid
-from piloop.db import session, sql
+from piloop.db import feed as db_feed, session, sql
 from piloop.db.events import emit, has
 from piloop.db.models import (
     AgentSession,
@@ -678,7 +679,15 @@ def test_inbox_wait_blocks_until_an_item_lands_and_hands_over_a_cursor_that_miss
     cursor = again.split()[-1]
     escalate = "INSERT INTO comments (target_kind, target_id, author, kind, priority, body) VALUES ('campaign', 1, 'watchdog#2', 'escalation', 1, 'SSO expired')"
     writer = threading.Timer(0.3, run_cli, [['sql', escalate]])
-    writer.start()
+    newest = db_feed.newest
+
+    def then_write(s: Session) -> int:  # a row that lands before the wait takes its cursor is not new to it
+        cursor = newest(s)
+        if writer.ident is None:
+            writer.start()
+        return cursor
+
+    monkeypatch.setattr(db_feed, 'newest', then_write)
     run_cli(['inbox', 'wait', 'demo', '--timeout', '30'])
     writer.join(10)
     lines = out().splitlines()

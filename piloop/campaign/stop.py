@@ -1,14 +1,14 @@
 """Stop conditions: decide when a campaign's stop rule, or a request, ends the campaign.
 
 The scheduler checks every active campaign once per tick. The reason goes into ``campaigns.stopped_reason`` and into
-the trigger of the closing watchdog. A stop or a cancel that someone requests is an event that the daemon acts on, so
-any client of the database can make one.
+the trigger of the closing watchdog. A stop or a cancel that someone asks for is an event that the daemon acts on and
+answers (``piloop.db.requests``).
 """
 
 import math
 from datetime import datetime, timedelta
 from enum import StrEnum
-from typing import Literal
+from typing import Literal, assert_never
 
 from sqlalchemy import ColumnElement, exists, func, select
 from sqlalchemy.orm import Session
@@ -36,8 +36,10 @@ from piloop.db.models import (
     Measurement,
     Run,
     campaign_runs,
+    count,
     utcnow,
 )
+from piloop.db.requests import answer, pending
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.db.triggers.changelog import CampaignPausedChanged, CampaignStatusChanged
 from piloop.ids import RunId, TargetKind, TargetRef
@@ -59,8 +61,9 @@ class Ending(StrEnum):
 class StopRequested(EventModel):
     """Someone asked to stop a campaign (``piloop campaign stop``).
 
-    On its next tick, the daemon stops the campaign as for a ``[stop]`` condition (``check``), and ends its implementers
-    as ``ending`` says. A request made before the campaign was last set ``active`` is spent.
+    On its next tick, the daemon stops an active campaign as for a ``[stop]`` condition (``check``). It ends the
+    campaign's implementers as ``ending`` says, also when the campaign was stopped already. An ask
+    (``piloop.db.requests``).
     """
 
     kind: Literal['campaign.stop_requested'] = 'campaign.stop_requested'
@@ -74,7 +77,8 @@ class CancelRequested(EventModel):
 
     The daemon closes a requested row with its queued run. It ends a running agent with everything it started, as
     ``ending`` says. A starting agent waits until it runs, and a run whose agent then fails to start is not launched
-    again. The run ends ``cancelled`` unless its implementer left its finding, and its commits are scored.
+    again. The run ends ``cancelled`` unless its implementer left its finding, and its commits are scored. An ask
+    (``piloop.db.requests``).
     """
 
     kind: Literal['run.cancel_requested', 'agent_session.cancel_requested']
@@ -121,17 +125,7 @@ def attempts(idea: Idea) -> int:
 
 def request_stop(s: Session, campaign: Campaign, actor: Actor, *, reason: str, ending: Ending) -> None:
     """Ask the daemon to stop ``campaign`` (``StopRequested``). The caller commits."""
-    event = StopRequested(reason=reason, ending=ending)
-    emit(s, event, TargetRef(TargetKind.CAMPAIGN, campaign.id), actor)
-
-
-def requested_stop(s: Session, campaign: Campaign) -> tuple[Event, StopRequested] | None:
-    """Return the latest stop request since the campaign was last set ``active``, or None."""
-    on_campaign = Event.target == TargetRef(TargetKind.CAMPAIGN, campaign.id)
-    reactivated = s.scalar(
-        select(func.max(Event.id)).where(on_campaign, has(CampaignStatusChanged, new=CampaignStatus.ACTIVE))
-    )
-    return latest(s, StopRequested, on_campaign, Event.id > (reactivated or 0))
+    emit(s, StopRequested(reason=reason, ending=ending), TargetRef(TargetKind.CAMPAIGN, campaign.id), actor)
 
 
 class CampaignClosed(EventModel):
@@ -165,25 +159,39 @@ def settled(s: Session, campaign: Campaign) -> bool:
 
 def request_cancel(s: Session, target: Run | AgentSession, actor: Actor, *, ending: Ending) -> None:
     """Ask the daemon to cancel a run or an agent (``CancelRequested``). The caller commits."""
-    on = (
-        TargetRef(TargetKind.RUN, target.id)
-        if isinstance(target, Run)
-        else TargetRef(TargetKind.AGENT_SESSION, target.id)
-    )
-    kind = 'run.cancel_requested' if on.kind is TargetKind.RUN else 'agent_session.cancel_requested'
-    emit(s, CancelRequested(kind=kind, ending=ending), on, actor)
+    match target:
+        case Run():
+            on = TargetRef(TargetKind.RUN, target.id)
+            cancel = CancelRequested(kind='run.cancel_requested', ending=ending)
+        case AgentSession():
+            on = TargetRef(TargetKind.AGENT_SESSION, target.id)
+            cancel = CancelRequested(kind='agent_session.cancel_requested', ending=ending)
+        case _:
+            assert_never(target)
+    emit(s, cancel, on, actor)
+
+
+def cancelled(ask: Event, cancel: CancelRequested) -> ColumnElement[bool]:
+    """Select the agents that a cancel acts on: a run's agents, or an agent and the other agents of its run."""
+    match cancel.kind:
+        case 'run.cancel_requested':
+            return AgentSession.run_id == ask.target_id
+        case 'agent_session.cancel_requested':
+            run = select(AgentSession.run_id).where(AgentSession.id == ask.target_id).scalar_subquery()
+            return (AgentSession.id == ask.target_id) | (AgentSession.run_id == run)
+        case _:
+            assert_never(cancel.kind)
 
 
 def run_cancel(s: Session, run_id: RunId) -> tuple[Event, CancelRequested] | None:
-    """Return the latest cancel of a run: requested on the run, or on any of its agents, or None.
+    """Return the latest cancel of a run, open or answered: requested on the run, or on any of its agents, or None.
 
     A cancel on an agent holds for its run, so an implementer that a relaunch puts in the place of one that failed to start
     is cancelled too.
     """
-    on_run = Event.target == TargetRef(TargetKind.RUN, run_id)
     agents = select(AgentSession.id).where(AgentSession.run_id == run_id)
     on_agent = (Event.target_kind == TargetKind.AGENT_SESSION) & Event.target_id.in_(agents)
-    return latest(s, CancelRequested, on_run | on_agent)
+    return latest(s, CancelRequested, (Event.target == TargetRef(TargetKind.RUN, run_id)) | on_agent)
 
 
 def agent_cancel(s: Session, agent_session: AgentSession) -> tuple[Event, CancelRequested] | None:
@@ -191,6 +199,41 @@ def agent_cancel(s: Session, agent_session: AgentSession) -> tuple[Event, Cancel
     if agent_session.run_id is not None:
         return run_cancel(s, agent_session.run_id)
     return latest(s, CancelRequested, Event.target == TargetRef(TargetKind.AGENT_SESSION, agent_session.id))
+
+
+ACTING = (AgentSessionState.REQUESTED, AgentSessionState.STARTING, AgentSessionState.RUNNING)
+"""The states of an agent that a cancel still has to act on. An ``ending`` one is ended already."""
+
+
+def answer_done(s: Session) -> None:
+    """Answer each open stop and cancel that the daemon carried out. The caller commits.
+
+    A stop is carried out once its campaign is stopped and, with ``now``, none of the campaign's implementers is starting
+    or running. A cancel is carried out once none of its agents (``cancelled``) is requested, starting or running: the
+    daemon closed or ended each one, or it ended on its own.
+    """
+    for asked, stop in pending(s, StopRequested, Event.target_id.in_(select(Campaign.id))):
+        campaign = s.get_one(Campaign, asked.target_id)
+        if campaign.status is not CampaignStatus.STOPPED:
+            continue
+        match stop.ending:
+            case Ending.WRAP_UP:
+                done = True
+            case Ending.NOW:
+                running = (AgentSessionState.STARTING, AgentSessionState.RUNNING)
+                implementers = select(AgentSession).where(
+                    AgentSession.campaign_id == campaign.id,
+                    AgentSession.run_id.is_not(None),
+                    AgentSession.state.in_(running),
+                )
+                done = not count(s, implementers)
+            case _:
+                assert_never(stop.ending)
+        if done:
+            answer(s, asked)
+    for asked, cancel in pending(s, CancelRequested):
+        if not count(s, select(AgentSession).where(cancelled(asked, cancel), AgentSession.state.in_(ACTING))):
+            answer(s, asked)
 
 
 def park_cancelled(s: Session, run: Run) -> None:
@@ -252,11 +295,15 @@ def timeout(s: Session, campaign: Campaign, cfg: CampaignConfig, role_timeout: f
 
 
 def requested(s: Session, campaign: Campaign) -> Stop | None:
-    """Return the stop that someone requested (``requested_stop``), or None. It wins over every answer of the rule."""
-    if (request := requested_stop(s, campaign)) is None:
+    """Return the stop that someone requested and the daemon has not carried out, or None.
+
+    It wins over every answer of the rule. ``answer_done`` answers it once the campaign is stopped.
+    """
+    asks = pending(s, StopRequested, Event.target == TargetRef(TargetKind.CAMPAIGN, campaign.id))
+    if not asks:
         return None
-    event, stop = request
-    return Stop(f'stopped by {event.actor}: {stop.reason}' if stop.reason else f'stopped by {event.actor}')
+    asked, stop = asks[0]
+    return Stop(f'stopped by {asked.actor}: {stop.reason}' if stop.reason else f'stopped by {asked.actor}')
 
 
 def asked(s: Session, campaign: Campaign, cfg: CampaignConfig) -> bool:

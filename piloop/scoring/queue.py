@@ -7,19 +7,19 @@ campaign with many requests never holds back the requests of another, and inside
 for the ones before it. The queue is in the database, so ``piloop eval`` reads and cancels it without the daemon.
 
 A remeasure that someone asked for (``ledger.request_remeasure``) enters the queue only when the daemon gets to it, one
-per campaign at a time. Until then ``requested`` lists it, so ``piloop eval queue`` shows it from the moment it is asked.
+per campaign at a time. Until then ``requested`` lists its pending request, so ``piloop eval queue`` shows it from the
+moment it is asked.
 """
 
 from collections import Counter
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from piloop.actor import Actor
-from piloop.db.events import emit, has
-from piloop.db.models import Campaign, Candidate, Evaluation, Event, Measurement
-from piloop.ids import CandidateId, EvaluatorId, TargetKind, TargetRef
+from piloop.db.models import Campaign, Candidate, Evaluation
+from piloop.ids import CandidateId, EvaluatorId
 from piloop.scoring import ledger
 from piloop.scoring.ledger import head
 
@@ -84,12 +84,10 @@ def requested(s: Session) -> list[tuple[Candidate, datetime]]:
             select(Evaluation.candidate_id, Evaluation.evaluator_id).where(Evaluation.cancelled_by.is_(None))
         ).all()
     )
-    kind = (has(ledger.RemeasureRequested), Event.target_kind == TargetKind.CANDIDATE)
-    asked = dict(s.execute(select(Event.target_id, func.max(Event.at)).where(*kind).group_by(Event.target_id)).all())
     return [
-        (candidate, asked[candidate.id])
+        (candidate, asked.at)
         for campaign in s.scalars(select(Campaign).order_by(Campaign.id))
-        for candidate in ledger.requested(s, campaign)
+        for candidate, asked in ledger.requested(s, campaign)
         if (candidate.id, campaign.evaluator_id) not in queued
     ]
 
@@ -100,7 +98,7 @@ def cancel(s: Session, candidate_id: CandidateId, actor: Actor) -> int:
     Signed by ``actor``. Return how many it cancelled. The caller commits.
 
     Each records its crashed measurement now (``CANCELLED``), so the candidate is not evaluated again unless someone
-    asks, even if the daemon restarts first. That measurement also answers a remeasure request (``requested``). A
+    asks, even if the daemon restarts first. That measurement also answers a remeasure request (``ledger.record``). A
     waiting evaluation leaves the queue. A running one gets ``cancelled_by``, and the daemon stops its evaluator and
     records nothing more.
     """
@@ -113,11 +111,7 @@ def cancel(s: Session, candidate_id: CandidateId, actor: Actor) -> int:
         evaluators += [evaluator_id] if evaluator_id is not None else []
     for evaluator_id in evaluators:
         error = CANCELLED.format(actor=actor)
-        measurement = Measurement(candidate=s.get_one(Candidate, candidate_id), evaluator_id=evaluator_id, error=error)
-        s.add(measurement)
-        s.flush()
-        recorded = ledger.MeasurementRecorded(candidate=candidate_id, metrics={}, error=error, run=None)
-        emit(s, recorded, TargetRef(TargetKind.MEASUREMENT, measurement.id), actor)
+        ledger.record(s, s.get_one(Candidate, candidate_id), evaluator_id, actor, metrics={}, error=error, seconds=None)
     for evaluation in found:
         if evaluation.started_at is None:  # its executor finds it gone when a slot comes (``Results.started``)
             s.delete(evaluation)

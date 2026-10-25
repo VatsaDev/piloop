@@ -847,7 +847,7 @@ def test_a_crash_from_a_fault_of_the_host_is_measured_again_on_request_and_judge
         assert requested(s, p) == [], 'nobody asked'
         request_remeasure(s, s.get_one(Candidate, crashed.id), System.ORCHESTRATOR)
         s.commit()
-        assert [c.id for c in requested(s, p)] == [crashed.id]
+        assert [c.id for c, _ in requested(s, p)] == [crashed.id]
 
     ex.remeasure(crashed.id)
     with db.session() as s:

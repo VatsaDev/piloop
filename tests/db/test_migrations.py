@@ -1954,3 +1954,56 @@ def test_0045_renames_commit_sha_to_revision_a_job_captures_a_run_a_report_carri
         assert [loads(j) for (j,) in con.execute(leases)] == jobs
         assert [loads(p) for (p,) in con.execute(events)] == payloads
         assert con.execute('SELECT commit_sha FROM candidates').fetchall() == [('c',)]
+
+
+def test_0046_answers_each_latest_ask_that_0_2_had_spent_and_indexes_the_asks_by_kind(tmp_path: Path) -> None:
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0045')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        for name in ('again', 'asked'):
+            con.execute("INSERT INTO campaigns (name, path, config) VALUES (?, ?, '{}')", (name, f'/{name}'))
+        con.execute("INSERT INTO evaluators (campaign_id, key, definition) VALUES (1, 'k', '{}')")
+        con.execute('UPDATE campaigns SET evaluator_id = 1 WHERE id = 1')
+        for tree in ('t1', 't2'):
+            con.execute("INSERT INTO candidates (campaign_id, tree_sha, revision) VALUES (1, ?, 'c')", (tree,))
+        events = [
+            ('campaign.stop_requested', 'campaign', 1, {'reason': '', 'ending': 'wrap_up'}),  # 1: spent
+            ('campaign.status', 'campaign', 1, {'old': 'stopped', 'new': 'active', 'stopped_reason': None}),
+            ('campaign.stop_requested', 'campaign', 2, {'reason': '', 'ending': 'now'}),  # 3: pending
+            ('candidate.remeasure_requested', 'candidate', 1, {'repeats': 3}),  # 4: spent by the measurement
+            ('candidate.remeasure_requested', 'candidate', 2, {'repeats': 2}),  # 5: an older ask
+            ('candidate.remeasure_requested', 'candidate', 2, {'repeats': 5}),  # 6: pending
+            ('candidate.rejudge_requested', 'candidate', 1, {'measurement': 1}),  # 7: spent
+            ('candidate.judged', 'candidate', 1, {'verdict': 'keep', 'score': None, 'reason': None}),
+            ('candidate.rejudge_requested', 'candidate', 2, {'measurement': 1}),  # 9: pending
+        ]
+        for n, (kind, target_kind, target_id, payload) in enumerate(events, 1):
+            con.execute(
+                'INSERT INTO events (at, actor, target_kind, target_id, payload) VALUES (?, ?, ?, ?, ?)',
+                (f'2026-01-01 00:00:{n:02}', 'human', target_kind, target_id, dumps({'kind': kind, **payload})),
+            )
+        con.execute(
+            "INSERT INTO measurements (candidate_id, evaluator_id, created_at) VALUES (1, 1, '2026-01-01 00:00:20')"
+        )
+        con.execute(
+            "INSERT INTO measurements (candidate_id, evaluator_id, created_at) VALUES (2, 1, '2026-01-01 00:00:05')"
+        )
+    command.upgrade(cfg, '0046')
+    answers = (
+        "SELECT target_kind, target_id, json_extract(payload, '$.ask') FROM events WHERE kind = 'request.answered'"
+    )
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute(answers + ' ORDER BY id').fetchall() == [
+            ('campaign', 1, 1),
+            ('candidate', 1, 4),
+            ('candidate', 1, 7),
+        ]
+        plan = con.execute(
+            "EXPLAIN QUERY PLAN SELECT id FROM events WHERE kind = 'campaign.stop_requested' AND target_kind = 'campaign'"
+        ).fetchall()
+        assert 'ix_events_kind' in str(plan)
+    command.downgrade(cfg, '0045')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute(answers).fetchall() == []
+        assert con.execute("SELECT name FROM sqlite_master WHERE name = 'ix_events_kind'").fetchall() == []

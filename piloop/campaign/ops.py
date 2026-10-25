@@ -49,12 +49,12 @@ from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring.ledger import (
     MOVED,
     IdeaCreated,
-    MeasurementRecorded,
     Rebased,
     RejudgeRequested,
     follow_up,
     head,
     rebase,
+    record,
     track_of,
 )
 from piloop.scoring.verdict import Refusal, label, override, pending, refusal, rejudgeable, write
@@ -306,20 +306,19 @@ def add_measurement(s: Session, candidate_id: CandidateId, report: Report, *, ac
     missing = sorted(names - report.metrics.keys())
     if report.error is None and missing:
         raise Refused(f'the report has no {", ".join(missing)}: give every metric, or the error')
-    measurement = Measurement(
-        candidate_id=candidate.id,
-        evaluator_id=campaign.evaluator_id,
+    measurement = record(
+        s,
+        candidate,
+        campaign.evaluator_id,
+        actor,
         metrics=report.metrics,
         error=report.error,
         seconds=report.seconds,
     )
-    s.add(measurement)
-    s.flush()
-    recorded = MeasurementRecorded(candidate=candidate.id, metrics=report.metrics, error=report.error, run=None)
-    emit(s, recorded, TargetRef(TargetKind.MEASUREMENT, measurement.id), actor)
     if not rejudgeable(candidate):
         return Added(measurement, False, _stays(candidate))
-    emit(s, RejudgeRequested(measurement=measurement.id), TargetRef(TargetKind.CANDIDATE, candidate.id), actor)
+    asked = RejudgeRequested(measurement=measurement.id)
+    emit(s, asked, TargetRef(TargetKind.CANDIDATE, candidate.id), actor)
     later = measuring_held(s, campaign, cfg)
     return Added(measurement, True, f'the daemon judges it again with all its measurements{later}')
 

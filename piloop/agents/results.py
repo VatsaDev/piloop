@@ -25,13 +25,13 @@ from piloop.db.models import (
     AgentSession,
     AgentSessionState,
     Campaign,
+    Candidate,
     Comment,
     CommentKind,
     Evaluation,
     Event,
     EventModel,
     Idea,
-    Measurement,
     Run,
     RunEnd,
     utcnow,
@@ -69,7 +69,8 @@ from piloop.plugins.executor.contract import (
 )
 from piloop.plugins.runtime.contract import AgentExit, ExitStatus
 from piloop.plugins.vcs.contract import Transfer
-from piloop.scoring.ledger import MeasurementRecorded, save_units
+from piloop.scoring import ledger
+from piloop.scoring.ledger import save_units
 from piloop.settings import TMP_DIR, UNITS_DIR
 from piloop.store.tree import Manifest, Staged, merge, stage, write_files
 
@@ -636,23 +637,21 @@ def record(
     *,
     pair: MeasurementId | None = None,
 ) -> MeasurementId:
-    """Store one sample as a measurement, with its per-unit results, and return its id. The caller commits.
+    """Store one sample as the daemon's measurement (``ledger.record``), with its per-unit results, and return its id.
 
-    ``pair`` is the bar's measurement that ran next to it in a paired evaluation.
+    The caller commits. ``pair`` is the bar's measurement that ran next to it in a paired evaluation.
     """
-    measurement = Measurement(
-        candidate_id=candidate_id,
-        evaluator_id=evaluator_id,
+    candidate = s.get_one(Candidate, candidate_id)
+    measurement = ledger.record(
+        s,
+        candidate,
+        evaluator_id,
+        System.DAEMON,
         metrics=sample.metrics,
         error=sample.error,
         seconds=sample.seconds,
-        pair_id=pair,
+        run=run_id,
+        pair=pair,
     )
-    s.add(measurement)
-    s.flush()
     save_units(units_dir, measurement.id, sample.units)
-    recorded = MeasurementRecorded(
-        candidate=candidate_id, metrics=sample.metrics, error=sample.error, run=run_id, pair=pair
-    )
-    emit(s, recorded, TargetRef(TargetKind.MEASUREMENT, measurement.id), System.DAEMON)
     return measurement.id

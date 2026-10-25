@@ -19,6 +19,7 @@ from sqlalchemy import select
 
 from piloop.actor import System
 from piloop.db.models import EVENT, Event, EventModel, UnknownEvent
+from piloop.db.requests import RequestAnswered
 from piloop.db.session import Database
 from tests.db.test_migrations import alembic
 
@@ -290,7 +291,8 @@ def test_every_event_that_a_release_wrote_loads_as_its_model(
     tmp_path: Path, revision: str, setup: tuple[str, ...], rows: list[Row]
 ) -> None:
     events = [e for e, _ in release(tmp_path, revision, setup, rows)]
-    assert len(events) == len(rows), 'no event is lost'
+    answers = [e for e in events if isinstance(e.payload, RequestAnswered)]
+    assert len(events) - len(answers) == len(rows), 'no event is lost, and the upgrade adds only answers of spent asks'
     assert {e.kind for e in events if isinstance(e.payload, UnknownEvent)} <= EventModel.retired_kinds()
     assert [e.payload for e in events] == [EVENT.validate_json(EVENT.dump_json(e.payload)) for e in events]
 
@@ -453,6 +455,7 @@ def test_the_shapes_of_0_2_0_are_rewritten_to_the_models(tmp_path: Path) -> None
                 'OriginChanged',
                 '{"kind":"candidate.origin","old":"run","new":"recovered"}',
             ),
+            ('RequestAnswered', '{"kind":"request.answered","ask":7}'),
         ]
     )
 

@@ -101,6 +101,7 @@ from piloop.scoring.ledger import (
     Lineage,
     RejudgeFailed,
     Trunk,
+    answer_rejudge,
     bar_of,
     current_evaluator,
     head,
@@ -662,7 +663,7 @@ class RunController:
             cfg = campaign.config
             evaluator_id = current_evaluator(s, campaign, cfg).id
             s.commit()
-            asked = remeasure_asked(s, campaign, candidate)
+            asked = remeasure_asked(s, candidate)
             parent = candidate.parent
             # a merge that no run judges is measured as its run would: paired with its head when the track repeats
             paired = cfg.track(candidate.run.idea.track).repeats if unjudged(candidate) and candidate.run else None
@@ -688,8 +689,8 @@ class RunController:
     def rejudge(self, candidate_id: CandidateId) -> None:
         """Judge again a candidate that someone measured by hand (``ledger.rejudges``), with all its measurements.
 
-        Never raises. When the judgement fails, for example because the repo is gone, a ``RejudgeFailed`` event with
-        the error answers the request, so it is not tried on every tick.
+        Never raises. When the judgement fails, for example because the repo is gone, a ``RejudgeFailed`` event records
+        the error, and the request is answered, so it is not tried on every tick.
         """
         with self._db.session() as s:
             candidate = s.get_one(Candidate, candidate_id)
@@ -702,6 +703,7 @@ class RunController:
             with self._db.session() as s:
                 failed = RejudgeFailed(error=f'{type(e).__name__}: {e}')
                 emit(s, failed, TargetRef(TargetKind.CANDIDATE, candidate_id), System.DAEMON)
+                answer_rejudge(s, candidate_id)
                 s.commit()
             self._tracer.event(failed.kind, candidate=candidate_id, error=str(e))
 
@@ -716,6 +718,8 @@ class RunController:
             candidate = s.get_one(Candidate, candidate_id)
             run = candidate.run
             if run is None or not (rejudgeable(candidate) or unjudged(candidate)):
+                answer_rejudge(s, candidate_id)  # its verdict stays: nothing to judge
+                s.commit()
                 return
             assert candidate.parent is not None  # a run's candidate descends from the run's base
             cfg = run.idea.campaign.config
@@ -996,6 +1000,7 @@ class RunController:
                             reason=candidate.verdict_reason,
                         )
                         emit(s, judged, TargetRef(TargetKind.CANDIDATE, candidate_id), System.DAEMON)
+                        answer_rejudge(s, candidate_id)
                         why = '; '.join(notes)
                         if why and not moved and refusal(candidate, Outcome.INTERESTING, Cause.NOTE) is None:
                             by = implementer_of(s, scope.run_id)

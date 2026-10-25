@@ -23,7 +23,6 @@ from piloop.campaign.stop import (
     hours,
     request_stop,
     requested,
-    requested_stop,
     runs,
     runs_without_keep,
     stall,
@@ -52,6 +51,7 @@ from piloop.db.models import (
     RunStatus,
     utcnow,
 )
+from piloop.db.requests import RequestAnswered, pending
 from piloop.db.session import Database
 from piloop.db.triggers.changelog import CampaignPausedChanged, CampaignStatusChanged
 from piloop.ids import IMPLEMENTER, CandidateId, RunId, TargetKind, TargetRef
@@ -594,11 +594,11 @@ def test_a_requested_stop_ends_the_campaign_as_a_stop_condition_does(
         )
         s.commit()
         assert requested(s, s.get_one(Campaign, campaign.id)) == (Stop('stopped by implementer#3'))
-        request = requested_stop(s, s.get_one(Campaign, campaign.id))
-        assert request is not None and (request[0].actor, request[1]) == (
-            'implementer#3',
-            StopRequested(reason='', ending=Ending.NOW),
-        )
+        assert [(e.actor, stop) for e, stop in pending(s, StopRequested)] == [
+            ('implementer#3', StopRequested(reason='', ending=Ending.NOW))
+        ], 'the one pending ask: the daemon answered the first when it stopped the campaign'
+        (first, _), _ = in_order(s, StopRequested)
+        assert [answered.ask for _, answered in in_order(s, RequestAnswered)] == [first.id]
 
 
 def stop_while_held(db: Database, campaign: Campaign, hold: str, review: str | None = None) -> int:

@@ -13,13 +13,14 @@ from statistics import fmean
 from typing import Literal, assert_never
 
 from pydantic import Field
-from sqlalchemy import Select, func, select
+from sqlalchemy import ColumnElement, Select, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from piloop.actor import Actor, System
 from piloop.config import CampaignConfig, Metric, Track
-from piloop.db.events import emit, has, latest
+from piloop.db import requests
+from piloop.db.events import emit
 from piloop.db.models import (
     OPEN_RUNS,
     PROCESS,
@@ -34,6 +35,7 @@ from piloop.db.models import (
     IdeaLink,
     IdeaStatus,
     LinkKind,
+    Measurement,
     Origin,
     Run,
     latest_agent_session,
@@ -50,7 +52,7 @@ from piloop.plugins.vcs.contract import (
 )
 from piloop.plugins.verdict_rule.contract import VERDICT_RULES, Case, Criterion, Outcome, Side, VerdictRule
 from piloop.scoring.evaluate import UNITS, Units
-from piloop.scoring.verdict import judgeable, label, pending, pending_clause, rejudgeable
+from piloop.scoring.verdict import judgeable, label, pending, pending_clause
 from piloop.text import metric
 
 type Samples = dict[str, list[float]]
@@ -189,7 +191,7 @@ def due(s: Session, campaign: Campaign) -> list[Candidate]:
         Candidate.campaign_id == campaign.id, Candidate.origin == Origin.REFERENCE, ~Candidate.measurements.any()
     )
     waiting = select(Candidate).join(Run).where(Candidate.campaign_id == campaign.id, pending_clause())
-    asked = requested(s, campaign)
+    asked = [c for c, _ in requested(s, campaign)]
     active = campaign.status is CampaignStatus.ACTIVE
     found = [head(s, campaign), *(bar_of(run.base) for run in s.scalars(open_runs.order_by(Run.id)))] if active else []
     found += asked + [c for c in s.scalars(waiting.order_by(Candidate.id)) if unjudged(c)]
@@ -227,11 +229,11 @@ def request_remeasure(s: Session, candidate: Candidate, actor: Actor, repeats: i
     """Ask the daemon to measure ``candidate`` again with the current evaluator, next to its bar. The caller commits.
 
     Use it for a measurement that a fault of the host spoiled (a full disk, a lost GPU), or that load made noisy. The
-    request is the ``RemeasureRequested`` event, and ``requested`` lists it until a newer measurement exists. The
-    daemon runs ``repeats`` pairs of the candidate and its bar (``bar_of`` its parent), then judges it again when it is
-    ``rejudgeable`` (``RunController.remeasure``). A candidate without a parent, the baseline or a reference, gets
-    ``repeats`` samples alone. A commit that the daemon never measured (``skipped`` or ``recovered``) gets its first measurement, to
-    isolate a regression to it, say.
+    request (``RemeasureRequested``) is pending until a measurement of the candidate under the campaign's current
+    evaluator is recorded (``record``). The daemon runs ``repeats`` pairs of the candidate and its bar (``bar_of`` its
+    parent), then judges it again when it is ``rejudgeable`` (``RunController.remeasure``). A candidate without a
+    parent, the baseline or a reference, gets ``repeats`` samples alone. A commit that the daemon never measured
+    (``skipped`` or ``recovered``) gets its first measurement, to isolate a regression to it, say.
 
     Raises:
         RemeasureRefused: the candidate is pending: its run measures and judges it.
@@ -241,33 +243,57 @@ def request_remeasure(s: Session, candidate: Candidate, actor: Actor, repeats: i
     emit(s, RemeasureRequested(repeats=repeats), TargetRef(TargetKind.CANDIDATE, candidate.id), actor)
 
 
-def remeasure_asked(s: Session, campaign: Campaign, candidate: Candidate) -> RemeasureRequested | None:
-    """Return the latest request to measure ``candidate`` again that no measurement answered yet, or None."""
-    if candidate not in requested(s, campaign):
-        return None
-    found = latest(s, RemeasureRequested, Event.target == TargetRef(TargetKind.CANDIDATE, candidate.id))
-    return None if found is None else found[1]
+def remeasure_asked(s: Session, candidate: Candidate) -> RemeasureRequested | None:
+    """Return the pending request to measure ``candidate`` again, or None."""
+    found = requests.pending(s, RemeasureRequested, Event.target == TargetRef(TargetKind.CANDIDATE, candidate.id))
+    return found[0][1] if found else None
 
 
-def requested(s: Session, campaign: Campaign) -> list[Candidate]:
-    """Return the candidates that someone asked to measure again, with no measurement since, oldest request first.
+def candidates_of(campaign: Campaign) -> ColumnElement[bool]:
+    """Select the events on the candidates of ``campaign``."""
+    of_campaign = select(Candidate.id).where(Candidate.campaign_id == campaign.id)
+    return (Event.target_kind == TargetKind.CANDIDATE) & Event.target_id.in_(of_campaign)
 
-    Only a measurement with the current evaluator answers a request.
+
+def requested(s: Session, campaign: Campaign) -> list[tuple[Candidate, Event]]:
+    """Return the candidates of ``campaign`` that someone asked to measure again, with the open requests, oldest first."""
+    return [
+        (s.get_one(Candidate, asked.target_id), asked)
+        for asked, _ in requests.pending(s, RemeasureRequested, candidates_of(campaign))
+    ]
+
+
+def record(
+    s: Session,
+    candidate: Candidate,
+    evaluator_id: EvaluatorId,
+    actor: Actor,
+    *,
+    metrics: dict[str, float],
+    error: str | None,
+    seconds: float | None,
+    run: RunId | None = None,
+    pair: MeasurementId | None = None,
+) -> Measurement:
+    """Store a measurement of ``candidate``, with ``MeasurementRecorded``. The caller commits.
+
+    The one writer of measurements. ``run`` is the run that the daemon measured it for, and ``pair`` the bar's
+    measurement that ran next to it in a paired evaluation. A measurement under the campaign's current evaluator
+    answers the pending request to measure the candidate again (``request_remeasure``).
     """
-    evaluator_id = campaign.evaluator_id
-    asks = s.execute(
-        select(Event.target_id, func.max(Event.at))
-        .join(Candidate, Candidate.id == Event.target_id)
-        .where(has(RemeasureRequested), Event.target_kind == TargetKind.CANDIDATE, Candidate.campaign_id == campaign.id)
-        .group_by(Event.target_id)
-        .order_by(func.max(Event.id))
-    ).all()
-    found: list[Candidate] = []
-    for candidate_id, asked in asks:
-        candidate = s.get_one(Candidate, candidate_id)
-        if all(m.created_at < asked for m in candidate.measurements if m.evaluator_id == evaluator_id):
-            found.append(candidate)
-    return found
+    measurement = Measurement(
+        candidate=candidate, evaluator_id=evaluator_id, metrics=metrics, error=error, seconds=seconds, pair_id=pair
+    )
+    s.add(measurement)
+    s.flush()
+    recorded = MeasurementRecorded(candidate=candidate.id, metrics=metrics, error=error, run=run, pair=pair)
+    emit(s, recorded, TargetRef(TargetKind.MEASUREMENT, measurement.id), actor)
+    if evaluator_id == s.get_one(Campaign, candidate.campaign_id).evaluator_id:
+        for asked, _ in requests.pending(
+            s, RemeasureRequested, Event.target == TargetRef(TargetKind.CANDIDATE, candidate.id)
+        ):
+            requests.answer(s, asked)
+    return measurement
 
 
 class RejudgeRequested(EventModel):
@@ -323,29 +349,22 @@ def unjudged(candidate: Candidate) -> bool:
 
 
 def rejudges(s: Session, campaign: Campaign) -> list[Candidate]:
-    """Return the candidates to judge again: still ``rejudgeable``, asked after their last judgement, oldest first.
+    """Return the candidates of ``campaign`` that someone asked to judge again (``RejudgeRequested``), oldest first.
 
-    A request is answered by a later ``CandidateJudged`` event, or by a ``RejudgeFailed`` one.
+    The daemon answers each request when it judges the candidate again, or finds that it cannot (``answer_rejudge``).
     """
-    asks = s.execute(
-        select(Event.target_id, func.max(Event.id))
-        .join(Candidate, Candidate.id == Event.target_id)
-        .where(has(RejudgeRequested), Event.target_kind == TargetKind.CANDIDATE, Candidate.campaign_id == campaign.id)
-        .group_by(Event.target_id)
-        .order_by(func.max(Event.id))
-    ).all()
-    found: list[Candidate] = []
-    for candidate_id, asked in asks:
-        answered = s.scalar(
-            select(func.max(Event.id)).where(
-                has(CandidateJudged) | has(RejudgeFailed),
-                Event.target == TargetRef(TargetKind.CANDIDATE, candidate_id),
-            )
-        )
-        candidate = s.get_one(Candidate, candidate_id)
-        if (answered is None or answered < asked) and rejudgeable(candidate):
-            found.append(candidate)
-    return found
+    return [
+        s.get_one(Candidate, asked.target_id)
+        for asked, _ in requests.pending(s, RejudgeRequested, candidates_of(campaign))
+    ]
+
+
+def answer_rejudge(s: Session, candidate_id: CandidateId) -> None:
+    """Answer the pending request to judge the candidate again: the daemon judged it, or found that it cannot."""
+    for asked, _ in requests.pending(
+        s, RejudgeRequested, Event.target == TargetRef(TargetKind.CANDIDATE, candidate_id)
+    ):
+        requests.answer(s, asked)
 
 
 def references(s: Session, campaign: Campaign) -> list[Candidate]:

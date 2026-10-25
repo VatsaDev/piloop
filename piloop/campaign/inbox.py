@@ -13,12 +13,14 @@ They need no action from the human. They are listed so that the human can see wh
 
 import re
 from collections.abc import Collection, Sequence
+from typing import Final
 
 from sqlalchemy import ColumnElement, ScalarSelect, case, select
 from sqlalchemy.orm import Mapped, Session, aliased
 
 from piloop.actor import Actor
 from piloop.campaign.anomaly import AnomalyReported
+from piloop.db import feed as db_feed
 from piloop.db.models import (
     AgentSession,
     Campaign,
@@ -79,8 +81,15 @@ def seed_line(idea: Idea, campaign: Campaign) -> str:
     return f'seed idea#{idea.id} ({campaign.name}) by {idea.created_by}: {cell(idea.title)} — {cell(idea.provenance or "")}'
 
 
+WAKES: Final = tuple(
+    db_feed.Topic(m) for m in (Commented, CampaignStatusChanged, AnomalyReported, IdeaCreated, CandidateJudged)
+)
+"""The events that ``news`` turns into lines: what ends ``piloop inbox wait``."""
+PAGE = 500
+
+
 def news(s: Session, after: int, *, campaign_id: CampaignId | None = None, me: Actor) -> tuple[int, list[str]]:
-    """Return the events after event#``after`` that the orchestrator must look at, one line each, and the last id.
+    """Return the events after event#``after`` that the orchestrator must look at, one line each, and the next cursor.
 
     The lines report:
 
@@ -90,11 +99,19 @@ def news(s: Session, after: int, *, campaign_id: CampaignId | None = None, me: A
     - anomalies that the daemon gave to a watchdog.
     - the daemon's verdicts.
 
-    ``campaign_id`` filters all of them. The returned id is the cursor for the next call, so no event is missed.
+    It reads the ``WAKES`` events from the feed (``piloop.db.feed``), a page at a time until a page gives a line.
+    ``campaign_id`` filters all of them. The returned cursor passes every event that it read, so no event is missed.
     """
-    events = s.scalars(select(Event).where(Event.id > after).order_by(Event.id)).all()
-    if not events:
-        return after, []
+    cursor, lines, more = after, list[str](), True
+    while more and not lines:
+        page = db_feed.after(s, cursor, WAKES, limit=PAGE)
+        cursor, more = page.next, page.more
+        events = s.scalars(select(Event).where(Event.id.in_(page.ids)).order_by(Event.id)).all()
+        lines = _lines(s, events, campaign_id, me)
+    return cursor, lines
+
+
+def _lines(s: Session, events: Sequence[Event], campaign_id: CampaignId | None, me: Actor) -> list[str]:
     fresh = {e.target_id for e in events if isinstance(e.payload, Commented)}
     lines = [
         f'comment#{c.id} {c.kind} p{c.priority} on {c.target}'
@@ -120,7 +137,7 @@ def news(s: Session, after: int, *, campaign_id: CampaignId | None = None, me: A
                 candidate = s.get(Candidate, e.target_id)
                 if candidate is not None and campaign_id in (None, candidate.campaign_id):
                     lines.append(f'candidate#{candidate.id} {verdict}: {cell(str(reason))}')
-    return events[-1].id, lines
+    return lines
 
 
 def ack(s: Session, ids: Sequence[CommentId], actor: Actor) -> list[str]:

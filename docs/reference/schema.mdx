@@ -73,6 +73,7 @@ CREATE TABLE events (
 	PRIMARY KEY (id),
 	CONSTRAINT targetkind CHECK (target_kind IN ('campaign', 'idea', 'run', 'candidate', 'measurement', 'agent_session', 'comment', 'instance'))
 );
+CREATE INDEX ix_events_kind ON events (kind, target_kind, target_id, id);
 CREATE INDEX ix_events_target ON events (target_kind, target_id, id);
 CREATE TABLE journal (
 	id INTEGER NOT NULL,

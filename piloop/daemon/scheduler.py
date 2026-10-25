@@ -51,15 +51,17 @@ from piloop.campaign.stop import (
     CampaignClosed,
     CancelRequested,
     Ending,
+    StopRequested,
     agent_cancel,
+    answer_done,
     asked,
     attempts,
+    cancelled,
     check as check_stop,
     held as held_now,
     limits,
     park_cancelled,
     requested,
-    requested_stop,
     runs,
     runs_without_keep,
     settled,
@@ -103,6 +105,7 @@ from piloop.db.models import (
     count,
     utcnow,
 )
+from piloop.db.requests import pending
 from piloop.db.session import Database
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.ids import (
@@ -640,51 +643,62 @@ class Scheduler:
         cut by the stop (``RunEnd.CAMPAIGN_STOPPED``), not as a failed attempt. Sweeps of a stopped campaign are not
         changed, because their timeouts limit them and the closing review is one of them.
 
-        A cancelled run or agent of any role (``agent_cancel``, ``CANCEL_REQUESTED``) is ended at once, or after the
-        wrap-up prompt and the grace period when the cancel asked for it. Its run ends ``RunEnd.CANCELLED``. A cancelled request never
+        A cancelled run or agent of any role (a pending ``CancelRequested``) is ended at once, or after the wrap-up prompt
+        and the grace period when the cancel asked for it. Its run ends ``RunEnd.CANCELLED``. A cancelled request never
         starts, and its queued run fails. Both park the run's idea. A starting agent is left for a later tick, once it
-        runs; if its start fails, the run is not launched again (``RunController._relaunch``).
+        runs; if its start fails, the run is not launched again (``RunController._relaunch``). An ``ending`` agent gets
+        its kill again on each tick until it ends: a kill can fail. Then the stops and cancels that are carried out are
+        answered (``stop.answer_done``).
         """
         with self._db.session() as s:
-            requested = select(Event.target_id).where(has(CancelRequested))
-            on_agents = requested.where(Event.target_kind == TargetKind.AGENT_SESSION)
-            on_runs = requested.where(Event.target_kind == TargetKind.RUN)
-            runs_of_agents = select(AgentSession.run_id).where(
-                AgentSession.id.in_(on_agents), AgentSession.run_id.is_not(None)
-            )
-            winding = (AgentSessionState.RUNNING, AgentSessionState.ENDING)  # ending: its kill is sent on each tick
-            cancelled = AgentSession.state.in_((AgentSessionState.REQUESTED, *winding)) & (
-                AgentSession.id.in_(on_agents)
-                | AgentSession.run_id.in_(on_runs)
-                | AgentSession.run_id.in_(runs_of_agents)
-            )
+            cancels = {
+                agent_session.id: (request, cancel)
+                for request, cancel in pending(s, CancelRequested)
+                for agent_session in s.scalars(
+                    select(AgentSession).where(
+                        cancelled(request, cancel),
+                        AgentSession.state.in_((AgentSessionState.REQUESTED, AgentSessionState.RUNNING)),
+                    )
+                )
+            }
+            winding = (AgentSessionState.RUNNING, AgentSessionState.ENDING)
             stopping = (
                 select(AgentSession.id)
                 .join(Campaign, AgentSession.campaign_id == Campaign.id)
-                .where(AgentSession.run_id.is_not(None), AgentSession.state.in_(winding))
+                .where(AgentSession.run_id.is_not(None), AgentSession.state == AgentSessionState.RUNNING)
                 .where(Campaign.status == CampaignStatus.STOPPED)
             )
             implementers = select(AgentSession).where(AgentSession.run_id.is_not(None), AgentSession.state.in_(winding))
             found = [w.id for w in s.scalars(implementers) if self._found(s, w)]
             agent_sessions = s.scalars(
                 select(AgentSession)
-                .where(cancelled | AgentSession.id.in_(stopping) | AgentSession.id.in_(found))
+                .where(
+                    AgentSession.id.in_(cancels)
+                    | AgentSession.id.in_(stopping)
+                    | AgentSession.id.in_(found)
+                    | (AgentSession.state == AgentSessionState.ENDING)
+                )
                 .order_by(AgentSession.id)
             ).all()
             for agent_session in agent_sessions:
                 if agent_session.id in found:
                     self._end(s, agent_session, FOUND, RunEnd.FINISHED)
                     continue
-                if (cancel := agent_cancel(s, agent_session)) is not None:
-                    event, asked = cancel
-                    reason, end = f'cancelled by {event.actor}', RunEnd.CANCELLED
+                if agent_session.state is AgentSessionState.ENDING:
+                    self._kill(s, agent_session)
+                    continue
+                if (cancel := cancels.get(agent_session.id)) is not None:
+                    request, asked = cancel
+                    reason, end = f'cancelled by {request.actor}', RunEnd.CANCELLED
                     what = 'Your run was cancelled' if agent_session.run_id is not None else 'This sweep was cancelled'
-                    cause, ending = f'by {event.actor}', asked.ending
+                    cause, ending = f'by {request.actor}', asked.ending
                 else:
                     campaign = s.get_one(Campaign, agent_session.campaign_id)
                     reason, end = campaign.stopped_reason or 'campaign stopped', RunEnd.CAMPAIGN_STOPPED
-                    what, cause, request = 'The campaign stopped', reason, requested_stop(s, campaign)
-                    ending = Ending.WRAP_UP if request is None else request[1].ending
+                    what, cause = 'The campaign stopped', reason
+                    on_campaign = Event.target == TargetRef(TargetKind.CAMPAIGN, campaign.id)
+                    now = [stop for _, stop in pending(s, StopRequested, on_campaign) if stop.ending is Ending.NOW]
+                    ending = Ending.NOW if now else Ending.WRAP_UP
                 if agent_session.state is AgentSessionState.REQUESTED:
                     self._close(s, agent_session, reason)
                     if agent_session.run_id is not None:
@@ -695,7 +709,7 @@ class Scheduler:
                         Event.target == TargetRef(TargetKind.AGENT_SESSION, agent_session.id), has(WrapUp)
                     )
                 )
-                if ending is Ending.NOW or agent_session.state is AgentSessionState.ENDING:
+                if ending is Ending.NOW:
                     self._end(s, agent_session, reason, end)
                 elif told is None:
                     text = WRAP_UP_PROMPT.format(what=what, cause=cause, minutes=STOP_GRACE_SECONDS / 60)
@@ -707,6 +721,7 @@ class Scheduler:
                     cause = left.cut.value.format(timeout=left.timeout)
                     text = WRAP_UP_PROMPT.format(what='Your time is almost up', cause=cause, minutes=left.minutes)
                     self._wrap_up(s, agent_session, TIMEOUT, text)
+            answer_done(s)
             s.commit()
 
     @staticmethod
@@ -757,10 +772,14 @@ class Scheduler:
                 System.DAEMON,
             )
             self._tracer.event('agent_session.ended', agent_session=agent_session.id, reason=reason)
+        self._kill(s, agent_session)
+
+    def _kill(self, s: Session, agent_session: AgentSession) -> None:
+        """Commit, then send the kill of an ``ending`` agent to its executor. Sent on each tick until it ends."""
         # before the kill: the run that the kill ends reads it when it closes, and the executor writes in a session of
         # its own, which waits for this one's write lock
         s.commit()
-        self._controller.executor.cancel(AgentKey(agent_session.id))  # on each tick until it ends: a kill can fail
+        self._controller.executor.cancel(AgentKey(agent_session.id))
 
     def _triggers(
         self, s: Session, campaign: Campaign, cfg: CampaignConfig, answer: Go | Stop, held: str | None
@@ -785,6 +804,8 @@ class Scheduler:
         campaign.status, campaign.stopped_reason = CampaignStatus.STOPPED, reason
         self._tracer.event('campaign.stopped', campaign=campaign.name, reason=reason)
         self._drain(s, campaign)
+        s.flush()
+        answer_done(s)  # a stop with ``now`` waits for ``_wind_down`` to end the running implementers
         if held is not None and cfg.spend is not None and cfg.spend.closing_review is ClosingReview.SKIP:
             spend.review_skipped(s, campaign, held)
             self._close_campaign(s, campaign, cfg, {})
