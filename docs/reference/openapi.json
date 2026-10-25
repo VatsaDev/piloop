@@ -59,6 +59,26 @@
               }
             }
           },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -125,6 +145,26 @@
                 }
               }
             }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Conflict"
           },
           "422": {
             "description": "Validation Error",
@@ -220,6 +260,26 @@
               }
             }
           },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -236,7 +296,7 @@
     "/v1/events": {
       "get": {
         "summary": "Events",
-        "description": "The events after a cursor. With wait, it answers once an event matches, or at the end of the wait with none.",
+        "description": "The events after a cursor. With wait, it answers once an event matches, or at the end of the wait with none.\n\nEach read runs in the thread pool, in a session of its own. Between two reads the route awaits the database's\nnext wake and holds no thread. Each read starts at the cursor that the last one moved to, past what the filters\nleft out.",
         "operationId": "events",
         "parameters": [
           {
@@ -343,6 +403,26 @@
               }
             }
           },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -370,11 +450,13 @@
           },
           "next": {
             "type": "integer",
-            "title": "Next"
+            "title": "Next",
+            "description": "The cursor for the next read. It passes every event that the read examined, those that the filters left out\ntoo, so a read that returns nothing still moves on."
           },
           "more": {
             "type": "boolean",
-            "title": "More"
+            "title": "More",
+            "description": "Events newer than ``next`` exist already: read again without waiting. They may not match the filters."
           }
         },
         "type": "object",
@@ -448,7 +530,8 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "description": "The campaign that it is under. Null for a root."
           },
           "status": {
             "type": "string",
@@ -474,7 +557,8 @@
                 "type": "null"
               }
             ],
-            "title": "Paused"
+            "title": "Paused",
+            "description": "What ``piloop pause`` holds: ``launches`` or ``all``. Null while the campaign is not paused."
           },
           "paused_reason": {
             "anyOf": [
@@ -506,7 +590,8 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "description": "Null when the campaign has no trunk keep."
           },
           "kept": {
             "type": "integer",
@@ -514,18 +599,21 @@
           },
           "candidates": {
             "type": "integer",
-            "title": "Candidates"
+            "title": "Candidates",
+            "description": "The baseline and the commits of runs, not the imported references."
           },
           "ideas": {
             "additionalProperties": {
               "type": "integer"
             },
             "type": "object",
-            "title": "Ideas"
+            "title": "Ideas",
+            "description": "The number of ideas in each status."
           },
           "runnable": {
             "type": "integer",
-            "title": "Runnable"
+            "title": "Runnable",
+            "description": "The ``ready`` ideas that no prerequisite blocks."
           },
           "runs": {
             "items": {
@@ -539,11 +627,13 @@
               "$ref": "#/components/schemas/LiveAgent"
             },
             "type": "array",
-            "title": "Agents"
+            "title": "Agents",
+            "description": "The agents that are starting or running."
           },
           "inbox": {
             "type": "integer",
-            "title": "Inbox"
+            "title": "Inbox",
+            "description": "The unacknowledged inbox items."
           },
           "tokens": {
             "type": "integer",
@@ -593,7 +683,8 @@
           },
           "started": {
             "type": "string",
-            "title": "Started"
+            "title": "Started",
+            "description": "When it started, ISO 8601 in UTC."
           },
           "listen": {
             "anyOf": [
@@ -604,7 +695,8 @@
                 "type": "null"
               }
             ],
-            "title": "Listen"
+            "title": "Listen",
+            "description": "The URL that it serves other machines on. Null when it serves only this machine."
           }
         },
         "type": "object",
@@ -620,7 +712,8 @@
         "properties": {
           "id": {
             "type": "integer",
-            "title": "Id"
+            "title": "Id",
+            "description": "The cursor: events are read in id order."
           },
           "kind": {
             "type": "string",
@@ -642,17 +735,27 @@
                 "type": "null"
               }
             ],
-            "title": "Time"
+            "title": "Time",
+            "description": "When the event was written, ISO 8601 in UTC. Null when the stored value is not a time."
           },
           "payload": {
-            "$ref": "#/components/schemas/Json"
+            "$ref": "#/components/schemas/JsonValue",
+            "description": "The payload as stored: any JSON value. Null when the stored value is not JSON."
           },
           "invalid": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "type": "object",
-            "title": "Invalid"
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invalid",
+            "description": "Only when a stored value did not read: the stored text of each such field, ``time`` or ``payload``."
           }
         },
         "type": "object",
@@ -713,7 +816,8 @@
               "$ref": "#/components/schemas/Item"
             },
             "type": "array",
-            "title": "Items"
+            "title": "Items",
+            "description": "Most urgent first, then oldest first."
           },
           "seeds": {
             "items": {
@@ -830,37 +934,7 @@
         "title": "Item",
         "description": "An inbox item: a comment with a priority."
       },
-      "Json": {
-        "anyOf": [
-          {
-            "type": "boolean"
-          },
-          {
-            "type": "integer"
-          },
-          {
-            "type": "number"
-          },
-          {
-            "type": "string"
-          },
-          {
-            "items": {
-              "$ref": "#/components/schemas/Json"
-            },
-            "type": "array"
-          },
-          {
-            "additionalProperties": {
-              "$ref": "#/components/schemas/Json"
-            },
-            "type": "object"
-          },
-          {
-            "type": "null"
-          }
-        ]
-      },
+      "JsonValue": {},
       "LiveAgent": {
         "properties": {
           "id": {
@@ -928,11 +1002,12 @@
             "title": "Key"
           },
           "value": {
-            "$ref": "#/components/schemas/Json"
+            "$ref": "#/components/schemas/JsonValue"
           },
           "origin": {
             "type": "string",
-            "title": "Origin"
+            "title": "Origin",
+            "description": "``default``, ``config.toml`` or ``limit``."
           },
           "actor": {
             "anyOf": [
@@ -943,7 +1018,8 @@
                 "type": "null"
               }
             ],
-            "title": "Actor"
+            "title": "Actor",
+            "description": "Who set the limit. Null unless ``origin`` is ``limit``."
           },
           "reason": {
             "anyOf": [
@@ -1055,6 +1131,32 @@
         "title": "Overview",
         "description": "What ``piloop status`` prints: the daemon, the live keys that ``config.toml`` or a limit sets, and each overview."
       },
+      "ProblemDetail": {
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error",
+            "description": "A ``Problem``. Missing from a 404 of a route that the daemon does not have: it runs an older piloop."
+          },
+          "detail": {
+            "type": "string",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "detail"
+        ],
+        "title": "ProblemDetail",
+        "description": "Why a route refuses a request, with its status: a ``Problem``, and what to do."
+      },
       "Seed": {
         "properties": {
           "idea": {
@@ -1131,7 +1233,8 @@
         "properties": {
           "kind": {
             "type": "string",
-            "title": "Kind"
+            "title": "Kind",
+            "description": "A ``TargetKind``: ``campaign``, ``idea``, ``run``, ``candidate``, ``measurement``, ``agent_session``, ``comment``, or\n``home`` for an event about the whole home."
           },
           "id": {
             "type": "integer",
@@ -1146,7 +1249,8 @@
                 "type": "null"
               }
             ],
-            "title": "Campaign"
+            "title": "Campaign",
+            "description": "The campaign of the row, resolved when the event is read. Null when the row is gone or has no campaign (a reply\nto a reply). A campaign filter keeps these events too, because they may be of that campaign."
           }
         },
         "type": "object",
@@ -1185,7 +1289,8 @@
           },
           "metric": {
             "type": "string",
-            "title": "Metric"
+            "title": "Metric",
+            "description": "The primary metric of the track."
           },
           "value": {
             "anyOf": [
@@ -1196,7 +1301,8 @@
                 "type": "null"
               }
             ],
-            "title": "Value"
+            "title": "Value",
+            "description": "Null when the current evaluator has not measured the head."
           },
           "delta": {
             "anyOf": [
@@ -1207,7 +1313,8 @@
                 "type": "null"
               }
             ],
-            "title": "Delta"
+            "title": "Delta",
+            "description": "Against the baseline. Null when the head is the baseline, or either is not measured."
           }
         },
         "type": "object",

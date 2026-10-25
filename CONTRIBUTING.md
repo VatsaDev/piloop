@@ -170,6 +170,7 @@ renames a table, a column or a value, add the rename to `RENAMES` in that module
   the header in `scripts/generate/configuration.py`.
 - `docs/reference/schema.mdx`, from `piloop/db/models.py`.
 - `piloop/db/actor_triggers.sql`, from `piloop/db/triggers/`.
+- `docs/reference/openapi.json`, the API's OpenAPI document, from the FastAPI routes of `piloop/daemon/api.py`.
 - `docs/snippets/generated/`: the generated parts of other pages. These are the diagram of the tables, the values of
   the state enums and the graph of the imports, and the tables of the built-in runtimes, triggers, harnesses,
   `Runtime` methods and the limits of the stop rule. They also include the environment variables of the settings classes. They come

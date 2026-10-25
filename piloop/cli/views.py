@@ -15,20 +15,8 @@ from rich.table import Table
 from rich.text import Text
 
 from piloop.api.client import Client, NoDaemon, Refused
-from piloop.api.contract import (
-    EVENTS,
-    INBOX,
-    LIMIT,
-    MAX_LIMIT,
-    MAX_POLL_SECONDS,
-    OVERVIEW,
-    STATUS,
-    EventsQuery,
-    InboxQuery,
-    Problem,
-    Selection,
-)
-from piloop.api.views import DaemonState, LiveKey, seed_line
+from piloop.api.contract import LIMIT, MAX_LIMIT, MAX_POLL_SECONDS, EventsQuery, InboxQuery, Problem, Selection
+from piloop.api.views import Batch, DaemonState, LiveKey, seed_line
 from piloop.cli import common
 from piloop.cli.common import CampaignRef, JsonFlag
 from piloop.ids import CommentKind
@@ -43,7 +31,7 @@ KindFilter = Annotated[
 def api() -> Generator[Client]:
     """A client of the home's daemon. Exit with what to do when there is no daemon or it refuses the call."""
     try:
-        with Client(common.settings.socket_file) as client:
+        with Client.on(common.settings.socket_file) as client:
             yield client
     except (NoDaemon, Refused) as e:
         raise SystemExit(str(e)) from e
@@ -63,31 +51,31 @@ def status(ref: CampaignRef | None = None, /, *, json_: JsonFlag = False) -> Non
     selection = Selection(campaign=ref, cwd=_cwd())
     if json_:
         with api() as client:
-            common.print_json(client.call(STATUS, selection))
+            common.print_json(client.status(selection).model_dump(mode='json'))
         return
     with api() as client:
-        overview = client.call(OVERVIEW, selection)
-    common.console.print(daemon_line(overview['daemon']), markup=False)
-    for key in overview['limits']:
+        shown = client.overview(selection)
+    common.console.print(daemon_line(shown.daemon), markup=False)
+    for key in shown.limits:
         common.console.print(f'limit: {limit_line(key)}', markup=False)
-    for campaign in overview['campaigns']:
-        parent = campaign['parent']
-        under = '' if parent is None else f'  under {parent["name"]} #{parent["id"]}'
-        common.heading(f'[bold]{campaign["name"]}[/] #{campaign["id"]}  {campaign["path"]}{under}')
-        common.console.print(campaign['text'], markup=False, highlight=False, soft_wrap=True)
+    for campaign in shown.campaigns:
+        parent = campaign.parent
+        under = '' if parent is None else f'  under {parent.name} #{parent.id}'
+        common.heading(f'[bold]{campaign.name}[/] #{campaign.id}  {campaign.path}{under}')
+        common.console.print(campaign.text, markup=False, highlight=False, soft_wrap=True)
 
 
-def daemon_line(daemon: DaemonState) -> str:
+def daemon_line(state: DaemonState) -> str:
     """One line on the daemon: its pid, its uptime, and the URL that other machines reach it on."""
-    up = timedelta(seconds=int(time.time() - datetime.fromisoformat(daemon['started']).timestamp()))
-    listening = '' if daemon['listen'] is None else f', listening on {daemon["listen"]}'
-    return f'daemon: pid {daemon["pid"]}, up {up}{listening}'
+    up = timedelta(seconds=int(time.time() - datetime.fromisoformat(state.started).timestamp()))
+    listening = '' if state.listen is None else f', listening on {state.listen}'
+    return f'daemon: pid {state.pid}, up {up}{listening}'
 
 
 def limit_line(key: LiveKey) -> str:
     """One live key: its value, and where the value comes from."""
-    source = key['origin'] if key['actor'] is None else f'limit by {key["actor"]}: {key["reason"]}'
-    return f'{key["key"]} = {json.dumps(key["value"])}  ({source})'
+    source = key.origin if key.actor is None else f'limit by {key.actor}: {key.reason}'
+    return f'{key.key} = {json.dumps(key.value)}  ({source})'
 
 
 def inbox_list(
@@ -104,32 +92,32 @@ def inbox_list(
     prints them read at one cursor: follow them with `piloop events --after <cursor>`.
     """
     with api() as client:
-        inbox = client.call(INBOX, InboxQuery(campaign=ref, cwd=_cwd(), kind=kind, acked=all_))
+        inbox = client.inbox(InboxQuery(campaign=ref, cwd=_cwd(), kind=kind, acked=all_))
     if json_:
-        common.print_json(inbox)
+        common.print_json(inbox.model_dump(mode='json'))
         return
     now = clock()
     table = Table('id', 'p', 'kind', 'campaign', 'on', 'by', 'age', *(['acked'] if all_ else []), 'first line')
-    for item in inbox['items']:
-        acked = [f'{item["acked_by"]}, {_age(item["acked_at"], now)} ago' if item['acked_at'] else '—'] if all_ else []
+    for item in inbox.items:
+        acked = [f'{item.acked_by}, {_age(item.acked_at, now)} ago' if item.acked_at else '—'] if all_ else []
         table.add_row(
-            str(item['id']),
-            str(item['priority']),
-            item['kind'],
-            item['campaign_name'] or '—',
-            f'{item["target"]["kind"]}#{item["target"]["id"]}',
-            item['author'],
-            _age(item['created'], now),
+            str(item.id),
+            str(item.priority),
+            item.kind,
+            item.campaign_name or '—',
+            f'{item.target.kind}#{item.target.id}',
+            item.author,
+            _age(item.created, now),
             *acked,
-            Text(cell(item['body'])),
+            Text(cell(item.body)),
         )
-    if inbox['items']:
+    if inbox.items:
         common.console.print(table)
     common.console.print(
-        f'{len(inbox["items"])} item(s){"" if all_ else " unacknowledged"}; `piloop inbox show <id>`,'
+        f'{len(inbox.items)} item(s){"" if all_ else " unacknowledged"}; `piloop inbox show <id>`,'
         ' `piloop inbox ack <id>`'
     )
-    if seeds := [seed_line(seed) for seed in inbox['seeds']]:
+    if seeds := [seed_line(seed) for seed in inbox.seeds]:
         common.console.print(f'{len(seeds)} seed(s) waiting for research:', markup=False)
         common.console.print('\n'.join(seeds), markup=False, highlight=False, soft_wrap=True)
 
@@ -166,34 +154,36 @@ def events(
     missed in between. Save the cursor after you have handled the events, and read from it again after a disconnect.
     An event can come twice then: skip an id that you have handled.
     """
-    query = EventsQuery(after=after, campaign=campaign, cwd=_cwd(), kind=kind, limit=limit)
-    deadline = time.monotonic() + (timeout if follow else 0)
+    deadline, cursor = time.monotonic() + (timeout if follow else 0), after
     with api() as client:
         while True:
             wait = min(MAX_POLL_SECONDS, max(0.0, deadline - time.monotonic()))
             try:
-                batch = client.call(EVENTS, query.model_copy(update={'wait': wait}))
+                batch = _read(client, cursor, campaign, kind, limit, wait)
             except Refused as e:
                 if json_ and e.error == Problem.CURSOR_AHEAD:
                     raise common.json_error(e.error, str(e)) from e
                 raise
-            if batch['events'] or time.monotonic() >= deadline:
+            if batch.events or time.monotonic() >= deadline:
                 break
-            query = query.model_copy(update={'after': batch['next']})
+            cursor = batch.next
     if json_:
-        common.print_json(batch)
+        common.print_json(batch.model_dump(mode='json'))
         return
-    for e in batch['events']:
-        subject, invalid = e['subject'], e.get('invalid', {})
-        payload = json.dumps(invalid['payload'] if 'payload' in invalid else e['payload'])
+    for e in batch.events:
+        invalid = e.invalid or {}
+        payload = json.dumps(invalid.get('payload', e.payload))
         common.console.out(
-            f'event#{e["id"]} {e["time"] or invalid.get("time")} {e["kind"]} {subject["kind"]}#{subject["id"]}'
-            f' by {e["actor"]}: {payload}',
+            f'event#{e.id} {e.time or invalid.get("time")} {e.kind} {e.subject.kind}#{e.subject.id} by {e.actor}: {payload}',
             highlight=False,
         )
     narrow = [*(['--campaign', campaign] if campaign else []), *(a for k in kind for a in ('--kind', k))]
-    again = shlex.join(['piloop', 'events', '--after', str(batch['next']), *narrow])
-    common.console.print(f'next: {again}' + (' (more now)' if batch['more'] else ''), markup=False, soft_wrap=True)
+    again = shlex.join(['piloop', 'events', '--after', str(batch.next), *narrow])
+    common.console.print(f'next: {again}' + (' (more now)' if batch.more else ''), markup=False, soft_wrap=True)
+
+
+def _read(client: Client, after: int, campaign: str | None, kind: tuple[str, ...], limit: int, wait: float) -> Batch:
+    return client.events(EventsQuery(after=after, campaign=campaign, cwd=_cwd(), kind=kind, limit=limit, wait=wait))
 
 
 def clock() -> datetime:

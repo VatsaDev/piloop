@@ -9,7 +9,7 @@ from types import FrameType
 from piloop import deprecated
 from piloop.actor import System
 from piloop.campaign.archive import ManifestNotMigrated, migrate_manifests
-from piloop.daemon.api import endpoints
+from piloop.daemon.api import Handlers, daemon_state, with_api
 from piloop.daemon.archiver import ArchivePolicy, Archiving
 from piloop.daemon.run_controller import RunController
 from piloop.daemon.scheduler import Scheduler
@@ -243,10 +243,10 @@ class Daemon:
             raise SystemExit(f'the daemon does not listen: {e}') from e
         listeners = [local] if listener is None else [local, listener]
         listen = None if listener is None else url(listener)
-        api = endpoints(self.db, self._cfg, iso(utcnow()), listen)
+        api = Handlers(self.db, self._cfg, daemon_state(iso(utcnow()), listen))
         routes = self.controller.executor.routes()
         # one app for each server: a server's shutdown ends the long-polls of its own app
-        self._servers = [Server(app(self._tokens, self.network, routes, api), each) for each in listeners]
+        self._servers = [Server(with_api(app(self._tokens, self.network, routes), api), each) for each in listeners]
         for server in self._servers:
             server.start()
         if listener is not None:

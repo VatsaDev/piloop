@@ -62,8 +62,8 @@ class CasError(Exception):
 
 def app(tokens: Tokens, network: Network, cas: Cas, scratch: Path) -> App:
     """The routes of ``ROUTE`` over ``cas``, with temporary files in ``scratch``, for workers."""
-    workers = [Depends(authorized(tokens, network, Access.WORKER))]
-    server = App()
+    workers = [Depends(authorized(Access.WORKER))]
+    server = App(tokens, network)
 
     @server.exception_handler(CasError)
     def refused(request: Request, e: CasError) -> Response:

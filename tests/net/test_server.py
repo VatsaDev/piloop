@@ -156,7 +156,7 @@ class Served:
 
 
 def _control_plane(tokens: Tokens, network: Network, tmp: Path) -> App:
-    return app(tokens, network, [ECHO], ())
+    return app(tokens, network, [ECHO])
 
 
 def _cas(tokens: Tokens, network: Network, tmp: Path) -> App:
@@ -372,7 +372,7 @@ class TrustedHeaders:
 
 def test_a_bearer_that_is_not_a_piloop_token_reaches_the_network_which_identifies_the_caller(db: Database) -> None:
     network = TrustedHeaders()
-    with closing(Server(app(Tokens(db), network, [ECHO], ()), network.listener())) as server:
+    with closing(Server(app(Tokens(db), network, [ECHO]), network.listener())) as server:
         server.start()
         stamped = {'Authorization': 'Bearer hil_abc', 'x-user': 'gpu7', 'x-access': 'worker'}
         answered = httpx.post(server.url + ECHOED, json=HI, headers=stamped)

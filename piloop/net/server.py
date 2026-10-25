@@ -7,8 +7,6 @@ next call outside it, so many long-polls never starve a heartbeat.
 """
 
 import asyncio
-import inspect
-import operator
 import socket
 import ssl
 import threading
@@ -18,16 +16,14 @@ from pathlib import Path
 from typing import Annotated
 
 import uvicorn
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
-from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
-from fastapi.routing import APIRouter
 from uvicorn.protocols.http.h11_impl import H11Protocol
 
-from piloop.api.contract import ENDPOINTS, GRANTS, Access, Endpoint, Params
-from piloop.net import InvalidBody, Refusal, Route, Served
+from piloop.api.contract import GRANTS, Access
+from piloop.net import Changed, InvalidBody, Refusal, Route
 from piloop.net.tokens import PREFIX, Caller, Tokens
 from piloop.plugins.network.contract import Address, Listener, Network, Peer, Refused
 
@@ -38,11 +34,12 @@ OWNER = Caller('owner', Access.ADMIN)
 OPENAPI = '/v1/openapi.json'
 
 
-def authorized(tokens: Tokens, network: Network, access: Access) -> Callable[[Request], Caller]:
-    """The dependency that admits a caller whose access grants ``access``: 401 for an unknown caller, 403 for another scope."""
+def authorized(access: Access) -> Callable[[Request], Caller]:
+    """The dependency that admits a caller whose access grants ``access``: 401 for an unknown caller, 403 for another."""
 
     def caller(request: Request) -> Caller:
-        known = _identified(tokens, network, request)
+        server = served(request)
+        known = _identified(server.tokens, server.network, request)
         if isinstance(known, Refused):
             raise HTTPException(401, known.reason, headers={'WWW-Authenticate': 'Bearer'})
         if access not in GRANTS[known.access]:
@@ -72,113 +69,43 @@ def _peer(request: Request) -> Peer:
 
 
 class App(FastAPI):
-    """FastAPI, with the event that its ``Server`` sets when it shuts down. One ``Server`` serves one ``App``."""
+    """FastAPI that knows who may call it, with the event that its ``Server`` sets when it shuts down.
 
-    def __init__(self) -> None:
-        super().__init__(openapi_url=None)
+    One ``Server`` serves one ``App``. A route's ``Refusal`` answers its status with ``{"error", "detail"}``.
+    """
+
+    def __init__(self, tokens: Tokens, network: Network, *, openapi_url: str | None = None) -> None:
+        super().__init__(title='piloop', version='1', openapi_url=openapi_url)
+        self.tokens = tokens
+        self.network = network
         self.closing = asyncio.Event()
         """Set at the start of the shutdown: each long-poll that waits answers at once, as at the end of its wait."""
 
+        @self.exception_handler(Refusal)
+        def refused(request: Request, e: Refusal) -> Response:
+            return JSONResponse({'error': e.error, 'detail': str(e)}, status_code=e.status)
 
-def app(tokens: Tokens, network: Network, routes: Sequence[Route], api: Sequence[Served]) -> App:
-    """The ``api`` endpoints and ``OPENAPI``, and the executor's ``routes`` under ``/v1/executor``, for workers."""
-    server = App()
-    for served in api:
-        scoped = authorized(tokens, network, served.endpoint.access)
-        _add(server.router, served.endpoint, _serve(scoped, served, server.closing))
-    document = openapi()
 
-    def described() -> dict[str, object]:
-        return document
+def served(request: Request) -> App:
+    """The ``App`` that serves ``request``."""
+    found = request.app
+    assert isinstance(found, App)  # every server of piloop serves one
+    return found
 
-    server.add_api_route(OPENAPI, described, include_in_schema=False)
-    workers = authorized(tokens, network, Access.WORKER)
+
+def app(tokens: Tokens, network: Network, routes: Sequence[Route]) -> App:
+    """The server's app, with the executor's ``routes`` under ``/v1/executor``, for workers. The daemon adds the API."""
+    server = App(tokens, network, openapi_url=OPENAPI)
+    workers = authorized(Access.WORKER)
     for route in routes:
         endpoint = _endpoint(workers, route, server.closing)
         server.add_api_route(f'/v1/executor/{route.path}', endpoint, methods=['POST'], include_in_schema=False)
     return server
 
 
-def openapi() -> dict[str, object]:
-    """The OpenAPI document of ``ENDPOINTS``: what ``GET /v1/openapi.json`` answers, and ``docs/reference/openapi.json``.
-
-    The executor's routes are its own protocol, and are not in it.
-    """
-    described = APIRouter()
-    for endpoint in ENDPOINTS:
-        _add(described, endpoint, _described)
-    return get_openapi(title='piloop', version='1', routes=described.routes)
-
-
-async def _described(**query: object) -> Response:
-    """The handler of a route that ``openapi`` only describes: it is never served."""
-    raise NotImplementedError
-
-
-class _Signed:
-    """An endpoint's handler under the signature that FastAPI reads its parameters from (``inspect.signature``)."""
-
-    def __init__(self, serve: Callable[..., Awaitable[Response]], signature: inspect.Signature) -> None:
-        self._serve = serve
-        self.__signature__ = signature
-
-    async def __call__(self, **arguments: object) -> Response:
-        return await self._serve(**arguments)
-
-
-def _add(router: APIRouter, endpoint: Endpoint[Params, object], serve: Callable[..., Awaitable[Response]]) -> None:
-    """Add ``endpoint`` to ``router``, served by ``serve``: each field of its parameters is a query parameter."""
-    query = [
-        inspect.Parameter(
-            name,
-            inspect.Parameter.KEYWORD_ONLY,
-            default=inspect.Parameter.empty if field.is_required() else field.default,
-            # built at run time: FastAPI reads the field's bounds from it, and a checker allows no variable in a type
-            annotation=operator.getitem(
-                Annotated, (field.annotation, *field.metadata, Query(description=field.description))
-            ),
-        )
-        for name, field in endpoint.params.model_fields.items()
-    ]
-    declared = inspect.signature(serve)
-    own = [p for p in declared.parameters.values() if p.kind is not inspect.Parameter.VAR_KEYWORD]
-    router.add_api_route(
-        endpoint.path,
-        _Signed(serve, declared.replace(parameters=[*own, *query])),
-        methods=[endpoint.method],
-        name=endpoint.name,
-        operation_id=endpoint.name,
-        description=endpoint.description,
-        response_model=endpoint.answer,
-    )
-
-
-def _serve(
-    scoped: Callable[[Request], Caller], served: Served, closing: asyncio.Event
-) -> Callable[..., Awaitable[Response]]:
-    """The handler of ``served``: its parameters are validated here, and its function runs in the thread pool.
-
-    A long-poll calls it again (``Step.again``) after each wake (``Served.changed``) until its ``wait`` ends or the
-    server closes, then sends the last answer.
-    """
-
-    async def serve(caller: Annotated[Caller, Depends(scoped)], **query: object) -> Response:
-        call = served.bind(caller, query)  # FastAPI has checked each parameter against the model's field
-        deadline, seen = time.monotonic() + call.wait, 0
-        try:
-            step = await run_in_threadpool(call.handle)
-            while step.again is not None and served.changed is not None:
-                if (left := deadline - time.monotonic()) <= 0:
-                    break
-                if (changed := await _unless_closing(served.changed(seen, left), closing)) is None:
-                    break
-                seen = changed
-                step = await run_in_threadpool(step.again)
-        except Refusal as e:
-            return JSONResponse({'error': e.error, 'detail': str(e)}, status_code=e.status)
-        return Response(step.answer, media_type='application/json')
-
-    return serve
+async def changed(request: Request, waited: Changed, seen: int, timeout: float) -> int | None:
+    """What ``waited`` returns, or None once the server of ``request`` closes: a long-poll then answers at once."""
+    return await _unless_closing(waited(seen, timeout), served(request).closing)
 
 
 def _endpoint(

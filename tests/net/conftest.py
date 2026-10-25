@@ -32,7 +32,7 @@ def serving(db: Database) -> Serving:
         network = Https.model_validate({'listen': '127.0.0.1:0', **keys}).open(NetworkHost(Tokens(db)))
         listener = network.listener()
         assert listener is not None
-        server = Server(app(Tokens(db), network, routes, ()), listener)
+        server = Server(app(Tokens(db), network, routes), listener)
         server.start()
         try:
             yield server

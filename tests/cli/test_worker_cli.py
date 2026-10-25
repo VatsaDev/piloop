@@ -45,7 +45,7 @@ def server(db: Database, tmp_path: Path) -> Generator[str]:
     assert listener is not None
     leases = Leases(db, Recorder(db), home_cas(db), pools={'gpu': Pool()})
     routes = lease_routes(leases, db.changed, disk(tmp_path / 'worker'), no_send, echoed)
-    server = Server(app(Tokens(db), network, routes, ()), listener)
+    server = Server(app(Tokens(db), network, routes), listener)
     server.start()
     yield server.url
     server.close()

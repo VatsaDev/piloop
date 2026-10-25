@@ -1,104 +1,172 @@
-"""The functions that answer the API's endpoints (``piloop.api.contract``), each bound to its endpoint.
+"""The API's routes: FastAPI path operations under ``/v1``, each calling the function that owns its answer.
 
-A handler reads with the daemon's database and calls the function of the layer that owns the answer; it holds no logic
-of its own. ``endpoints`` pairs every endpoint of ``ENDPOINTS`` with one.
+``router`` is the API, and ``with_api`` puts it on a server with what its routes read with. The routes share their
+lookups as dependencies (``Selected``, ``Narrowed``) over one session per request. The OpenAPI document of the router
+(``openapi``) is ``docs/reference/openapi.json``.
 """
 
 import os
+import time
+from collections.abc import Generator
 from dataclasses import dataclass
 from http import HTTPStatus
 from pathlib import Path
+from typing import Annotated
 
+from fastapi import APIRouter, Depends, FastAPI, Query, Request
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 
-from piloop.api.contract import EVENTS, INBOX, OVERVIEW, STATUS, EventsQuery, InboxQuery, Located, Problem, Selection
-from piloop.api.views import Batch, CampaignOverview, DaemonState, Inbox, Overview, Status
+from piloop.api.contract import Access, EventsQuery, InboxQuery, Located, Problem, Selection
+from piloop.api.views import Batch, CampaignOverview, DaemonState, Inbox, Overview, ProblemDetail, Status
 from piloop.campaign.campaigns import UnknownCampaign, named, selected
 from piloop.db import feed as db_feed
 from piloop.db.models import Campaign, utcnow
 from piloop.db.session import Database
 from piloop.ids import CampaignId
-from piloop.net import Pending, Refusal, Served
-from piloop.net.tokens import Caller
+from piloop.net import Refusal
+from piloop.net.server import App, authorized, changed
 from piloop.plugins.limits import Origin, live_keys
 from piloop.reports import feed
-from piloop.reports.overview import overview
+from piloop.reports.overview import overview as overview_text
 from piloop.settings import Settings
 
 
 @dataclass(frozen=True)
 class Handlers:
-    """The handlers, over the daemon's database and settings."""
+    """What the routes read with: the daemon's database and settings, and the daemon itself."""
 
     db: Database
     cfg: Settings
     daemon: DaemonState
 
-    def status(self, caller: Caller, params: Selection) -> Status:
-        with self.db.session() as s, db_feed.snapshot(s) as cursor:
-            states = feed.status_view(s, _selected(s, params))
-        return Status(cursor=cursor, daemon=self.daemon, campaigns=states)
 
-    def overview(self, caller: Caller, params: Selection) -> Overview:
-        now = utcnow()
-        with self.db.session() as s:
-            campaigns = [
-                CampaignOverview(
-                    id=campaign.id,
-                    name=campaign.name,
-                    path=campaign.path,
-                    parent=feed.parent_of(s, campaign),
-                    text=overview(s, campaign, campaign.config, now, tools=False),
-                )
-                for campaign in _selected(s, params)
-            ]
-            limits = live_keys(s, self.cfg.providers, (Origin.CONFIG, Origin.LIMIT))
-        return Overview(daemon=self.daemon, limits=limits, campaigns=campaigns)
-
-    def inbox(self, caller: Caller, params: InboxQuery) -> Inbox:
-        with self.db.session() as s, db_feed.snapshot(s) as cursor:
-            campaign_id = _campaign(s, params)
-            return feed.inbox_view(s, cursor, campaign_id=campaign_id, kinds=params.kind, acked=params.acked)
-
-    def events(self, caller: Caller, params: EventsQuery) -> Batch | Pending[EventsQuery, Batch]:
-        with self.db.session() as s:
-            try:
-                batch = feed.read(
-                    s, params.after, campaign_id=_campaign(s, params), kinds=params.kind, limit=params.limit
-                )
-            except db_feed.CursorAhead as e:
-                raise Refusal(HTTPStatus.CONFLICT, Problem.CURSOR_AHEAD, str(e)) from e
-        if batch['events'] or batch['more']:
-            return batch
-        return Pending(batch, params.model_copy(update={'after': batch['next']}))
+def handlers(request: Request) -> Handlers:
+    """The ``Handlers`` that ``with_api`` put on the server's state."""
+    found = request.app.state.handlers
+    assert isinstance(found, Handlers)  # with_api sets them before the server serves
+    return found
 
 
-def endpoints(db: Database, cfg: Settings, started: str, listen: str | None) -> list[Served]:
-    """Every endpoint, with its handler. ``started`` and ``listen`` describe the daemon (``DaemonState``)."""
-    handlers = Handlers(db, cfg, DaemonState(pid=os.getpid(), started=started, listen=listen))
-    return [
-        Served(STATUS, handlers.status),
-        Served(OVERVIEW, handlers.overview),
-        Served(INBOX, handlers.inbox),
-        Served(EVENTS, handlers.events, db.changed),
-    ]
+Api = Annotated[Handlers, Depends(handlers)]
 
 
-def _selected(s: Session, params: Selection) -> list[Campaign]:
+def session(api: Api) -> Generator[Session]:
+    """One session of the daemon's database for the request."""
+    with api.db.session() as s:
+        yield s
+
+
+Reading = Annotated[Session, Depends(session)]
+
+
+def campaigns_selected(s: Reading, query: Annotated[Selection, Query()]) -> list[Campaign]:
+    """The campaigns that the query selects. Refuses a campaign that it names and the home does not have."""
     try:
-        return selected(s, params.campaign, _cwd(params))
+        return selected(s, query.campaign, _cwd(query))
     except UnknownCampaign as e:
         raise Refusal(HTTPStatus.NOT_FOUND, Problem.UNKNOWN_CAMPAIGN, str(e)) from e
 
 
-def _campaign(s: Session, params: Located) -> CampaignId | None:
-    if params.campaign is None:
+def campaign_narrowed(s: Reading, query: Annotated[Located, Query()]) -> CampaignId | None:
+    """The campaign that the query narrows to, or None for every campaign. Refuses one that the home does not have."""
+    if query.campaign is None:
         return None
     try:
-        return named(s, params.campaign, _cwd(params)).id
+        return named(s, query.campaign, _cwd(query)).id
     except UnknownCampaign as e:
         raise Refusal(HTTPStatus.NOT_FOUND, Problem.UNKNOWN_CAMPAIGN, str(e)) from e
 
 
-def _cwd(params: Located) -> Path | None:
-    return None if params.cwd is None else Path(params.cwd)
+Selected = Annotated[list[Campaign], Depends(campaigns_selected)]
+Narrowed = Annotated[CampaignId | None, Depends(campaign_narrowed)]
+
+router = APIRouter(
+    prefix='/v1',
+    dependencies=[Depends(authorized(Access.READ))],
+    responses={HTTPStatus.NOT_FOUND: {'model': ProblemDetail}, HTTPStatus.CONFLICT: {'model': ProblemDetail}},
+)
+"""The API. Every route reads; ``Refusal`` answers 404 or 409 with a ``ProblemDetail``."""
+
+
+@router.get('/status', operation_id='status')
+def status(api: Api, s: Reading, campaigns: Selected) -> Status:
+    """The main facts of each campaign, at a cursor."""
+    with db_feed.snapshot(s) as cursor:
+        return Status(cursor=cursor, daemon=api.daemon, campaigns=feed.status_view(s, campaigns))
+
+
+@router.get('/overview', operation_id='overview')
+def overview(api: Api, s: Reading, campaigns: Selected) -> Overview:
+    """The overview of each campaign, as text, and the live keys that config.toml or a limit sets."""
+    now = utcnow()
+    return Overview(
+        daemon=api.daemon,
+        limits=live_keys(s, api.cfg.providers, (Origin.CONFIG, Origin.LIMIT)),
+        campaigns=[
+            CampaignOverview(
+                id=c.id,
+                name=c.name,
+                path=c.path,
+                parent=feed.parent_of(s, c),
+                text=overview_text(s, c, c.config, now, tools=False),
+            )
+            for c in campaigns
+        ],
+    )
+
+
+@router.get('/inbox', operation_id='inbox')
+def inbox(s: Reading, campaign: Narrowed, query: Annotated[InboxQuery, Query()]) -> Inbox:
+    """The inbox items and the seeds, at a cursor."""
+    with db_feed.snapshot(s) as cursor:
+        return feed.inbox_view(s, cursor, campaign_id=campaign, kinds=query.kind, acked=query.acked)
+
+
+@router.get('/events', operation_id='events')
+async def events(request: Request, api: Api, campaign: Narrowed, query: Annotated[EventsQuery, Query()]) -> Batch:
+    """The events after a cursor. With wait, it answers once an event matches, or at the end of the wait with none.
+
+    Each read runs in the thread pool, in a session of its own. Between two reads the route awaits the database's
+    next wake and holds no thread. Each read starts at the cursor that the last one moved to, past what the filters
+    left out.
+    """
+    deadline, seen = time.monotonic() + query.wait, 0
+    batch = await run_in_threadpool(_events, api.db, query, campaign, query.after)
+    while not (batch.events or batch.more) and (left := deadline - time.monotonic()) > 0:
+        if (woke := await changed(request, api.db.changed, seen, left)) is None:
+            break
+        seen = woke
+        batch = await run_in_threadpool(_events, api.db, query, campaign, batch.next)
+    return batch
+
+
+def _events(db: Database, query: EventsQuery, campaign: CampaignId | None, after: int) -> Batch:
+    with db.session() as s:
+        try:
+            return feed.read(s, after, campaign_id=campaign, kinds=query.kind, limit=query.limit)
+        except db_feed.CursorAhead as e:
+            raise Refusal(HTTPStatus.CONFLICT, Problem.CURSOR_AHEAD, str(e)) from e
+
+
+def with_api(server: App, api: Handlers) -> App:
+    """``server`` with the API's routes, which read with ``api``."""
+    server.include_router(router)
+    server.state.handlers = api
+    return server
+
+
+def daemon_state(started: str, listen: str | None) -> DaemonState:
+    """This process, as the daemon that answers."""
+    return DaemonState(pid=os.getpid(), started=started, listen=listen)
+
+
+def openapi() -> dict[str, object]:
+    """The OpenAPI document of ``router``: what ``GET /v1/openapi.json`` answers, and ``docs/reference/openapi.json``."""
+    described = FastAPI(title='piloop', version='1')
+    described.include_router(router)
+    return described.openapi()
+
+
+def _cwd(query: Located) -> Path | None:
+    return None if query.cwd is None else Path(query.cwd)

@@ -2,12 +2,12 @@
 
 import json
 
-from piloop.net.server import openapi
+from piloop.daemon.api import openapi
 from scripts.generate import ROOT
 
 PATH = ROOT / 'docs' / 'reference' / 'openapi.json'
 
 
 def generate() -> str:
-    """Return the document of the endpoints of ``piloop/api/contract.py``, indented, with its keys in order."""
+    """Return the document of the routes of ``piloop/daemon/api.py``, indented, with its keys in order."""
     return json.dumps(openapi(), indent=2) + '\n'

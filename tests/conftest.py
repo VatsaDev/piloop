@@ -27,7 +27,7 @@ from sqlalchemy import select
 from piloop.actor import System
 from piloop.campaign import archive as archive_module, campaigns as campaign_module
 from piloop.config import CampaignConfig, load_campaign_config
-from piloop.daemon.api import endpoints
+from piloop.daemon.api import Handlers, daemon_state, with_api
 from piloop.daemon.main import ACTOR
 from piloop.daemon.run_controller import RunController
 from piloop.db.models import (
@@ -587,8 +587,8 @@ def serving_api(cfg: Settings, listen: str | None = None) -> Generator[list[Serv
     network = Https.model_validate({'listen': listen}).open(NetworkHost(tokens))
     listener = network.listener()
     listeners = [local_listener(cfg.socket_file), *([] if listener is None else [listener])]
-    api = endpoints(db, cfg, iso(utcnow()), None if listener is None else url(listener))
-    servers = [Server(app(tokens, network, (), api), each) for each in listeners]
+    api = Handlers(db, cfg, daemon_state(iso(utcnow()), None if listener is None else url(listener)))
+    servers = [Server(with_api(app(tokens, network, ()), api), each) for each in listeners]
     for server in servers:
         server.start()
     try:

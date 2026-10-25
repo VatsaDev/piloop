@@ -86,7 +86,7 @@ def test_the_envelope_normalizes_history_without_inventing_and_keeps_unknown_kin
         idea_id = idea.id
     unknown = raw(db, 'myplugin.observed', '{"nested": {"a": [1, 2]}}')
     with db.session() as s:
-        batch = feed.read(s, 0)
+        batch = feed.read(s, 0).model_dump()
     by_id = {e['id']: e for e in batch['events']}
     status = next(e for e in batch['events'] if e['kind'] == 'idea.status')
     assert status == {
@@ -130,7 +130,7 @@ def test_every_event_has_one_time_format_whoever_wrote_it(db: Database, campaign
         stored = conn.execute(text("SELECT payload ->> '$.kind', at FROM events WHERE id > :start"), {'start': start})
         assert all('.' in at for _, at in stored), 'a trigger keeps the milliseconds, as updated_at does'
     with db.session() as s:
-        times = {e['kind']: e['time'] for e in feed.read(s, start)['events']}
+        times = {e['kind']: e['time'] for e in feed.read(s, start).model_dump()['events']}
     assert set(times) == {'idea.created', 'idea.status'}
     assert all(t is not None and re.fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z', t) for t in times.values()), (
         times
@@ -155,7 +155,7 @@ def test_a_row_that_an_older_piloop_let_through_never_stops_the_reader(db: Datab
                 )
     con.close()
     with db.session() as s:
-        batch = feed.read(s, start)
+        batch = feed.read(s, start).model_dump()
     assert [(e['kind'], e['time'], e['payload'], e.get('invalid')) for e in batch['events']] == [
         ('a.time', None, {'kind': 'a.time'}, {'time': 'not a date'}),
         ('a.number', None, {'kind': 'a.number'}, {'time': '2460000'}),
@@ -171,17 +171,17 @@ def test_a_bounded_read_advances_its_cursor_over_what_it_examined(db: Database, 
     start = newest(db)
     ids = [raw(db, f'k.{n}', '{}') for n in range(5)]
     with db.session() as s:
-        first = feed.read(s, start, limit=2)
+        first = feed.read(s, start, limit=2).model_dump()
         assert [e['id'] for e in first['events']] == ids[:2] and first['next'] == ids[1] and first['more']
-        rest = feed.read(s, first['next'], limit=10)
+        rest = feed.read(s, first['next'], limit=10).model_dump()
         assert [e['id'] for e in rest['events']] == ids[2:] and rest['next'] == ids[-1] and not rest['more']
-        none = feed.read(s, start, kinds=['no.such.kind'])
+        none = feed.read(s, start, kinds=['no.such.kind']).model_dump()
         assert none == {'events': [], 'next': ids[-1], 'more': False}, 'a filter that matches nothing still advances'
-        some = feed.read(s, start, kinds=['k.1', 'k.3'], limit=1)
+        some = feed.read(s, start, kinds=['k.1', 'k.3'], limit=1).model_dump()
         assert [e['id'] for e in some['events']] == [ids[1]] and some['next'] == ids[1] and some['more']
-        again = feed.read(s, some['next'], kinds=['k.1', 'k.3'], limit=1)
+        again = feed.read(s, some['next'], kinds=['k.1', 'k.3'], limit=1).model_dump()
         assert [e['id'] for e in again['events']] == [ids[3]]
-        assert feed.read(s, ids[-1]) == {'events': [], 'next': ids[-1], 'more': False}
+        assert feed.read(s, ids[-1]).model_dump() == {'events': [], 'next': ids[-1], 'more': False}
 
 
 def test_a_campaign_filter_follows_each_subject_to_its_campaign(
@@ -213,7 +213,7 @@ def test_a_campaign_filter_follows_each_subject_to_its_campaign(
         ):
             emit(s, IdeaCreated(), TargetRef(kind, target), System.DAEMON)
         s.commit()
-        batch = feed.read(s, start, campaign_id=campaign.id)
+        batch = feed.read(s, start, campaign_id=campaign.id).model_dump()
         assert [(e['subject']['kind'], e['subject']['campaign']) for e in batch['events']] == [
             ('idea', campaign.id),
             ('run', campaign.id),
@@ -229,7 +229,7 @@ def test_a_campaign_filter_follows_each_subject_to_its_campaign(
         s.commit()
         s.delete(gone)
         s.commit()
-        late = feed.read(s, batch['next'], campaign_id=other.id)
+        late = feed.read(s, batch['next'], campaign_id=other.id).model_dump()
     assert [(e['kind'], e['subject']['campaign']) for e in late['events']] == [
         ('idea.created', None),
         ('idea.status', None),
@@ -243,12 +243,12 @@ def test_a_cursor_ahead_of_the_feed_asks_for_a_new_snapshot_and_bad_bounds_are_r
     end = newest(db)
     with db.session() as s:
         with pytest.raises(db_feed.CursorAhead, match=f'cursor {end + 5} is ahead of the feed, which ends at {end}'):
-            feed.read(s, end + 5)
+            feed.read(s, end + 5).model_dump()
         with pytest.raises(ValueError, match='cursor must be 0 or more'):
-            feed.read(s, -1)
+            feed.read(s, -1).model_dump()
         for limit in (0, MAX_LIMIT + 1):
             with pytest.raises(ValueError, match=f'limit must be from 1 to {MAX_LIMIT}'):
-                feed.read(s, 0, limit=limit)
+                feed.read(s, 0, limit=limit).model_dump()
 
 
 def emitted(db: Database, kind: str) -> None:
@@ -294,10 +294,12 @@ def test_snapshots_carry_the_cursor_they_were_read_at(db: Database, campaign: Ca
             other.add(escalation(campaign.id, 'after the cursor'))
             other.commit()
             [state] = feed.status_view(s, [s.get_one(Campaign, campaign.id)])
-            inbox = feed.inbox_view(s, cursor)
-        assert feed.read(s, cursor)['events'][0]['kind'] == 'comment.escalation', 'what the snapshot missed follows it'
+            inbox = feed.inbox_view(s, cursor).model_dump()
+        assert feed.read(s, cursor).model_dump()['events'][0]['kind'] == 'comment.escalation', (
+            'what the snapshot missed follows it'
+        )
     idea_id, seed_id, candidate_id, run_id, agent_session_id = ids
-    assert state == {
+    assert state.model_dump() == {
         'id': campaign.id,
         'name': 'demo',
         'path': campaign.path,
@@ -346,7 +348,7 @@ def test_snapshots_carry_the_cursor_they_were_read_at(db: Database, campaign: Ca
             'provenance': 'a paper',
         }
     ]
-    json.dumps([state, inbox])
+    json.dumps([state.model_dump(mode='json'), inbox])
 
 
 def test_a_campaign_without_a_keep_has_no_head(db: Database, campaign: Campaign) -> None:
@@ -354,4 +356,4 @@ def test_a_campaign_without_a_keep_has_no_head(db: Database, campaign: Campaign)
         s.execute(update(Candidate).values(verdict=Outcome.DISCARD))
         s.commit()
         [state] = feed.status_view(s, [s.get_one(Campaign, campaign.id)])
-    assert state['head'] is None and state['kept'] == 0
+    assert state.head is None and state.kept == 0

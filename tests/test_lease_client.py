@@ -105,7 +105,7 @@ def server(network: HttpsNetwork, leases: Leases, db: Database, tmp_path: Path) 
     assert listener is not None
     cas = disk(tmp_path / 'server')
     assert cas.put(b'piloop worker cas probe\n') == PROBE, 'the workers share it'
-    server = Server(app(Tokens(db), network, lease_routes(leases, db.changed, cas, bundled, echoed), ()), listener)
+    server = Server(app(Tokens(db), network, lease_routes(leases, db.changed, cas, bundled, echoed)), listener)
     server.start()
     yield server
     server.close()

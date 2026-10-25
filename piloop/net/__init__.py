@@ -2,72 +2,24 @@
 
 The network capability (``piloop.plugins.network.contract``) says how other machines reach the server and who a caller
 is. What a caller may do is core's: the access of its credential (``piloop.api.contract.Access``) must grant the
-route's. The server is FastAPI on uvicorn (``piloop.net.server``). It serves the API (``Served`` endpoints of
-``piloop.api.contract``) and the routes of the executor (``Executor.routes``). Data never goes through it: workers read
+route's. The server is FastAPI on uvicorn (``piloop.net.server``). It serves the API (the FastAPI routes of
+``piloop.daemon.api``) and the routes of the executor (``Executor.routes``). Data never goes through it: workers read
 and write the artifact store's remote directly, and the routes pass only hashes.
 """
 
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import partial
 from http import HTTPStatus
 
-from pydantic import BaseModel, TypeAdapter, ValidationError
+from pydantic import BaseModel, ValidationError
 
-from piloop.api.contract import Endpoint, Params, Polled
+from piloop.api.contract import Polled
 from piloop.net.tokens import Caller
 
 type Changed = Callable[[int, float], Awaitable[int]]
 """``Database.changed``: the count of wakes once it passes the one seen, or at the timeout."""
-
-
-@dataclass(frozen=True)
-class Pending[P: Params, A]:
-    """A long-poll's answer while there is nothing new: the server awaits a change, then calls again with ``again``.
-
-    At the end of the wait it sends ``answer``, so a cursor still moves over what the filters left out.
-    """
-
-    answer: A
-    again: P
-
-
-@dataclass(frozen=True)
-class Step:
-    """One call of an endpoint's handler: the answer, as JSON, and the next call of a long-poll that has nothing new."""
-
-    answer: bytes
-    again: Callable[[], Step] | None
-
-
-class Served:
-    """An endpoint of the API, and the function that answers it.
-
-    ``handle`` runs in a thread of the server's pool, so it must not wait. A long-poll answers ``Pending`` until there
-    is something new, and ``changed`` is what the server awaits in between, outside the pool.
-    """
-
-    def __init__[P: Params, A](
-        self, endpoint: Endpoint[P, A], handle: Callable[[Caller, P], A | Pending[P, A]], changed: Changed | None = None
-    ) -> None:
-        self.endpoint: Endpoint[Params, object] = endpoint
-        self.changed = changed
-        answers = TypeAdapter(endpoint.answer)
-
-        def step(caller: Caller, params: P) -> Step:
-            match handle(caller, params):
-                case Pending(answer=answer, again=again):
-                    return Step(answers.dump_json(answer), partial(step, caller, again))
-                case answer:
-                    return Step(answers.dump_json(answer), None)
-
-        def bind(caller: Caller, query: Mapping[str, object]) -> Call[Step]:
-            params = endpoint.params.model_validate(query)
-            return Call(partial(step, caller, params), params.wait if isinstance(params, Polled) else 0)
-
-        self.bind: Callable[[Caller, Mapping[str, object]], Call[Step]] = bind
-        """Bind the handler to a request's parameters, which the server has validated."""
 
 
 @dataclass(frozen=True)

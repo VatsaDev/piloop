@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 from piloop.actor import Actor, Agent, System
 from piloop.agents.results import PromptOutcome
 from piloop.api.client import Client, NoDaemon
-from piloop.api.contract import STATUS, Selection
+from piloop.api.contract import Selection
 from piloop.campaign import campaigns as campaign_module, inbox
 from piloop.campaign.campaigns import CampaignAdded
 from piloop.campaign.ideas import defined_by, runnable
@@ -1313,8 +1313,8 @@ def test_status_shows_where_the_daemon_listens_and_a_restart_keeps_a_free_port(
 def listening() -> str | None:
     """The URL that the home's daemon serves other machines on, or None when no daemon answers or it serves none."""
     try:
-        with Client(common.settings.socket_file) as client:
-            return client.call(STATUS, Selection())['daemon']['listen']
+        with Client.on(common.settings.socket_file) as client:
+            return client.status(Selection()).daemon.listen
     except NoDaemon:
         return None
 

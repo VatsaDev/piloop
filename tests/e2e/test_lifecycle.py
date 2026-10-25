@@ -127,13 +127,13 @@ def test_status_json(live_campaign: Smoke) -> None:
     """``piloop status --json`` shows the daemon and the campaign at a cursor, which the event reader starts from."""
     doc = live_campaign.status()
     pid = int((live_campaign.home / 'serve.pid').read_text().split()[0])
-    assert doc['daemon']['pid'] == pid, f'daemon {doc["daemon"]}, serve.pid has {pid}'
-    assert doc['cursor'] > 0
+    assert doc.daemon.pid == pid, f'daemon {doc.daemon}, serve.pid has {pid}'
+    assert doc.cursor > 0
     campaign = live_campaign.campaign_state()
-    assert campaign['status'] == 'active', campaign
-    assert campaign['head'] is not None, campaign
-    live_campaign.snapshot = live_campaign.cursor = doc['cursor']
-    print(f'cursor {doc["cursor"]}, head {campaign["head"]}')
+    assert campaign.status == 'active', campaign
+    assert campaign.head is not None, campaign
+    live_campaign.snapshot = live_campaign.cursor = doc.cursor
+    print(f'cursor {doc.cursor}, head {campaign.head}')
 
 
 def test_pause_holds_launches(live_campaign: Smoke) -> None:
@@ -144,7 +144,7 @@ def test_pause_holds_launches(live_campaign: Smoke) -> None:
     time.sleep(10)  # a fixed window: nothing must launch during five ticks of the daemon
     assert [dict(r) for r in live_campaign.sql('SELECT id, status FROM runs')] == []
     assert live_campaign.sql("SELECT id FROM agent_sessions WHERE kind = 'implementer'") == []
-    assert live_campaign.campaign_state()['paused'] == 'launches'
+    assert live_campaign.campaign_state().paused == 'launches'
 
 
 @needs(test_pause_holds_launches)
@@ -311,16 +311,16 @@ def test_event_feed_across_reconnects(live_campaign: Smoke) -> None:
         if live_campaign.cursor == before:
             break
     followed = live_campaign.feed(live_campaign.cursor, '--follow', '--timeout', '3')
-    seen = [e['id'] for e in live_campaign.events]
+    seen = [e.id for e in live_campaign.events]
     stored = live_campaign.sql(
         'SELECT id FROM events WHERE id > ? AND id <= ? ORDER BY id', live_campaign.snapshot, live_campaign.cursor
     )
     evidence = f'{live_campaign.event_reads} reads, reader errors {live_campaign.errors[-3:]}'
     assert seen == sorted(set(seen)), f'the feed gave an event twice or out of order; {evidence}'
     assert seen == [r['id'] for r in stored], f'the feed must give every stored event; {evidence}'
-    kinds = {e['kind'] for e in live_campaign.events}
+    kinds = {e.kind for e in live_campaign.events}
     assert [k for k in REQUIRED_EVENTS if k not in kinds] == [], evidence
-    assert followed['events'] == []
+    assert followed.events == []
     assert live_campaign.event_reads >= 2, evidence
     print(f'{len(seen)} events in {live_campaign.event_reads} reads, all stored ones, in order; {len(kinds)} kinds')
 

@@ -10,15 +10,14 @@ from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import FunctionType
-from typing import TypedDict
 
 import pytest
 from pydantic import TypeAdapter
 
+from piloop.api.views import Batch, CampaignState, Envelope, Status
 from piloop.plugins.runtime.contract import TAG_ENV
 from piloop.plugins.runtime.kit.tags import kill_tagged, tagged
 from piloop.plugins.runtime.subprocess import STDOUT
-from piloop.reports.feed import Batch, CampaignState, Envelope
 from tests.fixtures.netfault import Proxy
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -31,21 +30,6 @@ EVENT_PAGE = 25
 """A small page, so the feed is read in many batches, each by a new process from the saved cursor."""
 
 type Toml = Mapping[str, object]
-
-
-class Daemon(TypedDict):
-    """``daemon`` in ``piloop status --json``."""
-
-    pid: int | None
-    listen: str | None
-
-
-class Status(TypedDict):
-    """The document of ``piloop status --json``."""
-
-    cursor: int
-    daemon: Daemon
-    campaigns: list[CampaignState]
 
 
 STATUS = TypeAdapter(Status)
@@ -166,8 +150,8 @@ class Smoke:
     def campaign_state(self) -> CampaignState:
         """The campaign in ``piloop status --json``, the only one."""
         doc = self.status()
-        assert [p['name'] for p in doc['campaigns']] == [self.name], doc['campaigns']
-        return doc['campaigns'][0]
+        assert [p.name for p in doc.campaigns] == [self.name], doc.campaigns
+        return doc.campaigns[0]
 
     def campaign_row(self) -> sqlite3.Row:
         """The campaign's row in the database."""
@@ -244,8 +228,8 @@ class Smoke:
             return
         batch = self.feed(self.cursor, '--limit', str(EVENT_PAGE))
         self.event_reads += 1
-        self.events.extend(batch['events'])
-        self.cursor = batch['next']
+        self.events.extend(batch.events)
+        self.cursor = batch.next
 
     def sample_queue(self) -> None:
         """Record what ``piloop eval queue`` shows, and how many agent leases are live."""

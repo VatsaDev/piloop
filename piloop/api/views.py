@@ -7,7 +7,7 @@ A snapshot (``Status``, ``Inbox``) carries the cursor that it was read at: a cli
 (``Batch``) and so joins the two without a gap. The fields are on the "Event feed" page of the docs.
 """
 
-from typing import NotRequired, TypedDict
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from piloop.ids import (
     AgentSessionId,
@@ -27,10 +27,17 @@ PROTOCOL = 1
 fields they do not know. Removing or changing a field is a new version."""
 
 
-type Json = None | bool | int | float | str | list[Json] | dict[str, Json]
+class View(BaseModel):
+    """A document of the API: frozen, its fields documented, and read back by the client with the same model."""
+
+    model_config = ConfigDict(frozen=True, use_attribute_docstrings=True)
 
 
-class Subject(TypedDict):
+def _absent(value: object) -> bool:
+    return value is None
+
+
+class Subject(View):
     """The row that an event is about."""
 
     kind: str
@@ -42,7 +49,7 @@ class Subject(TypedDict):
     to a reply). A campaign filter keeps these events too, because they may be of that campaign."""
 
 
-class Envelope(TypedDict):
+class Envelope(View):
     """One event, as every reader sees it."""
 
     id: int
@@ -52,13 +59,13 @@ class Envelope(TypedDict):
     actor: str
     time: str | None
     """When the event was written, ISO 8601 in UTC. Null when the stored value is not a time."""
-    payload: Json
+    payload: JsonValue
     """The payload as stored: any JSON value. Null when the stored value is not JSON."""
-    invalid: NotRequired[dict[str, str]]
+    invalid: dict[str, str] | None = Field(default=None, exclude_if=_absent)
     """Only when a stored value did not read: the stored text of each such field, ``time`` or ``payload``."""
 
 
-class Batch(TypedDict):
+class Batch(View):
     """The result of a read."""
 
     events: list[Envelope]
@@ -69,7 +76,7 @@ class Batch(TypedDict):
     """Events newer than ``next`` exist already: read again without waiting. They may not match the filters."""
 
 
-class TrackScore(TypedDict):
+class TrackScore(View):
     """The head on one track."""
 
     track: TrackName
@@ -81,14 +88,14 @@ class TrackScore(TypedDict):
     """Against the baseline. Null when the head is the baseline, or either is not measured."""
 
 
-class Head(TypedDict):
+class Head(View):
     """The head of the trunk: the latest keep."""
 
     candidate: CandidateId
     tracks: list[TrackScore]
 
 
-class OpenRun(TypedDict):
+class OpenRun(View):
     """A run that is queued or running."""
 
     id: RunId
@@ -99,7 +106,7 @@ class OpenRun(TypedDict):
     status: str
 
 
-class LiveAgent(TypedDict):
+class LiveAgent(View):
     """An agent that is starting or running."""
 
     id: AgentSessionId
@@ -110,14 +117,14 @@ class LiveAgent(TypedDict):
     run: RunId | None
 
 
-class Named(TypedDict):
+class Named(View):
     """A campaign, by its id and its name."""
 
     id: CampaignId
     name: str
 
 
-class CampaignState(TypedDict):
+class CampaignState(View):
     """What ``piloop status`` shows of a campaign, as data."""
 
     id: CampaignId
@@ -148,14 +155,14 @@ class CampaignState(TypedDict):
     tokens: int
 
 
-class Target(TypedDict):
+class Target(View):
     """The row that a comment is about."""
 
     kind: str
     id: int
 
 
-class Item(TypedDict):
+class Item(View):
     """An inbox item: a comment with a priority."""
 
     id: CommentId
@@ -171,7 +178,7 @@ class Item(TypedDict):
     body: str
 
 
-class Seed(TypedDict):
+class Seed(View):
     """A seed that waits for research."""
 
     idea: IdeaId
@@ -185,12 +192,12 @@ class Seed(TypedDict):
 def seed_line(seed: Seed) -> str:
     """One seed as the inbox prints it: who filed it, its title and its provenance."""
     return (
-        f'seed idea#{seed["idea"]} ({seed["campaign_name"]}) by {seed["created_by"]}: {cell(seed["title"])}'
-        f' — {cell(seed["provenance"] or "")}'
+        f'seed idea#{seed.idea} ({seed.campaign_name}) by {seed.created_by}: {cell(seed.title)}'
+        f' — {cell(seed.provenance or "")}'
     )
 
 
-class Inbox(TypedDict):
+class Inbox(View):
     """What ``piloop inbox`` lists, read at ``cursor``."""
 
     cursor: int
@@ -200,7 +207,7 @@ class Inbox(TypedDict):
     seeds: list[Seed]
 
 
-class DaemonState(TypedDict):
+class DaemonState(View):
     """The daemon that answers: its process, and where it listens."""
 
     pid: int
@@ -210,7 +217,7 @@ class DaemonState(TypedDict):
     """The URL that it serves other machines on. Null when it serves only this machine."""
 
 
-class Status(TypedDict):
+class Status(View):
     """What ``piloop status --json`` prints: the daemon, and each campaign read at ``cursor``."""
 
     cursor: int
@@ -218,11 +225,11 @@ class Status(TypedDict):
     campaigns: list[CampaignState]
 
 
-class LiveKey(TypedDict):
+class LiveKey(View):
     """A live key of a provider of the home (``piloop limits``), and where its value comes from."""
 
     key: str
-    value: Json
+    value: JsonValue
     origin: str
     """``default``, ``config.toml`` or ``limit``."""
     actor: str | None
@@ -230,7 +237,7 @@ class LiveKey(TypedDict):
     reason: str | None
 
 
-class CampaignOverview(TypedDict):
+class CampaignOverview(View):
     """A campaign's overview: the text that a sweep reads in its brief."""
 
     id: CampaignId
@@ -240,9 +247,17 @@ class CampaignOverview(TypedDict):
     text: str
 
 
-class Overview(TypedDict):
+class Overview(View):
     """What ``piloop status`` prints: the daemon, the live keys that ``config.toml`` or a limit sets, and each overview."""
 
     daemon: DaemonState
     limits: list[LiveKey]
     campaigns: list[CampaignOverview]
+
+
+class ProblemDetail(View):
+    """Why a route refuses a request, with its status: a ``Problem``, and what to do."""
+
+    error: str | None = None
+    """A ``Problem``. Missing from a 404 of a route that the daemon does not have: it runs an older piloop."""
+    detail: str

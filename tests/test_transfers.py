@@ -152,9 +152,7 @@ def worker(db: Database, store: Cas, record: Counted, dial: Dial) -> Generator[R
     assert listener is not None
     leases = Leases(db, Recorder(db), store, TIMING, POOLS)
     server = Server(
-        app(
-            Tokens(db), network, lease_routes(leases, db.changed, store, transfers(db, store, record).send, echoed), ()
-        ),
+        app(Tokens(db), network, lease_routes(leases, db.changed, store, transfers(db, store, record).send, echoed)),
         listener,
     )
     server.start()

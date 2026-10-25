@@ -1,17 +1,14 @@
-"""The table of the API's endpoints, which the server mounts and the client calls, and who may call each one.
+"""What the API's routes and its client share: who may call, the query models, the bounds, and why a route refuses.
 
-An ``Endpoint`` names its method, its path, the model of its parameters, the type of its answer and the access that
-it needs. The server (``piloop.net.server``) builds its routes and ``/v1/openapi.json`` from ``ENDPOINTS``, and the
-client (``piloop.api.client``) its requests: the two cannot drift apart, as with ts-rest's shared contract.
+The routes are FastAPI's (``piloop.daemon.api``). The client (``piloop.api.client``) sends these query models and
+reads the answers of ``piloop.api.views``: one set of models on both sides.
 """
 
 from collections.abc import Mapping
 from enum import StrEnum
-from typing import NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from piloop.api.views import Batch, Inbox, Overview, Status
 from piloop.ids import CommentKind
 
 MAX_POLL_SECONDS = 25
@@ -41,12 +38,6 @@ GRANTS: Mapping[Access, frozenset[Access]] = {
     Access.WORKER: frozenset({Access.WORKER}),
 }
 """The access of the routes that a caller of each access may call."""
-
-
-class Method(StrEnum):
-    """An endpoint's HTTP method."""
-
-    GET = 'GET'
 
 
 class Params(BaseModel):
@@ -93,51 +84,6 @@ class EventsQuery(Polled, Located):
     """Only the events of these kinds."""
     limit: int = Field(LIMIT, ge=1, le=MAX_LIMIT)
     """The most events to answer."""
-
-
-class Endpoint[P: Params, A](NamedTuple):
-    """One route of the API: its ``params`` are its query parameters.
-
-    A tuple, so that an endpoint of narrower types is one of ``Endpoint[Params, object]``: ``ENDPOINTS`` holds every one.
-    """
-
-    name: str
-    """The OpenAPI ``operationId``."""
-    method: Method
-    path: str
-    params: type[P]
-    answer: type[A]
-    """A model or a ``TypedDict``."""
-    access: Access
-    description: str
-    """What it answers, in one sentence."""
-
-
-STATUS = Endpoint(
-    'status', Method.GET, '/v1/status', Selection, Status, Access.READ, 'The main facts of each campaign, at a cursor.'
-)
-OVERVIEW = Endpoint(
-    'overview',
-    Method.GET,
-    '/v1/overview',
-    Selection,
-    Overview,
-    Access.READ,
-    'The overview of each campaign, as text, and the live keys that config.toml or a limit sets.',
-)
-INBOX = Endpoint(
-    'inbox', Method.GET, '/v1/inbox', InboxQuery, Inbox, Access.READ, 'The inbox items and the seeds, at a cursor.'
-)
-EVENTS = Endpoint(
-    'events',
-    Method.GET,
-    '/v1/events',
-    EventsQuery,
-    Batch,
-    Access.READ,
-    'The events after a cursor. With wait, it answers once an event matches, or at the end of the wait with none.',
-)
-ENDPOINTS: tuple[Endpoint[Params, object], ...] = (STATUS, OVERVIEW, INBOX, EVENTS)
 
 
 class Problem(StrEnum):

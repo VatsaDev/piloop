@@ -19,6 +19,7 @@ import math
 from collections.abc import Collection, Sequence
 from datetime import UTC, datetime
 
+from pydantic import JsonValue
 from sqlalchemy import String, case, cast, func, select
 from sqlalchemy.orm import Session
 
@@ -30,7 +31,6 @@ from piloop.api.views import (
     Head,
     Inbox,
     Item,
-    Json,
     LiveAgent,
     Named,
     OpenRun,
@@ -93,17 +93,17 @@ def read(
             payload = _json(row.payload)
         except ValueError:
             invalid['payload'], payload = row.payload, None
-        event = Envelope(
-            id=row.id,
-            kind=row.kind,
-            subject=Subject(kind=str(row.target_kind), id=row.target_id, campaign=row.campaign),
-            actor=row.actor,
-            time=time_,
-            payload=payload,
+        events.append(
+            Envelope(
+                id=row.id,
+                kind=row.kind,
+                subject=Subject(kind=str(row.target_kind), id=row.target_id, campaign=row.campaign),
+                actor=row.actor,
+                time=time_,
+                payload=payload,
+                invalid=invalid or None,
+            )
         )
-        if invalid:
-            event['invalid'] = invalid
-        events.append(event)
     return Batch(events=events, next=page.next, more=page.more)
 
 
@@ -217,7 +217,7 @@ def _time(stored: str) -> str | None:
     return iso(at if at.tzinfo else at.replace(tzinfo=UTC))
 
 
-def _json(stored: str) -> Json:
+def _json(stored: str) -> JsonValue:
     """The JSON value of a stored payload.
 
     Raises:

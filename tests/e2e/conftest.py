@@ -221,8 +221,8 @@ def elsewhere(live_campaign: Smoke, install: Install, home: Path) -> Elsewhere:
     The worker reaches the daemon through a fault proxy, and the CAS directly: as a machine elsewhere does.
     """
     live_campaign.piloop('serve', '--detach', '--listen', '127.0.0.1:0')
-    wait_until(lambda: live_campaign.status()['daemon']['listen'], timeout=60)
-    listen = live_campaign.status()['daemon']['listen']
+    wait_until(lambda: live_campaign.status().daemon.listen, timeout=60)
+    listen = live_campaign.status().daemon.listen
     assert listen is not None
     secret = live_campaign.piloop('token', 'create', ELSEWHERE).strip()
     argv = ['piloop', 'cas', 'serve', '--listen', '127.0.0.1:0']

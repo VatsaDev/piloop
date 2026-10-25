@@ -53,22 +53,12 @@ def out(isolated_home: Console):
     return read
 
 
-class Daemon(TypedDict):
-    pid: int
-    started: str
-    listen: str | None
-
-
-class StatusDocument(TypedDict):
+class StatusDocument(views.Status):
     protocol: Literal[1]
-    cursor: int
-    daemon: Daemon
-    campaigns: list[views.CampaignState]
 
 
 class InboxDocument(views.Inbox):
     protocol: Literal[1]
-    cursor: int
 
 
 class EventsDocument(views.Batch):
@@ -128,17 +118,17 @@ def test_status_and_inbox_print_one_json_document_with_the_cursor_they_were_read
 
     run_cli(['status', '--json'])
     status = document(StatusDocument, out())
-    assert status['cursor'] == end and (status['daemon']['pid'], status['daemon']['listen']) == (os.getpid(), None)
-    [state] = status['campaigns']
-    assert state['name'] == 'demo' and state['paused'] == 'all' and state['paused_reason'] == 'budget review'
-    assert state['inbox'] == 1 and state['head'] is not None
+    assert status.cursor == end and (status.daemon.pid, status.daemon.listen) == (os.getpid(), None)
+    [state] = status.campaigns
+    assert state.name == 'demo' and state.paused == 'all' and state.paused_reason == 'budget review'
+    assert state.inbox == 1 and state.head is not None
 
     run_cli(['inbox', 'demo', '--json', '--kind', 'escalation'])
     inbox = document(InboxDocument, out())
-    assert inbox['cursor'] == end and [i['body'] for i in inbox['items']] == ['a long body ' * 20]
-    assert inbox['seeds'] == []
+    assert inbox.cursor == end and [i.body for i in inbox.items] == ['a long body ' * 20]
+    assert inbox.seeds == []
     run_cli(['inbox', '--json', '--all', '--kind', 'note'])
-    assert document(InboxDocument, out())['items'] == []
+    assert document(InboxDocument, out()).items == []
 
 
 def test_events_reads_after_a_cursor_with_filters_and_says_how_to_read_on(
@@ -149,12 +139,12 @@ def test_events_reads_after_a_cursor_with_filters_and_says_how_to_read_on(
     write(db, BROKEN)
     run_cli(['events', '--json'])
     batch = document(EventsDocument, out())
-    kinds = [e['kind'] for e in batch['events']]
+    kinds = [e.kind for e in batch.events]
     assert kinds == ['idea.created', 'acme.observed', 'acme.raw'], 'unknown kinds pass through'
-    assert batch['events'][1]['payload'] == {'kind': 'acme.observed', 'latency_ms': 12.5, 'tags': ['a']}
-    assert batch['events'][2]['payload'] is None
-    assert batch['events'][2]['invalid'] == {'payload': '{"kind": "acme.raw", "v": NaN}'}
-    end = batch['next']
+    assert batch.events[1].payload == {'kind': 'acme.observed', 'latency_ms': 12.5, 'tags': ['a']}
+    assert batch.events[2].payload is None
+    assert batch.events[2].invalid == {'payload': '{"kind": "acme.raw", "v": NaN}'}
+    end = batch.next
 
     run_cli(['events', '--after', '1', '--limit', '1'])
     lines = out().splitlines()
@@ -172,15 +162,15 @@ def test_events_reads_after_a_cursor_with_filters_and_says_how_to_read_on(
 
     threading.Timer(0.3, write, [db, f"UPDATE ideas SET status = 'parked' WHERE id = {first}"]).start()
     run_cli(['events', '--after', str(end), '--follow', '--timeout', '30', '--json', '--kind', 'idea.status'])
-    [parked] = document(EventsDocument, out())['events']
-    assert parked['payload'] == {'kind': 'idea.status', 'old': 'ready', 'new': 'parked'}
-    assert parked['subject']['campaign'] == campaign.id
-    run_cli(['events', '--after', str(parked['id']), '--follow', '--timeout', '0'])
-    assert out().splitlines() == [f'next: piloop events --after {parked["id"]}']
+    [parked] = document(EventsDocument, out()).events
+    assert parked.payload == {'kind': 'idea.status', 'old': 'ready', 'new': 'parked'}
+    assert parked.subject.campaign == campaign.id
+    run_cli(['events', '--after', str(parked.id), '--follow', '--timeout', '0'])
+    assert out().splitlines() == [f'next: piloop events --after {parked.id}']
     write(db, UNKNOWN)
     monkeypatch.setattr(cli_views, 'MAX_POLL_SECONDS', 0.1)
-    run_cli(['events', '--after', str(parked['id']), '--follow', '--timeout', '0.5', '--kind', 'x'])
-    assert out().splitlines() == [f'next: piloop events --after {parked["id"] + 1} --kind x'], (
+    run_cli(['events', '--after', str(parked.id), '--follow', '--timeout', '0.5', '--kind', 'x'])
+    assert out().splitlines() == [f'next: piloop events --after {parked.id + 1} --kind x'], (
         'it asks again after each long-poll, until its own timeout, from the cursor that the last one moved'
     )
 
@@ -192,8 +182,8 @@ def test_a_payload_that_json_cannot_say_prints_as_stored_text_never_as_infinity(
     run_cli(['events', '--json'])
     text_out = out()
     assert 'Infinity' not in text_out
-    [event] = document(EventsDocument, text_out)['events']
-    assert event['payload'] is None and event['invalid'] == {'payload': '{"kind": "acme.huge", "v": 1e400}'}
+    [event] = document(EventsDocument, text_out).events
+    assert event.payload is None and event.invalid == {'payload': '{"kind": "acme.huge", "v": 1e400}'}
     run_cli(['events'])
     assert (
         out().splitlines()[0].endswith('acme.huge campaign#1 by acme: "{\\"kind\\": \\"acme.huge\\", \\"v\\": 1e400}"')
@@ -238,10 +228,10 @@ def test_a_separate_process_joins_a_snapshot_to_the_feed_and_resumes_after_a_dis
         s.commit()
 
     snap = one_document(StatusDocument, controller(tmp_path, 'status', 'demo', '--json'))
-    cursor = snap['cursor']
+    cursor = snap.cursor
     assert cursor == event_ids(db, 0)[-1]
-    [state] = snap['campaigns']
-    assert state['ideas']['parked'] == 1, 'the snapshot holds what the events up to its cursor did'
+    [state] = snap.campaigns
+    assert state.ideas['parked'] == 1, 'the snapshot holds what the events up to its cursor did'
 
     args = ['events', '--follow', '--timeout', '30', '--json', '--limit', '2']
     with subprocess.Popen(
@@ -258,8 +248,8 @@ def test_a_separate_process_joins_a_snapshot_to_the_feed_and_resumes_after_a_dis
         stdout, stderr = waiting.communicate(timeout=60)
     assert waiting.returncode == 0 and stderr == ''
     first = document(EventsDocument, stdout)
-    seen = [e['id'] for e in first['events']]
-    checkpoint = first['next']
+    seen = [e.id for e in first.events]
+    checkpoint = first.next
     assert seen and checkpoint == seen[-1]
 
     # the controller disconnects while it waits; the campaign goes on, with a kind the controller does not know
@@ -282,18 +272,18 @@ def test_a_separate_process_joins_a_snapshot_to_the_feed_and_resumes_after_a_dis
         batch = one_document(
             EventsDocument, controller(tmp_path, 'events', '--after', str(checkpoint), '--json', '--limit', '2')
         )
-        seen += [e['id'] for e in batch['events']]
-        checkpoint = batch['next']
-        if not batch['more']:
+        seen += [e.id for e in batch.events]
+        checkpoint = batch.next
+        if not batch.more:
             break
     assert seen == event_ids(db, cursor), 'every event after the snapshot, once each, in order'
     last = one_document(
         EventsDocument, controller(tmp_path, 'events', '--after', str(cursor), '--json', '--limit', '1000')
     )
-    kinds = {e['kind']: e for e in last['events']}
+    kinds = {e.kind: e for e in last.events}
     assert {'idea.priority', 'idea.status', 'campaign.paused', 'acme.observed', 'acme.raw'} <= kinds.keys()
-    assert kinds['acme.observed']['payload'] == {'kind': 'acme.observed', 'latency_ms': 12.5, 'tags': ['a']}
-    assert kinds['acme.raw']['invalid'] == {'payload': '{"kind": "acme.raw", "v": NaN}'}
+    assert kinds['acme.observed'].payload == {'kind': 'acme.observed', 'latency_ms': 12.5, 'tags': ['a']}
+    assert kinds['acme.raw'].invalid == {'payload': '{"kind": "acme.raw", "v": NaN}'}
 
     ahead = controller(tmp_path, 'events', '--after', str(checkpoint + 100), '--json')
     assert ahead.returncode == 1 and 'read a new snapshot' in ahead.stderr
