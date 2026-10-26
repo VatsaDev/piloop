@@ -17,7 +17,9 @@ from piloop.db.models import Archive, Campaign
 from piloop.plugins.cas.contract import CAS, Integrity, Upkeep, integrity
 from piloop.store.tree import Manifest
 
-app = cyclopts.App(name='store')  # its help is where piloop.cli.main registers it
+app = cyclopts.App(
+    name='store', help='The artifact store that archived workspace files live in: what it holds, eviction, checks.'
+)
 
 
 def restore(

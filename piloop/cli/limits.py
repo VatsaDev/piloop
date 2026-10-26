@@ -11,7 +11,7 @@ from piloop.cli import common
 from piloop.cli.client import api
 from piloop.cli.views import limit_line
 
-app = cyclopts.App(name='limits')  # its help is where piloop.cli.main registers it
+app = cyclopts.App(name='limits', help='Change a live key of a provider of the home while the daemon runs.')
 
 
 @app.default

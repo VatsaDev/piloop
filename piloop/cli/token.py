@@ -10,7 +10,7 @@ from piloop.api.contract import Access, TokenBody
 from piloop.cli import common
 from piloop.cli.client import api
 
-app = cyclopts.App(name='token')  # its help is where piloop.cli.main registers it
+app = cyclopts.App(name='token', help='The bearer tokens of `piloop serve` and `piloop cas serve`.')
 
 
 @app.command

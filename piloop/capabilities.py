@@ -6,6 +6,8 @@ from piloop.plugins.host import Capability, Tier, Parameters, Choice, Scope, Che
 from piloop.plugins.host import MissingProvider, Provider, PythonSource, ContractBroken
 from piloop.plugins.host import Live
 from piloop.plugins.host import Entry, Named, Tables
+from piloop.plugins.contribution import Contribution, Contributes
+from piloop.daemon.loop import Consumer, Turn
 
 from piloop.plugins.runtime.contract import RUNTIMES
 from piloop.plugins.runtime.contract import AgentSpec, AgentStart, Handle
@@ -90,7 +92,7 @@ from piloop.plugins.fact_source.command import Command
 from piloop.plugins.stop_rule.contract import Go, GO, Hold, Stop, Escalate
 from piloop.plugins.stop_rule.limits import Limits
 
-from piloop.db.models import EventModel
+from piloop.db.models import EventModel, Base
 from piloop.plugins.executor.contract import EXECUTORS, Executor, ExecutorConfig, Host
 from piloop.plugins.executor.contract import Results, Settled
 from piloop.plugins.executor.contract import AgentJob, EvaluationJob, LeftJob
@@ -98,6 +100,7 @@ from piloop.plugins.executor.contract import AgentReport, EvaluationReport, Samp
 from piloop.plugins.executor.contract import AgentFinished, AgentNotStarted, HarnessSession
 from piloop.plugins.executor.contract import AgentKey, EvaluationKey, JobKey
 from piloop.plugins.executor.contract import key_of, Capacity, Prompt
+from piloop.plugins.executor.contract import JobKind
 from piloop.plugins.executor.contract import Source, Bar, RepoId, MissingBlobs, Workspace
 from piloop.plugins.executor.kit.jobs import Control, Site, local_site, run_agent, remove
 from piloop.plugins.executor.kit.jobs import run_evaluation
@@ -110,6 +113,7 @@ from piloop.runtime.factory import RuntimeFactory
 from piloop.mcp import McpServer
 from piloop.usage import Usage, UsageSpec, UsageReader
 from piloop.net import Route
+from piloop.net.server import executor_router
 
 from piloop.plugins.network.contract import NETWORKS, Network, NetworkHost
 from piloop.plugins.network.contract import NetworkConfig, Address

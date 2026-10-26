@@ -15,7 +15,7 @@ from piloop.actor import System
 from piloop.agents.results import CampaignResults
 from piloop.campaign.campaigns import checkout_of, record_of
 from piloop.db.session import Database
-from piloop.net.server import Server, app
+from piloop.net.server import Server, app, executor_router
 from piloop.net.tokens import Tokens
 from piloop.otel import Tracer
 from piloop.plugins.cas.contract import CAS
@@ -45,7 +45,9 @@ def main() -> None:
     assert listener is not None
     bundle = partial(send_of_record, cas, partial(record_of, db))
     cli = Runner(db, home, partial(checkout_of, db))
-    Server(app(Tokens(db), network, lease_routes(leases, db.changed, cas, bundle, cli)), listener).start()
+    Server(
+        app(Tokens(db), network, [executor_router(lease_routes(leases, db.changed, cas, bundle, cli))]), listener
+    ).start()
     print(f'ready {listener.socket.getsockname()[1]}', flush=True)
     threading.Event().wait()
 

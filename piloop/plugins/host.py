@@ -358,12 +358,8 @@ class Capability[P: Parameters]:
         stack.callback(self._deactivate)
 
     def _load(self) -> dict[str, Provider[P]]:
-        found: dict[str, Provider[P]] = {}
-        for ep in entry_points(group=self.group):
-            if (other := found.get(ep.name)) is not None:
-                raise PluginError(f'{_where(ep)}: {ep.name!r} is a {self.noun} already, from {other.source}')
-            found[ep.name] = Provider(ep.name, self._provider(ep, _loaded(ep)), _source(ep))
-        return dict(sorted(found.items(), key=lambda item: not item[1].source.built_in))
+        found = _entries(self.group, self.noun)
+        return {name: Provider(name, self._provider(ep, _loaded(ep)), _source(ep)) for name, ep in found.items()}
 
     def _provider(self, ep: EntryPoint, loaded: object) -> type[P]:
         """The provider that ``ep`` names: a concrete subclass of the contract."""
@@ -377,6 +373,68 @@ class Capability[P: Parameters]:
 
     def _deactivate(self) -> None:
         self._providers = None
+
+
+def _entries(group: str, noun: str) -> dict[str, EntryPoint]:
+    """The entry points of ``group`` by name: piloop's own first, then the others in their order.
+
+    Each distribution's name is read once: it parses its metadata, and the CLI reads the commands on every start.
+
+    Raises:
+        PluginError: Two entry points have one name.
+    """
+    found: dict[str, EntryPoint] = {}
+    for ep in entry_points(group=group):
+        if (other := found.get(ep.name)) is not None:
+            raise PluginError(f'{_where(ep)}: {ep.name!r} is a {noun} already, from {_source(other)}')
+        found[ep.name] = ep
+    dists = {id(ep.dist): ep.dist for ep in found.values() if ep.dist is not None}
+    ours = {key for key, dist in dists.items() if dist.name == BUILT_IN}
+    return dict(sorted(found.items(), key=lambda item: id(item[1].dist) not in ours))
+
+
+class Slot[T]:
+    """An entry point group that a package declares into, which piloop reads before it opens any provider.
+
+    piloop's own entries are in it too, as its providers are in their groups. An entry's name is the name of what it
+    declares. The CLI's commands are a slot: their paths are read without importing anything.
+    """
+
+    def __init__(
+        self, name: str, kind: TypeAdapter[T], noun: str, refuses: Callable[[str, T], str | None] | None = None
+    ) -> None:
+        """Declare a slot: its entry point group is ``piloop.<name>``, and each entry names a ``kind``.
+
+        ``refuses`` says why an entry, by its name and what it names, cannot be, or None when it can.
+        """
+        self.group = f'piloop.{name}'
+        self.kind = kind
+        self.noun = noun
+        self.refuses = refuses
+
+    def paths(self) -> dict[str, str]:
+        """Each entry's ``<module>:<attribute>`` by name, in order, with nothing imported.
+
+        Raises:
+            PluginError: Two entry points have one name.
+        """
+        return {name: ep.value for name, ep in _entries(self.group, self.noun).items()}
+
+    def loaded(self) -> dict[str, T]:
+        """What each entry names by name, in order, imported and checked.
+
+        Raises:
+            PluginError: Two entry points have one name, or one does not load, names no ``kind``, or is refused.
+        """
+        found: dict[str, T] = {}
+        for name, ep in _entries(self.group, self.noun).items():
+            try:
+                found[name] = self.kind.validate_python(_loaded(ep), strict=True)
+            except ValidationError as e:
+                raise PluginError(f'{_where(ep)} is not a {self.noun}: {e.errors()[0]["msg"]}') from e
+            if self.refuses is not None and (why := self.refuses(name, found[name])) is not None:
+                raise PluginError(f'{_where(ep)}: {why}')
+        return found
 
 
 type Plugins = dict[str, Parameters]

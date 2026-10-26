@@ -192,7 +192,7 @@ provider = "inline"
 The entry point names a subclass of `ExecutorConfig`: its fields are the other keys of `[plugins.executor]`. The
 daemon calls its `open(host)` once, when it starts, to make the `Executor`. The live
 [limits](/architecture/leases#capacity) reach it through `configure`, and a [network](#networks) says who may call
-its `routes`.
+the routes of its `contribution`.
 
 <ContractExecutor />
 
@@ -785,6 +785,19 @@ table shows each capability of piloop with its name in that module, where the co
 the name of each built-in provider.
 
 <Capabilities />
+
+## Commands
+
+A plugin adds a command, or a group of them, to `piloop` with an entry point in `piloop.commands`. Its name is the
+command's, and it names a function or a cyclopts `App`:
+
+```toml
+[project.entry-points."piloop.commands"]
+lattice = "piloop_lattice.cli:app"
+```
+
+`piloop` imports it only when the command runs, or when a help lists it. A name that a command of piloop has is
+refused. piloop's own commands are entry points of the same group.
 
 ## Let other plugins extend your plugin
 

@@ -9,7 +9,7 @@ from pydantic import SecretStr, ValidationError
 from piloop.actor import System
 from piloop.api.contract import Access
 from piloop.db.session import Database
-from piloop.net.server import Server, app
+from piloop.net.server import Server, app, executor_router
 from piloop.net.tokens import Caller, Tokens
 from piloop.plugins.network.contract import NETWORKS, NetworkHost, NoCredential, NotEnrolled, Peer, Refused
 from piloop.plugins.network.proxy import (
@@ -124,7 +124,7 @@ def test_a_served_request_is_known_by_its_stamps_alone(db: Database) -> None:
     network = opened(db)
     listener = network.listener()
     assert listener is not None and listener.tls is None, 'TLS ends at the proxy'
-    server = Server(app(Tokens(db), network, [ECHO]), listener)
+    server = Server(app(Tokens(db), network, [executor_router([ECHO])]), listener)
     server.start()
     try:
         stamped = httpx.post(server.url + ECHOED, headers=STAMPED, json=HI)

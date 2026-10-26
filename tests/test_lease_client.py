@@ -24,7 +24,7 @@ from piloop.db.models import Campaign, LeaseState, NoLease
 from piloop.db.session import Database
 from piloop.ids import CampaignId, CommentId, Revision
 from piloop.net import tokens
-from piloop.net.server import Server, app
+from piloop.net.server import Server, app, executor_router
 from piloop.net.tokens import Tokens
 from piloop.otel import Tracer
 from piloop.plugins.executor.contract import AgentJob, AgentKey, HarnessSession, MissingBlobs, Prompt, RepoId
@@ -108,7 +108,9 @@ def server(network: HttpsNetwork, leases: Leases, db: Database, tmp_path: Path) 
     assert listener is not None
     cas = disk(tmp_path / 'server')
     assert cas.put(b'piloop worker cas probe\n') == PROBE, 'the workers share it'
-    server = Server(app(Tokens(db), network, lease_routes(leases, db.changed, cas, bundled, echoed)), listener)
+    server = Server(
+        app(Tokens(db), network, [executor_router(lease_routes(leases, db.changed, cas, bundled, echoed))]), listener
+    )
     server.start()
     yield server
     server.close()

@@ -16,16 +16,18 @@ from pathlib import Path
 from typing import Annotated
 
 import uvicorn
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
 from uvicorn.protocols.http.h11_impl import H11Protocol
 
 from piloop.api.client import SOCKET_ACTOR_HEADER
 from piloop.api.contract import GRANTS, Access
 from piloop.net import Changed, InvalidBody, Refusal, Route
 from piloop.net.tokens import PREFIX, Caller, Tokens
+from piloop.plugins.host import PluginError
 from piloop.plugins.network.contract import Address, Listener, Network, Peer, Refused
 from piloop.settings import socket_dir
 
@@ -94,10 +96,25 @@ class App(FastAPI):
         self.network = network
         self.closing = asyncio.Event()
         """Set at the start of the shutdown: each long-poll that waits answers at once, as at the end of its wait."""
+        self._mounted: dict[tuple[str, str], str] = {}
+        """The name of the route of each method and path that ``mount_router`` included."""
 
         @self.exception_handler(Refusal)
         def refused(request: Request, e: Refusal) -> Response:
             return JSONResponse({'error': e.error, 'detail': str(e)}, status_code=e.status)
+
+    def mount_router(self, router: APIRouter) -> None:
+        """Include ``router``, unless one of its routes has the method and path of one that is mounted.
+
+        Raises:
+            PluginError: A route is taken. The message names both.
+        """
+        found = {(m, r.path): r.name for r in router.routes if isinstance(r, APIRoute) for m in sorted(r.methods or ())}
+        for (method, path), name in found.items():
+            if (other := self._mounted.get((method, path))) is not None:
+                raise PluginError(f'{method} {path} is both {other} and {name}')
+        self._mounted |= found
+        self.include_router(router)
 
 
 def served(request: Request) -> App:
@@ -107,14 +124,27 @@ def served(request: Request) -> App:
     return found
 
 
-def app(tokens: Tokens, network: Network, routes: Sequence[Route]) -> App:
-    """The server's app, with the executor's ``routes`` under ``/v1/executor``, for workers. The daemon adds the API."""
+def app(tokens: Tokens, network: Network, routers: Sequence[APIRouter]) -> App:
+    """The server's app, with the contributed ``routers`` (``Contribution.router``). The daemon adds the API.
+
+    Raises:
+        PluginError: Two routers have a route of one method and path.
+    """
     server = App(tokens, network, openapi_url=OPENAPI)
+    for router in routers:
+        server.mount_router(router)
+    return server
+
+
+def executor_router(routes: Sequence[Route]) -> APIRouter:
+    """An executor's ``routes`` under ``/v1/executor``, for its workers: what its contribution's router is."""
+    router = APIRouter(prefix='/v1/executor', include_in_schema=False)
     workers = authorized(Access.WORKER)
     for route in routes:
-        endpoint = _endpoint(workers, route, server.closing)
-        server.add_api_route(f'/v1/executor/{route.path}', endpoint, methods=['POST'], include_in_schema=False)
-    return server
+        router.add_api_route(
+            f'/{route.path}', _endpoint(workers, route), methods=['POST'], name=f'executor {route.path}'
+        )
+    return router
 
 
 async def changed(request: Request, waited: Changed, seen: int, timeout: float) -> int | None:
@@ -122,9 +152,7 @@ async def changed(request: Request, waited: Changed, seen: int, timeout: float) 
     return await _unless_closing(waited(seen, timeout), served(request).closing)
 
 
-def _endpoint(
-    scoped: Callable[[Request], Caller], route: Route, closing: asyncio.Event
-) -> Callable[[Request, Caller], Awaitable[Response]]:
+def _endpoint(scoped: Callable[[Request], Caller], route: Route) -> Callable[[Request, Caller], Awaitable[Response]]:
     """The handler of ``route``: its body is read and validated here, and the route's handler runs in the thread pool.
 
     A long-poll calls it again after each wake (``Route.changed``) while it answers None, until the body's wait ends
@@ -142,7 +170,7 @@ def _endpoint(
             while (answer := await run_in_threadpool(call.handle)) is None and route.changed is not None:
                 if (left := deadline - time.monotonic()) <= 0:
                     break
-                if (changed := await _unless_closing(route.changed(seen, left), closing)) is None:
+                if (changed := await _unless_closing(route.changed(seen, left), served(request).closing)) is None:
                     break
                 seen = changed
         except Refusal as e:

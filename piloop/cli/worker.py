@@ -18,7 +18,7 @@ from piloop.plugins.executor.workers import Workers, instances, remote_worker, s
 from piloop.plugins.network.contract import NETWORKS, NoCredential
 from piloop.text import age
 
-app = cyclopts.App(name='worker')  # its help is where piloop.cli.main registers it
+app = cyclopts.App(name='worker', help='The workers that run jobs on leases.')
 
 
 @app.default

@@ -23,7 +23,7 @@ from piloop.db.models import Campaign
 from piloop.db.session import Database
 from piloop.net import Route, cas_server, tokens
 from piloop.net.cas import route
-from piloop.net.server import App, Server, app
+from piloop.net.server import App, Server, app, executor_router
 from piloop.net.tokens import Caller, Tokens
 from piloop.plugins import host as plugins
 from piloop.plugins.cas.contract import BLAKE3
@@ -163,7 +163,7 @@ class Served:
 
 
 def _control_plane(tokens: Tokens, network: Network, tmp: Path) -> App:
-    return app(tokens, network, [ECHO])
+    return app(tokens, network, [executor_router([ECHO])])
 
 
 def _cas(tokens: Tokens, network: Network, tmp: Path) -> App:
@@ -383,7 +383,7 @@ class TrustedHeaders:
 
 def test_a_bearer_that_is_not_a_piloop_token_reaches_the_network_which_identifies_the_caller(db: Database) -> None:
     network = TrustedHeaders()
-    with closing(Server(app(Tokens(db), network, [ECHO]), network.listener())) as server:
+    with closing(Server(app(Tokens(db), network, [executor_router([ECHO])]), network.listener())) as server:
         server.start()
         stamped = {'Authorization': 'Bearer hil_abc', 'x-user': 'gpu7', 'x-access': 'worker'}
         answered = httpx.post(server.url + ECHOED, json=HI, headers=stamped)
@@ -402,7 +402,7 @@ def test_a_bearer_that_is_not_a_piloop_token_reaches_the_network_which_identifie
 def test_a_network_that_authenticates_every_caller_makes_core_refuse_piloop_tokens(db: Database) -> None:
     network = TrustedHeaders(takes_tokens=False)
     token = Tokens(db).mint('gpu1', Access.WORKER)
-    with closing(Server(app(Tokens(db), network, [ECHO]), network.listener())) as server:
+    with closing(Server(app(Tokens(db), network, [executor_router([ECHO])]), network.listener())) as server:
         server.start()
         stamped = {'x-user': 'gpu7', 'x-access': 'worker'}
         valid = httpx.post(server.url + ECHOED, json=HI, headers={**stamped, 'Authorization': f'Bearer {token}'})

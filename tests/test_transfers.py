@@ -15,7 +15,7 @@ from piloop.api.contract import MAX_POLL_SECONDS
 from piloop.db.models import Campaign, FirstTransfer
 from piloop.db.session import Database
 from piloop.ids import Revision
-from piloop.net.server import Server, app
+from piloop.net.server import Server, app, executor_router
 from piloop.net.tokens import Tokens
 from piloop.otel import Tracer
 from piloop.plugins.cas.contract import Cas
@@ -156,7 +156,11 @@ def worker(db: Database, store: Cas, record: Counted, dial: Dial) -> Generator[R
     assert listener is not None
     leases = Leases(db, Recorder(db), store, TIMING, POOLS)
     server = Server(
-        app(Tokens(db), network, lease_routes(leases, db.changed, store, transfers(db, store, record).send, echoed)),
+        app(
+            Tokens(db),
+            network,
+            [executor_router(lease_routes(leases, db.changed, store, transfers(db, store, record).send, echoed))],
+        ),
         listener,
     )
     server.start()

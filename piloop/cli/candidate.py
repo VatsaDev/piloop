@@ -12,7 +12,10 @@ from piloop.cli.common import CampaignRef
 from piloop.ids import CandidateId, TrackName
 from piloop.plugins.verdict_rule.contract import Outcome
 
-app = cyclopts.App(name='candidate')  # its help is where piloop.cli.main registers it
+app = cyclopts.App(
+    name='candidate',
+    help='Import a starting point, measure a candidate again, keep a regressed result in view, or override a verdict.',
+)
 
 
 @app.command(name='import')

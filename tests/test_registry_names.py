@@ -47,7 +47,6 @@ LEAVES: dict[str, frozenset[str] | None] = {
     'deprecated.py': None,
     'cli/skills.py': frozenset({'claude', 'codex', 'pi'}),
     'cli/idea.py': frozenset({'seed'}),
-    'cli/main.py': frozenset({'sql'}),
     'plugins/executor/kit/relay.py': frozenset({'seed', 'sql'}),
     'daemon/archiver.py': frozenset({'research'}),
 }
@@ -62,8 +61,7 @@ LEAVES: dict[str, frozenset[str] | None] = {
   would load its provider, and with it the database, when the config models load.
 - ``deprecated.py``: the bridges rewrite the keys of earlier releases, which named built-in roles and triggers.
 - ``cli/skills.py``: the skill folder of each agent CLI, which is not the harness registry.
-- ``cli/idea.py``, ``cli/main.py`` and ``plugins/executor/kit/relay.py``: the commands ``piloop idea seed`` and
-  ``piloop sql``.
+- ``cli/idea.py`` and ``plugins/executor/kit/relay.py``: the commands ``piloop idea seed`` and ``piloop sql``.
 - ``daemon/archiver.py``: ``research/`` is a folder of the shared workspace, not the role.
 """
 

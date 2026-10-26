@@ -17,7 +17,6 @@ import subprocess
 import threading
 from collections.abc import Callable, Sequence
 from contextlib import suppress
-from datetime import datetime, timedelta
 from functools import partial
 
 from covalence import Cid
@@ -28,6 +27,7 @@ from piloop.capabilities import (
     AgentKey,
     AgentReport,
     Capacity,
+    Contribution,
     EvaluationJob,
     EvaluationReport,
     EventModel,
@@ -38,7 +38,6 @@ from piloop.capabilities import (
     JobKey,
     LeftJob,
     Prompt,
-    Route,
     Runtime,
     Settled,
     key_of,
@@ -109,21 +108,13 @@ class InlineExecutor:
         """Take over nothing: a previous daemon's jobs died with its threads."""
         return [job.key for job in left]
 
-    def routes(self) -> Sequence[Route]:
-        """None: every job runs in the daemon."""
-        return []
-
-    def upkeep_events(self) -> frozenset[type[EventModel]]:
-        """None: it has no upkeep."""
-        return frozenset()
+    def contribution(self) -> Contribution:
+        """Nothing: a thread reports its own job, so it has no upkeep, and every job runs in the daemon, so no route."""
+        return Contribution()
 
     def capacity_events(self) -> frozenset[type[EventModel]]:
         """None: a slot frees only when a job ends."""
         return frozenset()
-
-    def upkeep(self, now: datetime, absent: timedelta) -> datetime | None:
-        """Nothing to do: a thread reports its own job."""
-        return None
 
     def stop(self, timeout: float) -> None:
         with self._lock:

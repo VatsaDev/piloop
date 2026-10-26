@@ -1,66 +1,26 @@
 """The ``piloop`` command line. ``piloop serve`` runs the daemon. ``status``, ``inbox`` and ``events`` ask it.
 
 This module only assembles the commands. Each group of commands is its own module in this package. A command loads
-by its import path when it runs, so that the views (``piloop.cli.views``), which open no database, start fast.
+by its import path when it runs (``COMMANDS``), so that the views (``piloop.cli.views``), which open no database, start
+fast.
 """
 
 import os
 import sys
+from collections.abc import Callable
 
 import cyclopts
+from pydantic import TypeAdapter
 
 from piloop import deprecated
 from piloop.cli import common, views
+from piloop.plugins.host import PluginError, Slot
 from piloop.plugins.runtime.contract import TAG_ENV
 from piloop.version import installed
 
-GROUPS = (
-    ('idea', 'idea:app', 'Propose work (a seed, a defined idea) and change an idea: its status, links, base or track.'),
-    (
-        'candidate',
-        'candidate:app',
-        'Import a starting point, measure a candidate again, keep a regressed result in view, or override a verdict.',
-    ),
-    ('measurement', 'measurement:app', 'Record a measurement made outside the daemon.'),
-    ('eval', 'evaluation:app', 'List or cancel the evaluations that the daemon runs or that wait for a slot.'),
-    (
-        'store',
-        'store:app',
-        'The artifact store that archived workspace files live in: what it holds, eviction, checks.',
-    ),
-    ('token', 'token:app', 'The bearer tokens of `piloop serve` and `piloop cas serve`.'),
-    ('run', 'agents:run_app', 'Act on one run.'),
-    ('worker', 'worker:app', 'The workers that run jobs on leases.'),
-    ('limits', 'limits:app', 'Change a live key of a provider of the home while the daemon runs.'),
-    ('cas', 'cas:app', "This home's CAS: print a blob, or serve the CAS to workers on other machines."),
-    ('secret', 'secret:app', 'The secrets that agents get in their environment. No command shows a value.'),
-)
-"""Each group of commands: its name, its ``App`` in this package, and its help."""
-COMMANDS = (
-    ('init', 'campaign:init'),
-    ('history', 'campaign:history'),
-    ('watch', 'campaign:watch_cmd'),
-    ('pause', 'control:pause'),
-    ('resume', 'control:resume'),
-    ('restore', 'store:restore'),
-    ('launch', 'agents:launch'),
-    ('prompt', 'agents:prompt'),
-    ('attach', 'agent_io:attach'),
-    ('journal', 'memory:journal'),
-    ('wake', 'wake:wake'),
-    ('serve', 'daemon:serve'),
-    ('stop', 'daemon:stop'),
-    ('restart', 'daemon:restart'),
-    ('service-unit', 'daemon:service_unit_cmd'),
-    ('sql', 'database:sql_cmd'),
-    ('schema', 'database:schema'),
-    ('migrate', 'database:migrate_cmd'),
-    ('upgrade', 'install:upgrade'),
-    ('doctor', 'install:doctor_cmd'),
-    ('plugins', 'plugins:plugins_cmd'),
-    ('install-skills', 'install:install_skills'),
-)
-"""Each command outside a group: its name, and its function in this package."""
+COMMANDS = Slot('commands', TypeAdapter(Callable[..., object]), 'command')
+"""The commands that load by their import path when they run, piloop's own included: a cyclopts ``App`` for a group,
+else a function. A package adds one with an entry point: ``<name> = "<module>:<attribute>"``."""
 
 app = cyclopts.App(name='piloop', help='Run autoresearch campaigns with coding agents.', version=installed)
 app.command(views.status)
@@ -79,14 +39,23 @@ campaign.command('piloop.cli.campaign:parent', name='parent')
 campaign.command('piloop.cli.campaign:tree', name='tree')
 campaign.command('piloop.cli.control:stop', name='stop')
 app.command(campaign)
-agent = cyclopts.App(name='agent', help='Act on one agent.')
-agent.command('piloop.cli.agents:agent_cancel', name='cancel')
-agent.command('piloop.cli.agent_io:messages', name='messages')
-app.command(agent)
-for name, path, help_ in GROUPS:
-    app.command(f'piloop.cli.{path}', name=name, help=help_)
-for name, path in COMMANDS:
-    app.command(f'piloop.cli.{path}', name=name)
+
+
+def add_commands(to: cyclopts.App) -> None:
+    """Add each command of ``COMMANDS`` to ``to`` by its path, which imports nothing.
+
+    Raises:
+        PluginError: Two entry points have one name, or one has the name of a command of ``to``.
+    """
+    for name, path in COMMANDS.paths().items():
+        if name in to:
+            raise PluginError(
+                f'entry point {name} = {path} in {COMMANDS.group}: {name!r} is a command of piloop already'
+            )
+        to.command(path, name=name)
+
+
+add_commands(app)
 
 
 def load_for_help(argv: list[str]) -> None:

@@ -19,9 +19,9 @@ protect it, is the executor's choice.
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Literal, NewType, Protocol, Self
+from typing import Annotated, Literal, NewType, Protocol, Self, get_args
 
 from covalence import Cid
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, TypeAdapter
@@ -31,10 +31,10 @@ from piloop.db.models import EventModel
 from piloop.db.session import Database
 from piloop.ids import AgentSessionId, CampaignId, CandidateId, CommentId, Revision, RunId
 from piloop.mcp import EnvName, McpServer
-from piloop.net import Route
 from piloop.otel import Tracer
 from piloop.plugins.cas.contract import BlobAddress, Cas
-from piloop.plugins.host import Capability, Choice, Parameters, Scope
+from piloop.plugins.contribution import Contributes
+from piloop.plugins.host import Capability, Choice, Parameters, Scope, Slot
 from piloop.plugins.network.contract import Network
 from piloop.plugins.runtime.contract import AgentExit, AgentStart
 from piloop.plugins.secrets.contract import SecretsProvider
@@ -189,6 +189,25 @@ class EvaluationJob(BaseModel):
 
 type Job = Annotated[AgentJob | EvaluationJob, Field(discriminator='kind')]
 JOB: TypeAdapter[AgentJob | EvaluationJob] = TypeAdapter(Job)
+KINDS = frozenset(m.model_fields['kind'].default for m in get_args(get_args(Job.__value__)[0]))
+"""The kinds of job that executors run: ``agent`` and ``evaluation``."""
+
+
+@dataclass(frozen=True)
+class JobKind:
+    """A kind of job that a package declares: the data of its job and of its report."""
+
+    job: type[BaseModel]
+    report: type[BaseModel]
+
+
+def _run_already(name: str, _kind: JobKind) -> str | None:
+    return f'piloop runs jobs of the kind {name!r} already' if name in KINDS else None
+
+
+JOB_KINDS: Slot[JobKind] = Slot('job_kinds', TypeAdapter(JobKind), 'job kind', _run_already)
+"""The kinds of job that packages add, by name. The daemon checks them when it starts, and executors run only
+``KINDS``."""
 
 
 class HarnessSession(BaseModel):
@@ -423,8 +442,11 @@ class Capacity:
     evaluations: int | None
 
 
-class Executor[C: ExecutorConfig](Protocol):
+class Executor[C: ExecutorConfig](Contributes, Protocol):
     """Runs the jobs that piloop submits, and reports their results through ``Host.results``.
+
+    Its housekeeping is a consumer of its ``contribution``, and what its workers on other machines call is its router
+    (``piloop.net.server.executor_router``).
 
     The daemon calls it from its threads; an executor makes its methods safe for that.
     """
@@ -435,10 +457,6 @@ class Executor[C: ExecutorConfig](Protocol):
         Core submits no more than that, in its own order: it launches agents across campaigns, and evaluations in the
         order of the evaluation queue. The order and the fairness are core's.
         """
-        ...
-
-    def upkeep_events(self) -> frozenset[type[EventModel]]:
-        """The events of this executor after which its ``upkeep`` runs at once, without waiting for its time."""
         ...
 
     def capacity_events(self) -> frozenset[type[EventModel]]:
@@ -472,17 +490,6 @@ class Executor[C: ExecutorConfig](Protocol):
         """Take over the jobs that a previous daemon process left, and return the keys of those it cannot.
 
         Core fails the rows of an agent that it cannot adopt, and asks again for an evaluation.
-        """
-        ...
-
-    def routes(self) -> Sequence[Route]:
-        """The routes that its workers on other machines call, under ``/v1/executor/`` (``piloop serve --listen``)."""
-        ...
-
-    def upkeep(self, now: datetime, absent: timedelta) -> datetime | None:
-        """Do the executor's own housekeeping, and return when it next has some: the daemon calls it then.
-
-        ``absent`` is how long the daemon was away past that time (a suspend): no work expires for it.
         """
         ...
 

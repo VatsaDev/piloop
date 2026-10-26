@@ -11,7 +11,7 @@ from piloop.cli import common
 from piloop.cli.client import api
 from piloop.ids import CandidateId
 
-app = cyclopts.App(name='measurement')  # its help is where piloop.cli.main registers it
+app = cyclopts.App(name='measurement', help='Record a measurement made outside the daemon.')
 
 
 @app.command(name='add')

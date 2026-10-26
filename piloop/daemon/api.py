@@ -777,9 +777,13 @@ def _events(db: Database, query: EventsQuery, campaign: CampaignId | None, after
 
 
 def with_api(server: App, api: Handlers) -> App:
-    """``server`` with the API's routes, which read with ``api``. An operation's refusal answers 409, ``refused``."""
+    """``server`` with the API's routes, which read with ``api``. An operation's refusal answers 409, ``refused``.
+
+    Raises:
+        PluginError: A contributed route has the method and path of one of the API's.
+    """
     for routes in ROUTERS:
-        server.include_router(routes)
+        server.mount_router(routes)
     for refused in REFUSALS:
         server.add_exception_handler(refused, _refused)
     server.state.handlers = api

@@ -19,7 +19,7 @@ from piloop.plugins.secrets.contract import SECRETS, HomeSecrets
 from piloop.store import chunks
 from piloop.store.tree import Missing
 
-app = cyclopts.App(name='cas')  # its help is where piloop.cli.main registers it
+app = cyclopts.App(name='cas', help="This home's CAS: print a blob, or serve the CAS to workers on other machines.")
 ADDRESS: TypeAdapter[BlobAddress] = TypeAdapter(BlobAddress)
 
 

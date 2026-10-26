@@ -22,14 +22,14 @@ from piloop.daemon.serve import (
     secrets,
     serve_argv,
 )
-from piloop.db.models import utcnow
+from piloop.db.models import TABLES, TARGET_KINDS, utcnow
 from piloop.db.session import BackupFailed, Database, OlderDaemon, SchemaMismatch, migrate
 from piloop.net.server import Server, app, local_listener, url
 from piloop.net.tokens import Tokens
 from piloop.otel import Span, tracer
 from piloop.plugins import host as plugins
 from piloop.plugins.cas import contract as cas
-from piloop.plugins.executor.contract import EXECUTORS
+from piloop.plugins.executor.contract import EXECUTORS, JOB_KINDS
 from piloop.plugins.network import contract as network
 from piloop.plugins.secrets.contract import SECRETS, HomeSecrets
 from piloop.proc import Inherited
@@ -38,6 +38,8 @@ from piloop.settings import CONFIG_FILE, Settings, settings
 from piloop.text import iso
 from piloop.version import code_digest
 
+DECLARED = (TABLES, JOB_KINDS, TARGET_KINDS)
+"""The slots of what packages add that the daemon reads, which it checks before it starts."""
 ACTOR = System.DAEMON
 """The actor that the daemon's connections record in ``updated_by``. The change-log triggers use this name."""
 
@@ -79,10 +81,13 @@ def preflight(cfg: Settings, listen: network.Address | None = None) -> network.N
     daemon. ``piloop.toml`` is checked when it loads (``piloop init``).
 
     Raises:
-        PluginError: A provider does not compose, or ``config.toml`` selects a provider that there is not, or one
-            that refuses its parameters (``[plugins]``, ``[runtimes]``), or the network refuses ``listen``.
+        PluginError: A provider or a package's declaration (``DECLARED``) does not load, or ``config.toml``
+            selects a provider that there is not, or one that refuses its parameters (``[plugins]``, ``[runtimes]``),
+            or the network refuses ``listen``.
     """
     plugins.compose(*bound(cfg))
+    for slot in DECLARED:
+        slot.loaded()
     try:
         runtimes(cfg)
         return network.NETWORKS.selected(cfg.providers).listening(listen)
@@ -246,9 +251,9 @@ class Daemon:
         listeners = [local] if listener is None else [local, listener]
         listen = None if listener is None else url(listener)
         api = Handlers(self.db, self._cfg, daemon_state(iso(utcnow()), listen), self.controller.cas)
-        routes = self.controller.executor.routes()
+        routers = self.scheduler.contributions.routers
         # one app for each server: a server's shutdown ends the long-polls of its own app
-        self._servers = [Server(with_api(app(self._tokens, self.network, routes), api), each) for each in listeners]
+        self._servers = [Server(with_api(app(self._tokens, self.network, routers), api), each) for each in listeners]
         for server in self._servers:
             server.start()
         if listener is not None:

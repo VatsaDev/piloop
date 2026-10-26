@@ -3,8 +3,8 @@
 The network capability (``piloop.plugins.network.contract``) says how other machines reach the server and who a caller
 is. What a caller may do is core's: the access of its credential (``piloop.api.contract.Access``) must grant the
 route's. The server is FastAPI on uvicorn (``piloop.net.server``). It serves the API (the FastAPI routes of
-``piloop.daemon.api``) and the routes of the executor (``Executor.routes``). Data never goes through it: workers read
-and write the artifact store's remote directly, and the routes pass only hashes.
+``piloop.daemon.api``) and the routes that the executor contributes (``executor_router``). Data never goes through it:
+workers read and write the artifact store's remote directly, and the routes pass only hashes.
 """
 
 from collections.abc import Awaitable, Callable

@@ -166,6 +166,7 @@ from piloop.ids import (
     TrackName,
 )
 from piloop.otel import Tracer
+from piloop.plugins.contribution import collect
 from piloop.plugins.executor.contract import AgentKey, LeftJob, Prompt
 from piloop.plugins.fact_source import facts
 from piloop.plugins.fact_source.contract import FactReadError, FactSource
@@ -379,10 +380,9 @@ class Scheduler:
         home: Path,
         runtime_factory: RuntimeFactory = make_runtime,
         archiving: Archiving | None = None,
-        also: Sequence[Consumer] = (),
         now: Callable[[], datetime] = utcnow,
     ) -> None:
-        """``also``: consumers of the process to run after the scheduler's own. ``now``: the clock."""
+        """``now``: the clock."""
         self._db = db
         self._now = now
         self._controller = controller
@@ -415,7 +415,9 @@ class Scheduler:
         )
         """Archives the workspaces in the background. The daemon always passes ``archiving``; a test that does not
         archives nothing."""
-        self.loop = Loop(db, (*self.consumers(), *also), now)
+        self.contributions = collect((controller.executor,), [c.name for c in self._own()])
+        """What the providers that the daemon opened add: its executor's."""
+        self.loop = Loop(db, self.consumers(), now)
 
     def reap(self) -> None:
         """Hand the jobs that a previous daemon process left to the executor (``Executor.adopt``). Fail the rest.
@@ -600,11 +602,18 @@ class Scheduler:
             self._tracer.event('agent_session.kill_failed', agent_session=agent_session.id, error=str(e))
 
     def consumers(self) -> tuple[Consumer, ...]:
-        """The daemon's jobs, in the order that a turn of its loop runs them, with the events that wake each one."""
+        """The daemon's jobs, in the order that a turn of its loop runs them, with the events that wake each one.
+
+        ``limits`` comes first, so that every provider has the live limits, then the contributed consumers, then the
+        scheduler's others, which see what the contributed ones left.
+        """
+        limits, *others = self._own()
+        return (limits, *self.contributions.consumers, *others)
+
+    def _own(self) -> tuple[Consumer, ...]:
         capacity = self._controller.executor.capacity_events()
         return (
             Consumer('limits', LIMITS, self._limits),
-            Consumer('executor', self._controller.executor.upkeep_events(), self._upkeep),
             Consumer('evaluations', EVALUATIONS | capacity, self._evaluations),
             Consumer('prompts', frozenset({Commented, AgentSessionRunning}), self._prompts),
             Consumer('wind_down', WINDING, self._wind_down),
@@ -621,9 +630,6 @@ class Scheduler:
     def _limits(self, _turn: Turn) -> None:
         """Hand the executor the live limits that changed (``RunController.configure``)."""
         self._controller.configure()
-
-    def _upkeep(self, turn: Turn) -> datetime | None:
-        return self._controller.executor.upkeep(turn.now, turn.absent)
 
     def _evaluations(self, _turn: Turn) -> None:
         """Stop the evaluations that someone cancelled, and submit those that a slot freed for."""

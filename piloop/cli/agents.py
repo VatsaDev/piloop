@@ -11,7 +11,9 @@ from piloop.cli.client import api, campaign_name
 from piloop.cli.common import HARNESS_HELP, CampaignRef
 from piloop.ids import AgentSessionId, Ending, RoleName, RunId
 
-run_app = cyclopts.App(name='run')  # its help is where piloop.cli.main registers it
+agent_app = cyclopts.App(name='agent', help='Act on one agent.')
+run_app = cyclopts.App(name='run', help='Act on one run.')
+agent_app.command('piloop.cli.agent_io:messages', name='messages')
 
 
 def launch(
@@ -84,6 +86,7 @@ WrapUp = Annotated[
 ]
 
 
+@agent_app.command(name='cancel')
 def agent_cancel(
     agent_session_id: Annotated[AgentSessionId, cyclopts.Parameter(help='The id of the agent.')],
     /,

@@ -34,6 +34,7 @@ from piloop.plugins.runtime.contract import NotSteerable
 
 HELPERS: set[object] = {
     capabilities.EventModel,  # what a provider's events subclass, as an executor's capacity_events
+    capabilities.Base,  # what a package's tables subclass (piloop.tables)
     capabilities.MissingProvider,
     capabilities.Live,
     NotSteerable,
@@ -98,6 +99,9 @@ HELPERS: set[object] = {
     capabilities.UnknownRevision,
     capabilities.GitRepository,  # what a built-in provider's open makes
     capabilities.values,  # what an executor calls at an agent's start
+    capabilities.executor_router,  # what an executor's contribution routes its workers' calls with
+    capabilities.Route,
+    capabilities.JobKind,  # what a package's piloop.job_kinds name
     capabilities.Owner,  # a type alias
     capabilities.FactSource,  # what a provider that supplies facts implements, which no signature names
     capabilities.HEAD,  # the facts that a rule reads, and the ratios over them
@@ -141,6 +145,8 @@ def _types(hint: object) -> set[type]:
     if isinstance(hint, type):
         ours = hint.__module__.startswith('piloop.') and not hint.__module__.startswith('piloop.db')
         return {hint} if ours else set()
+    if isinstance(hint, list):  # the arguments of a ``Callable``
+        return {t for part in hint for t in _types(part)}
     parts = [*typing.get_args(hint), *filter(None, [typing.get_origin(hint)])]
     return {t for part in parts for t in _types(part)}
 
@@ -150,8 +156,12 @@ ROWS = {**vars(models), 'Session': Session}
 
 
 def _named(cls: type) -> set[type]:
-    """The classes that ``cls`` names in its fields, and in the signatures of its own methods and properties."""
-    hints = list(get_type_hints(cls, localns=ROWS, format=Format.FORWARDREF).values())
+    """The classes that ``cls`` names in its fields, and in the signatures of its own methods and properties.
+
+    With the protocols of piloop that it extends, whose methods it has too: the executor's ``Contributes``.
+    """
+    hints: list[object] = [b for b in cls.__mro__[1:] if typing.is_protocol(b) and b.__module__.startswith('piloop.')]
+    hints += get_type_hints(cls, localns=ROWS, format=Format.FORWARDREF).values()
     for name, member in vars(cls).items():
         if name.startswith('_') and name != '__init__':
             continue

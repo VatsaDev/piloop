@@ -24,7 +24,6 @@ flowchart TB
     usage["usage/"]
     watch["watch/"]
     api --> plugins
-    cli --> daemon
     cli --> watch
     deprecated --> plugins
     otel --> settings
@@ -38,7 +37,7 @@ The graph leaves out the shared modules `actor.py`, `ids.py`, `proc.py`, `text.p
 | `agents/` | `actor.py`, `config.py`, `db/`, `deprecated.py`, `harnesses.py`, `ids.py`, `otel.py`, `plugins/`, `scoring/`, `settings.py`, `store/`, `usage/` |
 | `api/` | `actor.py`, `ids.py`, `plugins/`, `text.py` |
 | `campaign/` | `actor.py`, `agents/`, `api/`, `config.py`, `db/`, `deprecated.py`, `ids.py`, `plugins/`, `proc.py`, `scoring/`, `settings.py`, `store/`, `text.py` |
-| `capabilities.py` | `actor.py`, `api/`, `db/`, `ids.py`, `mcp/`, `net/`, `otel.py`, `plugins/`, `proc.py`, `runtime/`, `usage/` |
+| `capabilities.py` | `actor.py`, `api/`, `daemon/`, `db/`, `ids.py`, `mcp/`, `net/`, `otel.py`, `plugins/`, `proc.py`, `runtime/`, `usage/` |
 | `cli/` | `actor.py`, `agents/`, `api/`, `campaign/`, `config.py`, `daemon/`, `db/`, `deprecated.py`, `harnesses.py`, `ids.py`, `mcp/`, `net/`, `otel.py`, `plugins/`, `proc.py`, `reports/`, `settings.py`, `store/`, `text.py`, `version.py`, `watch/` |
 | `config.py` | `deprecated.py`, `harnesses.py`, `ids.py`, `mcp/`, `plugins/` |
 | `daemon/` | `actor.py`, `agents/`, `api/`, `campaign/`, `config.py`, `db/`, `deprecated.py`, `harnesses.py`, `ids.py`, `net/`, `otel.py`, `plugins/`, `proc.py`, `reports/`, `runtime/`, `scoring/`, `settings.py`, `store/`, `text.py`, `usage/`, `version.py` |
@@ -49,7 +48,7 @@ The graph leaves out the shared modules `actor.py`, `ids.py`, `proc.py`, `text.p
 | `mcp/` | nothing |
 | `net/` | `api/`, `db/`, `plugins/`, `settings.py` |
 | `otel.py` | `settings.py` |
-| `plugins/` | `actor.py`, `agents/`, `api/`, `campaign/`, `config.py`, `db/`, `deprecated.py`, `harnesses.py`, `ids.py`, `mcp/`, `net/`, `otel.py`, `proc.py`, `reports/`, `runtime/`, `scoring/`, `settings.py`, `store/`, `text.py`, `usage/` |
+| `plugins/` | `actor.py`, `agents/`, `api/`, `campaign/`, `config.py`, `daemon/`, `db/`, `deprecated.py`, `harnesses.py`, `ids.py`, `mcp/`, `net/`, `otel.py`, `proc.py`, `reports/`, `runtime/`, `scoring/`, `settings.py`, `store/`, `text.py`, `usage/` |
 | `proc.py` | nothing |
 | `reports/` | `agents/`, `api/`, `campaign/`, `config.py`, `db/`, `ids.py`, `plugins/`, `runtime/`, `scoring/`, `store/`, `text.py`, `usage/` |
 | `runtime/` | `db/`, `plugins/`, `settings.py` |

@@ -13,7 +13,7 @@ from piloop.cli.client import api
 from piloop.ids import CandidateId
 from piloop.text import age, cell
 
-app = cyclopts.App(name='eval')  # its help is where piloop.cli.main registers it
+app = cyclopts.App(name='eval', help='List or cancel the evaluations that the daemon runs or that wait for a slot.')
 
 
 @app.command(name='queue')

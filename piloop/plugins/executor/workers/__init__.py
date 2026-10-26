@@ -10,7 +10,7 @@ import threading
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Self
 
@@ -19,10 +19,12 @@ from pydantic import Field, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from piloop.daemon.loop import Consumer, Turn
 from piloop.db.models import LIVE_LEASES, EventModel, Lease, LeaseKind, LeaseWorker, WorkerInstance, WorkerInstanceState
-from piloop.net import Route
+from piloop.net.server import executor_router
 from piloop.otel import Tracer
 from piloop.plugins.cas.contract import Cas
+from piloop.plugins.contribution import Contribution
 from piloop.plugins.executor.contract import (
     AgentJob,
     AgentKey,
@@ -142,21 +144,23 @@ class WorkersExecutor:
         self.worker.start()
         return refused
 
-    def routes(self) -> Sequence[Route]:
-        """The lease routes (``remote.lease_routes``), which workers on other machines call (``piloop worker``)."""
-        return lease_routes(self.leases, self._changed, self._cas, self._send.send, self._cli)
-
     def capacity_events(self) -> frozenset[type[EventModel]]:
         """A worker that joins or comes back, and one whose host is no longer under pressure."""
         return frozenset({LeaseWorkerJoined, LeaseWorkerRelieved})
 
-    def upkeep_events(self) -> frozenset[type[EventModel]]:
-        """What the scaler of the provisioned pools acts on (``scaling.WAKES``): a job that waits, a worker lost."""
-        return frozenset(topic.model for topic in scaling.WAKES)
+    def contribution(self) -> Contribution:
+        """Its upkeep and its lease routes.
 
-    def upkeep(self, now: datetime, absent: timedelta) -> datetime | None:
+        The upkeep wakes on what the scaler of the provisioned pools acts on (``scaling.WAKES``). Workers on other
+        machines call the lease routes (``remote.lease_routes``, ``piloop worker``).
+        """
+        wakes = frozenset(t.model for t in scaling.WAKES)
+        routes = lease_routes(self.leases, self._changed, self._cas, self._send.send, self._cli)
+        return Contribution(consumers=(Consumer('executor', wakes, self._upkeep),), router=executor_router(routes))
+
+    def _upkeep(self, turn: Turn) -> datetime | None:
         """Expire the leases of a silent worker (``Leases.expire``), scale the provisioned pools, and return when next."""
-        due = [d for d in (self.leases.expire(now, absent), self.scaler.upkeep(now)) if d is not None]
+        due = [d for d in (self.leases.expire(turn.now, turn.absent), self.scaler.upkeep(turn.now)) if d is not None]
         return min(due, default=None)
 
     def stop(self, timeout: float) -> None:

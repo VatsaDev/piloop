@@ -10,7 +10,7 @@ import pytest
 from piloop.api.contract import Access
 from piloop.db.session import Database
 from piloop.net import Route, tokens
-from piloop.net.server import Server, app
+from piloop.net.server import Server, app, executor_router
 from piloop.net.tokens import Tokens
 from piloop.plugins.network.contract import NetworkHost
 from piloop.plugins.network.https import Https, HttpsNetwork
@@ -38,7 +38,7 @@ def serving(db: Database) -> Serving:
         )
         listener = network.listener()
         assert listener is not None
-        server = Server(app(Tokens(db), network, routes), listener)
+        server = Server(app(Tokens(db), network, [executor_router(routes)]), listener)
         server.start()
         try:
             yield server

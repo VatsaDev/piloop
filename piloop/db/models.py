@@ -68,6 +68,7 @@ from piloop.ids import (
     TargetRef,
     TrackName,
 )
+from piloop.plugins.host import Slot
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.usage import Usage
 
@@ -510,6 +511,28 @@ class Base(DeclarativeBase):
         WorkerInstanceState: _values(WorkerInstanceState),
         InstanceEnd: _values(InstanceEnd),
     }
+
+
+def _misnamed(name: str, table: type[Base]) -> str | None:
+    return (
+        None
+        if table.__tablename__ == name
+        else f'it names the table {table.__tablename__!r}: the names must be the same'
+    )
+
+
+TABLES: Slot[type[Base]] = Slot('tables', TypeAdapter(type[Base]), 'table', _misnamed)
+"""The tables that packages add, by name: classes of ``Base``. The daemon checks them when it starts, and piloop's
+migrations create only piloop's own."""
+
+
+def _pointed_at_already(name: str, _rows: type[Base]) -> str | None:
+    return f'comments and events point at {name!r} of piloop already' if name in TargetKind else None
+
+
+TARGET_KINDS: Slot[type[Base]] = Slot('target_kinds', TypeAdapter(type[Base]), 'target kind', _pointed_at_already)
+"""What else comments and events may point at, by name: the table of its rows. The daemon checks them when it
+starts, and a ``TargetRef`` points only at a ``TargetKind``."""
 
 
 class Tracked:

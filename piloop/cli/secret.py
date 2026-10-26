@@ -16,7 +16,7 @@ from piloop.db.models import Campaign
 from piloop.mcp import EnvName
 from piloop.plugins.secrets import contract as secrets
 
-app = cyclopts.App(name='secret')  # its help is where piloop.cli.main registers it
+app = cyclopts.App(name='secret', help='The secrets that agents get in their environment. No command shows a value.')
 
 Name = Annotated[str, cyclopts.Parameter(help='The name of the secret: the variable that agents get it in.')]
 CampaignOption = Annotated[

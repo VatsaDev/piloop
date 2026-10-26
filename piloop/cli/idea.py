@@ -10,7 +10,9 @@ from piloop.cli.client import api, campaign_name
 from piloop.cli.common import HARNESS_HELP, CampaignRef
 from piloop.ids import CandidateId, IdeaId, IdeaStatus, LinkKind, TrackName
 
-app = cyclopts.App(name='idea')  # its help is where piloop.cli.main registers it
+app = cyclopts.App(
+    name='idea', help='Propose work (a seed, a defined idea) and change an idea: its status, links, base or track.'
+)
 PRIORITY_HELP = 'From 0 (urgent) to 4 (someday).'
 FAMILY_HELP = 'The mechanism family. Ideas that try the same mechanism share it.'
 BASE_HELP = 'The candidate id to start from instead of the head. This makes a branch.'

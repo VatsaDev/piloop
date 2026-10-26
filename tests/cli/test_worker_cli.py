@@ -14,7 +14,7 @@ from piloop.db.models import LeaseWorker
 from piloop.db.session import Database
 from piloop.ids import Revision
 from piloop.net import tokens
-from piloop.net.server import Server, app
+from piloop.net.server import Server, app, executor_router
 from piloop.net.tokens import Tokens
 from piloop.plugins.executor.contract import AgentJob, RepoId
 from piloop.plugins.executor.kit.capacity import Pool
@@ -49,7 +49,7 @@ def server(db: Database, tmp_path: Path) -> Generator[str]:
     assert listener is not None
     leases = Leases(db, Recorder(db), home_cas(db), pools={'gpu': Pool()})
     routes = lease_routes(leases, db.changed, disk(tmp_path / 'worker'), no_send, echoed)
-    server = Server(app(Tokens(db), network, routes), listener)
+    server = Server(app(Tokens(db), network, [executor_router(routes)]), listener)
     server.start()
     yield server.url
     server.close()
