@@ -25,7 +25,7 @@ def daemon_http() -> httpx.Client:
     """
     actor, server = common.settings.actor, common.settings.server
     if server is None:
-        return socket_http(common.settings.socket_file, actor)
+        return socket_http(common.settings.socket_file, actor, common.settings.agent_token)
     from piloop.plugins.network.contract import NETWORKS  # only a remote call needs a network's client
 
     return NETWORKS.selected(common.settings.providers).client(server, actor)

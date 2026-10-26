@@ -12,7 +12,6 @@ from contextlib import suppress
 from functools import partial
 
 from covalence import Cid
-from pydantic import SecretStr
 
 from piloop.capabilities import (
     AgentJob,
@@ -28,17 +27,18 @@ from piloop.capabilities import (
     HarnessSession,
     Host,
     JobKey,
+    JobSecrets,
     LeftJob,
     Prompt,
     Runtime,
     Settled,
+    job_secrets,
     key_of,
     kill_group,
     local_site,
     remove,
     run_agent,
     run_evaluation,
-    values,
 )
 
 
@@ -215,8 +215,10 @@ class _Job:
     def queued(self) -> list[list[Prompt]]:
         return self.prompts
 
-    def secrets(self) -> dict[str, SecretStr]:
+    def secrets(self) -> JobSecrets:
         assert isinstance(self.job, AgentJob)
         host = self._executor.host
         with host.db.session() as s:
-            return values(s, host.secrets, self.job.agent_session, self.job.secrets.values())
+            found = job_secrets(s, host.secrets, self.job)
+            s.commit()
+        return found

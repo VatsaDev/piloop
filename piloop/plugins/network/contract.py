@@ -14,7 +14,7 @@ import ssl
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Annotated, Protocol
+from typing import Annotated, ClassVar, Protocol
 
 import httpx2 as httpx
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, WithJsonSchema, model_validator
@@ -169,6 +169,9 @@ class NetworkConfig(Parameters, ABC):
 
     listen: Annotated[Address, WithJsonSchema({'type': 'string'})] | None = None
     """Where the server listens, as ``HOST:PORT``. None: no server. ``piloop serve --listen`` overrides it."""
+
+    CREDENTIALS: ClassVar[frozenset[str]] = frozenset()
+    """The variables that hold the credential that ``client`` reads: ``piloop worker`` withholds them from its jobs."""
 
     @abstractmethod
     def open(self, host: NetworkHost) -> Network:

@@ -100,7 +100,8 @@ HELPERS: set[object] = {
     capabilities.UnknownRevision,
     capabilities.CloneFailed,
     capabilities.GitRepository,  # what a built-in provider's open makes
-    capabilities.values,  # what an executor calls at an agent's start
+    capabilities.job_secrets,  # what an executor calls at an agent's start, and what it answers
+    capabilities.JobSecrets,
     capabilities.executor_router,  # what an executor's contribution routes its workers' calls with
     capabilities.Route,
     capabilities.JobKind,  # what a package's piloop.job_kinds name

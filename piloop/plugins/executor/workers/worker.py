@@ -28,10 +28,9 @@ from pathlib import Path
 from typing import assert_never
 
 from covalence import Cid
-from pydantic import BaseModel, ConfigDict, SecretStr
+from pydantic import BaseModel, ConfigDict
 
 from piloop.db.models import NoLease
-from piloop.mcp import EnvName
 from piloop.otel import Tracer
 from piloop.plugins.executor.contract import (
     AgentJob,
@@ -39,6 +38,7 @@ from piloop.plugins.executor.contract import (
     EvaluationJob,
     EvaluationReport,
     HarnessSession,
+    JobSecrets,
     MissingBlobs,
     Prompt,
     Report,
@@ -761,5 +761,5 @@ class _Control:
             running = self._worker._jobs.get(self._lease)
             return list(running.queued) if running is not None else []
 
-    def secrets(self) -> dict[EnvName, SecretStr]:
+    def secrets(self) -> JobSecrets:
         return self._worker.client.secrets(self._lease)

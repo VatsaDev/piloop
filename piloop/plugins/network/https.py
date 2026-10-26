@@ -17,7 +17,7 @@ import os
 import socket
 import ssl
 from collections.abc import Mapping
-from typing import Literal, Self, assert_never
+from typing import ClassVar, Literal, Self, assert_never
 
 import httpx2 as httpx
 from pydantic import BaseModel, ConfigDict, FilePath, SecretStr, model_validator
@@ -56,6 +56,8 @@ class Certificate(BaseModel):
 
 class Https(NetworkConfig):
     """``https``: the keys of ``[plugins.network]``."""
+
+    CREDENTIALS: ClassVar[frozenset[str]] = frozenset({TOKEN_ENV})
 
     tls: Certificate | Literal['proxy'] | None = None
     """The server ends TLS with a certificate, or ``"proxy"``: a reverse proxy or an SSH tunnel ends it. None: plain

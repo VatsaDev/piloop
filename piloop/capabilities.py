@@ -113,7 +113,7 @@ from piloop.plugins.executor.contract import AgentReport, EvaluationReport, Samp
 from piloop.plugins.executor.contract import AgentFinished, AgentNotStarted, HarnessSession
 from piloop.plugins.executor.contract import AgentKey, EvaluationKey, JobKey
 from piloop.plugins.executor.contract import key_of, Capacity, Prompt
-from piloop.plugins.executor.contract import JobKind
+from piloop.plugins.executor.contract import JobKind, JobSecrets, job_secrets
 from piloop.plugins.executor.contract import Source, Bar, RepoId, MissingBlobs, Workspace
 from piloop.plugins.executor.kit.jobs import Control, Site, local_site, run_agent, remove
 from piloop.plugins.executor.kit.jobs import run_evaluation
@@ -134,7 +134,7 @@ from piloop.plugins.network.contract import Listener, NoCredential, Peer, Refuse
 from piloop.plugins.network.contract import Enrollment, NotEnrolled
 from piloop.net.tokens import Caller, Tokens
 from piloop.api.contract import Access
-from piloop.actor import Agent, Person, System
+from piloop.actor import Agent, Person, Orchestrating, System
 from piloop.plugins.network.https import Https, HttpsNetwork
 from piloop.plugins.network.proxy import Proxy
 
@@ -151,5 +151,5 @@ from piloop.plugins.provisioner.contract import StartRefused
 from piloop.plugins.provisioner.kit.conformance import check_provisioning
 from piloop.plugins.provisioner.modal import Modal
 
-from piloop.plugins.secrets.contract import SECRETS, SecretsProvider, SecretKey, Owner, values, HomeSecrets
+from piloop.plugins.secrets.contract import SECRETS, SecretsProvider, SecretKey, Owner, HomeSecrets
 from piloop.plugins.secrets.local import LocalSecrets

@@ -24,7 +24,7 @@ from sqlalchemy import select, update
 from piloop.actor import Agent, System
 from piloop.agents.results import PromptOutcome
 from piloop.api import client as client_module
-from piloop.api.client import Client, NoDaemon, Refused
+from piloop.api.client import SOCKET_ACTOR_HEADER, Client, NoDaemon, Refused
 from piloop.api.contract import (
     MAX_POLL_SECONDS,
     Access,
@@ -98,7 +98,7 @@ from piloop.plugins.memory.local.tables import Journal
 from piloop.plugins.network.contract import NetworkHost
 from piloop.plugins.network.https import ACTOR_HEADER, TOKEN_ENV, Https
 from piloop.plugins.network.proxy import Proxy
-from piloop.plugins.secrets.contract import HomeSecrets, values
+from piloop.plugins.secrets.contract import HomeSecrets
 from piloop.plugins.secrets.local import LocalSecrets
 from piloop.plugins.vcs.git import Git
 from piloop.scoring.api import CancelledBy, RemeasureBody, RunningSince, ScoringClient
@@ -353,7 +353,7 @@ def test_the_news_long_poll_wakes_on_what_someone_else_writes_and_skips_what_the
         assert unknown.value.error == Problem.UNKNOWN_COMMENT
 
 
-def test_a_caller_acts_as_itself_or_the_orchestrator_and_only_admin_as_an_agent(
+def test_a_caller_acts_as_itself_or_the_orchestrator_and_only_an_agent_s_token_as_that_agent(
     db: Database, campaign: Campaign, cfg: Settings
 ) -> None:
     reader = {'Authorization': f'Bearer {token(db, "ana", Access.READ)}'}
@@ -362,12 +362,60 @@ def test_a_caller_acts_as_itself_or_the_orchestrator_and_only_admin_as_an_agent(
         for named in (None, 'human', 'human:ana', 'orchestrator'):
             assert httpx.get(news, headers={**reader, **({ACTOR_HEADER: named} if named else {})}).status_code == 200
         agent = httpx.get(news, headers={**reader, ACTOR_HEADER: 'implementer#12'})
-        assert agent.json() == {'detail': 'ana has read access, which may not act as implementer#12'}
+        assert agent.json() == {
+            'error': 'forbidden',
+            'detail': 'ana may not act as implementer#12: only the token of implementer#12 acts as it',
+        }
         other = httpx.get(news, headers={**reader, ACTOR_HEADER: 'human:bob'})
-        assert other.json() == {'detail': 'ana has read access, which may not act as human:bob'}
+        assert other.json() == {'error': 'forbidden', 'detail': 'ana has read access, which may not act as human:bob'}
         assert httpx.get(news, headers={**reader, ACTOR_HEADER: 'implementer#'}).status_code == 422
-        with Client.on(cfg.socket_file, Agent(role=RoleName('implementer'), session=AgentSessionId(12))) as owner:
-            assert owner.news(NewsQuery()).items == [], 'the owner on the socket may name an agent'
+
+
+def test_an_agent_s_token_acts_as_its_agent_only_and_the_owner_on_the_socket_as_anyone_else(
+    db: Database, campaign: Campaign, cfg: Settings
+) -> None:
+    """The owner acts as the orchestrator with no setup. An agent's token on the socket is that agent, whatever it asks."""
+    with db.session() as s:
+        live = [AgentSession(kind='watchdog', campaign_id=campaign.id, state=AgentSessionState.RUNNING) for _ in '12']
+        s.add_all(live)
+        s.flush()
+        [bound, older] = [Agent(role=RoleName('watchdog'), session=w.id) for w in live]
+        secret = tokens.mint_agent(s, bound).get_secret_value()
+        s.commit()
+    uds = httpx.HTTPTransport(uds=str(cfg.socket_file))
+    with serving_api(cfg), httpx.Client(transport=uds, base_url='http://piloop') as http:
+
+        def journal(text: str, named: str | None, *, bearer: str | None = None) -> httpx.Response:
+            headers = {
+                **({SOCKET_ACTOR_HEADER: named} if named else {}),
+                **({'Authorization': f'Bearer {bearer}'} if bearer else {}),
+            }
+            return http.post('/v1/journal', json={'line': text}, headers=headers)
+
+        for named in (None, 'human', 'orchestrator', 'human:ana'):
+            assert journal(f'owner as {named}', named).status_code == 200, 'the owner needs no setup'
+        for named in (None, 'human', str(bound)):
+            assert journal(f'agent as {named}', named, bearer=secret).status_code == 200
+        for named in ('orchestrator', 'human:ana', str(older)):
+            refused = journal('posing', named, bearer=secret)
+            assert refused.json() == {'error': 'forbidden', 'detail': f'{bound} acts only as itself, not as {named}'}
+        assert journal('posing', str(bound)).json() == {
+            'error': 'forbidden',
+            'detail': f'owner may not act as {bound}: only the token of {bound} acts as it',
+        }, 'without its token, nobody acts as an agent'
+        assert journal('an agent of the daemon before', str(older)).status_code == 200, 'until 0.5.0'
+        assert journal('no such agent', 'watchdog#99').status_code == 403
+    with db.session() as s:
+        signed = {(j.line, j.author) for j in s.scalars(select(Journal))}
+    assert signed >= {
+        ('owner as orchestrator', 'orchestrator'),
+        ('owner as None', 'human'),
+        ('agent as None', str(bound)),
+        ('agent as human', str(bound)),
+        (f'agent as {bound}', str(bound)),
+        ('an agent of the daemon before', str(older)),
+    }
+    assert not {line for line, _ in signed} & {'posing', 'no such agent'}
 
 
 PROXY = Proxy.model_validate(
@@ -390,12 +438,20 @@ def test_a_proxy_caller_s_ack_reply_and_pause_sign_as_the_person_it_names(
         [acked] = client.ack(AckBody(ids=(CommentId(1),))).results
         replied = client.reply(CommentId(1), ReplyBody(body='go ahead')).comment
         paused = client.pause('demo', PauseBody(reason='waits for comment#2')).campaign
-        with httpx.Client(base_url=tcp.url, headers={**stamped, PROXY.actor_header: 'orchestrator'}) as asking:
+        with (
+            httpx.Client(base_url=tcp.url, headers={**stamped, PROXY.actor_header: 'orchestrator'}) as asking,
+            Client.on(cfg.socket_file, System.ORCHESTRATOR) as local,
+        ):
+            start = local.news(NewsQuery()).next
             acted = Client(asking).reply(CommentId(1), ReplyBody(body='mine')).comment
+            [news] = local.news(NewsQuery(after=start)).items
     me = 'human:ana@example.com'
+    assert news.text() == f'comment#{acted.id} decision p2 on comment#1 (demo) by orchestrator via {me}: mine', (
+        "the orchestrator at the terminal sees the network orchestrator's decision, and whose it is"
+    )
     assert isinstance(paused, CampaignState)
     assert (acked.acked_by, replied.author, paused.paused) == (me, me, 'launches')
-    assert acted.author == 'orchestrator', 'a person may still act as the orchestrator'
+    assert acted.author == f'orchestrator via {me}', 'a person acts as the orchestrator, and the write says who'
     with db.session() as s:
         row = s.get_one(Campaign, campaign.id)
         assert (row.updated_by, s.get_one(Comment, 1).acked_by) == (me, me)
@@ -405,9 +461,9 @@ def test_a_proxy_caller_s_ack_reply_and_pause_sign_as_the_person_it_names(
         ('campaign.paused', me),
         ('comment.acked_at', me),
         ('comment.decision', me),
-        ('comment.decision', 'orchestrator'),
+        ('comment.decision', f'orchestrator via {me}'),
     }, 'the change log signs as the caller'
-    assert {r.cells[2] for r in rows} >= {me, 'orchestrator'}, 'watch shows who replied'
+    assert {r.cells[2] for r in rows} >= {me, f'orchestrator via {me}'}, 'watch shows who replied'
 
 
 def test_a_message_signs_as_the_caller_wakes_the_orchestrator_and_its_reply_reaches_the_sender_s_inbox(
@@ -456,7 +512,10 @@ def test_a_message_signs_as_the_caller_wakes_the_orchestrator_and_its_reply_reac
     assert plain.cursor > start, 'the cursor passes the write itself'
     assert (refused.status_code, refused.json()) == (
         403,
-        {'detail': 'ana@example.com has act access, which may not act as implementer#12'},
+        {
+            'error': 'forbidden',
+            'detail': 'ana@example.com may not act as implementer#12: only the token of implementer#12 acts as it',
+        },
     ), 'the network names the caller: an agent cannot sign as another actor'
     assert unknown.value.error == Problem.UNKNOWN_CAMPAIGN
 
@@ -564,36 +623,24 @@ def test_a_limit_is_set_and_unset_by_an_admin_and_refused_on_a_key_that_is_not_l
     assert refused.json() == {'detail': 'ana has act access, and this route needs admin'}
 
 
-def test_an_admin_sets_lists_and_removes_secrets_and_an_agent_writes_only_its_own_campaign_s(
+def test_an_admin_sets_lists_and_removes_secrets(
     db: Database, campaign: Campaign, cfg: Settings, tmp_path: Path
 ) -> None:
     with db.session() as s:
         s.add(Campaign(name='other', path=str(tmp_path / 'other'), config=campaign.config))
-        s.add(AgentSession(kind='watchdog', campaign_id=campaign.id))
         s.commit()
     home, demo, other = Located(), Located(campaign='demo'), Located(campaign='other')
     body = SecretBody(value=SecretStr('s3cret'))
     assert 's3cret' not in repr(body), 'a log of the body shows no value'
-    agent = Agent(role='watchdog', session=1)
     with (
         serving_api(cfg, listen='127.0.0.1:0') as [_, tcp],
         Client.on(cfg.socket_file, System.HUMAN) as admin,
-        Client.on(cfg.socket_file, agent) as watchdog,
     ):
         assert admin.set_secret('KEY', home, body).campaign is None
         assert admin.set_secret('KEY', demo, body).campaign == 'demo'
-        for elsewhere in (home, other):
-            with pytest.raises(Refused, match='^watchdog#1 writes only the secrets of its own campaign$') as denied:
-                watchdog.set_secret('KEY', elsewhere, body)
-            assert denied.value.error == Problem.FORBIDDEN
-        with pytest.raises(Refused, match='^watchdog#1 writes only the secrets') as denied:
-            watchdog.remove_secret('KEY', home)
-        assert denied.value.error == Problem.FORBIDDEN
-        assert watchdog.set_secret('OWN', demo, body).campaign == 'demo'
+        assert admin.set_secret('OWN', other, body).campaign == 'other'
         listed = [(f.name, f.campaign, f.set_by) for f in admin.list_secrets().secrets]
-        assert listed == [('KEY', None, 'human'), ('KEY', 'demo', 'human'), ('OWN', 'demo', 'watchdog#1')]
-        with db.session() as s:
-            assert values(s, LocalSecrets(), AgentSessionId(1), ['OWN'])['OWN'].get_secret_value() == 's3cret'
+        assert listed == [('KEY', None, 'human'), ('KEY', 'demo', 'human'), ('OWN', 'other', 'human')]
         assert admin.remove_secret('KEY', demo).campaign == 'demo'
         with pytest.raises(Refused, match=r'^campaign demo has no secret KEY: see `piloop secret list`$') as unknown:
             admin.remove_secret('KEY', demo)
@@ -843,7 +890,10 @@ def test_a_write_needs_act_access_and_a_caller_whose_name_signs(
         refused = httpx.post(tcp.url + '/v1/campaigns/demo/resume', headers=reader)
         unsigned = httpx.post(tcp.url + '/v1/campaigns/demo/resume', headers=spaced)
     assert refused.json() == {'detail': 'ana has read access, and this route needs act'}
-    assert unsigned.json() == {'detail': "'two words' is no name that signs a write: name the caller another way"}
+    assert unsigned.json() == {
+        'error': 'forbidden',
+        'detail': "'two words' is no name that signs a write: name the caller another way",
+    }
 
 
 def test_without_a_campaign_named_status_answers_every_campaign(

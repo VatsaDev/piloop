@@ -9,6 +9,7 @@ import signal
 import subprocess
 import sys
 import threading
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import assert_never
 
@@ -22,6 +23,9 @@ ACTOR_ENV = 'PILOOP_ACTOR'
 """The signature of an agent. ``child_env`` drops it: a daemon or an evaluation that an agent's ``piloop`` command
 starts must not sign as that agent. Nor must it die with the agent: the CLI drops the agent's process tag when it starts
 (``piloop.cli.main``)."""
+AGENT_TOKEN_ENV = 'PILOOP_AGENT_TOKEN'
+"""The token of an agent, which its worker sets at its start (``piloop.net.tokens.mint_agent``): it acts as that agent
+with it, and as nobody else. ``child_env`` drops it, as it drops ``ACTOR_ENV``."""
 PILOOP_ARGV = (sys.executable, '-P', '-m', 'piloop')
 """The command that runs this process's piloop, from any cwd. ``-P`` keeps the cwd off ``sys.path``: an agent's cwd is a
 campaign's worktree, and its own ``json.py`` or ``piloop/`` would otherwise shadow piloop's imports."""
@@ -68,15 +72,25 @@ def running(leader: Leader) -> bool:
 def child_env(*drop: str) -> dict[str, str]:
     """The environment for subprocesses: this process's environment without the variables that it must not pass on.
 
-    These are VIRTUAL_ENV, ``UNITS_ENV``, ``ACTOR_ENV`` and ``drop``. Without VIRTUAL_ENV, uv does not warn about the
+    These are VIRTUAL_ENV, ``UNITS_ENV``, ``ACTOR_ENV``, ``AGENT_TOKEN_ENV`` and ``drop``. Without VIRTUAL_ENV, uv does not warn about the
     campaign's own virtual environment. Only ``run_evaluate`` sets ``UNITS_ENV``, so no agent gets a units path. The
     launcher signs each agent and its runtime tags it, after this.
 
     This is the only place outside ``Settings`` that reads the environment. It passes the values on and does not
     interpret them.
     """
-    dropped = ('VIRTUAL_ENV', UNITS_ENV, ACTOR_ENV, *drop)
+    dropped = ('VIRTUAL_ENV', UNITS_ENV, ACTOR_ENV, AGENT_TOKEN_ENV, *drop)
     return {k: v for k, v in os.environ.items() if k not in dropped}
+
+
+def withhold(names: Collection[str]) -> None:
+    """Remove ``names`` from this process's environment, so that no child gets them: a credential that it holds itself.
+
+    A worker withholds its own (``NetworkConfig.CREDENTIALS``) once it dialed the server, as the jobs that it runs are
+    not the worker.
+    """
+    for name in names:
+        os.environ.pop(name, None)
 
 
 def started(pid: int) -> float | None:

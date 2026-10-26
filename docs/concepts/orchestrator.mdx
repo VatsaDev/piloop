@@ -28,7 +28,8 @@ next: piloop inbox wait enwik8 --after 17
 
 The wait returns on a new inbox item, a new seed, a verdict, an anomaly or a stop, or at the timeout. Its last line is
 the next wait, with a cursor, so nothing is lost between two waits. `PILOOP_ACTOR=orchestrator` signs the
-orchestrator's writes, and the wait skips them.
+orchestrator's writes, and the wait skips them. A person who calls a server over the network signs them as
+`orchestrator via human:<name>`.
 
 Run one orchestrator for each campaign. Two orchestrators answer the same escalation twice.
 

@@ -43,7 +43,7 @@ from enum import StrEnum
 from typing import Annotated, Literal, assert_never
 
 from covalence import Cid
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 from sqlalchemy import ColumnElement, exists, func, select, update
 from sqlalchemy.orm import Session, aliased
 
@@ -71,7 +71,6 @@ from piloop.db.models import (
 )
 from piloop.db.session import Database, read_transaction, write_transaction
 from piloop.ids import HOME, AgentSessionId, CommentId, TargetKind, TargetRef
-from piloop.mcp import EnvName
 from piloop.plugins.cas.contract import BlobAddress, Cas
 from piloop.plugins.executor.contract import (
     JOB,
@@ -86,14 +85,16 @@ from piloop.plugins.executor.contract import (
     Guard,
     HarnessSession,
     JobKey,
+    JobSecrets,
     LeftJob,
     Prompt,
     Report,
     Results,
     Settled,
+    job_secrets,
 )
 from piloop.plugins.executor.kit.capacity import HostSample, Pool, add, admits, less, pressure, slots, times
-from piloop.plugins.secrets.contract import SECRETS, SecretsProvider, values
+from piloop.plugins.secrets.contract import SECRETS, SecretsProvider
 
 SERVE = 'serve'
 """The id of the worker inside ``piloop serve``, and its pool. The id is stable, so the next daemon's worker finds its
@@ -690,16 +691,18 @@ class Leases:
             raise StaleLease(f'stale_lease: lease#{lease_id} is an evaluation, which relays nothing')
         return job
 
-    def secrets(self, lease_id: int, worker: str) -> dict[EnvName, SecretStr]:
-        """The values of the secrets of the agent's job on ``worker``'s live lease ``lease_id``, by name.
+    def secrets(self, lease_id: int, worker: str) -> JobSecrets:
+        """The values of the secrets of the agent's job on ``worker``'s live lease ``lease_id``, and the agent's token.
 
-        Only those that the job names (``AgentJob.secrets``), read from the job in the CAS: never a name that the worker
-        sends. Those that the home lacks are left out.
+        Only the secrets that the job names (``AgentJob.secrets``), read from the job in the CAS: never a name that the
+        worker sends. Those that the home lacks are left out. The token is minted here, in place of any that the agent
+        had: a worker asks once, when it starts the job.
 
         Raises:
             StaleLease: no such live lease of ``worker``, or an evaluation's.
         """
         with self._db.session() as s:
+            write_transaction(s)
             if s.get(Lease, lease_id) is None:
                 raise StaleLease(f'stale_lease: there is no lease#{lease_id}')
             live = self._live(s, lease_id, worker)
@@ -707,7 +710,9 @@ class Leases:
                 raise StaleLease(f'stale_lease: lease#{lease_id} is an evaluation, which has no secrets')
             job = read_job(self._cas, live.id, live.job_cid)
             assert isinstance(job, AgentJob)  # an agent session's lease
-            return values(s, self._secrets, job.agent_session, job.secrets.values())
+            found = job_secrets(s, self._secrets, job)
+            s.commit()
+        return found
 
     def report(
         self, lease_id: int, worker: str, request_id: str, report: AgentReport | EvaluationReport

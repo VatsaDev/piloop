@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from piloop.actor import Actor, Agent, System
+from piloop.actor import Actor, Agent, Orchestrating, Person, System
 from piloop.db import sql
 from piloop.db.events import emit
 from piloop.db.models import Event
@@ -24,6 +24,8 @@ ACTORS: TypeAdapter[Actor] = TypeAdapter(Actor)
         ('my-role#7', Agent(role='my-role', session=7)),
         ('human', System.HUMAN),
         ('orchestrator', System.ORCHESTRATOR),
+        ('human:ana@example.com', Person(name='ana@example.com')),
+        ('orchestrator via human:ana@example.com', Orchestrating(person=Person(name='ana@example.com'))),
         ('daemon', System.DAEMON),
     ],
 )
@@ -34,7 +36,22 @@ def test_a_signature_parses_into_its_actor_and_dumps_back(signed: str, actor: Ac
 
 
 @pytest.mark.parametrize(
-    'signed', ['', '#', 'implementer#', '#12', 'implementer#0', 'Scout#3', 'a#b', 'a#1#2', 'controller', 'Human']
+    'signed',
+    [
+        '',
+        '#',
+        'implementer#',
+        '#12',
+        'implementer#0',
+        'Scout#3',
+        'a#b',
+        'a#1#2',
+        'controller',
+        'Human',
+        'orchestrator via ana',
+        'orchestrator via human:a b',
+        'daemon via human:ana',
+    ],
 )
 def test_a_malformed_signature_or_an_unknown_name_is_refused(signed: str) -> None:
     with pytest.raises(ValidationError):

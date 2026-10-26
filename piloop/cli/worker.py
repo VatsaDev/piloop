@@ -16,6 +16,7 @@ from piloop.plugins.cas.contract import CAS
 from piloop.plugins.executor.contract import EXECUTORS
 from piloop.plugins.executor.workers import Workers, instances, remote_worker, seen
 from piloop.plugins.network.contract import NETWORKS, NoCredential
+from piloop.proc import withhold
 from piloop.text import age
 
 app = cyclopts.App(name='worker', help='The workers that run jobs on leases.')
@@ -39,14 +40,16 @@ def run(
     it: a revoked credential, another piloop protocol, an unknown pool.
     """
     settings = common.settings
+    network = NETWORKS.selected(settings.providers)
     try:
-        client = NETWORKS.selected(settings.providers).client(server)
+        client = network.client(server)
     except NoCredential as e:
         raise SystemExit(str(e)) from e
     settings.home.mkdir(parents=True, exist_ok=True)  # its jobs' files, its spool and its free disk are there
     stopping = threading.Event()
     with client as http:
         cas = CAS.selected(settings.providers).open(settings.home)
+        withhold(network.CREDENTIALS)  # after its last client: no job gets the worker's credential
         reserve = settings.storage.reserve
         worker = remote_worker(
             http,

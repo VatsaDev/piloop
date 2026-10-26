@@ -22,6 +22,7 @@ from pydantic import (
 )
 from pydantic_core import PydanticCustomError
 
+from piloop.actor import PERSON_NAME
 from piloop.ids import (
     CampaignStatus,
     CandidateId,
@@ -153,7 +154,7 @@ class Problem(StrEnum):
     REFUSED = 'refused'
     """An operation refused its input and changed nothing. The detail says why."""
     FORBIDDEN = 'forbidden'
-    """The caller's actor may not make this change, which another actor may. The detail says why."""
+    """The caller may not act as the actor that it asks for (``piloop.net.acting``). The detail says why."""
 
 
 type Priority = Annotated[int, Field(ge=0, le=4)]
@@ -318,8 +319,8 @@ class CancelBody(Params):
 class TokenBody(Params):
     """A bearer token to make for a caller."""
 
-    name: str
-    """The name of the caller that uses it, such as a worker."""
+    name: Annotated[str, Field(pattern=PERSON_NAME)]
+    """The name of the caller that uses it, such as a worker. No ``#``: that names a launched agent's token."""
     access: Access
 
 

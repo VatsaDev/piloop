@@ -18,6 +18,7 @@ from pathlib import Path
 
 import httpx2 as httpx
 import pytest
+from pydantic import SecretStr
 from sqlalchemy import func, select
 
 from piloop.agents.results import PromptOutcome, queue_prompt
@@ -367,8 +368,10 @@ HARNESS_ELSEWHERE = (
     '#!/bin/sh\necho line >> solve.txt\ngit commit -qam "add a line"\nmkdir -p workspace/idea1\n'
     'echo out > workspace/idea1/out.txt\n'
     f'"$PILOOP_BIN" sql "{RELAYED_FINDING}" > workspace/idea1/relayed.txt 2>&1\n'
+    'echo "${PILOOP_HTTPS_TOKEN:-none}" > workspace/idea1/worker-token.txt\n'
 )
-"""An implementer that commits, writes in its workspace, and leaves its finding through ``piloop sql``."""
+"""An implementer that commits, writes in its workspace, leaves its finding through ``piloop sql``, and looks for its
+worker's token."""
 
 
 def finding(db: Database) -> list[tuple[str, str]]:
@@ -405,9 +408,12 @@ def test_a_remote_implementers_commits_come_back_as_a_bundle_and_are_scored_and_
     relayed = (workspace / 'idea1' / 'relayed.txt').read_text()
     assert finding(db) == [('relayed from elsewhere', 'implementer#1')], relayed
     assert (workspace / 'idea1' / 'out.txt').read_text() == 'out\n', 'its workspace came back through the CAS'
+    assert (workspace / 'idea1' / 'worker-token.txt').read_text() == 'none\n', (
+        "the worker's credential is not the agent's"
+    )
     assert net.proxy is not None
     with dial(f'http://127.0.0.1:{net.proxy.port}', net.token) as http, pytest.raises(StaleLease, match='is reported'):
-        Remote(http, threading.Event(), Tracer(None)).cli(1, Call(argv=['sql', 'SELECT 1']))
+        Remote(http, threading.Event(), Tracer(None)).cli(1, Call(argv=['sql', 'SELECT 1'], token=SecretStr('plt_x')))
 
 
 HARNESS_PROMPTED = (
@@ -447,7 +453,8 @@ def test_a_prompt_reaches_a_remote_implementer_within_a_round_trip_and_its_relay
     assert (workspace / 'prompt.txt').read_text() == 'try lzma', 'its next turn took the prompt'
     with httpx.Client(transport=httpx.HTTPTransport(uds=str(Settings(home=net.home).relay_file))) as relay:
         refused = relay.post(
-            'http://worker/v1/cli', content=AgentCall(agent=AgentSessionId(1), argv=[]).model_dump_json()
+            'http://worker/v1/cli',
+            content=AgentCall(agent=AgentSessionId(1), argv=[], token=SecretStr('plt_x')).model_dump_json(),
         )
     assert refused.status_code == 404, 'its job ended: its worker relays nothing more for it'
 

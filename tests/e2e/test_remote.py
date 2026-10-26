@@ -29,7 +29,7 @@ import pytest
 import tomli_w
 from pydantic import JsonValue
 
-from piloop.actor import System
+from piloop.actor import ORCHESTRATING, System
 from piloop.api.client import Client
 from piloop.api.contract import (
     MAX_LIMIT,
@@ -277,7 +277,7 @@ def test_the_orchestrator_adds_an_idea(server: Server) -> None:
         ' same algorithm. Run `python3 evaluate.py`, then commit. Change nothing else.'
     )
     server.piloop('idea', 'add', server.name, title, '--plan', plan, '--priority', '1')
-    created = server.seen(lambda e: e.kind == 'idea.created' and e.actor == 'orchestrator', 'idea.created', 60)
+    created = server.seen(lambda e: e.kind == 'idea.created' and e.actor.startswith(ORCHESTRATING), 'idea.created', 60)
     server.ideas['added'] = created.subject.id
     print(f'idea#{created.subject.id} by {created.actor}')
 
@@ -318,7 +318,7 @@ def test_a_message_to_the_orchestrator_is_answered(server: Server) -> None:
     assert f'comment#{sent.comment.id}' in woke, woke
     server.piloop('inbox', 'reply', str(sent.comment.id), 'e2e: two ideas, one from your seed.')
     thread = server.api.thread(sent.comment.id)
-    replies = [c for c in thread.linked if c.author == 'orchestrator']
+    replies = [c for c in thread.linked if c.author.startswith(ORCHESTRATING)]
     assert replies, thread
     acked = server.api.ack(AckBody(ids=(sent.comment.id,)))
     assert server.api.thread(sent.comment.id).comment.acked_at is not None, acked

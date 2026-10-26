@@ -31,12 +31,11 @@ from time import monotonic
 
 import httpx2 as httpx
 from covalence import Cid
-from pydantic import BaseModel, Field, RootModel, SecretStr, ValidationError
+from pydantic import BaseModel, Field, RootModel, ValidationError
 
-from piloop.api.contract import MAX_POLL_SECONDS, Polled, Revealed
+from piloop.api.contract import MAX_POLL_SECONDS, Polled
 from piloop.db.models import NoLease
 from piloop.ids import Revision
-from piloop.mcp import EnvName
 from piloop.net import Changed, Refusal, Route
 from piloop.net.tokens import Caller
 from piloop.otel import Tracer
@@ -45,6 +44,7 @@ from piloop.plugins.executor.contract import (
     AgentReport,
     EvaluationReport,
     HarnessSession,
+    JobSecrets,
     MissingBlobs,
     RepoId,
     Report,
@@ -179,10 +179,6 @@ class SecretsAsked(BaseModel):
     lease: int
 
 
-class SecretValues(RootModel[dict[EnvName, Revealed]]):
-    """The answer of ``secrets``: the values of the job's secrets that the home has, by name."""
-
-
 class SendAsked(Polled):
     """The body of ``send``: versions of a repo of record, the versions that the worker's clone has, and the wait."""
 
@@ -296,8 +292,8 @@ def _queued(worker: Local, body: Queued) -> None:
     worker.queued(body.message, body.error)
 
 
-def _secrets(worker: Local, body: SecretsAsked) -> SecretValues:
-    return SecretValues(worker.secrets(body.lease))
+def _secrets(worker: Local, body: SecretsAsked) -> JobSecrets:
+    return worker.secrets(body.lease)
 
 
 class RefusalBody(BaseModel):
@@ -367,8 +363,8 @@ class Remote:
     def queued(self, message: int, error: str | None) -> None:
         self._post('queued', Queued(message=message, error=error))
 
-    def secrets(self, lease: int) -> dict[EnvName, SecretStr]:
-        return SecretValues.model_validate_json(self._post('secrets', SecretsAsked(lease=lease))).root
+    def secrets(self, lease: int) -> JobSecrets:
+        return JobSecrets.model_validate_json(self._post('secrets', SecretsAsked(lease=lease)))
 
     def send(self, repo: RepoId, revisions: Sequence[Revision], have: Sequence[Revision]) -> list[Cid]:
         """``Clones``' fetch: the server puts what ``revisions`` have beyond ``have`` into the CAS, and names it.
@@ -394,7 +390,7 @@ class Remote:
 
     def cli(self, lease: int, call: Call) -> Relayed:
         """``Relay``'s send: run an agent's relayed call on the server, on its lease. Raises ``StaleLease``."""
-        body = LeaseCall(lease=lease, argv=call.argv, stdin=call.stdin)
+        body = LeaseCall(lease=lease, argv=call.argv, stdin=call.stdin, token=call.token)
         return Relayed.model_validate_json(self._post('cli', body, RELAY_SECONDS, resend=Resend.UNSENT))
 
     def _post(self, path: str, body: BaseModel, wait: float = 0, *, resend: Resend = Resend.ANSWERLESS) -> bytes:

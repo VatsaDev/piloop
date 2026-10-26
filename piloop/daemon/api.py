@@ -21,7 +21,7 @@ from pydantic import SecretStr, TypeAdapter, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from piloop.actor import Actor, Person, System
+from piloop.actor import Actor
 from piloop.agents.results import PromptOutcome, queue_prompt
 from piloop.api.contract import (
     Access,
@@ -122,7 +122,8 @@ from piloop.ids import (
 )
 from piloop.mcp import EnvName
 from piloop.net import Refusal, tokens
-from piloop.net.server import OWNER, App, asked, authorized, changed
+from piloop.net.acting import MayNotAct, acts_as
+from piloop.net.server import App, asked, authorized, changed, served
 from piloop.net.tokens import Caller
 from piloop.plugins import limits as limits_module
 from piloop.plugins.cas.contract import Cas
@@ -207,36 +208,17 @@ reader = authorized(Access.READ)
 """The access of every route: one callable, so that FastAPI runs it once per request for each dependency on it."""
 
 
-def person(caller: Caller) -> Actor:
-    """Who ``caller`` is: the person at the terminal on the socket, else the person whom its token or network names."""
-    if caller is OWNER:
-        return System.HUMAN
-    try:
-        return Person(name=caller.name)
-    except ValidationError as e:
-        raise HTTPException(403, f'{caller.name!r} is no name that signs a write: name the caller another way') from e
-
-
 def acting(request: Request, caller: Annotated[Caller, Depends(reader)]) -> Actor:
-    """Who the caller acts as: the actor that it asks for (``asked``), when it may act as it, else itself.
-
-    ``human`` is the caller itself, so a client that a person whom the network names runs signs as that person. The
-    caller may ask for itself or the orchestrator, and ``admin`` for any actor: a launched agent calls on the socket
-    with its ``PILOOP_ACTOR`` until it has a token of its own. Acting as an actor grants nothing: core checks the
-    access of every route as before.
-    """
-    me, named = person(caller), asked(request)
-    if named is None:
-        return me
+    """Who the caller acts as: the actor that it asks for (``asked``), by the table of ``piloop.net.acting.acts_as``."""
+    named = asked(request)
     try:
-        actor = ACTOR.validate_python(named)
+        actor = None if named is None else ACTOR.validate_python(named)
     except ValidationError as e:
         raise HTTPException(422, f'{named!r} is not an actor, such as orchestrator or implementer#12') from e
-    if actor is System.HUMAN:
-        return me
-    if caller.access is not Access.ADMIN and actor not in (me, System.ORCHESTRATOR):
-        raise HTTPException(403, f'{caller.name} has {caller.access} access, which may not act as {actor}')
-    return actor
+    try:
+        return acts_as(caller, actor, served(request).tokens.tokenless)
+    except MayNotAct as e:
+        raise Refusal(HTTPStatus.FORBIDDEN, Problem.FORBIDDEN, str(e)) from e
 
 
 ACTOR: TypeAdapter[Actor] = TypeAdapter(Actor)
@@ -319,9 +301,6 @@ Commented = Annotated[Comment, Depends(comment_addressed)]
 AddressedIdea = Annotated[Idea, Depends(idea_addressed)]
 Target = Annotated[Idea, Depends(target_addressed)]
 
-
-FORBIDDEN_RESPONSE: dict[int | str, dict[str, object]] = {HTTPStatus.FORBIDDEN: {'model': ProblemDetail}}
-"""What a route answers to an actor that may not make its change (``forbidden``), which another actor may."""
 
 REFUSALS_DOCUMENTED: dict[int | str, dict[str, object]] = {
     HTTPStatus.NOT_FOUND: {'model': ProblemDetail},
@@ -770,22 +749,15 @@ def list_secrets(api: Api, s: Reading) -> SecretList:
     )
 
 
-@router.put(
-    '/secrets/{name}', operation_id='set_secret', dependencies=[Depends(admin_access)], responses=FORBIDDEN_RESPONSE
-)
+@router.put('/secrets/{name}', operation_id='set_secret', dependencies=[Depends(admin_access)])
 def set_secret(api: Api, s: Writing, me: Acting, name: EnvName, campaign: Narrowed, body: SecretBody) -> SecretChanged:
-    """Set a secret of the home, or of the campaign named, in place of any. Agents get it from their next start.
-
-    An agent sets only its own campaign's secrets.
-    """
+    """Set a secret of the home, or of the campaign named, in place of any. Agents get it from their next start."""
     secrets.set_secret(s, _secrets(api), me, campaign, name, body.value)
     s.commit()
     return _secret_changed(s, name, campaign)
 
 
-@router.delete(
-    '/secrets/{name}', operation_id='remove_secret', dependencies=[Depends(admin_access)], responses=FORBIDDEN_RESPONSE
-)
+@router.delete('/secrets/{name}', operation_id='remove_secret', dependencies=[Depends(admin_access)])
 def remove_secret(api: Api, s: Writing, me: Acting, name: EnvName, campaign: Narrowed) -> SecretChanged:
     """Delete a secret of the home, or of the campaign named. An agent that starts after it no longer gets it."""
     if not secrets.remove_secret(s, _secrets(api), me, campaign, name):
@@ -938,7 +910,6 @@ def with_api(server: App, api: Handlers) -> App:
         server.mount_router(routes)
     for refused in REFUSALS:
         server.add_exception_handler(refused, _refused)
-    server.add_exception_handler(secrets.Denied, _forbidden)
     server.state.handlers = api
     return server
 
@@ -958,10 +929,6 @@ REFUSALS: tuple[type[Exception], ...] = (
 
 def _refused(_request: Request, e: Exception) -> Response:
     return JSONResponse({'error': Problem.REFUSED, 'detail': str(e)}, status_code=HTTPStatus.CONFLICT)
-
-
-def _forbidden(_request: Request, e: Exception) -> Response:
-    return JSONResponse({'error': Problem.FORBIDDEN, 'detail': str(e)}, status_code=HTTPStatus.FORBIDDEN)
 
 
 def daemon_state(started: str, listen: str | None) -> DaemonState:

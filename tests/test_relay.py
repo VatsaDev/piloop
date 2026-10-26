@@ -11,6 +11,7 @@ from pathlib import Path
 
 import httpx2 as httpx
 import pytest
+from pydantic import SecretStr
 from pytest_mock import MockerFixture
 from sqlalchemy import select
 
@@ -19,9 +20,11 @@ from piloop.agents.roles import IDEAS, PROMPTS, SQL_HINT
 from piloop.campaign.campaigns import checkout_of
 from piloop.cli.database import ORCHESTRATOR_PROCEDURES
 from piloop.cli.main import app
-from piloop.db.models import Campaign, Comment, Event
+from piloop.db.models import AgentSession, AgentSessionState, Campaign, Comment, Event
 from piloop.db.session import Database
 from piloop.ids import AgentSessionId
+from piloop.net.tokens import mint_agent
+from piloop.plugins.executor.contract import AgentJob
 from piloop.plugins.executor.kit import door as door_module, relay as relay_module
 from piloop.plugins.executor.kit.client import Dismissed
 from piloop.plugins.executor.kit.door import AgentCall, Call, Relayed, main
@@ -33,6 +36,7 @@ from piloop.settings import Settings
 from tests.test_lease import agent_job
 
 AGENT = AgentSessionId(7)
+TOKEN = SecretStr('plt_agent')
 SPAN = re.compile(r'`([^`]+)`')
 FENCE = re.compile(r'```[a-z]*\n(.*?)```', re.DOTALL)
 CALLER = re.compile(r'^(?:piloop|"\$PILOOP_BIN"|\{piloop\})\s')
@@ -65,25 +69,52 @@ def runner(db: Database, tmp_path: Path) -> Runner:
     return Runner(db, tmp_path, partial(checkout_of, db))
 
 
+def launched(db: Database, job: AgentJob) -> SecretStr:
+    """Mark the job's agent session running, and mint its token, as its worker's start does."""
+    with db.session() as s:
+        session = s.get_one(AgentSession, job.agent_session)
+        session.state = AgentSessionState.RUNNING
+        token = mint_agent(s, Agent(role=session.kind, session=session.id))
+        s.commit()
+    return token
+
+
 def test_a_relayed_call_runs_on_the_server_as_the_agent_in_its_campaigns_checkout(
     db: Database, campaign: Campaign, tmp_path: Path, runner: Runner
 ) -> None:
     job = agent_job(db, campaign, tmp_path)
+    token = launched(db, job)
     actor = Agent(role='watchdog', session=job.agent_session).signature
     note = f"INSERT INTO comments (target_kind, target_id, author, kind, body) VALUES ('campaign', 1, '{actor}', 'note', 'hi')"
-    done = runner(job, Call(argv=['sql', '-'], stdin=note))
+    done = runner(job, Call(argv=['sql', '-'], stdin=note, token=token))
     assert done.exit_code == 0, done.stderr
     with db.session() as s:
         [written] = s.scalars(select(Comment).where(Comment.body == 'hi')).all()
         [event] = s.scalars(select(Event).where(Event.kind == 'comment.note')).all()
         assert event.actor == actor, 'signed as the agent of the lease'
-    assert runner(job, Call(argv=['sql', 'SELECT 41 + 1'])).stdout.count('42') == 1, 'no stdin: none is read'
+    assert runner(job, Call(argv=['sql', 'SELECT 41 + 1'], token=token)).stdout.count('42') == 1, (
+        'no stdin: none is read'
+    )
+
+
+def test_a_relayed_call_runs_only_with_the_token_of_the_lease_s_agent(
+    db: Database, campaign: Campaign, tmp_path: Path, runner: Runner
+) -> None:
+    """Another agent of the same worker names the lease's agent: its own token gives it away."""
+    job, sibling = agent_job(db, campaign, tmp_path), agent_job(db, campaign, tmp_path)
+    launched(db, job)
+    for token in (launched(db, sibling), TOKEN):
+        done = runner(job, Call(argv=['sql', 'SELECT 1'], token=token))
+        assert (done.exit_code, done.stderr) == (
+            1,
+            f'piloop: the token is not the one of agent_session#{job.agent_session}\n',
+        )
 
 
 def test_a_command_that_is_not_relayed_is_refused_with_what_is(
     db: Database, campaign: Campaign, tmp_path: Path, runner: Runner
 ) -> None:
-    done = runner(agent_job(db, campaign, tmp_path), Call(argv=['campaign', 'stop', 'demo']))
+    done = runner(agent_job(db, campaign, tmp_path), Call(argv=['campaign', 'stop', 'demo'], token=TOKEN))
     assert done.exit_code == 2 and done.stderr.startswith('piloop campaign stop: an agent on another machine runs only')
     assert 'idea status' in done.stderr
 
@@ -93,7 +124,8 @@ def test_a_relayed_call_that_runs_too_long_is_stopped(
 ) -> None:
     monkeypatch.setattr(relay_module, 'RELAY_SECONDS', 0.2)
     monkeypatch.setattr(relay_module, 'PILOOP_ARGV', ('sh', '-c', 'sleep 5', 'piloop'))
-    done = runner(agent_job(db, campaign, tmp_path), Call(argv=['sql', 'SELECT 1']))
+    job = agent_job(db, campaign, tmp_path)
+    done = runner(job, Call(argv=['sql', 'SELECT 1'], token=launched(db, job)))
     assert (done.exit_code, done.stderr) == (124, 'piloop: the call ran for 0.2 s on the server and was stopped\n')
 
 
@@ -118,7 +150,7 @@ def post(relay: Relay, body: bytes | str, path: str = '/v1/cli') -> httpx.Respon
 
 
 def call(agent: int = AGENT, argv: list[str] | None = None) -> str:
-    return AgentCall(agent=AgentSessionId(agent), argv=argv or []).model_dump_json()
+    return AgentCall(agent=AgentSessionId(agent), argv=argv or [], token=TOKEN).model_dump_json()
 
 
 def test_the_relay_takes_an_agents_calls_on_its_lease_while_its_job_runs_on_this_worker(tmp_path: Path) -> None:
@@ -130,7 +162,7 @@ def test_the_relay_takes_an_agents_calls_on_its_lease_while_its_job_runs_on_this
     relay.open({AGENT: 3})
     answered = post(relay, call(argv=['sql', 'SELECT 1']))
     assert Relayed.model_validate_json(answered.content) == Relayed(stdout='sql SELECT 1', exit_code=0)
-    assert server.calls == [(3, Call(argv=['sql', 'SELECT 1']))]
+    assert server.calls == [(3, Call(argv=['sql', 'SELECT 1'], token=TOKEN))]
     assert post(relay, '{"argv": 1}').status_code == 422
     assert post(relay, '{}', path='/v1/other').status_code == 404
     server.fail = StaleLease('stale_lease: lease#3 is reported')
@@ -170,6 +202,9 @@ def test_the_piloop_of_an_agent_elsewhere_prints_what_the_call_printed_and_exits
     relay.start()
     agent = Agent(role='implementer', session=AGENT)
     monkeypatch.setattr(door_module, 'settings', Settings(home=tmp_path, actor=agent))
+    with pytest.raises(SystemExit, match='implementer#7 has no PILOOP_AGENT_TOKEN, and the call did not run'):
+        main()
+    monkeypatch.setattr(door_module, 'settings', Settings(home=tmp_path, actor=agent, agent_token=TOKEN))
     monkeypatch.setattr(sys, 'argv', ['piloop', 'sql', '-'])
     monkeypatch.setattr(sys, 'stdin', io.StringIO('SELECT 1'))
     with pytest.raises(SystemExit, match='the call did not run: agent_session#7 has no job on this worker'):
@@ -179,7 +214,7 @@ def test_the_piloop_of_an_agent_elsewhere_prints_what_the_call_printed_and_exits
     with pytest.raises(SystemExit) as ended:
         main()
     assert (ended.value.code, capsys.readouterr().out) == (0, 'sql -')
-    assert server.calls == [(3, Call(argv=['sql', '-'], stdin='SELECT 1'))]
+    assert server.calls == [(3, Call(argv=['sql', '-'], stdin='SELECT 1', token=TOKEN))]
     relay.stop()
     with pytest.raises(SystemExit, match='no worker relays on .*, and the call did not run'):
         main()

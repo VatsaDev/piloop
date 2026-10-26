@@ -9,12 +9,11 @@ does not change.
 from collections.abc import Mapping, Sequence
 from typing import Protocol
 
-from pydantic import BaseModel, ConfigDict, SecretStr
+from pydantic import BaseModel, ConfigDict
 
 from piloop.db.models import NoLease
-from piloop.mcp import EnvName
 from piloop.plugins.cas.contract import BlobAddress
-from piloop.plugins.executor.contract import AgentJob, AgentReport, EvaluationReport, HarnessSession
+from piloop.plugins.executor.contract import AgentJob, AgentReport, EvaluationReport, HarnessSession, JobSecrets
 from piloop.plugins.executor.kit.capacity import HostSample
 from piloop.plugins.executor.kit.leases import (
     Answer,
@@ -29,7 +28,7 @@ from piloop.plugins.executor.kit.leases import (
     Work,
 )
 
-PROTOCOL = 8
+PROTOCOL = 9
 """The version of the ``LeaseClient`` calls on the wire."""
 
 
@@ -115,8 +114,8 @@ class LeaseClient(Protocol):
         """
         ...
 
-    def secrets(self, lease: int) -> dict[EnvName, SecretStr]:
-        """The values of the secrets of the agent's job on ``lease``, by name: what it starts with."""
+    def secrets(self, lease: int) -> JobSecrets:
+        """The values of the secrets of the agent's job on ``lease``, and its token: what it starts with."""
         ...
 
 
@@ -155,7 +154,7 @@ class Local:
     def queued(self, message: int, error: str | None) -> None:
         self._leases.queued(self._worker, message, error)
 
-    def secrets(self, lease: int) -> dict[EnvName, SecretStr]:
+    def secrets(self, lease: int) -> JobSecrets:
         return self._leases.secrets(lease, self._worker)
 
     def relayed(self, lease: int) -> AgentJob:

@@ -6,9 +6,9 @@ for ``piloop sql -``, to its worker's ``Relay``, on a Unix socket, which sends t
 (``Runner``), and sends back what it printed. The fence of the agent's lease scopes the call (``Leases.relayed``): a
 call after the lease ended is refused.
 
-An agent runs as the worker's user, with the worker's environment and credential, as an agent of ``piloop serve`` runs
-with the daemon's. The socket admits only that user, in a directory of mode 0700, and nothing guards one agent of a
-worker from another: each names itself, as ``PILOOP_ACTOR`` does on one machine.
+An agent runs as the worker's user, as an agent of ``piloop serve`` runs as the daemon's. The socket admits only that
+user, in a directory of mode 0700. Each call carries the agent's own token (``PILOOP_AGENT_TOKEN``), and the server runs
+it only when the token is the lease's agent's: one agent of a worker cannot call as another.
 
 Only the commands of ``RELAYED`` run, the ones that the role prompts name: a test keeps the two in step. The call runs
 in the campaign's checkout on the server, so a command that finds its campaign from the cwd finds it there.
@@ -30,15 +30,16 @@ import httpx2 as httpx
 from pydantic import ValidationError
 
 from piloop.actor import Agent
-from piloop.db.models import AgentSession
 from piloop.db.session import Database
 from piloop.ids import AgentSessionId
+from piloop.net import tokens
+from piloop.net.tokens import Caller
 from piloop.plugins.executor.contract import AgentJob, RepoId
 from piloop.plugins.executor.kit import door as agent_end
 from piloop.plugins.executor.kit.client import Dismissed
 from piloop.plugins.executor.kit.door import RELAY_SECONDS, AgentCall, Call, Relayed
 from piloop.plugins.executor.kit.leases import StaleLease
-from piloop.proc import ACTOR_ENV, PILOOP_ARGV, child_env
+from piloop.proc import ACTOR_ENV, AGENT_TOKEN_ENV, PILOOP_ARGV, child_env
 from piloop.settings import socket_dir
 
 RELAYED: frozenset[tuple[str, ...]] = frozenset(
@@ -87,9 +88,17 @@ class Runner:
     def __call__(self, job: AgentJob, call: Call) -> Relayed:
         if verb(call.argv) is None:
             return refused(call.argv)
+        token = call.token.get_secret_value()
         with self.db.session() as s:
-            agent = Agent(role=s.get_one(AgentSession, job.agent_session).kind, session=job.agent_session)
-        env = child_env() | {'PILOOP_HOME': str(self.home), ACTOR_ENV: agent.signature}
+            caller = tokens.verify(s, token)
+        match caller:
+            case Caller(agent=Agent(session=session) as agent) if session == job.agent_session:
+                pass
+            case _:
+                return Relayed(
+                    stderr=f'piloop: the token is not the one of agent_session#{job.agent_session}\n', exit_code=1
+                )
+        env = child_env() | {'PILOOP_HOME': str(self.home), ACTOR_ENV: agent.signature, AGENT_TOKEN_ENV: token}
         try:
             done = subprocess.run(
                 [*PILOOP_ARGV, *call.argv],
@@ -165,7 +174,7 @@ class Relay:
         if lease is None:
             return HTTPStatus.NOT_FOUND, f'agent_session#{call.agent} has no job on this worker: it ended'
         try:
-            return HTTPStatus.OK, self._send(lease, Call(argv=call.argv, stdin=call.stdin))
+            return HTTPStatus.OK, self._send(lease, Call(argv=call.argv, stdin=call.stdin, token=call.token))
         except StaleLease as e:
             return HTTPStatus.OK, Relayed(stderr=f'piloop: the lease of this agent ended: {e}\n', exit_code=1)
         except (httpx.ConnectError, Dismissed) as e:  # it never reached the command: running it again is safe

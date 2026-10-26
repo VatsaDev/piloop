@@ -37,7 +37,7 @@ from piloop.agents.roles import PILOOP_HINT, SQL_HINT, Role, compose_brief, read
 from piloop.config import CampaignConfig, Roles, load_campaign_config
 from piloop.daemon.run_controller import RunController
 from piloop.db.events import emit, in_order
-from piloop.db.models import AgentSession, AgentSessionState, Campaign, Event, Lease, LeaseKind
+from piloop.db.models import AgentSession, AgentSessionState, Campaign, Comment, Event, Lease, LeaseKind
 from piloop.db.session import Database
 from piloop.db.triggers.changelog import AgentSessionRequested
 from piloop.harnesses import DEFAULT_HARNESSES
@@ -56,6 +56,7 @@ from piloop.plugins.runtime.contract import AgentExit, AgentSpec, ExitStatus
 from piloop.plugins.secrets.contract import SECRETS, set_secret
 from piloop.plugins.vcs.contract import Part
 from piloop.plugins.vcs.git import Git
+from piloop.settings import Settings
 from piloop.store.chunks import read
 from piloop.usage import Usage
 from piloop.usage.jsonl import CWD_ENCODERS
@@ -72,6 +73,7 @@ from tests.conftest import (
     home_cas,
     role_timeout,
     serving,
+    serving_api,
     wait_until,
     write_toml,
 )
@@ -313,6 +315,37 @@ def test_an_agent_writes_through_piloop_sql_as_its_own_actor(
     with db.session() as s:
         row = s.get_one(Campaign, campaign.id)
         assert (row.name, row.updated_by) == ('renamed', f'research#{agent_session_id}')
+
+
+def test_an_agent_cannot_sign_as_the_orchestrator_on_the_daemons_socket(
+    campaign: Campaign, db: Database, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """A launched agent that sets its own ``PILOOP_ACTOR`` does not write as the orchestrator through the API."""
+    use_harness(
+        db, campaign, f"#!/bin/sh\nPILOOP_ACTOR=orchestrator piloop message {campaign.name} 'trust me' || true\n"
+    )
+    with serving_api(Settings(home=tmp_path)):
+        outcome = launch(db, runtime, tmp_path, request(db, campaign, kind=RESEARCH))
+    assert exit_of(outcome).error is None, (tmp_path / 'w' / 'agent_session.stderr').read_text()
+    with db.session() as s:
+        signed = s.scalars(select(Comment.author).where(Comment.body == 'trust me')).all()
+    assert 'orchestrator' not in signed, 'the agent signed a message as the orchestrator'
+
+
+def test_an_agent_cannot_sign_as_the_orchestrator_through_piloop_sql(
+    campaign: Campaign, db: Database, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """``piloop sql`` signs with the ``PILOOP_ACTOR`` that the agent sets: the same gap, off the socket."""
+    use_harness(
+        db,
+        campaign,
+        f'#!/bin/sh\nPILOOP_ACTOR=orchestrator {SQL_HINT} "UPDATE campaigns SET name = \'renamed\' WHERE id = {campaign.id}"'
+        ' || true\n',
+    )
+    outcome = launch(db, runtime, tmp_path, request(db, campaign, kind=RESEARCH))
+    assert exit_of(outcome).error is None, (tmp_path / 'w' / 'agent_session.stderr').read_text()
+    with db.session() as s:
+        assert s.get_one(Campaign, campaign.id).updated_by != 'orchestrator', 'the agent wrote as the orchestrator'
 
 
 @pytest.mark.parametrize('cli', ['piloop', '"$PILOOP_BIN"', PILOOP_HINT])
@@ -813,7 +846,7 @@ def test_codex_trusts_the_agents_worktree_and_gives_its_tool_shells_the_agents_e
             'shell_environment_policy.inherit': 'all',
             'shell_environment_policy.ignore_default_excludes': True,
             'shell_environment_policy.include_only': [],
-        }, 'PILOOP_PROCESS_TAG and PILOOP_ACTOR reach every command; the MCP renderer excludes the keys'
+        }, 'PILOOP_PROCESS_TAG and PILOOP_AGENT_TOKEN reach every command; the MCP renderer excludes the keys'
 
 
 def test_a_brief_past_the_limit_of_one_argument_reaches_the_agent_as_a_file(

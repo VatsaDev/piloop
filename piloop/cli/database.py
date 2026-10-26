@@ -4,6 +4,7 @@ import json
 import sqlite3
 import sys
 from contextlib import closing
+from functools import partial
 from pathlib import Path
 from typing import Annotated
 
@@ -11,11 +12,14 @@ import cyclopts
 from rich.table import Table
 from rich.text import Text
 
+from piloop.actor import Actor
 from piloop.agents.roles import PROCEDURES, PROMPTS
 from piloop.cli import common, local
 from piloop.db import sql
 from piloop.db.schema import CORE
 from piloop.db.session import Database, Stamps, backups, described, stamps
+from piloop.net import tokens
+from piloop.net.acting import OWNER, MayNotAct, acts_as
 from piloop.plugins.archive.local.store import ManifestNotMigrated, migrate_manifests
 from piloop.plugins.vcs.contract import VCS, prompted
 
@@ -49,7 +53,7 @@ def sql_cmd(
         raise SystemExit(f'sql error: {shell}')
     local.refuse_other_schema()
     database = common.settings.home / 'piloop.db'
-    with closing(sql.connect(database, actor=common.settings.actor)) as con:
+    with closing(sql.connect(database, actor=_signer())) as con:
         try:
             result = sql.run(con, statement)
         except sqlite3.Error as e:
@@ -65,6 +69,20 @@ def sql_cmd(
             common.console.print(f'[dim]truncated to {sql.ROW_LIMIT} rows[/]')
     else:
         common.console.print(f'{result.changes} row(s) changed, last insert id {result.last_insert_rowid}')
+
+
+def _signer() -> Actor:
+    """Whom ``piloop sql`` signs as: ``PILOOP_ACTOR``, as ``acts_as`` lets ``PILOOP_AGENT_TOKEN``'s agent or the owner."""
+    token = common.settings.agent_token
+    db = Database(common.settings.database_url, actor=common.settings.actor)  # sql_cmd checked its schema
+    with closing(db), db.session() as s:
+        caller = OWNER if token is None else tokens.verify(s, token.get_secret_value())
+        if caller is None:
+            raise SystemExit('sql error: PILOOP_AGENT_TOKEN is unknown, or its agent ended')
+        try:
+            return acts_as(caller, common.settings.actor, partial(tokens.tokenless, s))
+        except MayNotAct as e:
+            raise SystemExit(f'sql error: {e}') from e
 
 
 def schema() -> None:

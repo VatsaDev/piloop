@@ -17,7 +17,7 @@ from functools import cached_property
 from pathlib import Path
 from typing import Annotated, Self
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, SecretStr, TypeAdapter, model_validator
 from pydantic_settings import (
     BaseSettings,
     InitSettingsSource,
@@ -118,6 +118,10 @@ class Settings(BaseSettings):
     actor: Annotated[Actor, NoDecode] = System.HUMAN
     """Who this process is. Every row it updates records this value in ``updated_by``. The daemon launches each agent
     with ``<role>#<agent_session_id>``, for example ``implementer#12`` or ``scout#7``."""
+
+    agent_token: SecretStr | None = None
+    """The token of the agent that the daemon launched as ``actor``, which its worker sets at its start: its calls act
+    as that agent with it, and as nobody else."""
 
     server: str | None = None
     """The daemon that the commands which call the API ask, such as ``https://piloop.example.com``: its network's

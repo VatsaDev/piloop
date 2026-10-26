@@ -8,9 +8,10 @@ import os
 import sys
 
 import httpx2 as httpx
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 
 from piloop.actor import Agent
+from piloop.api.contract import Revealed
 from piloop.ids import AgentSessionId
 from piloop.proc import PILOOP_ARGV
 from piloop.settings import settings
@@ -20,10 +21,12 @@ RELAY_SECONDS = 120.0
 
 
 class Call(BaseModel):
-    """A relayed call: the agent's argv after ``piloop``, and its stdin."""
+    """A relayed call: the agent's argv after ``piloop``, its stdin, and its token, which the server runs it with."""
 
     argv: list[str]
     stdin: str | None = None
+    token: Revealed
+    """The agent's ``PILOOP_AGENT_TOKEN``: the server runs the call only as the agent that it is bound to."""
 
 
 class AgentCall(Call):
@@ -52,11 +55,13 @@ def main() -> None:
     argv = sys.argv[1:]
     if any(tuple(argv[: len(command)]) == command for command in LOCAL):
         os.execv(PILOOP_ARGV[0], [*PILOOP_ARGV, *argv])
-    match settings.actor:
-        case Agent(session=session):
+    match settings.actor, settings.agent_token:
+        case Agent(session=session), SecretStr() as token:
             agent = session
-        case actor:
-            raise SystemExit(f'piloop: this piloop relays the calls of an agent, and {actor} is none')
+        case Agent() as actor, None:
+            raise SystemExit(f'piloop: {actor} has no PILOOP_AGENT_TOKEN, and the call did not run')
+        case _:
+            raise SystemExit(f'piloop: this piloop relays the calls of an agent, and {settings.actor} is none')
     socket = settings.relay_file
     if not socket.exists():
         raise SystemExit(f'piloop: no worker relays on {socket}, and the call did not run')
@@ -66,7 +71,7 @@ def main() -> None:
         with httpx.Client(transport=transport, timeout=RELAY_SECONDS + 30) as client:
             response = client.post(
                 'http://worker/v1/cli',
-                content=AgentCall(agent=agent, argv=argv, stdin=stdin).model_dump_json(),
+                content=AgentCall(agent=agent, argv=argv, stdin=stdin, token=token).model_dump_json(),
                 headers={'content-type': 'application/json'},
             )
         response.raise_for_status()

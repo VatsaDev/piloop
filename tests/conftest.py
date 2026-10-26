@@ -22,10 +22,11 @@ import pytest
 from git import Repo
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from pydantic import TypeAdapter
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from piloop.actor import System
+from piloop.actor import SignedAgent, System
 from piloop.campaign.campaigns import CampaignAdded
 from piloop.config import CampaignConfig, load_campaign_config
 from piloop.daemon.api import Handlers, daemon_state, with_api
@@ -48,7 +49,7 @@ from piloop.db.session import Database, migrate
 from piloop.harnesses import DEFAULT_HARNESSES
 from piloop.ids import CampaignId, RoleName
 from piloop.net.server import Server, app, local_listener, url
-from piloop.net.tokens import Tokens
+from piloop.net.tokens import Tokens, mint_agent
 from piloop.otel import Tracer
 from piloop.plugins.archive.local import store as archive_module
 from piloop.plugins.cas.contract import CAS, Cas
@@ -653,3 +654,19 @@ def measuring(cfg: Settings) -> Generator[None]:
         for controller in controllers:
             controller.stop(5)
         db.close()
+
+
+def launched(home: Path, signature: str) -> dict[str, object]:
+    """The settings of an agent that the daemon launched as ``signature`` in ``home``'s first campaign: its session is
+    running, and it has its token, as its worker's start leaves it. ``Settings.model_copy(update=...)`` takes them."""
+    agent = TypeAdapter(SignedAgent).validate_python(signature)
+    db = Database(f'sqlite:///{home / "piloop.db"}', actor=System.DAEMON)
+    with db.session() as s:
+        if s.get(AgentSession, agent.session) is None:
+            campaign = s.scalars(select(Campaign.id).order_by(Campaign.id)).first()
+            s.add(AgentSession(id=agent.session, kind=agent.role, campaign_id=campaign, reason='test'))
+        s.get_one(AgentSession, agent.session).state = AgentSessionState.RUNNING
+        token = mint_agent(s, agent)
+        s.commit()
+    db.close()
+    return {'actor': agent, 'agent_token': token}

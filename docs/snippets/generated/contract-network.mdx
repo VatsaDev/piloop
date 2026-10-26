@@ -3,6 +3,7 @@
 | Member | What it is |
 |---|---|
 | `NetworkConfig.listen: Address \| None` | Where the server listens, as `HOST:PORT`. None: no server. `piloop serve --listen` overrides it. |
+| `NetworkConfig.CREDENTIALS: ClassVar[frozenset[str]]` | The variables that hold the credential that `client` reads: `piloop worker` withholds them from its jobs. |
 | `NetworkConfig.open(host: NetworkHost) -> Network` | Make the server's side of the network. The daemon calls it once, when it starts. |
 | `NetworkConfig.client(server: str, actor: Actor \| None = None) -> httpx.Client` | The dialing side, which needs no host: a client of the server at `server`, with this machine's credential. |
 | `NetworkConfig.listening(listen: Address \| None) -> NetworkConfig` | This network, with `listen` (`piloop serve --listen`) in place of its own when it is not None. |

@@ -163,7 +163,20 @@ piloop keeps each agent's session, the harness's own file, in the CAS: `agent_se
 ### Network plugins name the actor
 
 A network plugin implements `actor(headers)`: whom a request asks to act as. Its `client(server, actor)` sends that
-ask. A person whom the network names signs as `human:<name>`, not `human`. `piloop pause` prints `paused (all)`.
+ask. A person whom the network names signs as `human:<name>`, not `human`, and as the orchestrator as
+`orchestrator via human:<name>`. `piloop pause` prints `paused (all)`.
+
+### Agents sign with their own token
+
+Each agent gets its own token when it starts, in `PILOOP_AGENT_TOKEN`, and it signs as that agent only. Setting
+`PILOOP_ACTOR` no longer lets an agent sign as `orchestrator`, `human` or another agent, and its token has `act`
+access: no `piloop token`, `limit` or `secret`. The person at the terminal still signs as `human` or
+`orchestrator` with no setup.
+
+- An agent that the older daemon started keeps signing as itself until it ends.
+- A token's name may not contain `#`.
+- Upgrade `piloop worker` on every machine with the server: the server refuses a worker of the older protocol. A
+  worker no longer passes its own credential to the jobs that it runs.
 
 ### Spend is a fact
 

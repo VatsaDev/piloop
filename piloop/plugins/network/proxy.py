@@ -32,7 +32,7 @@ ends every worker.
 import os
 import socket
 from collections.abc import Mapping
-from typing import Final, Self
+from typing import ClassVar, Final, Self
 
 import httpx2 as httpx
 from pydantic import BaseModel, ConfigDict, SecretStr, model_validator
@@ -78,6 +78,8 @@ class Rule(BaseModel):
 
 class Proxy(NetworkConfig):
     """``proxy``: the keys of ``[plugins.network]``. A server (``listen``) needs ``rules``."""
+
+    CREDENTIALS: ClassVar[frozenset[str]] = frozenset({CREDENTIAL_ENV})
 
     url: str | None = None
     """Where workers reach this server, through the proxy: what a provisioned worker dials. None: it starts none."""

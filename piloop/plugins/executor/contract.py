@@ -27,17 +27,20 @@ from covalence import Cid
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, TypeAdapter
 from sqlalchemy.orm import Session
 
-from piloop.db.models import EventModel
+from piloop.actor import Agent
+from piloop.api.contract import Revealed
+from piloop.db.models import AgentSession, EventModel
 from piloop.db.session import Database
 from piloop.ids import AgentSessionId, CampaignId, CandidateId, CommentId, Revision, RunId
 from piloop.mcp import EnvName, McpServer
+from piloop.net.tokens import mint_agent
 from piloop.otel import Tracer
 from piloop.plugins.cas.contract import BlobAddress, Cas
 from piloop.plugins.contribution import Contributes
 from piloop.plugins.host import Capability, Choice, Parameters, Scope, Slot
 from piloop.plugins.network.contract import Network
 from piloop.plugins.runtime.contract import AgentExit, AgentStart
-from piloop.plugins.secrets.contract import SecretsProvider
+from piloop.plugins.secrets.contract import SecretsProvider, values
 from piloop.plugins.vcs.contract import VCS, Repository, Transfer, Vcs
 from piloop.runtime.factory import RuntimeFactory
 from piloop.usage import Usage, UsageSpec
@@ -103,6 +106,20 @@ DEADLINE_ENV = 'PILOOP_DEADLINE'
 executor sets it when it starts the agent."""
 
 
+class JobSecrets(BaseModel):
+    """What an agent's job gets at its start, on its live lease: its secrets' values, and the token that it acts with.
+
+    The token is minted then (``piloop.net.tokens.mint_agent``) and is never in the job, which the CAS keeps.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    values: dict[EnvName, Revealed]
+    """The values of the job's secrets (``AgentJob.secrets``) that the home has, by name."""
+    token: Revealed
+    """The agent's own token: its ``PILOOP_AGENT_TOKEN``."""
+
+
 class AgentJob(BaseModel):
     """The description of an agent's job: everything a worker needs, so it reads no campaign table.
 
@@ -146,6 +163,16 @@ class AgentJob(BaseModel):
     def needs_session_id(self) -> bool:
         """Whether the session id is needed when the agent ends, for ``usage``: the worker asks the runtime for it."""
         return self.usage is not None
+
+
+def job_secrets(s: Session, secrets: SecretsProvider, job: AgentJob) -> JobSecrets:
+    """What ``job`` gets at its start: the values of its secrets that the home has, and a token minted for its agent.
+
+    The token replaces any that the agent had. The caller commits.
+    """
+    found = values(s, secrets, job.agent_session, job.secrets.values())
+    agent = Agent(role=s.get_one(AgentSession, job.agent_session).kind, session=job.agent_session)
+    return JobSecrets(values=found, token=mint_agent(s, agent))
 
 
 class Bar(BaseModel):

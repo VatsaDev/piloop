@@ -22,7 +22,7 @@ from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring.ledger import RejudgeRequested
 from piloop.settings import Settings
 from tests.cli.test_cli import research_files, run_cli
-from tests.conftest import at_head, bare_config
+from tests.conftest import at_head, bare_config, launched
 
 pytestmark = pytest.mark.usefixtures('api')
 
@@ -87,7 +87,10 @@ def test_a_sweep_files_its_ideas_for_review_while_the_campaign_is_paused(
     out()
 
     def as_(actor: str, *argv: str) -> None:
-        monkeypatch.setattr(common, 'settings', Settings(home=tmp_path, uv_tool_dir=tmp_path / 'uv-tools', actor=actor))
+        settings = Settings(home=tmp_path, uv_tool_dir=tmp_path / 'uv-tools', actor=actor)
+        if '#' in actor:
+            settings = settings.model_copy(update=launched(tmp_path, actor))
+        monkeypatch.setattr(common, 'settings', settings)
         run_cli(list(argv))
 
     as_('research#8', 'idea', 'add', 'demo', 'during the pause')

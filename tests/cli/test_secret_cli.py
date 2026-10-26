@@ -11,8 +11,9 @@ from rich.console import Console
 from piloop.actor import Agent
 from piloop.cli import common
 from piloop.db import sql
-from piloop.db.models import AgentSession, Campaign
+from piloop.db.models import AgentSession, AgentSessionState, Campaign
 from piloop.db.session import Database
+from piloop.net.tokens import mint_agent
 from piloop.settings import Settings
 from tests.cli.test_cli import run_cli
 
@@ -65,18 +66,16 @@ def test_a_secret_is_set_from_stdin_listed_by_name_and_deleted_and_no_output_sho
         piped(monkeypatch, ['set', 'A'], '\n')
 
 
-def test_an_agent_sets_only_its_own_campaigns_secrets(
-    out, db: Database, campaign: Campaign, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_an_agent_sets_no_secret(out, db: Database, campaign: Campaign, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Its token has ``act`` access, and secrets are the home's settings."""
     with db.session() as s:
-        s.add(AgentSession(kind='watchdog', campaign_id=campaign.id))
+        session = AgentSession(kind='watchdog', campaign_id=campaign.id, state=AgentSessionState.RUNNING)
+        s.add(session)
+        s.flush()
+        agent = Agent(role='watchdog', session=session.id)
+        token = mint_agent(s, agent)
         s.commit()
-    monkeypatch.setattr(
-        common, 'settings', common.settings.model_copy(update={'actor': Agent(role='watchdog', session=1)})
-    )
-    with pytest.raises(SystemExit, match='watchdog#1 writes only the secrets of its own campaign'):
-        piped(monkeypatch, ['set', 'KEY'], 'v')
-    piped(monkeypatch, ['set', 'KEY', '--campaign', 'demo'], 'v')
-    assert out().strip() == 'KEY set for campaign demo'
-    with pytest.raises(SystemExit, match='watchdog#1 writes only the secrets of its own campaign'):
-        run_cli(['secret', 'rm', 'KEY'])
+    monkeypatch.setattr(common, 'settings', common.settings.model_copy(update={'actor': agent, 'agent_token': token}))
+    for argv in (['set', 'KEY', '--campaign', 'demo'], ['set', 'KEY']):
+        with pytest.raises(SystemExit, match='watchdog#1 has act access, and this route needs admin'):
+            piped(monkeypatch, argv, 'v')

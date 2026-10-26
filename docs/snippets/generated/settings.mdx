@@ -4,6 +4,7 @@
 |---|---|---|
 | `PILOOP_HOME` | `~/.piloop` | The directory that holds the database, the artifact store and the directories of each run (worktrees, logs, workspaces). |
 | `PILOOP_ACTOR` | `human` | Who this process is. Every row it updates records this value in `updated_by`. The daemon launches each agent with `<role>#<agent_session_id>`, for example `implementer#12` or `scout#7`. |
+| `PILOOP_AGENT_TOKEN` | none | The token of the agent that the daemon launched as `actor`, which its worker sets at its start: its calls act as that agent with it, and as nobody else. |
 | `PILOOP_SERVER` | none | The daemon that the commands which call the API ask, such as `https://piloop.example.com`: its network's client dials it, with the credential of this machine. Unset: the daemon of this home, on its socket. |
 | `PILOOP_MESSAGES` | none | The queue of messages for this agent's turn, set by a runtime that keeps one. `piloop agent messages` takes them. |
 | `PILOOP_MIGRATION_BACKUPS` | `3` | The number of copies of the database to keep, one written before each migration: `piloop.db.bak-<revision>-<UTC time>` next to it, the database as that revision left it. A new copy removes the oldest beyond this number. 0 writes none. Each copy is about the size of the database. |

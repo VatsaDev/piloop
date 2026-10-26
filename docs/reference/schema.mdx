@@ -116,11 +116,13 @@ CREATE TABLE tokens (
 	name VARCHAR NOT NULL,
 	access VARCHAR(16) NOT NULL,
 	sha256 VARCHAR NOT NULL,
+	agent_session_id INTEGER,
 	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
 	PRIMARY KEY (id),
 	UNIQUE (name),
 	CONSTRAINT access CHECK (access IN ('read', 'act', 'admin', 'worker')),
-	UNIQUE (sha256)
+	UNIQUE (sha256),
+	UNIQUE (agent_session_id)
 );
 CREATE TABLE worker_instances (
 	id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,

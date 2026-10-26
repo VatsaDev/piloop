@@ -6,7 +6,7 @@ import time
 import psutil
 import pytest
 
-from piloop.proc import UNITS_ENV, Inherited, Started, child_env, kill_group, started
+from piloop.proc import AGENT_TOKEN_ENV, UNITS_ENV, Inherited, Started, child_env, kill_group, started, withhold
 
 
 def test_kill_group_tolerates_a_reaped_child() -> None:
@@ -115,3 +115,11 @@ def _child(pid: int) -> bool:
     except ChildProcessError:
         return False
     return True
+
+
+def test_a_withheld_variable_and_an_agent_s_token_reach_no_child(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv('WORKER_CREDENTIAL', 'secret')
+    monkeypatch.setenv(AGENT_TOKEN_ENV, 'plt_agent')
+    assert child_env()['WORKER_CREDENTIAL'] == 'secret' and AGENT_TOKEN_ENV not in child_env()
+    withhold({'WORKER_CREDENTIAL', 'NEVER_SET'})
+    assert 'WORKER_CREDENTIAL' not in child_env() and 'WORKER_CREDENTIAL' not in os.environ

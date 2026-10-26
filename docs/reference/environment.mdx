@@ -30,6 +30,7 @@ the harnesses name.
 | Variable | Set for | Meaning |
 |---|---|---|
 | `PILOOP_ACTOR` | every agent | The agent's signature, `<role>#<agent-session-id>`, for example `implementer#12` or `scout#7`. |
+| `PILOOP_AGENT_TOKEN` | every agent | The agent's own token, minted when it starts and dead when it ends. Its piloop commands sign as the agent with it, whatever `PILOOP_ACTOR` says. |
 | `PILOOP_HOME` | every agent | The home of the daemon, or of the worker on another machine that runs the agent. |
 | `PILOOP_BIN` | every agent | `$PILOOP_HOME/bin/piloop`, which runs the daemon's own piloop on the daemon's home. On a [worker on another machine](/guides/remote-workers), it relays the command to the server. The briefs run piloop with it. |
 | `PATH` | every agent | The daemon's `PATH`, after `$PILOOP_HOME/bin`, so that a plain `piloop` is the daemon's too. |

@@ -53,6 +53,7 @@ from piloop.plugins.executor.contract import (
     EvaluationJob,
     EvaluationReport,
     HarnessSession,
+    JobSecrets,
     MissingBlobs,
     Prompt,
     Source,
@@ -216,7 +217,7 @@ def test_a_worker_that_stops_while_its_agent_gets_its_secrets_starts_nothing(
     worker = workers_of(ex).worker
     asked = Local.secrets
 
-    def stopping(client: Local, lease: int) -> dict[str, SecretStr]:
+    def stopping(client: Local, lease: int) -> JobSecrets:
         worker.stop()
         return asked(client, lease)
 
@@ -290,7 +291,10 @@ def test_a_worker_with_a_relay_relays_each_agent_while_its_job_runs(
     agent_session_id = request_agent(db, campaign)
 
     def relayed(agent: AgentSessionId) -> bool:
-        return relay.answer(AgentCall(agent=agent, argv=['sql']).model_dump_json().encode())[0] is HTTPStatus.OK
+        return (
+            relay.answer(AgentCall(agent=agent, argv=['sql'], token=SecretStr('plt_x')).model_dump_json().encode())[0]
+            is HTTPStatus.OK
+        )
 
     launching = threading.Thread(target=launch, args=(ex, agent_session_id, tmp_path))
     launching.start()

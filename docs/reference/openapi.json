@@ -1388,7 +1388,7 @@
     "/v1/secrets/{name}": {
       "put": {
         "summary": "Set Secret",
-        "description": "Set a secret of the home, or of the campaign named, in place of any. Agents get it from their next start.\n\nAn agent sets only its own campaign's secrets.",
+        "description": "Set a secret of the home, or of the campaign named, in place of any. Agents get it from their next start.",
         "operationId": "set_secret",
         "parameters": [
           {
@@ -1478,16 +1478,6 @@
               }
             },
             "description": "Conflict"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDetail"
-                }
-              }
-            },
-            "description": "Forbidden"
           },
           "422": {
             "description": "Validation Error",
@@ -1583,16 +1573,6 @@
               }
             },
             "description": "Conflict"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDetail"
-                }
-              }
-            },
-            "description": "Forbidden"
           },
           "422": {
             "description": "Validation Error",
@@ -6383,8 +6363,9 @@
         "properties": {
           "name": {
             "type": "string",
+            "pattern": "^[^\\s#]{1,128}$",
             "title": "Name",
-            "description": "The name of the caller that uses it, such as a worker."
+            "description": "The name of the caller that uses it, such as a worker. No ``#``: that names a launched agent's token."
           },
           "access": {
             "$ref": "#/components/schemas/Access"

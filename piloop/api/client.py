@@ -16,7 +16,7 @@ from typing import Final, Self
 from urllib.parse import quote
 
 import httpx2 as httpx
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, SecretStr, ValidationError
 
 from piloop.actor import Actor
 from piloop.api.contract import (
@@ -118,9 +118,9 @@ class Client:
             yield cls(http)
 
     @classmethod
-    def on(cls, socket: Path, actor: Actor) -> AbstractContextManager[Self]:
-        """A client of the daemon on the Unix socket ``socket``, acting as ``actor`` (``socket_http``)."""
-        return cls.connect(socket_http(socket, actor))
+    def on(cls, socket: Path, actor: Actor, token: SecretStr | None = None) -> AbstractContextManager[Self]:
+        """A client of the daemon on the Unix socket ``socket``, acting as ``actor`` with ``token`` (``socket_http``)."""
+        return cls.connect(socket_http(socket, actor, token))
 
     def status(self, query: Selection) -> Status:
         return self._get('/v1/status', query, Status)
@@ -273,8 +273,11 @@ def _timeout(params: Params | None) -> float:
             return TIMEOUT_SECONDS
 
 
-def socket_http(socket: Path, actor: Actor) -> httpx.Client:
+def socket_http(socket: Path, actor: Actor, token: SecretStr | None = None) -> httpx.Client:
     """An HTTP client of the daemon on the Unix socket ``socket``, which asks to act as ``actor``.
+
+    With ``token``, a launched agent's (``Settings.agent_token``), the daemon knows it as that agent. Without, as the
+    home's owner.
 
     Raises:
         NoDaemon: Nothing listens on the socket.
@@ -285,7 +288,10 @@ def socket_http(socket: Path, actor: Actor) -> httpx.Client:
             ' a daemon of an older piloop serves no socket: `piloop restart`'
         )
     transport = httpx.HTTPTransport(uds=str(socket))
-    return httpx.Client(transport=transport, base_url='http://piloop', headers={SOCKET_ACTOR_HEADER: actor.signature})
+    headers = {SOCKET_ACTOR_HEADER: actor.signature}
+    if token is not None:
+        headers['Authorization'] = f'Bearer {token.get_secret_value()}'
+    return httpx.Client(transport=transport, base_url='http://piloop', headers=headers)
 
 
 def segment(name: str) -> str:
@@ -321,7 +327,7 @@ def _refused(response: httpx.Response) -> Refused:
         problem = ProblemDetail.model_validate_json(response.content)
     except ValidationError:  # not a body of the API's, such as a crash's 500
         return Refused(None, f'the daemon answered {response.status_code}: {response.text}')
-    if problem.error is None:  # FastAPI's own 404: no such route
+    if problem.error is None and response.status_code == HTTPStatus.NOT_FOUND:  # FastAPI's own: no such route
         return Refused(
             None, f'the daemon has no such route ({problem.detail}): it runs an older piloop; `piloop restart`'
         )

@@ -18,14 +18,14 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from pydantic import SecretStr, ValidationError
 from pytest_mock import MockerFixture
 
-from piloop.actor import System
+from piloop.actor import Agent, System
 from piloop.api.contract import MAX_POLL_SECONDS, Access
-from piloop.db.models import Campaign, LeaseState, NoLease
+from piloop.db.models import AgentSession, AgentSessionState, Campaign, LeaseState, NoLease
 from piloop.db.session import Database
 from piloop.ids import CampaignId, CommentId, Revision
 from piloop.net import tokens
 from piloop.net.server import Server, app, executor_router
-from piloop.net.tokens import Tokens
+from piloop.net.tokens import Caller, Tokens
 from piloop.otel import Tracer
 from piloop.plugins.executor.contract import AgentJob, AgentKey, HarnessSession, MissingBlobs, Prompt, RepoId
 from piloop.plugins.executor.kit import remote as remote_module
@@ -49,7 +49,7 @@ from piloop.plugins.network.https import Https, HttpsNetwork
 from piloop.plugins.secrets.contract import SECRETS, HomeSecrets, set_secret
 from piloop.plugins.secrets.local import LocalSecrets
 from piloop.plugins.vcs.contract import MAX_HAVE
-from tests.conftest import Dial, disk, home_cas, wait_until
+from tests.conftest import WATCHDOG, Dial, disk, home_cas, wait_until
 from tests.fixtures.netfault import CutResponse, Proxy
 from tests.test_lease import (
     DONE,
@@ -211,10 +211,13 @@ def test_a_worker_cannot_act_on_another_workers_lease(
     assert lease_row(db, lease).state is LeaseState.ACQUIRED, 'still w1s'
 
 
-def test_a_worker_gets_the_values_of_the_secrets_that_its_agents_job_names_on_its_live_lease_only(
+def test_a_worker_gets_the_values_of_the_secrets_that_its_agents_job_names_and_its_token_on_its_live_lease_only(
     connect: Connect, db: Database, campaign: Campaign, tmp_path: Path
 ) -> None:
-    """The names come from the job in the CAS, never from the worker. The campaign's secret wins over the home's."""
+    """The names come from the job in the CAS, never from the worker. The campaign's secret wins over the home's.
+
+    The token acts as the job's agent while its session is live.
+    """
     with db.session() as s:
         for owner, name, value in [(None, 'KEY', 'home'), (campaign.id, 'KEY', 'campaign'), (None, 'OTHER', 'o')]:
             set_secret(s, SECRETS.selected({}), System.HUMAN, owner, name, SecretStr(value))
@@ -226,7 +229,15 @@ def test_a_worker_gets_the_values_of_the_secrets_that_its_agents_job_names_on_it
     lease = queue(db, job)
     assert isinstance(w1.acquire(uuid4().hex, HOST), Grant)
     found = w1.secrets(lease)
-    assert {name: value.get_secret_value() for name, value in found.items()} == {'KEY': 'campaign'}
+    assert {name: value.get_secret_value() for name, value in found.values.items()} == {'KEY': 'campaign'}
+    agent = Agent(role=WATCHDOG, session=job.agent_session)
+    assert Tokens(db).verify(found.token.get_secret_value()) is None, 'a session that is not live yet acts as nobody'
+    with db.session() as s:
+        s.get_one(AgentSession, job.agent_session).state = AgentSessionState.STARTING
+        s.commit()
+    assert Tokens(db).verify(found.token.get_secret_value()) == Caller(agent.signature, Access.ACT, agent)
+    again = w1.secrets(lease).token.get_secret_value()
+    assert Tokens(db).verify(found.token.get_secret_value()) is None, 'a token minted again replaces the one before'
     with pytest.raises(StaleLease):
         w2.secrets(lease)
     evaluation = queue(db, evaluation_job(db, campaign, tmp_path))
@@ -238,6 +249,10 @@ def test_a_worker_gets_the_values_of_the_secrets_that_its_agents_job_names_on_it
     w1.report(lease, uuid4().hex, DONE)
     with pytest.raises(StaleLease, match='is reported'):
         w1.secrets(lease)
+    with db.session() as s:
+        s.get_one(AgentSession, job.agent_session).state = AgentSessionState.EXITED
+        s.commit()
+    assert Tokens(db).verify(again) is None, 'the token ends with its agent session'
 
 
 def test_a_worker_reads_work_for_every_worker_and_only_its_own_prompts_and_revokes(
@@ -358,7 +373,7 @@ def test_a_revoked_token_and_the_servers_own_name_are_dismissed(remote: Callable
 
 def test_a_worker_of_another_protocol_is_dismissed_with_the_servers_version(remote: Callable[..., Remote]) -> None:
     with pytest.raises(
-        Dismissed, match=r'\(426\): the server runs piloop .+, with protocol 8, and the worker protocol 1'
+        Dismissed, match=r'\(426\): the server runs piloop .+, with protocol 9, and the worker protocol 1'
     ):
         remote().register(INFO.model_copy(update={'protocol': 1}))
 
@@ -515,7 +530,7 @@ def test_an_agents_relayed_call_runs_on_its_live_lease_only_and_a_lost_answer_is
         job = agent_job(db, campaign, tmp_path)
         lease = queue(db, job)
         assert isinstance(w1.acquire(uuid4().hex, HOST), Grant)
-        call = Call(argv=['sql', '-'], stdin='SELECT 1')
+        call = Call(argv=['sql', '-'], stdin='SELECT 1', token=SecretStr('plt_x'))
         assert w1.cli(lease, call) == Relayed(stdout=f'{job.agent_session}: sql - <SELECT 1>', exit_code=3)
         with pytest.raises(StaleLease):
             w2.cli(lease, call)

@@ -19,13 +19,14 @@ from alembic import command
 from alembic.script import ScriptDirectory
 from covalence import Cid
 from git import Repo
+from pydantic import SecretStr
 from pytest_mock import MockerFixture
 from rich.console import Console
 from rich.table import Table
 from sqlalchemy import create_engine, select, update
 from sqlalchemy.orm import Session
 
-from piloop.actor import Actor, Agent, System
+from piloop.actor import Actor, System
 from piloop.agents.results import PromptOutcome
 from piloop.api.client import Client, NoDaemon
 from piloop.api.contract import Selection
@@ -91,7 +92,18 @@ from piloop.scoring.ledger import CandidateImported, RemeasureRequested
 from piloop.settings import Settings
 from piloop.store.chunks import Chunked
 from piloop.version import direct_url, installed
-from tests.conftest import RESEARCH, WATCHDOG, at_head, disk, example, hold_lock, measuring, serving_api, wait_until
+from tests.conftest import (
+    RESEARCH,
+    WATCHDOG,
+    at_head,
+    disk,
+    example,
+    hold_lock,
+    launched,
+    measuring,
+    serving_api,
+    wait_until,
+)
 from tests.daemon.test_serve import alive
 from tests.db.test_migrations import TOO_OLD, alembic
 from tests.test_lease import Recorder
@@ -182,7 +194,10 @@ def test_every_role_but_the_implementer_files_a_seed_and_only_research_the_orche
     run_cli(['init', str(campaign_path)])
 
     def as_(actor: str, *argv: str) -> None:
-        monkeypatch.setattr(common, 'settings', Settings(home=tmp_path, uv_tool_dir=tmp_path / 'uv-tools', actor=actor))
+        settings = Settings(home=tmp_path, uv_tool_dir=tmp_path / 'uv-tools', actor=actor)
+        if '#' in actor:
+            settings = settings.model_copy(update=launched(tmp_path, actor))
+        monkeypatch.setattr(common, 'settings', settings)
         run_cli(list(argv))
 
     out()
@@ -272,9 +287,8 @@ def test_a_seed_developed_with_its_links_is_never_runnable_without_them(
     """
     research_files(campaign_path, 1)
     run_cli(['init', str(campaign_path)])
-    monkeypatch.setattr(
-        common, 'settings', Settings(home=tmp_path, uv_tool_dir=tmp_path / 'uv-tools', actor='research#8')
-    )
+    settings = Settings(home=tmp_path, uv_tool_dir=tmp_path / 'uv-tools')
+    monkeypatch.setattr(common, 'settings', settings.model_copy(update=launched(tmp_path, 'research#8')))
     run_cli(['idea', 'add', 'demo', 'the prerequisite'])
     run_cli(['idea', 'add', 'demo', 'a blunt version'])
     run_cli(['idea', 'seed', 'demo', 'refit after it', '--from', 'run#2'])
@@ -307,7 +321,10 @@ def test_a_sweep_files_its_new_ideas_as_proposed_while_its_role_may_file_none(
     run_cli(['init', str(campaign_path)])
 
     def as_(actor: str, *argv: str) -> None:
-        monkeypatch.setattr(common, 'settings', Settings(home=tmp_path, uv_tool_dir=tmp_path / 'uv-tools', actor=actor))
+        settings = Settings(home=tmp_path, uv_tool_dir=tmp_path / 'uv-tools', actor=actor)
+        if '#' in actor:
+            settings = settings.model_copy(update=launched(tmp_path, actor))
+        monkeypatch.setattr(common, 'settings', settings)
         run_cli(list(argv))
 
     as_('research#8', 'idea', 'add', 'demo', 'before the pause')
@@ -787,7 +804,10 @@ def test_cli_writes_as_the_actor_from_the_environment(
     campaign_path: Path, tmp_path: Path, out, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     run_cli(['init', str(campaign_path)])
+    agent = launched(tmp_path, 'watchdog#4')
+    assert isinstance(agent['agent_token'], SecretStr)
     monkeypatch.setenv('PILOOP_ACTOR', 'watchdog#4')
+    monkeypatch.setenv('PILOOP_AGENT_TOKEN', agent['agent_token'].get_secret_value())
     monkeypatch.setattr(common, 'settings', Settings(home=tmp_path))
     run_cli(['sql', "UPDATE campaigns SET name='renamed'"])
     out()
@@ -798,6 +818,14 @@ def test_cli_writes_as_the_actor_from_the_environment(
     out()
     run_cli(['sql', 'SELECT updated_by FROM campaigns'])
     assert 'watchdog#4' in out(), 'ORM writes carry the same actor'
+    monkeypatch.setattr(common, 'settings', Settings(home=tmp_path, actor=System.ORCHESTRATOR))
+    with pytest.raises(SystemExit, match='^sql error: watchdog#4 acts only as itself, not as orchestrator$'):
+        run_cli(['sql', "UPDATE campaigns SET name='posing'"])
+    with closing(Database(common.settings.database_url, actor=System.DAEMON)) as db, db.session() as s:
+        s.get_one(AgentSession, 4).state = AgentSessionState.EXITED
+        s.commit()
+    with pytest.raises(SystemExit, match='^sql error: PILOOP_AGENT_TOKEN is unknown, or its agent ended$'):
+        run_cli(['sql', 'SELECT 1'])
 
 
 @pytest.mark.usefixtures('api')
@@ -1073,7 +1101,7 @@ def test_candidate_note_keeps_a_regressed_result_in_view_with_follow_ups_pinned_
     with pytest.raises(SystemExit, match='no candidate#99'):
         run_cli(['candidate', 'note', '99', 'why'])
     monkeypatch.setattr(
-        common, 'settings', common.settings.model_copy(update={'actor': Agent(role='implementer', session=3)})
+        common, 'settings', common.settings.model_copy(update=launched(common.settings.home, 'implementer#3'))
     )
     with pytest.raises(SystemExit, match='implementer#3 files no ideas or seeds'):
         run_cli(['candidate', 'note', '2', 'worth a look', '--follow-up', 'a hunch'])

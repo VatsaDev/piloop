@@ -76,7 +76,7 @@ CODEX_TOOL_ENV = [
 ]
 """Give Codex's shell commands the agent's environment, as Claude and pi do, whatever the user's
 ``shell_environment_policy`` says. piloop finds an agent's background jobs by ``PILOOP_PROCESS_TAG``, and
-``PILOOP_ACTOR`` signs the agent's writes. ``inherit = "core"`` or an ``include_only`` would drop them, and the
+``PILOOP_AGENT_TOKEN`` signs the agent's writes. ``inherit = "core"`` or an ``include_only`` would drop them, and the
 default excludes (``*KEY*``, ``*SECRET*``, ``*TOKEN*``) other variables that Claude and pi pass on. The MCP renderer's
 ``shell_environment_policy.exclude`` keeps the role's API keys out."""
 

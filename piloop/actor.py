@@ -1,7 +1,8 @@
 """Who writes: an agent that the daemon launched, a person whom the network named, or one of piloop's own actors.
 
 ``PILOOP_ACTOR``, ``updated_by``, ``events.actor`` and the ``*_by`` and ``author`` columns hold the actor's signature:
-``<role>#<agent_session_id>`` for an agent, such as ``implementer#12``, ``human:<name>`` for a person, else ``human``,
+``<role>#<agent_session_id>`` for an agent, such as ``implementer#12``, ``human:<name>`` for a person,
+``orchestrator via human:<name>`` for a person whom the network named acting as the orchestrator, else ``human``,
 ``orchestrator`` or ``daemon``.
 """
 
@@ -16,6 +17,22 @@ PERSON = 'human:'
 """What a person's signature starts with."""
 PERSON_NAME = r'^[^\s#]{1,128}$'
 """A person's name, as the network names the caller: the proxy's ``name_claim``, or a token's name."""
+ORCHESTRATING = 'orchestrator via '
+"""What the signature of a person acting as the orchestrator starts with, before the person's own."""
+
+
+def _fields(value: object) -> object:
+    """Split a signature into its fields: ``<role>#<id>``, ``orchestrator via <person>``, or ``human:<name>``."""
+    match value:
+        case str() if '#' in value:
+            role, _, session = value.partition('#')
+            return {'role': role, 'session': session}
+        case str() if value.startswith(ORCHESTRATING):
+            return {'person': value.removeprefix(ORCHESTRATING)}
+        case str() if value.startswith(PERSON):
+            return {'name': value.removeprefix(PERSON)}
+        case _:
+            return value
 
 
 class Agent(BaseModel):
@@ -61,6 +78,25 @@ class Person(BaseModel):
         return self.signature
 
 
+class Orchestrating(BaseModel):
+    """A person whom the network named, acting as the orchestrator: the write is the orchestrator's, and says whose."""
+
+    model_config = ConfigDict(frozen=True)
+
+    person: Annotated[Person, BeforeValidator(_fields)]
+
+    @property
+    def signature(self) -> str:
+        return f'{ORCHESTRATING}{self.person.signature}'
+
+    @property
+    def launched(self) -> None:
+        return None
+
+    def __str__(self) -> str:
+        return self.signature
+
+
 class System(StrEnum):
     """An actor that the daemon did not launch: the person at the terminal, the orchestrator, or the daemon itself."""
 
@@ -77,22 +113,12 @@ class System(StrEnum):
         return None
 
 
-def _fields(value: object) -> object:
-    """Split a signature into its fields: ``<role>#<id>`` for an agent, ``human:<name>`` for a person."""
-    match value:
-        case str() if '#' in value:
-            role, _, session = value.partition('#')
-            return {'role': role, 'session': session}
-        case str() if value.startswith(PERSON):
-            return {'name': value.removeprefix(PERSON)}
-        case _:
-            return value
-
-
 def _signed(actor: Actor) -> str:
     return actor.signature
 
 
-type Actor = Annotated[Agent | Person | System, BeforeValidator(_fields), PlainSerializer(_signed, return_type=str)]
+type Actor = Annotated[
+    Agent | Person | Orchestrating | System, BeforeValidator(_fields), PlainSerializer(_signed, return_type=str)
+]
 type SignedAgent = Annotated[Agent, BeforeValidator(_fields), PlainSerializer(_signed, return_type=str)]
 """An ``Agent`` that is read from and written as its signature, as an ``Actor`` is."""

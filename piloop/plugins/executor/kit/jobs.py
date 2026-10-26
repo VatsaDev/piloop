@@ -43,6 +43,7 @@ from piloop.plugins.executor.contract import (
     AgentReport,
     EvaluationJob,
     EvaluationReport,
+    JobSecrets,
     Prompt,
     RepoId,
     Sample,
@@ -53,7 +54,7 @@ from piloop.plugins.executor.kit.sessions import POLL_SECONDS, SessionFile
 from piloop.plugins.executor.kit.transfers import send_of_record
 from piloop.plugins.runtime.contract import AgentExit, AgentSpec, ExitStatus, Handle, Runtime, taken
 from piloop.plugins.vcs.contract import Repository
-from piloop.proc import PILOOP_ARGV, child_env, kill_group
+from piloop.proc import AGENT_TOKEN_ENV, PILOOP_ARGV, child_env, kill_group
 from piloop.scoring.evaluate import (
     EvalResult,
     Failed,
@@ -216,8 +217,8 @@ class Control(Protocol):
         """The prompts that the agent's runtime took, one list for each ``Runtime.prompt``, oldest first."""
         ...
 
-    def secrets(self) -> dict[EnvName, SecretStr]:
-        """The values of the agent's secrets (``AgentJob.secrets``) that the home has, by name: asked at its start."""
+    def secrets(self) -> JobSecrets:
+        """The values of the agent's secrets (``AgentJob.secrets``) that the home has, and its token: asked at its start."""
         ...
 
 
@@ -564,16 +565,20 @@ class MissingSecrets(LookupError):
     """An agent's job needs secrets that the home does not have. The message names them, never a value."""
 
 
-def rendered(job: AgentJob, spec: AgentSpec, found: Mapping[str, SecretStr]) -> AgentSpec:
-    """The spec with the values of the job's secrets from ``found`` (``Control.secrets``), and ``{mcp}`` expanded.
+def rendered(job: AgentJob, spec: AgentSpec, found: JobSecrets) -> AgentSpec:
+    """The spec with the job's secrets and token from ``found`` (``Control.secrets``), and ``{mcp}`` expanded.
 
-    piloop's own variables in the spec win over a secret of the same name.
+    piloop's own variables in the spec and the token win over a secret of the same name.
 
     Raises:
         MissingSecrets: a secret is not set.
         McpError: the servers cannot be given to this agent.
     """
-    env = secret_env(job.secrets, found, child_env()) | spec.env
+    env = (
+        secret_env(job.secrets, found.values, child_env())
+        | spec.env
+        | {AGENT_TOKEN_ENV: found.token.get_secret_value()}
+    )
     if job.mcp is None:
         return replace(spec, env=env)
     mcp = RENDERERS[job.mcp].render(

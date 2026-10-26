@@ -100,41 +100,21 @@ class SecretDeleted(EventModel):
     name: EnvName
 
 
-class Denied(PermissionError):
-    """An agent's write of a secret that is not its campaign's. Nothing changed."""
-
-
 def target(owner: Owner) -> TargetRef:
     """What the events of ``owner``'s secrets are on."""
     return HOME if owner is None else TargetRef(TargetKind.CAMPAIGN, owner)
 
 
-def writable(s: Session, actor: Actor, owner: Owner) -> None:
-    """Check that ``actor`` may write ``owner``'s secrets: an agent its own campaign's only, anyone else any secret.
-
-    Raises:
-        Denied: An agent's write of the home's secrets, or of another campaign's.
-    """
-    if (agent := actor.launched) is None:
-        return
-    row = s.get(AgentSession, agent.session)
-    own = row.campaign_id if row is not None else None
-    if owner is None or owner != own:
-        raise Denied(f'{actor} writes only the secrets of its own campaign')
-
-
 def set_secret(
     s: Session, provider: SecretsProvider, actor: Actor, owner: Owner, name: EnvName, value: SecretStr
 ) -> None:
-    """Set ``owner``'s secret ``name`` to ``value``, in place of any. The caller commits. Raises ``Denied``."""
-    writable(s, actor, owner)
+    """Set ``owner``'s secret ``name`` to ``value``, in place of any. The caller commits."""
     provider.put(s, owner, name, value)
     emit(s, SecretSet(name=name), target(owner), actor)
 
 
 def remove_secret(s: Session, provider: SecretsProvider, actor: Actor, owner: Owner, name: EnvName) -> bool:
-    """Delete ``owner``'s secret ``name``, and return whether there was one. The caller commits. Raises ``Denied``."""
-    writable(s, actor, owner)
+    """Delete ``owner``'s secret ``name``, and return whether there was one. The caller commits."""
     if not provider.delete(s, owner, name):
         return False
     emit(s, SecretDeleted(name=name), target(owner), actor)

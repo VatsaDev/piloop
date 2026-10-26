@@ -975,10 +975,17 @@ class Token(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(unique=True)
-    """The caller's name, such as a worker's id."""
+    """The caller's name, such as a worker's id, or the signature of the agent that the token is bound to."""
     access: Mapped[Access]
     sha256: Mapped[str] = mapped_column(unique=True)
     """The hex SHA-256 of the secret."""
+    agent_session_id: Mapped[AgentSessionId | None] = mapped_column(unique=True)
+    """The agent session that the token was minted for when it launched: it acts as that agent while the session lives.
+
+    No foreign key: its cascade would write this table, which an agent's ``piloop sql`` may not, so an agent's delete of
+    a campaign would fail. A token whose session is gone acts as nobody. A session that reuses its id gets its own token
+    at its start (``mint_agent``), in place of the old one.
+    """
     created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=NOW)
 
 

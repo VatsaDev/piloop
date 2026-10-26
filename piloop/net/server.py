@@ -26,6 +26,7 @@ from uvicorn.protocols.http.h11_impl import H11Protocol
 from piloop.api.client import SOCKET_ACTOR_HEADER
 from piloop.api.contract import GRANTS, Access
 from piloop.net import Changed, InvalidBody, Refusal, Route
+from piloop.net.acting import OWNER
 from piloop.net.tokens import PREFIX, Caller, Tokens
 from piloop.plugins.host import PluginError
 from piloop.plugins.network.contract import Address, Listener, Network, Peer, Refused
@@ -33,8 +34,6 @@ from piloop.settings import socket_dir
 
 GRACE_SECONDS = 5
 """How long ``Server.close`` lets the requests in flight finish."""
-OWNER = Caller('owner', Access.ADMIN)
-"""Who calls on the home's Unix socket without a token: only the home's user can open it (Docker's socket)."""
 OPENAPI = '/v1/openapi.json'
 
 
