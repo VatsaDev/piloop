@@ -31,6 +31,7 @@ from piloop.plugins import metric
 from piloop.plugins.fact_source import facts
 from piloop.plugins.host import BUILT_IN, CAPABILITIES, Capability, Parameters, Tier
 from piloop.plugins.runtime.contract import NotSteerable
+from tests.fixtures import route_plugin
 
 HELPERS: tuple[object, ...] = (  # a tuple: some are values that do not hash, such as GO
     capabilities.EventModel,  # what a provider's events subclass, as an executor's capacity_events
@@ -133,6 +134,12 @@ HELPERS: tuple[object, ...] = (  # a tuple: some are values that do not hash, su
     capabilities.per_evaluation,
     capabilities.worker_spend,
     capabilities.per_run,
+    capabilities.reader,  # what a contributed route depends on, as the API's own routes do
+    capabilities.actor_access,
+    capabilities.Acting,
+    capabilities.Addressed,
+    capabilities.Writing,
+    capabilities.REFUSALS_DOCUMENTED,
 )
 """What a provider raises, calls or returns that no signature of a contract names."""
 
@@ -288,13 +295,14 @@ def test_the_example_plugins_import_piloop_only_from_the_module() -> None:
         piloop_nice,
         piloop_stop_after_keeps,
         piloop_keep_cost,
+        route_plugin,
     ]
     for plugin in plugins:
         own = plugin.__name__.split('.')[0]
         outside = {m for m in _imports(Path(plugin.__file__ or '')) if m.split('.')[0] not in sys.stdlib_module_names}
         # covalence is the library of piloop's CAS: a provider may return its stores as they are. pydantic's
-        # SecretStr is what a contract passes a secret's value in
-        assert {m for m in outside if m.split('.')[0] not in {own, 'covalence', 'pydantic'}} == {
+        # SecretStr is what a contract passes a secret's value in, and a contributed route is a FastAPI router
+        assert {m for m in outside if m.split('.')[0] not in {own, 'covalence', 'pydantic', 'fastapi'}} == {
             'piloop.capabilities'
         }, plugin.__name__
 

@@ -6,12 +6,15 @@ from importlib.metadata import EntryPoint
 from pathlib import Path
 
 import cyclopts
+import httpx2 as httpx
 import pytest
 from fastapi import APIRouter
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from piloop.actor import Actor
+from piloop.actor import Actor, System
+from piloop.api.client import Client, Refused
+from piloop.api.contract import Access, Problem
 from piloop.cli.main import COMMANDS, add_commands
 from piloop.daemon.api import Handlers, daemon_state, openapi, with_api
 from piloop.daemon.loop import Consumer, Turn
@@ -38,8 +41,10 @@ from piloop.plugins.network.https import Https
 from piloop.plugins.secrets.contract import HomeSecrets
 from piloop.plugins.secrets.local import LocalSecrets
 from piloop.settings import Settings
-from tests.conftest import disk
+from tests.conftest import disk, serving_api
 from tests.daemon.test_roles import forget_loaded, installed
+from tests.fixtures.route_plugin import Greeting
+from tests.net.test_api import token
 
 
 def idle(_turn: Turn) -> datetime | None:
@@ -150,6 +155,25 @@ def test_a_provider_that_contributes_and_cannot_be_built_with_its_defaults_is_re
         match="^the memory provider 'picky' contributes, and cannot be built with its defaults: folder: Field required$",
     ):
         contribution.installed()
+
+
+@pytest.mark.usefixtures('forgets')
+def test_a_package_s_route_authenticates_and_addresses_its_campaign_with_the_module_alone(
+    db: Database, campaign: Campaign, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    installed(monkeypatch, [EntryPoint('greeter', 'tests.fixtures.route_plugin:Greeter', MEMORY.group)])
+    cfg = Settings(home=tmp_path)
+    reader = token(db, 'ana', Access.READ)
+    with serving_api(cfg), Client.on(cfg.socket_file, System.ORCHESTRATOR) as client:
+        path = f'/v1/campaigns/{campaign.name}/greeting'
+        assert client.post(path, None, Greeting) == Greeting(campaign=campaign.name, to='orchestrator')
+        with pytest.raises(Refused) as unknown:
+            client.post('/v1/campaigns/nope/greeting', None, Greeting)
+        transport = httpx.HTTPTransport(uds=str(cfg.socket_file))
+        with httpx.Client(transport=transport, headers={'Authorization': f'Bearer {reader}'}) as http:
+            refused = http.post(f'http://piloop{path}')
+    assert unknown.value.error == Problem.UNKNOWN_CAMPAIGN
+    assert (refused.status_code, refused.json()) == (403, {'detail': 'ana has read access, and this route needs act'})
 
 
 def hello() -> str:
