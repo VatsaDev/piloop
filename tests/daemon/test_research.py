@@ -129,7 +129,7 @@ def test_a_seed_sweep_develops_one_seed_and_rejects_the_other_however_full_the_b
         campaign,
         FAKE_DEVELOPER,
         implementer={'max_concurrent': 1},
-        research={'triggers': low_water(0), 'max_ideas': 2},
+        research={'triggers': [*low_water(0), {'provider': 'stalled'}], 'max_ideas': 2},
     )
     with db.session() as s:
         for title, by, pointers in (
@@ -158,7 +158,7 @@ def test_a_seed_sweep_develops_one_seed_and_rejects_the_other_however_full_the_b
 
     with serving_api(Settings(home=tmp_path)):  # the sweep's `piloop idea develop` asks the daemon
         assert scheduler.run_all() == [1], 'the one slot is busy and the backlog is at its target, but two seeds wait'
-        assert last_reason(db) == '2 new seeds to develop'
+        assert last_reason(db) == '2 new seeds to develop; stalled, step 1'
         scheduler.wait()
     scheduler.stop(timeout=5)
 

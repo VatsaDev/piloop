@@ -1,10 +1,8 @@
-import math
-
 from sqlalchemy import func, select
 
 from piloop.api.views import Lines, Rendered
 from piloop.campaign.ideas import runnable
-from piloop.campaign.stop import limits, runs
+from piloop.campaign.stop import left
 from piloop.db.models import (
     LIVE,
     OPEN_RUNS,
@@ -37,8 +35,8 @@ class IdleQueue(Section):
         if campaign.status is not CampaignStatus.ACTIVE or campaign.paused is not None:
             return None
         free = cfg.run_slots - count(s, campaign_runs(campaign.id).where(Run.status.in_(OPEN_RUNS)))
-        if (max_runs := limits(cfg).get(RUNS)) is not None:
-            free = min(free, math.floor(max_runs) - runs(s, campaign))
+        if (runs_left := left(s, campaign, cfg).get(RUNS)) is not None:
+            free = min(free, runs_left)
         if free <= 0 or count(s, select(Idea).where(Idea.campaign_id == campaign.id, runnable())):
             return None
         moments = [campaign.created_at]

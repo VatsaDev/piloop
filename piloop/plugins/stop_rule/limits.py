@@ -4,6 +4,7 @@ The rule imports only the Python standard library, pydantic, its contract and th
 plugin does. It is an entry point of piloop's own ``pyproject.toml``, in ``piloop.stop_rules``.
 """
 
+import math
 from collections.abc import Callable
 from typing import Annotated
 
@@ -23,7 +24,7 @@ from piloop.plugins.fact_source.facts import (
     reading,
 )
 from piloop.plugins.metric import Direction, number
-from piloop.plugins.stop_rule.contract import GO, Escalate, Go, Hold, Stop, StopCase, StopRule
+from piloop.plugins.stop_rule.contract import Escalate, Go, Hold, Shape, Stop, StopCase, StopRule
 
 NONE = '—'
 
@@ -82,6 +83,10 @@ class Limits(StopRule):
     ``piloop init``."""
 
     def limits(self) -> dict[Fact[FactValue], float]:
+        """The limit on each fact: the facts that it reads and shows, and the budgets of ``left``.
+
+        A rule that subclasses ``limits`` adds a limit here, and checks it in ``check``.
+        """
         found = {
             RUNS: self.max_runs,
             HOURS: self.max_hours,
@@ -106,7 +111,26 @@ class Limits(StopRule):
         if (held := next((h for h in holds if h is not None), None)) is not None:
             return held
         reasons = (reached(case, limits[fact]) for fact, reached in STOPS if fact in limits)
-        return next((Stop(reason) for reason in reasons if reason is not None), GO)
+        stop = next((Stop(reason) for reason in reasons if reason is not None), None)
+        return Go(self.left(case)) if stop is None else stop
+
+    def left(self, case: StopCase) -> Facts:
+        """What is left of each fact that a limit stops the campaign at: the limit less the value.
+
+        While a value is not known, its whole limit is left. The head is not in it: a target is reached, not used up.
+        Nor is a value of ``hold_at``, which holds the campaign and never stops it.
+        """
+        held = {reading(name) for name in self.hold_at}
+        budgets = [(fact, limit) for fact, limit in self.limits().items() if fact not in held and fact != HEAD]
+        return Facts({fact.name: _less(limit, case.facts.get(fact)) for fact, limit in budgets})
+
+    def check_config(self, shape: Shape) -> str | None:
+        """A ``target`` is on the head, which is the primary metric of the first track only."""
+        return (
+            'limits the head, which needs a campaign of one track'
+            if self.target is not None and shape.tracks > 1
+            else None
+        )
 
     def describe(self, case: StopCase) -> list[str]:
         """``run 7/200 · 2.1h/12h``: the runs and the hours, then each other limit against its fact.
@@ -119,6 +143,17 @@ class Limits(StopRule):
         held = [_show_held(case.facts, name, limit) for name, limit in self.hold_at.items()]
         stops = limits.keys() - {reading(name) for name in self.hold_at}
         return [*parts, *held] if stops else [*parts, *held, 'no limit stops it: open-ended']
+
+
+def _less(limit: float, value: FactValue) -> FactValue:
+    """``limit`` less ``value``, as a count when the value is one. The whole limit while the value is not a number."""
+    match value:
+        case int():
+            return math.floor(limit) - value
+        case float():
+            return limit - value
+        case _:
+            return limit
 
 
 def _hold(facts: Facts, name: str, limit: float) -> Hold | Escalate | None:

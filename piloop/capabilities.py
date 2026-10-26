@@ -65,7 +65,7 @@ from piloop.plugins.section.lessons import Lessons
 
 from piloop.plugins.role.contract import ROLES, ImplementerRole, SweepRole
 from piloop.plugins.role.contract import Files
-from piloop.plugins.role.contract import RoleConfig, Sweep, Stall
+from piloop.plugins.role.contract import RoleConfig, Sweep
 from piloop.plugins.role.research import ResearchRole
 from piloop.plugins.role.scout import ScoutRole
 from piloop.plugins.role.watchdog import WatchdogRole
@@ -79,7 +79,7 @@ from piloop.plugins.verdict_rule.contract import Moved, Rebase, Seed, Leave
 from piloop.plugins.metric import number
 from piloop.plugins.verdict_rule.bootstrap import Bootstrap
 
-from piloop.plugins.stop_rule.contract import STOP_RULES, StopRule, StopCase, WhileHeld
+from piloop.plugins.stop_rule.contract import STOP_RULES, StopRule, StopCase, Shape, WhileHeld
 from piloop.plugins.fact_source.contract import FACT_SOURCES, FactSource, FactSourceEntry, FactReadError
 from piloop.plugins.fact_source.kit.readings import Readings
 from piloop.plugins.fact_source.facts import Fact, Facts, FactValue, Funnel

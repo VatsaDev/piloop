@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from enum import StrEnum
 from importlib.resources import files
 from importlib.resources.abc import Traversable
-from typing import TYPE_CHECKING, ClassVar, Literal, NamedTuple, Protocol, Self
+from typing import TYPE_CHECKING, ClassVar, Literal, Protocol, Self
 
 from pydantic import Field, model_validator
 
@@ -137,27 +137,12 @@ def ideas_taken(takes: str) -> str:
     return f'SELECT id FROM ideas WHERE {takes}'
 
 
-class Stall(NamedTuple):
-    """How close the campaign is to a stall (``piloop.campaign.stop.stall``)."""
-
-    runs: int
-    """The measured runs since the last keep."""
-    mark: int
-    """The runs without a keep that mark a stall."""
-    why: str
-    """How the mark was derived, for the brief."""
-
-
 class Sweep(Pass, Protocol):
     """What a sweeping role reads to give its agent its context: its trigger's ``Pass``, and the agent's row."""
 
     @property
     def agent_session(self) -> AgentSession:
         """The row of the agent that the brief is for."""
-        ...
-
-    def stall(self) -> Stall:
-        """The runs without a keep against the stall mark."""
         ...
 
 

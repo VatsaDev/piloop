@@ -5,7 +5,6 @@ the trigger of the closing watchdog. A stop or a cancel that someone asks for is
 answers (``piloop.db.requests``).
 """
 
-import math
 from collections.abc import Collection
 from datetime import datetime, timedelta
 from typing import Literal, assert_never
@@ -39,7 +38,7 @@ from piloop.db.requests import answer, pending
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.db.triggers.changelog import CampaignPausedChanged, CampaignStatusChanged
 from piloop.ids import CampaignStatus, CommentKind, Ending, IdeaStatus, RunId, TargetKind, TargetRef
-from piloop.plugins.fact_source.facts import HOURS, WITHOUT_KEEP, Fact, Facts, FactValue
+from piloop.plugins.fact_source.facts import HOURS, Fact, Facts, FactValue
 from piloop.plugins.stop_rule.contract import STOP_RULES, Escalate, Go, Hold, Stop, StopCase, WhileHeld
 from piloop.scoring.ledger import keeps, last_keep_at
 from piloop.scoring.verdict import pending_clause
@@ -234,11 +233,6 @@ def park_cancelled(s: Session, run: Run) -> None:
     )
 
 
-def limits(cfg: CampaignConfig) -> dict[Fact[FactValue], float]:
-    """The limits of the campaign's stop rule, by fact (``StopRule.limits``)."""
-    return STOP_RULES.selected(cfg.plugins).limits()
-
-
 def check(s: Session, campaign: Campaign, cfg: CampaignConfig) -> Go | Hold | Stop | Escalate:
     """Ask the campaign's stop rule whether ``campaign`` goes on, holds, or stops now.
 
@@ -260,6 +254,30 @@ def _case(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime) ->
     primary = cfg.all_tracks[0].primary
     reads = STOP_RULES.selected(cfg.plugins).reads()
     return StopCase(primary.name, primary.direction, gather(s, campaign, cfg, reads, now))
+
+
+def left(s: Session, campaign: Campaign, cfg: CampaignConfig) -> Facts:
+    """What the campaign's stop rule leaves of each fact now (``Go.left``).
+
+    Nothing bounds a campaign that the rule holds or stops, or that piloop does not ask it about (``asked``).
+    """
+    return left_of(check(s, campaign, cfg)) if asked(s, campaign, cfg) else Facts()
+
+
+def left_of(answer: Go | Hold | Stop | Escalate) -> Facts:
+    """What an answer of the stop rule leaves of each fact: ``Go.left``, also as the ``then`` of an ``Escalate``."""
+    match done := acted(answer):
+        case Go(left=facts):
+            return facts
+        case Hold() | Stop():
+            return Facts()
+        case _:
+            assert_never(done)
+
+
+def acted(answer: Go | Hold | Stop | Escalate) -> Go | Hold | Stop:
+    """What piloop does on an answer of the stop rule: the answer, or the ``then`` of an ``Escalate``."""
+    return answer.then if isinstance(answer, Escalate) else answer
 
 
 def escalated(
@@ -300,16 +318,26 @@ def gather(
 def timeout(s: Session, campaign: Campaign, cfg: CampaignConfig, role_timeout: float, started_at: datetime) -> float:
     """Return the seconds that an agent of ``campaign`` that started at ``started_at`` may run.
 
-    That is its ``role_timeout``, cut where the stop rule's limit on ``hours`` stops the active campaign
-    (``StopRule.limits``): a run that starts minutes before the stop ends with it. A stopped campaign cuts nothing, so
-    its closing review has its whole timeout.
+    That is its ``role_timeout``, cut where the stop rule's ``hours`` run out (``Go.left``): a run that starts minutes
+    before the stop ends with it. When the rule stops the campaign, no time is left: the pass winds the agent down. A
+    stopped campaign cuts nothing, so its closing review has its whole timeout.
     """
-    limit = STOP_RULES.selected(cfg.plugins).limits().get(HOURS)
-    if campaign.status is not CampaignStatus.ACTIVE or limit is None:
+    if campaign.status is not CampaignStatus.ACTIVE:
         return role_timeout
     now = utcnow()
-    left = (limit - (hours(s, campaign, now) or 0.0)) * 3600
-    return max(0.0, min(role_timeout, (now - started_at).total_seconds() + left))
+    match answer := acted(STOP_RULES.selected(cfg.plugins).check(_case(s, campaign, cfg, now))):
+        case Go(left=facts):
+            hours = facts.get(HOURS)
+        case Stop():
+            return 0.0
+        case Hold():
+            hours = None
+        case _:
+            assert_never(answer)
+    if hours is None:
+        return role_timeout
+    elapsed = (now - started_at).total_seconds()
+    return max(0.0, min(role_timeout, elapsed + hours * 3600))
 
 
 def requested(s: Session, campaign: Campaign) -> Stop | None:
@@ -367,9 +395,8 @@ def held(s: Session, campaign: Campaign, cfg: CampaignConfig) -> str | None:
     """
     if not asked(s, campaign, cfg):
         return None
-    answer = check(s, campaign, cfg)
-    acted = answer.then if isinstance(answer, Escalate) else answer
-    return acted.reason if isinstance(acted, Hold) else None
+    answer = acted(check(s, campaign, cfg))
+    return answer.reason if isinstance(answer, Hold) else None
 
 
 def kept(s: Session, campaign: Campaign) -> int:
@@ -390,16 +417,15 @@ def runs(s: Session, campaign: Campaign) -> int:
     return _over_runs(s, campaign, func.count(Run.id), counted() | (attempt() & unsettled())) or 0
 
 
-def hours_due(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime) -> datetime | None:
-    """When ``hours`` reaches the limit that the stop rule sets on it, for a campaign that runs and is not paused.
+def hours_due(campaign: Campaign, answer: Go | Hold | Stop | Escalate, now: datetime) -> datetime | None:
+    """When the ``hours`` that the stop rule's answer leaves run out, for a campaign that runs and is not paused.
 
-    None without such a limit, before the first run, or while time does not count. The pass then checks the rule.
+    None when the answer leaves no hours, or while time does not count. The pass then checks the rule.
     """
-    limit = limits(cfg).get(HOURS)
-    if limit is None or campaign.status is not CampaignStatus.ACTIVE or campaign.paused is not None:
+    hours = left_of(answer).get(HOURS)
+    if hours is None or campaign.status is not CampaignStatus.ACTIVE or campaign.paused is not None:
         return None
-    spent = hours(s, campaign, now)
-    return None if spent is None else now + timedelta(hours=max(limit - spent, 0))
+    return now + timedelta(hours=max(hours, 0))
 
 
 def hours(s: Session, campaign: Campaign, now: datetime) -> float | None:
@@ -447,15 +473,3 @@ def runs_without_keep(s: Session, campaign: Campaign, before: datetime | None = 
     after = (Run.finished_at > since,) if since is not None else ()
     by = (Run.finished_at <= before,) if before is not None else ()
     return _over_runs(s, campaign, func.count(Run.id), Run.status.in_(FINISHED_RUNS), counted(), *after, *by) or 0
-
-
-def stall(cfg: CampaignConfig) -> tuple[int, str]:
-    """Return the number of runs without a keep after which research must pivot, and how it was derived.
-
-    The number is half of the stop rule's limit on runs without a keep, so half of the campaign's patience remains after
-    the pivot. Without that limit, it is two rounds of the run slots (``CampaignConfig.run_slots``).
-    """
-    if (plateau := limits(cfg).get(WITHOUT_KEEP)) is not None:
-        return math.ceil(plateau / 2), f"half of the stop rule's limit of {plateau:g} runs without a keep"
-    slots = ' + '.join(f'[roles.{name}] max_concurrent' for name in cfg.roles.doing_runs())
-    return 2 * cfg.run_slots, f'two rounds of {slots} = {cfg.run_slots}'

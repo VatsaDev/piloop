@@ -70,15 +70,13 @@ from piloop.campaign.stop import (
     escalated,
     held as held_now,
     hours_due,
-    limits,
+    left as left_now,
     park_cancelled,
     requested,
     review_skipped,
     review_waits,
-    runs,
     runs_without_keep,
     settled,
-    stall,
     timeout as agent_timeout,
     unclosed,
 )
@@ -169,8 +167,9 @@ from piloop.plugins.contribution import collect, installed
 from piloop.plugins.executor.contract import AgentKey, LeftJob, Prompt
 from piloop.plugins.fact_source import facts
 from piloop.plugins.fact_source.contract import FactReadError, FactSource
+from piloop.plugins.fact_source.facts import Facts
 from piloop.plugins.memory.contract import MEMORY
-from piloop.plugins.role.contract import ImplementerRole, Stall, SweepRole, ideas_taken
+from piloop.plugins.role.contract import ImplementerRole, SweepRole, ideas_taken
 from piloop.plugins.section.contract import Rendering, markdown
 from piloop.plugins.stop_rule.contract import GO, STOP_RULES, Go, Hold, Stop, WhileHeld
 from piloop.plugins.trigger.contract import TRIGGERS, Backlog, Fire, TrackBacklog
@@ -635,8 +634,8 @@ class Scheduler:
     def _campaigns(self, turn: Turn) -> datetime | None:
         """Pass over every campaign: its ideas, its stop rule, its remeasures, its triggers, and the launches.
 
-        Returns when a pass must come for time alone: the earliest ``due_in`` of a trigger, the end of a ``max_hours``
-        or of a startup pause, or the next reading of a fact source.
+        Returns when a pass must come for time alone: the earliest ``due_in`` of a trigger, the end of the hours that the
+        stop rule leaves or of a startup pause, or the next reading of a fact source.
 
         Before the triggers, the pass rejects the ideas that a newer idea superseded (``piloop.campaign.ideas.supersede``),
         and parks those after a prerequisite that ended without a keep (``park_stranded``). This also happens for a
@@ -665,7 +664,7 @@ class Scheduler:
                     reason = f'after idea#{prerequisite}, which ended without a keep'
                     self._tracer.event('idea.parked', campaign=campaign.name, idea=idea_id, reason=reason)
                 answer = escalated(s, campaign, cfg, check_stop(s, campaign, cfg)) if asked(s, campaign, cfg) else GO
-                self._soonest.add(hours_due(s, campaign, cfg, turn.now))
+                self._soonest.add(hours_due(campaign, answer, turn.now))
                 held = answer.reason if isinstance(answer, Hold) else None
                 if held is None and campaign.paused is not Pause.ALL:
                     self._remeasure(s, campaign)
@@ -1021,9 +1020,11 @@ class Scheduler:
         the stop still launch.
         """
         if isinstance(answer, Go):
-            self._queue(s, campaign, cfg)
+            self._queue(s, campaign, cfg, answer.left)
+            s.flush()
+            left = left_now(s, campaign, cfg)  # the runs just queued use up what the rule left
             for name, role in cfg.roles.sweeping().items():
-                self._request(s, campaign, cfg, name, role, now)
+                self._request(s, campaign, cfg, name, role, now, left)
             return
         reason = answer.reason
         campaign.status, campaign.stopped_reason = CampaignStatus.STOPPED, reason
@@ -1053,7 +1054,7 @@ class Scheduler:
         else:
             self._tracer.event('documents.synced', campaign=campaign.name, result=synced.line())
         for name, role in sweeping.items():
-            self._request(s, campaign, cfg, name, role, now, stopping=True)
+            self._request(s, campaign, cfg, name, role, now, Facts(), stopping=True)
         s.flush()  # the status change's event first: the close comes after the stop
         emit(s, CampaignClosed(), TargetRef(TargetKind.CAMPAIGN, campaign.id), System.DAEMON)
 
@@ -1076,6 +1077,7 @@ class Scheduler:
         name: RoleName,
         role: SweepRole,
         now: datetime,
+        left: Facts,
         *,
         stopping: bool = False,
     ) -> None:
@@ -1096,7 +1098,7 @@ class Scheduler:
         ).first()
         if latest is not None and latest.state is AgentSessionState.REQUESTED:
             return  # One pending request per role is enough.
-        p = self._pass(s, campaign, cfg, name, role, now)
+        p = self._pass(s, campaign, cfg, name, role, now, left)
         fires: list[Fire] = []
         for trigger in (t for t in role.triggers if t.ON_STOP is stopping):
             try:
@@ -1125,9 +1127,16 @@ class Scheduler:
         self._tracer.event('agent_session.requested', campaign=campaign.name, kind=name, reason=reason, count=count)
 
     def _pass(
-        self, s: Session, campaign: Campaign, cfg: CampaignConfig, name: RoleName, role: SweepRole, now: datetime
+        self,
+        s: Session,
+        campaign: Campaign,
+        cfg: CampaignConfig,
+        name: RoleName,
+        role: SweepRole,
+        now: datetime,
+        left: Facts,
     ) -> RolePass:
-        """Return what the triggers of role ``name`` read in this pass."""
+        """Return what the triggers of role ``name`` read in this pass, with what the stop rule ``left``."""
         last = s.scalars(
             select(AgentSession)
             .where(AgentSession.campaign_id == campaign.id, AgentSession.kind == name)
@@ -1142,15 +1151,20 @@ class Scheduler:
             last=last,
             max_concurrent=role.max_concurrent,
             interval=role.interval,
-            backlog=partial(self._backlog, s, campaign, cfg, name),
-            stall_step=lambda before: runs_without_keep(s, campaign, before) // stall(cfg)[0],
+            backlog=partial(self._backlog, s, campaign, cfg, name, left),
+            without_keep=partial(runs_without_keep, s, campaign),
         )
 
-    def _backlog(self, s: Session, campaign: Campaign, cfg: CampaignConfig, name: RoleName, buffer: int) -> Backlog:
-        """Return the campaign's backlog as role ``name`` fills it: ``buffer`` beyond the run slots, its own sweeps."""
+    def _backlog(
+        self, s: Session, campaign: Campaign, cfg: CampaignConfig, name: RoleName, left: Facts, buffer: int
+    ) -> Backlog:
+        """Return the campaign's backlog as role ``name`` fills it: ``buffer`` beyond the run slots, its own sweeps.
+
+        It is never more than the runs that the stop rule ``left``.
+        """
         target = cfg.run_slots + buffer
-        if (max_runs := limits(cfg).get(facts.RUNS)) is not None:
-            target = min(target, math.floor(max_runs) - runs(s, campaign))
+        if (runs_left := left.get(facts.RUNS)) is not None:
+            target = min(target, runs_left)
         sweeps = count(
             s,
             select(AgentSession).where(
@@ -1175,34 +1189,34 @@ class Scheduler:
         return Backlog(
             tracks=tracks,
             target=target,
-            free=self._free_slots(s, campaign, cfg, cfg.roles.doing_runs()),
+            free=self._free_slots(s, campaign, cfg.roles.doing_runs(), left.get(facts.RUNS)),
             sweeps=sweeps,
             per_sweep=cfg.roles.sweeping()[name].max_ideas,
             on_hold=head_unmeasured(s, campaign),
         )
 
+    @staticmethod
     def _free_slots(
-        self, s: Session, campaign: Campaign, cfg: CampaignConfig, roles: dict[RoleName, ImplementerRole]
+        s: Session, campaign: Campaign, roles: dict[RoleName, ImplementerRole], runs_left: int | None
     ) -> int:
         """Return the runs that ``roles`` can start now.
 
-        For each role, this is its ``max_concurrent`` minus its open runs. The sum is never more than the stop rule's
-        limit on runs allows.
+        For each role, this is its ``max_concurrent`` minus its open runs. The sum is never more than the runs that the
+        stop rule leaves (``runs_left``).
         """
         open_runs = campaign_runs(campaign.id).where(Run.status.in_(OPEN_RUNS))
         free = sum(
             max(role.max_concurrent - count(s, open_runs.where(done_by(name))), 0) for name, role in roles.items()
         )
-        if (max_runs := limits(cfg).get(facts.RUNS)) is not None:
-            free = min(free, math.floor(max_runs) - runs(s, campaign))
-        return max(free, 0)
+        return max(free if runs_left is None else min(free, runs_left), 0)
 
-    def _queue(self, s: Session, campaign: Campaign, cfg: CampaignConfig) -> None:
-        """Queue a run, and request its agent, for each free slot with a runnable idea, within the limit on runs.
+    def _queue(self, s: Session, campaign: Campaign, cfg: CampaignConfig, left: Facts) -> None:
+        """Queue a run, and request its agent, for each free slot with a runnable idea, within the runs ``left``.
 
         Each role that does runs fills its own slots with the ideas that it takes (``takes``), in the order of
         ``Roles.doing_runs``. Its open runs count against its own ``max_concurrent``. Its ``explore_every`` and the
-        track shares apply to its own runs. The limit on runs and the attempts of an idea count the runs of every role.
+        track shares apply to its own runs. The runs that the stop rule leaves and the attempts of an idea count the
+        runs of every role.
 
         A ``ready`` idea with an ``after`` link to an idea that is not ``done`` is skipped and not changed. It stays
         ``ready`` and is taken when every prerequisite has finished. A runnable idea whose track is not in
@@ -1219,12 +1233,13 @@ class Scheduler:
         query = select(Idea).where(Idea.campaign_id == campaign.id, runnable(), Idea.track.in_(live))
         if head_unmeasured(s, campaign):
             query = query.where(Idea.base_candidate_id.is_not(None))
+        runs_left = left.get(facts.RUNS)
         for name, role in cfg.roles.doing_runs().items():
             takes = query
             if role.takes is not None:
                 taken = s.connection().exec_driver_sql(ideas_taken(role.takes)).scalars().all()
                 takes = query.where(Idea.id.in_(taken))
-            for _ in range(self._free_slots(s, campaign, cfg, {name: role})):
+            for _ in range(self._free_slots(s, campaign, {name: role}, runs_left)):
                 full = self._full(s, campaign, cfg)
                 fits = takes.where(or_(Idea.harness.is_(None), Idea.harness.not_in(full)))
                 explored = self._explore(s, campaign, name, role, fits)
@@ -1234,6 +1249,7 @@ class Scheduler:
                     idea, by_priority = self._pick(s, campaign, cfg, name, role, fits)
                 if idea is None or not self._enqueue(s, campaign, cfg, name, idea, full, by_priority=by_priority):
                     break
+                runs_left = None if runs_left is None else runs_left - 1
 
     def _park_strays(self, s: Session, campaign: Campaign, cfg: CampaignConfig) -> None:
         """Park each runnable idea whose track is not in ``piloop.toml``, with a note that says how to fix it.
@@ -1578,9 +1594,8 @@ class Scheduler:
             )
             now = utcnow()
             given = tuple(assigned(s, agent_session_id))
-            sweep = SweepPass(
-                **vars(self._pass(s, campaign, cfg, agent_session.kind, table, now)), agent_session=agent_session
-            )
+            role_pass = self._pass(s, campaign, cfg, agent_session.kind, table, now, left_now(s, campaign, cfg))
+            sweep = SweepPass(**vars(role_pass), agent_session=agent_session)
             rendering = Rendering(s, now, campaign, workspace_dir(self._home, campaign.id), self._controller.cas, given)
             lines = [
                 f'- Your cwd is a detached checkout of candidate#{base.id}, the head ({values}): read and run the'
@@ -1720,7 +1735,7 @@ class RolePass:
     max_concurrent: int
     interval: float
     backlog: Callable[[int], Backlog]
-    stall_step: Callable[[datetime | None], int]
+    without_keep: Callable[[datetime | None], int]
 
     def _mine(self) -> Select[AgentSession]:
         return select(AgentSession).where(AgentSession.campaign_id == self.campaign.id, AgentSession.kind == self.role)
@@ -1759,10 +1774,6 @@ class SweepPass(RolePass):
     """The ``Sweep`` of one agent of a sweeping role: its role's ``Pass``, and its row."""
 
     agent_session: AgentSession
-
-    def stall(self) -> Stall:
-        mark, why = stall(self.campaign.config)
-        return Stall(runs_without_keep(self.s, self.campaign), mark, why)
 
 
 def sweep_place(agent_session_id: AgentSessionId) -> str:

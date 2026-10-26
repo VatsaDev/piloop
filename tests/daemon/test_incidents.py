@@ -52,7 +52,7 @@ def fired(s: Session, campaign: Campaign, trigger: Trigger) -> Fire | None:
         max_concurrent=1,
         interval=0,
         backlog=unread,
-        stall_step=unread,
+        without_keep=unread,
     )
     return trigger.fire(p)
 

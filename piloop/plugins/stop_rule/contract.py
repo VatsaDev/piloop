@@ -4,7 +4,7 @@ On each pass of the daemon, piloop asks the stop rule of each active campaign wh
 stops. It asks in two steps. First it calls ``reads``: the rule names the facts that it needs. piloop gets only those
 facts. Then it calls ``check`` with a ``StopCase``: those facts. The rule returns one answer:
 
-- ``Go``: piloop starts what the campaign needs.
+- ``Go``: piloop starts what the campaign needs, within what ``left`` says is left of each fact.
 - ``Hold``: piloop starts no agent and no evaluation for the campaign. Work that runs finishes. The hold is not a
   pause: on each pass piloop asks again, and the hold ends when the rule answers ``Go``.
 - ``Stop``: piloop stops the campaign.
@@ -18,8 +18,7 @@ holds.
 
 The rule reads nothing else: it is a pure provider. ``[plugins.stop_rule] provider`` in ``piloop.toml`` selects the
 rule, and the other keys of that table are its fields, its limits among them. Without the table, the rule is
-``limits``. piloop reads the limits too, by fact (``limits``): it starts no more runs than a limit on ``runs``, and
-research pivots at half a limit on ``without_keep``.
+``limits``. ``check_config`` refuses a campaign that the rule cannot serve, when the file loads.
 
 A fact is a typed key (``piloop.plugins.fact_source.facts``) that a fact source of the campaign supplies, by its name.
 Every fact that a rule reads needs a source in the campaign.
@@ -29,7 +28,7 @@ this module and the facts it reads, and nothing else of piloop.
 """
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 
 from piloop.plugins.fact_source.facts import Fact, Facts, FactValue
@@ -50,8 +49,21 @@ class StopCase:
 
 
 @dataclass(frozen=True)
+class Shape:
+    """What a stop rule may refuse of a campaign when its file loads (``StopRule.check_config``)."""
+
+    tracks: int
+    """The number of tracks: one per primary metric."""
+
+
+@dataclass(frozen=True)
 class Go:
-    """The campaign goes on: piloop starts what it needs."""
+    """The campaign goes on: piloop starts what it needs, within ``left``."""
+
+    left: Facts = field(default_factory=Facts)
+    """How much of each fact is left before the rule stops the campaign, by fact. piloop starts no more runs than
+    ``RUNS`` leaves, and cuts each agent's timeout where ``HOURS`` runs out. A fact that is not in it does not bound
+    what piloop starts."""
 
 
 GO = Go()
@@ -102,12 +114,8 @@ class StopRule(Parameters, ABC):
     launches: ``run`` it anyway, ``skip`` it, or ``wait`` until the hold ends."""
 
     @abstractmethod
-    def limits(self) -> dict[Fact[FactValue], float]:
-        """Return the limit that the rule sets on each fact that it limits."""
-
     def reads(self) -> list[Fact[FactValue]]:
-        """Return the facts that ``check`` and ``describe`` read: piloop gets only those. By default, its limits'."""
-        return list(self.limits())
+        """Return the facts that ``check`` and ``describe`` read: piloop gets only those."""
 
     def describe(self, case: StopCase) -> list[str]:
         """Return where the campaign stands against the rule, in short parts: ``run 7/200``, ``2.1h/12h``.
@@ -119,6 +127,10 @@ class StopRule(Parameters, ABC):
     @abstractmethod
     def check(self, case: StopCase) -> Go | Hold | Stop | Escalate:
         """Return whether the campaign goes on, holds or stops, or tell a human why and then do one of those."""
+
+    def check_config(self, shape: Shape) -> str | None:
+        """Return why the rule cannot serve a campaign of ``shape``, or None. By default, it serves every campaign."""
+        return None
 
 
 STOP_RULES = Capability('stop_rule', StopRule, tier=Tier.PURE, choice=Choice(Scope.CAMPAIGN, default='limits'))

@@ -32,7 +32,7 @@ from piloop.plugins.fact_source import facts
 from piloop.plugins.host import BUILT_IN, CAPABILITIES, Capability, Parameters, Tier
 from piloop.plugins.runtime.contract import NotSteerable
 
-HELPERS: set[object] = {
+HELPERS: tuple[object, ...] = (  # a tuple: some are values that do not hash, such as GO
     capabilities.EventModel,  # what a provider's events subclass, as an executor's capacity_events
     capabilities.Base,  # what a package's tables subclass (piloop.schemas)
     capabilities.Schema,  # what a package declares its tables in (piloop.schemas)
@@ -126,7 +126,7 @@ HELPERS: set[object] = {
     capabilities.per_evaluation,
     capabilities.worker_spend,
     capabilities.per_run,
-}
+)
 """What a provider raises, calls or returns that no signature of a contract names."""
 
 

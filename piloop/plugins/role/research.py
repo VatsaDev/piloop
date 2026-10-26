@@ -8,6 +8,7 @@ from piloop.ids import IdeaStatus
 from piloop.plugins.role.contract import Files, Sweep, SweepRole
 from piloop.plugins.trigger.contract import TriggerEntry
 from piloop.plugins.trigger.low_water import LowWaterTrigger
+from piloop.plugins.trigger.stalled import StalledTrigger
 
 
 class ResearchRole(SweepRole):
@@ -41,17 +42,20 @@ class ResearchRole(SweepRole):
     def context(self, sweep: Sweep) -> list[str]:
         """The seeds to develop, this sweep's share of the backlog, the tracks short of their share, and the stall.
 
-        The backlog's target has the ``buffer`` of the role's first ``low_water`` trigger, or none without one.
+        The backlog's target has the ``buffer`` of the role's first ``low_water`` trigger, or none without one. The
+        stall mark is that of its first ``stalled`` trigger: without one, the role has no stall.
         """
         buffer = next((t.buffer for t in self.triggers if isinstance(t, LowWaterTrigger)), 0)
         backlog = sweep.backlog(buffer)
         most = self.max_ideas
-        stall = sweep.stall()
-        pivot = min(most, 1) if stall.runs >= stall.mark else 0  # A stall gets its pivot whatever the backlog holds.
+        mark = next((t.mark(sweep.campaign.config) for t in self.triggers if isinstance(t, StalledTrigger)), None)
+        runs = sweep.without_keep(None)
+        stalled = mark is not None and runs >= mark.every
+        pivot = min(most, 1) if stalled else 0  # A stall gets its pivot whatever the backlog holds.
         own = max(min(backlog.short + most, most), pivot)  # This sweep's share of the shortfall.
         campaign = sweep.campaign
         seeds = count(sweep.s, select(Idea).where(Idea.campaign_id == campaign.id, Idea.status == IdeaStatus.SEED))
-        stalled = ': stalled, so one of your own ideas pivots (section 3)' if pivot else ''
+        pivots = ': stalled, so one of your own ideas pivots (section 3)' if pivot else ''
         short = ', '.join(
             f'{t.name} {t.gap} ({t.runnable} of {t.target} runnable)' for t in backlog.tracks if t.gap > 0
         )
@@ -65,6 +69,11 @@ class ResearchRole(SweepRole):
             ' developed seeds do not count against it). Fewer only when what is left duplicates queued work;'
             ' name that work in your finding.',
             *(tracks if campaign.config.multitrack else []),
-            f'- Measured runs since the last keep: {stall.runs}, of the {stall.mark} that mark a stall ({stall.why})'
-            f'{stalled}.',
+            *(
+                [
+                    f'- Measured runs since the last keep: {runs}, of the {mark.every} that mark a stall ({mark.why}){pivots}.'
+                ]
+                if mark is not None
+                else []
+            ),
         ]

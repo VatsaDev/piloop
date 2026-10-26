@@ -216,6 +216,21 @@ A stop rule reads `StopCase.facts` by typed key (`case.facts.get(KEEPS)`, `case.
 of `Progress`. It shows its own progress line (`describe`), escalates itself (`Escalate(reason, then=...)`), and says
 what a stop while it holds does (`while_held`). A hold no longer posts an escalation of piloop's own.
 
+### The stop rule leaves a budget
+
+piloop no longer reads a stop rule's limits. A rule answers `Go(left=...)`: how much of each fact is left before it
+stops the campaign. piloop starts runs and cuts timeouts within it. `StopRule.limits` is gone, `reads` is abstract,
+and `check_config` refuses a campaign that the rule cannot serve. `limits` and a rule that subclasses it need no
+change.
+
+The stall mark is `every` of the `stalled` trigger. When it is not set, it is two rounds of the run slots, also with
+`plateau` set, which made it half of `plateau` before. To keep that mark, set it:
+
+```toml
+[roles.research]
+triggers = [{ provider = "low_water" }, { provider = "seed" }, { provider = "stalled", every = 15 }]
+```
+
 ### Memory documents
 
 `[memory] documents` is `documents` in [`[plugins.memory]`](/concepts/research-memory#documents); the old key works

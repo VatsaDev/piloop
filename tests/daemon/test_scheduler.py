@@ -38,7 +38,7 @@ from piloop.agents.results import (
 from piloop.agents.roles import SQL_HINT, compose_brief
 from piloop.campaign import campaigns, ops
 from piloop.campaign.campaigns import sync
-from piloop.campaign.stop import request_cancel, request_stop, runs
+from piloop.campaign.stop import left, request_cancel, request_stop, runs
 from piloop.config import CampaignConfig, load_campaign_config
 from piloop.daemon.loop import Turn
 from piloop.daemon.run_controller import RunController, wrap_up_lead
@@ -380,7 +380,7 @@ def test_a_harness_at_its_cap_passes_its_turn_and_an_idea_pinned_to_it_waits(
     scheduler = make_scheduler(db, runtime, tmp_path)
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
-        scheduler._queue(s, p, CampaignConfig.model_validate(p.config))
+        scheduler._queue(s, p, CampaignConfig.model_validate(p.config), left(s, p, p.config))
         s.commit()
     with db.session() as s:
         assert [(r.idea_id, r.harness) for r in s.scalars(select(Run).order_by(Run.id))] == [(a, 'pi'), (b, 'pi')], (
@@ -436,7 +436,7 @@ def test_a_queued_run_whose_harness_left_the_rotation_launches_on_the_new_one_un
     scheduler = make_scheduler(db, runtime, tmp_path)
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
-        scheduler._queue(s, p, CampaignConfig.model_validate(p.config))
+        scheduler._queue(s, p, CampaignConfig.model_validate(p.config), left(s, p, p.config))
         s.commit()
     set_config(
         db,
@@ -493,7 +493,7 @@ def test_a_run_starts_from_the_best_as_of_its_start_not_as_of_the_idea(
     scheduler = make_scheduler(db, runtime, tmp_path)
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
-        scheduler._queue(s, p, CampaignConfig.model_validate(p.config))
+        scheduler._queue(s, p, CampaignConfig.model_validate(p.config), left(s, p, p.config))
         s.commit()
     with db.session() as s:
         assert (s.get_one(Run, 1).idea_id, s.get_one(Run, 1).base_candidate_id) == (idea, 2)
@@ -516,7 +516,7 @@ def test_a_pin_is_honored_over_the_after_link_and_the_run_records_both_bases(
     scheduler = make_scheduler(db, runtime, tmp_path)
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
-        scheduler._queue(s, p, CampaignConfig.model_validate(p.config))
+        scheduler._queue(s, p, CampaignConfig.model_validate(p.config), left(s, p, p.config))
         s.commit()
     with db.session() as s:
         run = s.scalars(select(Run).where(Run.idea_id == branch)).one()
@@ -583,7 +583,7 @@ def test_a_run_pinned_to_a_non_keep_is_a_branch_run_only_when_its_nearest_keep_i
     scheduler = make_scheduler(db, runtime, tmp_path)
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
-        scheduler._queue(s, p, CampaignConfig.model_validate(p.config))
+        scheduler._queue(s, p, CampaignConfig.model_validate(p.config), left(s, p, p.config))
         s.commit()
     with db.session() as s:
         runs = {r.idea_id: (r.base_candidate_id, r.branch) for r in s.scalars(select(Run))}
@@ -2515,7 +2515,7 @@ def queue_one(db: Database, scheduler: Scheduler) -> tuple[int, bool]:
     """
     with db.session() as s:
         p = s.scalars(select(Campaign)).one()
-        scheduler._queue(s, p, CampaignConfig.model_validate(p.config))
+        scheduler._queue(s, p, CampaignConfig.model_validate(p.config), left(s, p, p.config))
         run = s.scalars(select(Run).order_by(Run.id.desc())).first()
         assert run is not None
         run.status, run.end = RunStatus.SUCCEEDED, RunEnd.FINISHED
@@ -2561,7 +2561,7 @@ def queue(db: Database, scheduler: Scheduler, campaign: Campaign) -> list[tuple[
     """
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
-        scheduler._queue(s, p, CampaignConfig.model_validate(p.config))
+        scheduler._queue(s, p, CampaignConfig.model_validate(p.config), left(s, p, p.config))
         s.commit()
     with db.session() as s:
         rows = s.scalars(select(Event).where(has(RunQueued)).order_by(Event.id)).all()
@@ -2621,7 +2621,7 @@ def test_the_triggers_that_read_no_time_ask_for_no_pass_of_their_own(
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
         cfg = CampaignConfig.model_validate(p.config)
-        on = scheduler._pass(s, p, cfg, RESEARCH, role_of(cfg, ResearchRole), utcnow())
+        on = scheduler._pass(s, p, cfg, RESEARCH, role_of(cfg, ResearchRole), utcnow(), left(s, p, cfg))
         for trigger in (
             SeedTrigger(),
             StalledTrigger(),
@@ -2643,17 +2643,19 @@ def test_low_water_counts_each_track_short_of_its_share_whatever_the_others_hold
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
         cfg = CampaignConfig.model_validate(p.config)
-        backlog = scheduler._backlog(s, p, cfg, RESEARCH, 0)
+        backlog = scheduler._backlog(s, p, cfg, RESEARCH, left(s, p, cfg), 0)
         assert (backlog.runnable, backlog.target, backlog.short) == (6, 4, 1), 'cost is one short; accuracy has 3 spare'
         assert str(backlog) == '6 of 4 runnable ideas (accuracy 6 of 3, cost 0 of 1)'
         fire = LowWaterTrigger(buffer=0).fire(
-            scheduler._pass(s, p, cfg, RESEARCH, role_of(cfg, ResearchRole), utcnow())
+            scheduler._pass(s, p, cfg, RESEARCH, role_of(cfg, ResearchRole), utcnow(), left(s, p, cfg))
         )
         assert fire is not None and fire.reason == str(backlog)
     add_ideas(db, campaign, 'c0', track='cost')
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
-        assert scheduler._backlog(s, p, cfg, RESEARCH, 0).short == -3, 'no track short: the surplus, as with one track'
+        assert scheduler._backlog(s, p, cfg, RESEARCH, left(s, p, cfg), 0).short == -3, (
+            'no track short: the surplus, as with one track'
+        )
 
 
 def test_an_implementer_is_told_once_to_wrap_up_before_its_timeout(

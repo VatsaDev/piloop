@@ -47,7 +47,8 @@ class Backlog:
     tracks: tuple[TrackBacklog, ...]
     """One entry per track, in config order. A track below its share is short, whatever the other tracks have."""
     target: int
-    """One idea per run slot plus the ``buffer`` of ``low_water``, but never more than ``[stop] max_runs`` allows."""
+    """One idea per run slot plus the ``buffer`` of ``low_water``, but never more than the runs that the stop rule
+    leaves (``Go.left``)."""
     free: int
     """The runs that the campaign can start now."""
     sweeps: int
@@ -152,11 +153,10 @@ class Pass(Protocol):
         """The campaign's backlog of ideas, with ``buffer`` ideas beyond one per run slot, as the role's sweeps fill it."""
         ...
 
-    def stall_step(self, before: datetime | None, /) -> int:
-        """The runs without a keep over the stall mark (``piloop.campaign.stop.stall``), rounded down.
+    def without_keep(self, before: datetime | None, /) -> int:
+        """The finished runs that count since the latest keep, or since the campaign was last set active again.
 
-        It is 0 until the campaign stalls, 1 from the mark, 2 from twice the mark, and so on. A keep resets it. With
-        ``before``, only the runs that finished by then count.
+        With ``before``, only the runs that finished by then count.
         """
         ...
 

@@ -12,6 +12,7 @@ import pytest
 from covalence import Cas as Covalence
 from sqlalchemy import select
 
+from piloop.campaign.stop import left
 from piloop.cli import common, main as cli
 from piloop.cli.plugins import selections
 from piloop.config import CampaignConfig, ConfigError, load_campaign_config
@@ -240,7 +241,7 @@ def queue(db: Database, sched: Scheduler, campaign: Campaign) -> None:
     """Queue runs for the free slots, as a tick does, without launching their agents."""
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
-        sched._queue(s, p, CampaignConfig.model_validate(p.config))
+        sched._queue(s, p, CampaignConfig.model_validate(p.config), left(s, p, p.config))
         s.commit()
 
 

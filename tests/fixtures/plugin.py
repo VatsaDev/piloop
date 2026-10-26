@@ -70,26 +70,29 @@ class ShownRuntime(SubprocessRuntime):
 class GoesOn(StopRule):
     """``goes_on``: a stop rule without limits, so it reads no fact and never holds or stops a campaign."""
 
-    def limits(self) -> dict[Fact[FactValue], float]:
-        return {}
+    def reads(self) -> list[Fact[FactValue]]:
+        return []
 
     def check(self, case: StopCase) -> Go | Hold | Stop:
         return GO
 
 
+WATCHED: dict[Fact[FactValue], float] = {EVALUATIONS: 100, ATTEMPTS: 50, since_keep('spend'): 300, FUNNEL: 1}
+
+
 class Watches(StopRule):
     """``watches``: limits on the facts that ``limits`` does not limit, which it never acts on."""
 
-    def limits(self) -> dict[Fact[FactValue], float]:
-        return {EVALUATIONS: 100, ATTEMPTS: 50, since_keep('spend'): 300, FUNNEL: 1}
+    def reads(self) -> list[Fact[FactValue]]:
+        return list(WATCHED)
 
     def check(self, case: StopCase) -> Go:
         return GO
 
     def describe(self, case: StopCase) -> list[str]:
-        shown = {fact: case.facts.get(fact) for fact in self.limits()}
+        shown = {fact: case.facts.get(fact) for fact in WATCHED}
         return [
-            f'{fact.name} {value if isinstance(value, int | float) else "—"}/{self.limits()[fact]:g}'
+            f'{fact.name} {value if isinstance(value, int | float) else "—"}/{WATCHED[fact]:g}'
             for fact, value in shown.items()
         ]
 
@@ -99,8 +102,8 @@ class Escalates(StopRule):
 
     reason: str
 
-    def limits(self) -> dict[Fact[FactValue], float]:
-        return {}
+    def reads(self) -> list[Fact[FactValue]]:
+        return []
 
     def check(self, case: StopCase) -> Escalate:
         return Escalate(self.reason)

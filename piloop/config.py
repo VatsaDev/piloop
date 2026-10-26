@@ -40,13 +40,12 @@ from piloop.harnesses import DEFAULT_HARNESSES, Harness
 from piloop.ids import IMPLEMENTER, ROLE_NAME, RoleName, TrackName
 from piloop.mcp import EnvName, McpServer, ServerName, env_names
 from piloop.plugins.fact_source.contract import FACT_SOURCES, FactSource, FactSourceEntry, sources
-from piloop.plugins.fact_source.facts import HEAD
 from piloop.plugins.host import Plugins, PluginTables, Scope
 from piloop.plugins.metric import Direction
 from piloop.plugins.role.contract import ROLES, ImplementerRole, RoleConfig, SweepRole, new_role
 from piloop.plugins.runtime.contract import RuntimeName
 from piloop.plugins.section.contract import Section, SectionEntry, Surface, chosen
-from piloop.plugins.stop_rule.contract import STOP_RULES
+from piloop.plugins.stop_rule.contract import STOP_RULES, Shape
 
 CONFIG_FILE = 'piloop.toml'
 BRIEF_FILE = 'brief.md'
@@ -306,7 +305,7 @@ class CampaignConfig(BaseModel):
     def _check(self) -> Self:
         self._check_tracks()
         self._check_facts()
-        self._check_limits()
+        self._check_stop_rule()
         self._check_harnesses(self.harnesses, self.model, 'campaign')
         if unknown := [h for h in self.max_concurrent if h not in DEFAULT_HARNESSES and h not in self.harness]:
             raise ValueError(f'max_concurrent: unknown harnesses {unknown}; built-ins are {sorted(DEFAULT_HARNESSES)}')
@@ -322,12 +321,12 @@ class CampaignConfig(BaseModel):
                 raise ValueError(f'{rel!r} must be a relative path inside the repo')
         return self
 
-    def _check_limits(self) -> None:
-        """Check the stop rule's limits against the rest of the file, by fact."""
+    def _check_stop_rule(self) -> None:
+        """Check that the stop rule serves this campaign (``StopRule.check_config``), and has a source for each fact."""
         rule = STOP_RULES.selected(self.plugins)
-        limits, name = rule.limits(), STOP_RULES.name_of(rule)
-        if HEAD in limits and self.multitrack:
-            raise ValueError(f'the stop rule {name!r} limits the head, which needs a campaign of one track')
+        name = STOP_RULES.name_of(rule)
+        if (why := rule.check_config(Shape(tracks=len(self.all_tracks)))) is not None:
+            raise ValueError(f'the stop rule {name!r} {why}')
         supplied = {fact for source in self.fact_sources() for fact in source.supplies()}
         if missing := [fact.name for fact in rule.reads() if fact not in supplied]:
             raise ValueError(

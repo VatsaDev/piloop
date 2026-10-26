@@ -212,7 +212,7 @@ def test_the_limits_of_the_stop_rule_are_optional_and_validated(campaign_path: P
     def rule(cfg: CampaignConfig) -> StopRule:
         return STOP_RULES.selected(cfg.plugins)
 
-    assert rule(load_campaign_config(campaign_path)).limits() == {}, 'no limit: open-ended'
+    assert rule(load_campaign_config(campaign_path)) == Limits(), 'no limit: open-ended'
     limits = {'target': 0.85, 'max_runs': 200, 'max_hours': 12, 'plateau': 25}
     cfg = load_campaign_config(campaign_path, plugins={'stop_rule': limits})
     assert rule(cfg) == Limits(target=0.85, max_runs=200, max_hours=12.0, plateau=25)

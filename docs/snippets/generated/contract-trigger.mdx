@@ -8,7 +8,7 @@
 | `Trigger.fire(p: Pass) -> Fire \| None` | Return the request that the trigger makes now, or None. |
 | `Trigger.due_in(p: Pass) -> timedelta \| None` | How long until `fire` can answer otherwise with time alone, or None when only events change its answer. |
 | `Pass.backlog(buffer: int, /) -> Backlog` | The campaign's backlog of ideas, with `buffer` ideas beyond one per run slot, as the role's sweeps fill it. |
-| `Pass.stall_step(before: datetime \| None, /) -> int` | The runs without a keep over the stall mark (`piloop.campaign.stop.stall`), rounded down. |
+| `Pass.without_keep(before: datetime \| None, /) -> int` | The finished runs that count since the latest keep, or since the campaign was last set active again. |
 | `Pass.live() -> int` | The number of the role's rows that are starting or running. |
 | `Pass.killed_streak() -> int` | The number of the role's latest rows, newest first, that were killed in a row. |
 | `Pass.cancel(agent_session: AgentSession, /) -> EventModel \| None` | The latest request to cancel the row (`piloop agent cancel`), or None. A cancelled row ends killed. |

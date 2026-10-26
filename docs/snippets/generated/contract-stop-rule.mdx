@@ -3,10 +3,10 @@
 | Member | What it is |
 |---|---|
 | `StopRule.while_held: WhileHeld` | What the closing review does when the campaign stops (`piloop campaign stop`) while the rule holds its launches: `run` it anyway, `skip` it, or `wait` until the hold ends. |
-| `StopRule.limits() -> dict[Fact[FactValue], float]` | Return the limit that the rule sets on each fact that it limits. |
-| `StopRule.reads() -> list[Fact[FactValue]]` | Return the facts that `check` and `describe` read: piloop gets only those. By default, its limits'. |
+| `StopRule.reads() -> list[Fact[FactValue]]` | Return the facts that `check` and `describe` read: piloop gets only those. |
 | `StopRule.describe(case: StopCase) -> list[str]` | Return where the campaign stands against the rule, in short parts: `run 7/200`, `2.1h/12h`. |
 | `StopRule.check(case: StopCase) -> Go \| Hold \| Stop \| Escalate` | Return whether the campaign goes on, holds or stops, or tell a human why and then do one of those. |
+| `StopRule.check_config(shape: Shape) -> str \| None` | Return why the rule cannot serve a campaign of `shape`, or None. By default, it serves every campaign. |
 | `StopCase.primary: str` | The name of the primary metric of the campaign's first track. |
 | `StopCase.direction: Direction` | Whether a larger or a smaller value of the primary metric is better. |
 | `StopCase.facts: Facts` | The facts that the rule reads (`reads`), from the campaign's fact sources. |

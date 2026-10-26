@@ -26,7 +26,6 @@ from piloop.campaign.stop import (
     requested,
     runs,
     runs_without_keep,
-    stall,
     timeout as agent_timeout,
 )
 from piloop.config import CampaignConfig, ConfigError, load_campaign_config
@@ -94,8 +93,9 @@ from piloop.plugins.memory.local import LocalMemory
 from piloop.plugins.memory.local.tables import Document
 from piloop.plugins.metric import Direction
 from piloop.plugins.stop_rule import limits as limits_module
-from piloop.plugins.stop_rule.contract import GO, STOP_RULES, Escalate, Hold, Stop, StopCase, StopRule
+from piloop.plugins.stop_rule.contract import GO, STOP_RULES, Escalate, Go, Hold, Shape, Stop, StopCase, StopRule
 from piloop.plugins.stop_rule.limits import Limits
+from piloop.plugins.trigger.stalled import StalledTrigger
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.reports.overview import progress
 from tests.conftest import (
@@ -363,20 +363,27 @@ def test_max_hours_since_the_first_run_started(db: Database, campaign: Campaign)
     assert reason(db, campaign) == 'max_hours: 12.5h since the first run'
 
 
-def test_the_pass_comes_back_when_max_hours_is_reached(db: Database, campaign: Campaign) -> None:
-    """``max_hours`` is the one limit that time alone reaches: the pass returns when it will."""
+def test_the_pass_comes_back_when_the_hours_that_the_rule_leaves_run_out(db: Database, campaign: Campaign) -> None:
+    """``hours`` is the one fact that time alone uses up: the pass returns when the rule's ``left`` of it runs out."""
     configure(db, campaign, max_hours=12)
     now = utcnow()
+
+    def due(row: Campaign) -> timedelta | None:
+        at = hours_due(row, check_campaign(s, row, row.config), now)
+        return None if at is None else at - now
+
     with db.session() as s:
         row = s.get_one(Campaign, campaign.id)
-        assert hours_due(s, row, row.config, now) is None, 'no run yet: no clock'
+        assert due(row) == timedelta(hours=12), 'no run yet: the whole limit is left'
     add_run(db, campaign, started_at=timedelta(hours=11))
     with db.session() as s:
         row = s.get_one(Campaign, campaign.id)
-        due = hours_due(s, row, row.config, now)
-        assert due is not None and abs(due - (now + timedelta(hours=1))) < timedelta(minutes=1)
+        left = due(row)
+        assert left is not None and abs(left - timedelta(hours=1)) < timedelta(minutes=1)
+        assert hours_due(row, Go(), now) is None, 'an answer that leaves no hours: no clock'
+        assert hours_due(row, Hold('spend not known'), now) is None, 'a held campaign uses up no hours'
         row.paused, row.paused_reason = Pause.ALL, 'night'
-        assert hours_due(s, row, row.config, now) is None, 'paused time does not count'
+        assert due(row) is None, 'paused time does not count'
 
 
 def test_the_time_a_campaign_was_paused_does_not_count_toward_max_hours(db: Database, campaign: Campaign) -> None:
@@ -523,22 +530,22 @@ def test_reactivating_a_stopped_campaign_starts_a_fresh_plateau_window(db: Datab
     assert reason(db, campaign) == 'plateau: 2 runs without a keep'
 
 
-def test_the_stall_mark_is_half_the_plateau_else_two_rounds_of_the_implementer_slots() -> None:
+def test_the_stall_mark_is_every_else_two_rounds_of_the_implementer_slots() -> None:
     bare = {
         'name': 'bare',
         'metrics': [{'name': 'a', 'direction': 'higher', 'role': 'primary'}],
         'evaluate': ['true'],
         'model': {'pi': 'm'},
     }
-    plateau = {**bare, 'plugins': {'stop_rule': {'plateau': 15}}}
-    assert stall(CampaignConfig.model_validate(plateau)) == (
-        8,
-        "half of the stop rule's limit of 15 runs without a keep",
+    plateau = CampaignConfig.model_validate({**bare, 'plugins': {'stop_rule': {'plateau': 15}}})
+    assert StalledTrigger(every=8).mark(plateau) == (8, 'every = 8 of the stalled trigger')
+    assert StalledTrigger().mark(plateau) == (8, 'two rounds of [roles.implementer] max_concurrent = 4'), (
+        'the stop rule does not set the mark'
     )
     agent_sessions = CampaignConfig.model_validate({**bare, 'roles': {'implementer': {'max_concurrent': 3}}})
-    assert stall(agent_sessions) == (6, 'two rounds of [roles.implementer] max_concurrent = 3')
+    assert StalledTrigger().mark(agent_sessions) == (6, 'two rounds of [roles.implementer] max_concurrent = 3')
     quick = {'implementer': {'max_concurrent': 3}, 'quick': {'runs': True, 'max_concurrent': 2}}
-    assert stall(CampaignConfig.model_validate({**bare, 'roles': quick})) == (
+    assert StalledTrigger().mark(CampaignConfig.model_validate({**bare, 'roles': quick})) == (
         10,
         'two rounds of [roles.quick] max_concurrent + [roles.implementer] max_concurrent = 5',
     )
@@ -983,7 +990,7 @@ def test_limits_holds_while_a_fact_is_unknown_or_at_its_hold_at_and_a_hold_comes
     def check(value: float | None, *, runs: int = 1) -> object:
         return rule.check(StopCase('score', Direction.HIGHER, facts(runs=runs, unsettled=0, spend=value)))
 
-    assert check(299.99) == GO
+    assert check(299.99) == Go(Facts({'runs': 2})), 'a hold leaves no budget: it never stops the campaign'
     assert check(None) == Hold('spend not known'), 'not read yet, or the latest reading failed'
     at_limit = Escalate(
         'spend reached its hold_at of 300: nothing launches until you raise it and run piloop init',
@@ -999,6 +1006,19 @@ def test_limits_holds_while_a_fact_is_unknown_or_at_its_hold_at_and_a_hold_comes
     ), 'no fact is special'
 
 
+def test_limits_leaves_each_limit_less_its_value_and_refuses_a_target_on_several_tracks() -> None:
+    """``Go.left`` is what piloop starts within: the runs, the hours. A target is reached, not used up."""
+    rule = Limits(max_runs=10, max_hours=12, max_tokens=1000, plateau=5, target=0.9)
+    known = facts(runs=3, unsettled=1, hours=None, tokens=250, without_keep=2, head=0.5)
+    assert rule.check(StopCase('score', Direction.HIGHER, known)) == Go(
+        Facts({'runs': 7, 'hours': 12.0, 'tokens': 750, 'without_keep': 3})
+    ), 'no run started yet: every hour is left'
+    assert Limits().check(StopCase('score', Direction.HIGHER, facts(runs=3, hours=1.0))) == GO, 'open-ended: no bound'
+    assert rule.check_config(Shape(tracks=1)) is None
+    assert rule.check_config(Shape(tracks=2)) == 'limits the head, which needs a campaign of one track'
+    assert Limits(max_runs=10).check_config(Shape(tracks=2)) is None, 'no target: any number of tracks'
+
+
 def test_the_example_stop_rule_ends_after_its_keeps_or_at_a_limit_of_limits() -> None:
     """``examples/plugins/stop-after-keeps``: ``limits`` with one more limit, so it reads the facts that it limits and
     that ``limits`` shows, and every limit of ``limits`` still applies."""
@@ -1009,7 +1029,7 @@ def test_the_example_stop_rule_ends_after_its_keeps_or_at_a_limit_of_limits() ->
     def check(known: Facts) -> object:
         return rule.check(StopCase('score', Direction.HIGHER, known))
 
-    assert check(facts(keeps=2, hours=1, tokens=10, spend=12)) == GO
+    assert check(facts(keeps=2, hours=1, tokens=10, spend=12)) == Go(Facts({'hours': 11.0, 'tokens': 990, 'keeps': 1}))
     assert check(facts(keeps=3, hours=1, tokens=10, spend=12)) == Stop('after_keeps: 3 keeps')
     assert check(facts(keeps=0, hours=12.5, tokens=10, spend=12)) == Stop('max_hours: 12.5h since the first run')
     assert check(facts(keeps=0, hours=1, tokens=1000, spend=12)) == Stop('max_tokens: 1000 tokens spent')
@@ -1101,6 +1121,9 @@ def test_an_agent_may_run_its_role_timeout_cut_at_the_time_that_the_campaign_sto
     with db.session() as s:
         row = s.get_one(Campaign, campaign.id)
         assert agent_timeout(s, row, cfg, 1800, utcnow()) == 0, 'past the stop: no time, never a negative one'
+        hold = {'max_hours': 3, 'hold_at': {'spend': 300}}
+        held = load_campaign_config(Path(campaign.path), facts=[*OWN, SOURCE], plugins={'stop_rule': hold})
+        assert agent_timeout(s, row, held, 1800, utcnow()) == 1800, 'a hold leaves no budget: nothing launches then'
 
 
 def facts(**values: FactValue) -> Facts:
@@ -1231,11 +1254,11 @@ def test_the_example_keep_cost_rule_escalates_once_per_keep_then_stops_at_its_ha
         known = facts(hours=hours, spend=spend, keeps=keeps, spend_since_keep=since)
         return rule.check(StopCase('score', Direction.HIGHER, known))
 
-    assert check(399) == GO, 'below 2 × $200 per keep'
+    assert check(399) == Go(Facts({'hours': 11.0})), 'below 2 × $200 per keep'
     escalation = 'keep_cost: since keep 2, spend passed 2 × its value per keep; it stops at 4 ×'
     assert check(400) == check(700) == Escalate(escalation), 'one reason for the keep, whatever the amount'
     assert check(800) == Stop('keep_cost: spend 800 since the latest keep, 4 × the 200 per keep')
-    assert check(5000, keeps=0) == GO, 'no keep yet: no spend per keep'
+    assert check(5000, keeps=0) == Go(Facts({'hours': 11.0})), 'no keep yet: no spend per keep'
     other = KeepCost(spend='gpu_hours')
     assert since_keep('gpu_hours') in other.reads(), 'the rule reads the fact that it names'
     assert check(800, hours=13) == Stop('max_hours: 13.0h since the first run'), 'the limits of limits come first'
