@@ -19,9 +19,9 @@ credential, removes any copy of its headers that the caller sent, and stamps its
 Envoy Gateway's authorization rules do; a caller that no rule matches is refused. A worker is named by the
 ``worker_header`` that it sends, anyone else by its ``name_claim``.
 
-This network checks no token of its own, and core refuses piloop's own tokens (``plt_``) on it, so ``listen`` must be
-reachable from the proxy alone, by a network policy or a firewall: whoever reaches it can claim anything. TLS ends at
-the proxy.
+This network checks no token of its own, and core refuses piloop's own tokens (``plt_``) on its listener, so
+``listen`` must be reachable from the proxy alone, by a network policy or a firewall: whoever reaches it can claim
+anything. TLS ends at the proxy.
 
 Workers share one credential that the proxy accepts, which its ``worker`` rule matches. ``enroll`` hands a provisioned
 worker that credential, from the home's secret ``worker_credential_secret`` (``piloop secret set``), and its name.

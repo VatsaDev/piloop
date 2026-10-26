@@ -63,15 +63,23 @@ def asked(request: Request) -> str | None:
 
 
 def _identified(tokens: Tokens, network: Network, request: Request) -> Caller | Refused:
-    """The caller of a piloop token (``plt_``), on any network, or else whom the network knows."""
+    """The caller of a piloop token (``plt_``), else the socket's owner, else whom the network knows.
+
+    The socket verifies every piloop token: only the home's user opens it, as its ``admin`` owner, so a token there only
+    narrows the caller, as a relayed agent's does. The network's listener takes one if the network does
+    (``Network.takes_tokens``).
+    """
     scheme, _, secret = request.headers.get('authorization', '').partition(' ')
-    if scheme.lower() == 'bearer' and secret.startswith(PREFIX):
-        if not network.takes_tokens:
+    token = secret if scheme.lower() == 'bearer' and secret.startswith(PREFIX) else None
+    match token, bool(request.scope['state'].get(_LOCAL)):
+        case str(), False if not network.takes_tokens:
             return Refused('this server takes no piloop token: its network authenticates every caller')
-        return tokens.verify(secret) or Refused('the token is unknown or revoked')
-    if request.scope['state'].get(_LOCAL):
-        return OWNER
-    return network.identify(request.headers, _peer(request))
+        case str() as known, _:
+            return tokens.verify(known) or Refused('the token is unknown or revoked')
+        case None, True:
+            return OWNER
+        case _:
+            return network.identify(request.headers, _peer(request))
 
 
 def _peer(request: Request) -> Peer:

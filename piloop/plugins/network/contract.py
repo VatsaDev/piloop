@@ -123,8 +123,9 @@ class Network(Protocol):
     """How machines reach the server, and who a caller is. The daemon makes one when it starts."""
 
     takes_tokens: bool
-    """Whether core admits piloop's own tokens (``plt_``) on this network. False: the network authenticates every caller
-    itself (``identify``), and core refuses a ``plt_`` bearer, so no token minted in the home opens a way around it."""
+    """Whether core admits piloop's own tokens (``plt_``) on this network's listener. False: the network authenticates
+    every caller itself (``identify``), and core refuses a ``plt_`` bearer there, so no token minted in the home opens a
+    way around it. The home's Unix socket verifies them whatever this says."""
 
     def listener(self) -> Listener | None:
         """Bind ``listen``, or return None when it is None. The daemon calls it once."""

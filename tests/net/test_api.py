@@ -466,6 +466,41 @@ def test_a_proxy_caller_s_ack_reply_and_pause_sign_as_the_person_it_names(
     assert {r.cells[2] for r in rows} >= {me, f'orchestrator via {me}'}, 'watch shows who replied'
 
 
+def test_behind_the_proxy_an_agent_s_token_signs_on_the_socket_and_no_piloop_token_passes_the_listener(
+    db: Database, campaign: Campaign, cfg: Settings
+) -> None:
+    """A relayed call runs ``piloop`` on the server's socket with the agent's token; the proxy fronts the listener."""
+    with db.session() as s:
+        live, ended = [
+            AgentSession(kind='watchdog', campaign_id=campaign.id, state=AgentSessionState.RUNNING) for _ in '12'
+        ]
+        s.add_all([live, ended])
+        s.flush()
+        agent, gone = (Agent(role=RoleName('watchdog'), session=w.id) for w in (live, ended))
+        [secret, stale] = [tokens.mint_agent(s, a).get_secret_value() for a in (agent, gone)]
+        ended.state = AgentSessionState.EXITED
+        s.commit()
+    person = token(db, 'ana', Access.ADMIN)
+    uds = httpx.HTTPTransport(uds=str(cfg.socket_file))
+    stamped = {'x-principal-id': 'ana@example.com'}
+    with (
+        serving_api(cfg, network_config=PROXY) as [_, tcp],
+        httpx.Client(transport=uds, base_url='http://piloop') as socket,
+        httpx.Client(base_url=tcp.url, headers=stamped) as network,
+    ):
+        signed = socket.post('/v1/journal', json={'line': 'relayed'}, headers={'Authorization': f'Bearer {secret}'})
+        assert signed.status_code == 200, signed.text
+        late = socket.post('/v1/journal', json={'line': 'late'}, headers={'Authorization': f'Bearer {stale}'})
+        assert (late.status_code, late.json()) == (401, {'detail': 'the token is unknown or revoked'})
+        for bearer in (person, secret):
+            refused = network.post(
+                '/v1/journal', json={'line': 'around'}, headers={'Authorization': f'Bearer {bearer}'}
+            )
+            assert refused.status_code == 401 and 'takes no piloop token' in refused.json()['detail']
+    with db.session() as s:
+        assert {(j.line, j.author) for j in s.scalars(select(Journal))} == {('relayed', str(agent))}
+
+
 def test_a_message_signs_as_the_caller_wakes_the_orchestrator_and_its_reply_reaches_the_sender_s_inbox(
     db: Database, campaign: Campaign, cfg: Settings
 ) -> None:
