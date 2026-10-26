@@ -49,6 +49,7 @@ def fired(s: Session, campaign: Campaign, trigger: Trigger) -> Fire | None:
         campaign=s.get_one(Campaign, campaign.id),
         role=WATCHDOG,
         last=None,
+        quiet=None,
         max_concurrent=1,
         interval=0,
         backlog=unread,

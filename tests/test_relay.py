@@ -16,7 +16,7 @@ from pytest_mock import MockerFixture
 from sqlalchemy import select
 
 from piloop.actor import Agent, System
-from piloop.agents.roles import IDEAS, PROMPTS, SQL_HINT
+from piloop.agents.roles import IDEAS, PROCEDURES, PROMPTS, SQL_HINT
 from piloop.campaign.campaigns import checkout_of
 from piloop.cli.database import ORCHESTRATOR_PROCEDURES
 from piloop.cli.main import app
@@ -29,7 +29,9 @@ from piloop.plugins.executor.kit import door as door_module, relay as relay_modu
 from piloop.plugins.executor.kit.client import Dismissed
 from piloop.plugins.executor.kit.door import AgentCall, Call, Relayed, main
 from piloop.plugins.executor.kit.leases import StaleLease
-from piloop.plugins.executor.kit.relay import RELAYED, Relay, Runner
+from piloop.plugins.executor.kit.relay import Relay, Runner
+from piloop.plugins.role.contract import RELAYED, Files
+from piloop.plugins.role.orchestrator import OrchestratorRole
 from piloop.plugins.runtime.contract import MESSAGES_ENV, QUEUE, put
 from piloop.proc import ACTOR_ENV
 from piloop.settings import Settings
@@ -62,6 +64,32 @@ def test_an_agent_on_another_machine_may_run_the_commands_that_the_role_prompts_
     briefs = [f'`{SQL_HINT} -`', *(line.format(piloop='piloop', campaign='demo') for line in IDEAS.values())]
     named = set().union(*(commands(text) for text in [*prompts, *briefs]))
     assert named == RELAYED
+
+
+def test_an_orchestrator_on_another_machine_may_run_the_commands_that_its_brief_names_and_no_other() -> None:
+    assert OrchestratorRole.PROMPT is not None
+    texts = [
+        OrchestratorRole.PROMPT.read_text(),
+        (PROMPTS / PROCEDURES).read_text(),
+        f'`{SQL_HINT} -`',
+        IDEAS[Files.IDEAS].format(piloop='piloop', campaign='demo'),
+    ]
+    assert set().union(*(commands(text) for text in texts)) == OrchestratorRole.RELAYED
+
+
+def test_the_commands_that_run_are_those_of_the_agents_role(
+    db: Database, campaign: Campaign, tmp_path: Path, runner: Runner
+) -> None:
+    watchdog = agent_job(db, campaign, tmp_path)
+    with db.session() as s:
+        orchestrator = AgentSession(kind='orchestrator', campaign_id=campaign.id)
+        s.add(orchestrator)
+        s.commit()
+        job = watchdog.model_copy(update={'agent_session': orchestrator.id})
+    refused = runner(watchdog, Call(argv=['inbox', 'show', '1'], token=launched(db, watchdog)))
+    assert refused.exit_code == 2, 'not in the default list'
+    shown = runner(job, Call(argv=['inbox', 'show', '1'], token=launched(db, job)))
+    assert 'an agent on another machine runs only' not in shown.stderr, shown.stderr
 
 
 @pytest.fixture

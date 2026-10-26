@@ -16,11 +16,11 @@ from typing import Annotated, assert_never
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Path, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
-from pydantic import SecretStr, TypeAdapter, ValidationError
+from pydantic import SecretStr, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from piloop.actor import Actor
+from piloop.actor import ACTORS, Actor
 from piloop.agents.results import PromptOutcome, queue_prompt
 from piloop.api.contract import (
     Access,
@@ -214,7 +214,7 @@ def acting(request: Request, caller: Annotated[Caller, Depends(reader)]) -> Acto
     """Who the caller acts as: the actor that it asks for (``asked``), by the table of ``piloop.net.acting.acts_as``."""
     named = asked(request)
     try:
-        actor = None if named is None else ACTOR.validate_python(named)
+        actor = None if named is None else ACTORS.validate_python(named)
     except ValidationError as e:
         raise HTTPException(422, f'{named!r} is not an actor, such as orchestrator or implementer#12') from e
     try:
@@ -223,7 +223,6 @@ def acting(request: Request, caller: Annotated[Caller, Depends(reader)]) -> Acto
         raise Refusal(HTTPStatus.FORBIDDEN, Problem.FORBIDDEN, str(e)) from e
 
 
-ACTOR: TypeAdapter[Actor] = TypeAdapter(Actor)
 Acting = Annotated[Actor, Depends(acting)]
 actor_access = authorized(Access.ACT)
 """The access of every route that writes."""
@@ -902,7 +901,7 @@ def _campaign_answer(s: Session, campaign: Campaign, me: Actor) -> CampaignAnswe
 
 def _news(db: Database, campaign: CampaignId | None, me: Actor, after: int | None) -> News:
     with db.session() as s:
-        return inbox_module.news(s, db_feed.newest(s) if after is None else after, campaign_id=campaign, me=me)
+        return inbox_module.news(s, db_feed.newest(s) if after is None else after, campaign_id=campaign, party=me.party)
 
 
 def _events(db: Database, query: EventsQuery, campaign: CampaignId | None, after: int) -> Batch:

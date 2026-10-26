@@ -340,6 +340,10 @@ def wake_budget(toml: Path, raw: dict[str, object], removed_in: Version) -> None
         if not isinstance(table, dict) or 'sections' in table or budget in (None, OLD_BUDGETS.get(name, 400)):
             continue
         model = ROLES.model_of(name) if name in ROLES.providers() else new_role(table)
+        if (
+            model.model_fields['sections'].default is not None
+        ):  # a role of its own sections, which wake_budget never sized
+            continue
         listed = [SECTIONS.dumped(s, 'python') for s in defaults(model.SURFACE)]
         others = [e for e in listed if e['provider'] != LESSONS]
         table['sections'] = [{'provider': LESSONS, 'budget': budget}, *others] if budget else others

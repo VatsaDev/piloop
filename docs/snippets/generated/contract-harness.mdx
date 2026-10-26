@@ -13,6 +13,7 @@
 | `Harness.mcp() -> McpRenderer \| None` | How it takes the MCP servers of a role. None, by default: it takes none. |
 | `Harness.sessions() -> UsageReader \| None` | How to read the session files that its CLI leaves. None, by default: it leaves none that piloop reads. |
 | `Harness.usage() -> UsageReader \| None` | How to read the tokens of an agent that ended: its `sessions`, when the session id can be known. |
+| `Harness.restore(session_id: str, cwd: Path) -> Path \| None` | Where to write a session file back from the CAS, so that `resume` continues it in `cwd` on any machine. |
 | `Harness.messages(lines: list[str]) -> str` | What `piloop agent messages --harness <provider>` prints for the messages it takes: by default, one a line. |
 | `Harness.skills_dir(settings: Settings) -> Path` | Where its CLI reads user skills: by default, the Agent Skills directory (`agent_skills_dir`). |
 | `Harness.refuses_servers() -> str \| None` | Return why `headless` cannot take MCP servers, or None when it can. |

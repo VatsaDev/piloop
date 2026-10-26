@@ -134,6 +134,7 @@ low_water = "piloop.plugins.trigger.low_water:LowWaterTrigger"
 stalled = "piloop.plugins.trigger.stalled:StalledTrigger"
 stopped = "piloop.plugins.trigger.stopped:StoppedTrigger"
 sql = "piloop.plugins.trigger.sql:SqlTrigger"
+news = "piloop.plugins.trigger.news:NewsTrigger"
 
 [project.entry-points."piloop.verdict_rules"]
 bootstrap = "piloop.plugins.verdict_rule.bootstrap:Bootstrap"
@@ -205,6 +206,7 @@ implementer = "piloop.plugins.role.implementer:ImplementerRole"
 watchdog = "piloop.plugins.role.watchdog:WatchdogRole"
 research = "piloop.plugins.role.research:ResearchRole"
 scout = "piloop.plugins.role.scout:ScoutRole"
+orchestrator = "piloop.plugins.role.orchestrator:OrchestratorRole"
 
 [tool.hatch.build.targets.wheel]
 packages = ["piloop"]

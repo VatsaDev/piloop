@@ -20,10 +20,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
-from pydantic import SecretStr, TypeAdapter
+from pydantic import SecretStr
 from sqlalchemy.orm import Session
 
-from piloop.actor import Actor
+from piloop.actor import ACTORS, Actor
 from piloop.db.events import emit, has, latest
 from piloop.db.models import AgentSession, Event, EventModel
 from piloop.db.session import Database
@@ -131,16 +131,13 @@ class Listed:
     set_by: Actor | None
 
 
-ACTOR: TypeAdapter[Actor] = TypeAdapter(Actor)
-
-
 def listed(s: Session, provider: SecretsProvider) -> list[Listed]:
     """Every secret, by owner (the home's first) and name, with who set it last and when."""
     found: list[Listed] = []
     for secret in provider.names(s):
         match latest(s, SecretSet, has(SecretSet, name=secret.name), Event.target == target(secret.owner)):
             case (event, _):
-                found.append(Listed(secret, event.at, ACTOR.validate_python(event.actor)))
+                found.append(Listed(secret, event.at, ACTORS.validate_python(event.actor)))
             case _:
                 found.append(Listed(secret, None, None))
     return found

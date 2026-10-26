@@ -28,13 +28,16 @@ LEAVES: dict[str, frozenset[str] | None] = {
     'db/models.py': None,
     'ids.py': None,
     'db/migrations/versions/*.py': None,
-    'config.py': frozenset({'subprocess'}),
+    'config.py': frozenset({'subprocess', 'orchestrator'}),
+    'actor.py': frozenset({'orchestrator'}),
+    'daemon/api.py': frozenset({'news'}),
     'plugins/role/research.py': frozenset({'claude', 'codex', 'low_water', 'seed', 'stalled'}),
     'plugins/role/watchdog.py': frozenset({'run_failed', 'dead_at_startup', 'leaking_funnel', 'cron', 'stopped'}),
     'plugins/role/scout.py': frozenset({'cron'}),
     'deprecated.py': None,
     'cli/idea.py': frozenset({'seed'}),
-    'plugins/executor/kit/relay.py': frozenset({'seed', 'sql'}),
+    'plugins/role/contract.py': frozenset({'seed', 'sql'}),
+    'plugins/role/orchestrator.py': frozenset({'seed', 'sql'}),
     'plugins/archive/local/archiver.py': frozenset({'research'}),
 }
 """The files that may name entries, and which ones (None: any). The reasons:
@@ -42,12 +45,15 @@ LEAVES: dict[str, frozenset[str] | None] = {
 - The harnesses (``plugins/harness/``), the triggers (``plugins/trigger/``) and ``ids.py`` (the built-in roles) define
   the entries. The migrations are history.
 - ``db/models.py``: the states ``seed`` and ``stopped``, which share a name with a trigger.
-- ``config.py``: the default of ``runtime``.
+- ``config.py``: the default of ``runtime``, and ``orchestrator`` among the names that sign writes.
+- ``actor.py``: the outside orchestrator, ``orchestrator``, one party with the agents of the role.
+- ``daemon/api.py``: ``news``, the operation id of the route that ``piloop inbox wait`` reads.
 - ``plugins/role/research.py``: the default ``model`` of research.
 - ``plugins/role/``: the default ``triggers`` of the built-in roles, named by kind as in ``piloop.toml``: a class
   would load its provider, and with it the database, when the config models load.
 - ``deprecated.py``: the bridges rewrite the keys of earlier releases, which named built-in roles and triggers.
-- ``cli/idea.py`` and ``plugins/executor/kit/relay.py``: the commands ``piloop idea seed`` and ``piloop sql``.
+- ``cli/idea.py``, ``plugins/role/contract.py`` and ``plugins/role/orchestrator.py``: the commands ``piloop idea seed``
+  and ``piloop sql``.
 - ``plugins/archive/local/archiver.py``: ``research/`` is a folder of the shared workspace, not the role.
 """
 

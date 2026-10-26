@@ -3,6 +3,7 @@
 | Member | What it is |
 |---|---|
 | `Trigger.ON_STOP: ClassVar[bool]` | The daemon checks the trigger once after each stop, when the stopped campaign's last runs are judged, instead of on every pass while it runs. |
+| `Trigger.WHILE: ClassVar[frozenset[Quiet]]` | The quiet phases in which the daemon still checks the trigger, and launches what it requests. A trigger that names `stopped` is checked on every pass after the campaign's closing review was requested. |
 | `Trigger.WAKES_ON: ClassVar[frozenset[type[EventModel]]]` | The event models that make the daemon check the trigger, beyond those of its campaign's state: its ideas, runs, candidates and agents, its status and config. A trigger that reads anything else, such as the events of a plugin, names them here. |
 | `Trigger.INVESTIGATES: ClassVar[bool]` | The agent that the trigger requests gets incidents to investigate. An agent of a role with such a trigger that dies at startup is then no incident: the agent that it would request could die the same way, and so on. |
 | `Trigger.fire(p: Pass) -> Fire \| None` | Return the request that the trigger makes now, or None. |

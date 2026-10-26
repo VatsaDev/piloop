@@ -10,12 +10,13 @@ snapshot stays small (a B-tree of two levels).
 
 import zlib
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 
 from covalence import Cid, Value
 from pydantic import BaseModel, ConfigDict
 
 from piloop.plugins.cas.contract import BlobAddress, Cas
-from piloop.store.tree import RAW, Missing
+from piloop.store.tree import RAW, WORKERS, Missing
 
 MIN_CHUNK = 2 * 1024
 """No cut before a chunk holds this many bytes."""
@@ -60,6 +61,9 @@ def cuts(data: bytes) -> Iterator[int]:
 def read(cas: Cas, cid: Cid) -> bytes | None:
     """The bytes of the file at ``cid``: a blob as stored, or a chunked file's parts joined. None if missing.
 
+    The parts of each manifest are fetched ``WORKERS`` at a time: on a remote CAS each is a request, and a long session
+    has thousands of chunks.
+
     Raises:
         Missing: a part of the file is not in the CAS.
         ValueError: ``cid`` names a value that is not a chunked file.
@@ -67,9 +71,20 @@ def read(cas: Cas, cid: Cid) -> bytes | None:
     data = cas.get(cid)
     if data is None or cid.codec == RAW:
         return data
-    parts: list[bytes] = []
-    for part in Chunked.model_validate(Value.decode(data).to_native()).chunks:
-        if (found := read(cas, part)) is None:
+    pool = ThreadPoolExecutor(WORKERS, thread_name_prefix='read-chunks')
+    try:
+        return b''.join(_parts(cas, pool, cid, data))
+    finally:
+        pool.shutdown(cancel_futures=True)
+
+
+def _parts(cas: Cas, pool: ThreadPoolExecutor, cid: Cid, manifest: bytes) -> Iterator[bytes]:
+    """The bytes of the parts of the chunked file ``cid``, whose manifest is ``manifest``, in order."""
+    parts = Chunked.model_validate(Value.decode(manifest).to_native()).chunks
+    for part, found in zip(parts, pool.map(cas.get, parts), strict=True):
+        if found is None:
             raise Missing(f'the part {part} of {cid} is not in the CAS')
-        parts.append(found)
-    return b''.join(parts)
+        if part.codec == RAW:
+            yield found
+        else:
+            yield from _parts(cas, pool, part, found)

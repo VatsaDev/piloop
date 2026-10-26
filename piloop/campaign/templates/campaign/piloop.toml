@@ -64,6 +64,7 @@ runs = false                              # a sweeping role: its triggers start 
 triggers = [{ provider = "run_failed" }, { provider = "dead_at_startup" }, { provider = "leaking_funnel" }, { provider = "cron" }, { provider = "stopped" }]  # incidents, the timer below, the stop
 # sections = [{ provider = "lessons", budget = 400 }, …]  # if not set: the installed sections of its briefs; see the sections
 interval = 1800                           # seconds between two progress reviews of the cron trigger; 0 turns it off
+# continuity = "fresh"                   # or "resume": each sweep continues the last sweep's harness session
 # incident_prompt = "briefs/incident.md"  # follows the prompt in a sweep that got anomalies; default: watchdog_incident.md
 # routine_prompt = "briefs/review.md"     # follows the prompt in every other sweep; default: watchdog_progress.md
 max_ideas = 1                             # new ideas per sweep for a low_water trigger; the watchdog files only seeds
@@ -84,6 +85,7 @@ runs = false                              # a sweeping role
 triggers = [{ provider = "low_water", buffer = 2 }, { provider = "seed" }, { provider = "stalled" }]  # a short backlog (buffer: ideas beyond one per run slot), a new seed, a stall
 # interval = 0                            # seconds between two sweeps of a cron trigger, if you add one
 # sections = [{ provider = "lessons", budget = 400 }, …]  # if not set: the installed sections of its briefs; see the sections
+# continuity = "fresh"                   # or "resume": each sweep continues the last sweep's harness session
 # incident_prompt = "briefs/incident.md"  # follows the prompt in a sweep that got anomalies, if you add that trigger
 # routine_prompt = "briefs/routine.md"    # follows the prompt in every other sweep; none by default
 max_ideas = 1                             # new ideas per sweep, after the seeds; 0 pauses them (proposed)
@@ -103,6 +105,7 @@ max_concurrent = 1                        # sweeps at the same time; more than o
 runs = false                              # a sweeping role
 triggers = [{ provider = "cron" }]            # the timer below
 interval = 0                              # seconds between two scout sweeps; 0 (the default) turns the scout off
+# continuity = "fresh"                   # or "resume": each sweep continues the last sweep's harness session
 # incident_prompt = "briefs/incident.md"  # follows the prompt in a sweep that got anomalies, if you add that trigger
 # routine_prompt = "briefs/routine.md"    # follows the prompt in every other sweep; none by default
 seeds = 3                                 # the most seeds one scout sweep may file
@@ -110,6 +113,27 @@ seeds = 3                                 # the most seeds one scout sweep may f
 max_ideas = 1                             # new ideas per sweep for a low_water trigger; the scout files only seeds
 timeout = 900
 max_concurrent = 1
+
+[roles.orchestrator]                      # piloop launches the campaign's orchestrator when news arrives for it
+# harnesses = ["claude"]                  # if not set: the campaign's harnesses; it keeps the harness of its last session
+# model = { claude = "claude-opus-5-5" }  # merged over [model]
+# effort = "high"                         # how hard its agents think, as the harness names it
+# addendum = "briefs/orchestrator.md"     # a file appended to brief.md in this role's briefs only
+# mcp = ["exa"]                           # the [mcp.<name>] servers that this role's agents get; none by default
+# prompt = "briefs/my-orchestrator.md"    # a file that replaces the built-in start of this role's brief
+# runtime = "subprocess"                  # if not set: the campaign's runtime
+# writes = ["decisions"]                  # what the brief says the role may write; default: what piloop expects of it
+# files = "ideas"                         # what its agents may file with `piloop idea`: nothing, seeds or ideas
+runs = false                              # a sweeping role
+triggers = []                             # off: you run your own orchestrator; [{ provider = "news" }] turns it on
+# continuity = "resume"                   # each agent resumes the last one's session; "fresh" starts each anew
+# interval = 0                            # seconds between two sweeps of a cron trigger, if you add one
+# sections = [{ provider = "inbox" }, …]  # if not set: a lean status after the news
+# incident_prompt = "briefs/incident.md"  # follows the prompt in a sweep that got anomalies, if you add that trigger
+# routine_prompt = "briefs/routine.md"    # follows the prompt in every other sweep; none by default
+# max_ideas = 1                           # new ideas per sweep for a low_water trigger, if you add one
+timeout = 900
+max_concurrent = 1                        # at most 1: two orchestrators would answer the same news twice
 
 # [roles.reviewer]                        # a role of your own: any new name; it needs a prompt and triggers
 # prompt = "briefs/reviewer.md"           # the file that starts its brief

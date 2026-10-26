@@ -122,6 +122,21 @@ class JobSecrets(BaseModel):
     """The agent's own token: its ``PILOOP_AGENT_TOKEN``."""
 
 
+class Resume(BaseModel):
+    """A harness session to continue on any machine: its file in the CAS, and the harness's ``resume`` argv."""
+
+    model_config = ConfigDict(frozen=True)
+
+    session_id: str
+    file: BlobAddress
+    """The session file, as ``agent_sessions.session_file`` names it: the worker writes it back where the job's
+    harness says (``Harness.restore``)."""
+    brief: BlobAddress
+    """The brief of the resumed agent, in place of ``AgentJob.brief_cid``: only what is new to the session."""
+    args: list[str]
+    """The arguments that continue the session with the agent's first prompt, in place of ``AgentStart.args``."""
+
+
 class AgentJob(BaseModel):
     """The description of an agent's job: everything a worker needs, so it reads no campaign table.
 
@@ -159,6 +174,9 @@ class AgentJob(BaseModel):
     capture: RunId | None = None
     """Bring the agent's work back, with what it left unsaved as a version recovered for this run
     (``Repository.capture``). None for a sweep: nothing that it saves comes back."""
+    resume: Resume | None = None
+    """Continue this session instead of starting a new one. When the worker cannot write its file back, it starts the
+    agent with ``spec`` and says why (``AgentFinished.unrestored``)."""
 
     @property
     def needs_session_id(self) -> bool:
@@ -270,6 +288,9 @@ class AgentFinished(BaseModel):
     session_file: BlobAddress | None = None
     """The harness's session file in the CAS, as it was when the agent ended: the last snapshot (``SessionFile``)."""
     usage: Usage | None = None
+    """The tokens of this agent. Of a resumed session, only those after the resume."""
+    unrestored: str | None = None
+    """Why the worker started a new session in place of the job's ``resume``: the file could not be written back."""
     changed: bool = True
     """Whether the agent changed its checkout: a saved version, or an unsaved change outside the links."""
     work: Transfer | None = None

@@ -157,7 +157,6 @@ def compose_brief(
     anomalies (``incident``). An implementer also gets its track's addendum after the role's addendum. With several
     tracks, the context lists them. ``context`` ends with the role's sections.
     """
-    author = agent.signature
     repo = Path(campaign.path)
     cfg = campaign.config
     addendum = cfg.role(role.kind).addendum
@@ -170,23 +169,41 @@ def compose_brief(
         (repo / addendum).read_text().rstrip() if addendum else '',
         (repo / track.addendum).read_text().rstrip() if track is not None and track.addendum else '',
         prompted((PROMPTS / PROCEDURES).read_text().rstrip(), vcs),
-        '\n'.join(
-            [
-                '# Context',
-                f'- You are {author}, the {role.kind} for campaign#{campaign.id} ({campaign.name}).',
-                f"- Campaign repo: {campaign.path}, on the daemon's machine. Your checkout can read every candidate's version.",
-                f"- Sign what you write as '{author}' (comments.author, ideas.created_by).",
-                f'- Why this agent started (context, not a scope): {reason}',
-                f"- piloop: `{PILOOP_HINT}` is this daemon's piloop. Run every `piloop` command of this brief with it.",
-                f"- SQL tool: `{SQL_HINT} -`, with the statement on stdin from a quoted heredoc (`<<'EOF'`).",
-                *([tracks_line(cfg, track)] if cfg.multitrack else []),
-                role.ideas.format(piloop=PILOOP_HINT, campaign=campaign.name),
-                *([f'- You may write: {", ".join(sorted(role.writes))}.'] if role.writes else []),
-                context.rstrip(),
-            ]
-        ),
+        _context(role, campaign, agent, reason, context, track),
     ]
     return '\n\n'.join(p for p in parts if p) + '\n'
+
+
+def compose_resumed(role: Role, campaign: Campaign, agent: Agent, *, reason: str, context: str) -> str:
+    """Compose the brief of an agent that resumes its role's last session: only its context, which is new to it.
+
+    The session holds the rest of the brief already, from the agent that started it.
+    """
+    lead = (
+        f'You continue this session as a new agent, {agent.signature}. Your earlier briefs and work are above.'
+        ' Follow your role as before, with this new context.'
+    )
+    return f'{lead}\n\n{_context(role, campaign, agent, reason, context, None)}\n'
+
+
+def _context(role: Role, campaign: Campaign, agent: Agent, reason: str, context: str, track: Track | None) -> str:
+    author = agent.signature
+    cfg = campaign.config
+    return '\n'.join(
+        [
+            '# Context',
+            f'- You are {author}, the {role.kind} for campaign#{campaign.id} ({campaign.name}).',
+            f"- Campaign repo: {campaign.path}, on the daemon's machine. Your checkout can read every candidate's version.",
+            f"- Sign what you write as '{author}' (comments.author, ideas.created_by).",
+            f'- Why this agent started (context, not a scope): {reason}',
+            f"- piloop: `{PILOOP_HINT}` is this daemon's piloop. Run every `piloop` command of this brief with it.",
+            f"- SQL tool: `{SQL_HINT} -`, with the statement on stdin from a quoted heredoc (`<<'EOF'`).",
+            *([tracks_line(cfg, track)] if cfg.multitrack else []),
+            role.ideas.format(piloop=PILOOP_HINT, campaign=campaign.name),
+            *([f'- You may write: {", ".join(sorted(role.writes))}.'] if role.writes else []),
+            context.rstrip(),
+        ]
+    )
 
 
 def tracks_line(cfg: CampaignConfig, track: Track | None) -> str:

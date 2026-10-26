@@ -9,7 +9,7 @@
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, PlainSerializer
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, PlainSerializer, TypeAdapter, ValidationError
 
 from piloop.ids import ROLE_NAME, AgentSessionId, RoleName
 
@@ -52,6 +52,11 @@ class Agent(BaseModel):
         return f'{self.role}#{self.session}'
 
     @property
+    def party(self) -> str:
+        """Whom it writes for: its role. Every agent of a role is one party, so one never waits for another's writes."""
+        return self.role
+
+    @property
     def launched(self) -> Agent:
         """The agent that the daemon launched, when the actor is one: what a check of a role or a session reads.
 
@@ -83,6 +88,10 @@ class Person(BaseModel):
         return f'{PERSON}{self.name}'
 
     @property
+    def party(self) -> str:
+        return self.signature
+
+    @property
     def launched(self) -> None:
         return None
 
@@ -101,6 +110,10 @@ class Service(BaseModel):
     @property
     def signature(self) -> str:
         return f'{SERVICE}{self.name}'
+
+    @property
+    def party(self) -> str:
+        return self.signature
 
     @property
     def launched(self) -> None:
@@ -129,6 +142,11 @@ class Orchestrating(BaseModel):
         return f'{ORCHESTRATING}{self.by.signature}'
 
     @property
+    def party(self) -> str:
+        """The orchestrator's: whoever acts as it, the person writes for the orchestrator."""
+        return System.ORCHESTRATOR.party
+
+    @property
     def launched(self) -> None:
         return None
 
@@ -148,6 +166,11 @@ class System(StrEnum):
         return self.value
 
     @property
+    def party(self) -> str:
+        """Its signature. ``orchestrator`` is also the party of each agent of the ``orchestrator`` role."""
+        return self.value
+
+    @property
     def launched(self) -> None:
         return None
 
@@ -163,3 +186,15 @@ type Actor = Annotated[
 ]
 type SignedAgent = Annotated[Agent, BeforeValidator(_fields), PlainSerializer(_signed, return_type=str)]
 """An ``Agent`` that is read from and written as its signature, as an ``Actor`` is."""
+ACTORS: TypeAdapter[Actor] = TypeAdapter(Actor)
+
+
+def party_of(signature: str) -> str:
+    """The party of the actor that signs ``signature`` (``Agent.party``).
+
+    A signature that names no actor, such as one that an older piloop wrote, is a party of its own.
+    """
+    try:
+        return ACTORS.validate_python(signature).party
+    except ValidationError:  # not an actor's signature: nothing else signs as it
+        return signature

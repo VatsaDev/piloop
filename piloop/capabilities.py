@@ -35,7 +35,7 @@ from piloop.plugins.cas.s3 import S3
 from piloop.plugins.cas.gcs import Gcs
 from piloop.plugins.cas.http import Http
 
-from piloop.plugins.trigger.contract import TRIGGERS, Trigger, TriggerEntry, Pass, Fire
+from piloop.plugins.trigger.contract import TRIGGERS, Trigger, TriggerEntry, Pass, Fire, Quiet
 from piloop.plugins.trigger.contract import Backlog, TrackBacklog
 from piloop.plugins.trigger.run_failed import RunFailed
 from piloop.plugins.trigger.dead_at_startup import DeadAtStartup
@@ -46,6 +46,7 @@ from piloop.plugins.trigger.low_water import LowWaterTrigger
 from piloop.plugins.trigger.sql import SqlTrigger
 from piloop.plugins.trigger.stalled import StalledTrigger
 from piloop.plugins.trigger.stopped import StoppedTrigger
+from piloop.plugins.trigger.news import NewsTrigger
 
 from piloop.plugins.section.contract import SECTIONS, Section, SectionEntry, Rendering, Surface
 from piloop.api.views import Rendered, Block, Text, Lines, Figures, Figure, Table, Value
@@ -72,11 +73,12 @@ from piloop.plugins.section.history import History
 from piloop.plugins.section.lessons import Lessons
 
 from piloop.plugins.role.contract import ROLES, ImplementerRole, SweepRole
-from piloop.plugins.role.contract import Files
+from piloop.plugins.role.contract import Files, Continuity
 from piloop.plugins.role.contract import RoleConfig, Sweep
 from piloop.plugins.role.research import ResearchRole
 from piloop.plugins.role.scout import ScoutRole
 from piloop.plugins.role.watchdog import WatchdogRole
+from piloop.plugins.role.orchestrator import OrchestratorRole
 
 from piloop.plugins.verdict_rule.contract import VERDICT_RULES, VerdictRule, Case
 from piloop.plugins.verdict_rule.contract import Criterion, Side
@@ -116,7 +118,7 @@ from piloop.store.tree import Materialised, Copy
 from piloop.plugins.archive.local import LocalArchive
 from piloop.plugins.executor.contract import EXECUTORS, Executor, ExecutorConfig, Host
 from piloop.plugins.executor.contract import Results, Settled
-from piloop.plugins.executor.contract import AgentJob, EvaluationJob, LeftJob
+from piloop.plugins.executor.contract import AgentJob, EvaluationJob, LeftJob, Resume
 from piloop.plugins.executor.contract import AgentReport, EvaluationReport, Sample
 from piloop.plugins.executor.contract import AgentFinished, AgentNotStarted, HarnessSession
 from piloop.plugins.executor.contract import AgentKey, EvaluationKey, JobKey

@@ -10,7 +10,8 @@ An agent runs as the worker's user, as an agent of ``piloop serve`` runs as the 
 user, in a directory of mode 0700. Each call carries the agent's own token (``PILOOP_AGENT_TOKEN``), and the server runs
 it only when the token is the lease's agent's: one agent of a worker cannot call as another.
 
-Only the commands of ``RELAYED`` run, the ones that the role prompts name: a test keeps the two in step. The call runs
+Only the commands of the agent's role run (``RoleConfig.RELAYED``), the ones that its prompt names: a test keeps the
+two in step. The call runs
 in the campaign's checkout on the server, so a command that finds its campaign from the cwd finds it there.
 
 Retirement: deleted when agents call typed operations over HTTP, if they ever do.
@@ -30,6 +31,7 @@ import httpx2 as httpx
 from pydantic import ValidationError
 
 from piloop.actor import Agent
+from piloop.db.models import AgentSession, Campaign
 from piloop.db.session import Database
 from piloop.ids import AgentSessionId
 from piloop.net import tokens
@@ -39,22 +41,10 @@ from piloop.plugins.executor.kit import door as agent_end
 from piloop.plugins.executor.kit.client import Dismissed
 from piloop.plugins.executor.kit.door import RELAY_SECONDS, AgentCall, Call, Relayed
 from piloop.plugins.executor.kit.leases import StaleLease
+from piloop.plugins.role.contract import RELAYED, Verb
 from piloop.proc import ACTOR_ENV, AGENT_TOKEN_ENV, PILOOP_ARGV, child_env
 from piloop.settings import socket_dir
 
-RELAYED: frozenset[tuple[str, ...]] = frozenset(
-    {
-        ('sql',),
-        ('idea', 'add'),
-        ('idea', 'seed'),
-        ('idea', 'develop'),
-        ('idea', 'status'),
-        ('candidate', 'import'),
-        ('restore',),
-        ('cas', 'get'),
-    }
-)
-"""The commands that an agent on a worker elsewhere may run: those that the role prompts name."""
 RELAY_ARGV = (sys.executable, '-P', '-m', agent_end.__name__)
 """What an agent's ``piloop`` runs on a worker elsewhere (``jobs.Site.piloop``): ``door.main``."""
 
@@ -65,14 +55,14 @@ class LeaseCall(Call):
     lease: int
 
 
-def verb(argv: Sequence[str]) -> tuple[str, ...] | None:
-    """The command of ``RELAYED`` that ``argv`` runs, or None."""
-    return next((v for v in RELAYED if tuple(argv[: len(v)]) == v), None)
+def verb(argv: Sequence[str], relayed: frozenset[Verb]) -> Verb | None:
+    """The command of ``relayed`` that ``argv`` runs, or None."""
+    return next((v for v in relayed if tuple(argv[: len(v)]) == v), None)
 
 
-def refused(argv: Sequence[str]) -> Relayed:
-    """The answer to a call of a command that does not run on a worker elsewhere."""
-    named = ', '.join(sorted(' '.join(v) for v in RELAYED))
+def refused(argv: Sequence[str], relayed: frozenset[Verb]) -> Relayed:
+    """The answer to a call of a command that an agent of its role does not run on a worker elsewhere."""
+    named = ', '.join(sorted(' '.join(v) for v in relayed))
     command = ' '.join(['piloop', *argv[:2]])
     return Relayed(stderr=f'{command}: an agent on another machine runs only {named}\n', exit_code=2)
 
@@ -86,8 +76,12 @@ class Runner:
     repos: Callable[[RepoId], Path]
 
     def __call__(self, job: AgentJob, call: Call) -> Relayed:
-        if verb(call.argv) is None:
-            return refused(call.argv)
+        with self.db.session() as s:
+            w = s.get_one(AgentSession, job.agent_session)
+            role = s.get_one(Campaign, w.campaign_id).config.roles.all().get(w.kind)
+        relayed = role.RELAYED if role is not None else RELAYED
+        if verb(call.argv, relayed) is None:
+            return refused(call.argv, relayed)
         token = call.token.get_secret_value()
         with self.db.session() as s:
             caller = tokens.verify(s, token)

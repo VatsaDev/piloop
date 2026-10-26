@@ -21,8 +21,27 @@ next: piloop inbox wait enwik8 --after 17
 
 The wait returns on a new inbox item, seed, verdict, anomaly or stop, or at the timeout. Its last line is the next
 wait, with a cursor, so nothing is lost between two waits. The orchestrator uses no tokens while it waits. The daemon
-never starts it, and runs without one. Run one orchestrator for each campaign: two would answer an escalation
-twice.
+runs without one. Run one orchestrator for each campaign: two would answer an escalation twice.
+
+## Let piloop launch it
+
+With the `news` trigger on `[roles.orchestrator]`, the daemon launches the orchestrator when news arrives, and nobody
+needs to keep a session open:
+
+```toml
+[roles.orchestrator]
+triggers = [{ provider = "news" }]
+```
+
+- A message, an escalation or the stop launches it within `quiet_seconds` (30). Other news, such as a verdict, launches
+  it at most once in `routine_every` seconds (900).
+- While the campaign is paused or held, only a message or an escalation launches it.
+- Each orchestrator resumes the session of the one before, so it remembers what it decided. When it cannot, it starts
+  from its whole brief, and `agent_session.not_resumed` says why.
+- Its writes sign as `orchestrator#<id>`. The inbox treats every orchestrator, launched or not, as one: none waits for
+  what another wrote.
+
+Do not run `piloop-operate` on a campaign whose orchestrator piloop launches. Write to it with `piloop message`.
 
 ## The inbox
 

@@ -5,6 +5,7 @@ import re
 import subprocess
 from collections.abc import Iterable
 from dataclasses import dataclass
+from pathlib import Path
 from shlex import join
 
 from piloop.mcp import McpServer, env_names
@@ -20,6 +21,7 @@ from piloop.plugins.harness.kit.jsonl import (
     texts,
     zero,
 )
+from piloop.settings import expand_env
 
 NO_MEMORY = 'features.memories=false'
 """``-c`` for every Codex agent. Codex keeps memories per repo, so the notes of one agent would load into every later
@@ -224,3 +226,11 @@ class Codex(Harness):
 
     def sessions(self) -> JsonlSessions:
         return JsonlSessions(f'{self.home}/sessions/*/*/*/rollout-*-{{session_id}}.jsonl', no_cwd, tally, said)
+
+    def restore(self, session_id: str, cwd: Path) -> Path:
+        """A rollout under a date folder, with a timestamped name.
+
+        ``exec resume`` takes no other (measured with Codex 0.164.0). The date says nothing; the thread id finds the file.
+        """
+        name = f'sessions/2000/01/01/rollout-2000-01-01T00-00-00-{session_id}.jsonl'
+        return Path(expand_env(f'{self.home}/{name}')).expanduser()

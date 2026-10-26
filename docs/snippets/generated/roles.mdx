@@ -3,6 +3,7 @@
 | Role | Does runs | Triggers | Files | What it is |
 |---|---|---|---|---|
 | `implementer` | yes | the run queue | `nothing` | A role that does runs. |
+| `orchestrator` | no | the run queue | `ideas` | Decides escalations, answers messages, steers the work and records each decision. |
 | `research` | no | `low_water`, `seed`, `stalled` | `ideas` | Research develops seeds and keeps ideas ready for the implementers. |
 | `scout` | no | `cron` | `seeds` | The scout files outside techniques as seeds for the measured losses. It is off by default. |
 | `watchdog` | no | `run_failed`, `dead_at_startup`, `leaking_funnel`, `cron`, `stopped` | `seeds` | The watchdog investigates the anomalies that the daemon detects and reviews progress. |

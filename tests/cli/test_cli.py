@@ -1440,7 +1440,9 @@ def test_launch_requests_an_implementer(campaign_path: Path, out) -> None:
     assert '- Agents live: none; requested: research#1, watchdog#2' in out(), (
         'a request is not an agent until the daemon launches it'
     )
-    with pytest.raises(SystemExit, match="demo has no sweeping role 'janitor'; it has research, scout, watchdog.$"):
+    with pytest.raises(
+        SystemExit, match="demo has no sweeping role 'janitor'; it has orchestrator, research, scout, watchdog.$"
+    ):
         run_cli(['launch', 'demo', 'janitor'])
     with pytest.raises(SystemExit, match='The daemon launches implementers by itself, one for each queued run'):
         run_cli(['launch', 'demo', 'implementer'])
@@ -1765,7 +1767,7 @@ def test_upgrade_reinstalls_migrates_and_restarts_the_daemon(
         cli_check(),
         f'ok    daemon: pid {pid} runs the installed {installed()}',
         f'ok    database: {common.settings.home}/piloop.db at schema {HEADS}, current',
-        'ok    plugins: 1 archive provider, 1 campaign type, 5 CAS providers, 1 executor, 3 fact sources, 3 harness providers, 1 memory provider, 2 networks, 1 provisioner, 4 roles, 1 runtime, 1 secrets provider, 21 sections, 1 stop rule, 9 triggers, 1 vcs provider, 1 verdict rule; all built in',
+        'ok    plugins: 1 archive provider, 1 campaign type, 5 CAS providers, 1 executor, 3 fact sources, 3 harness providers, 1 memory provider, 2 networks, 1 provisioner, 5 roles, 1 runtime, 1 secrets provider, 21 sections, 1 stop rule, 10 triggers, 1 vcs provider, 1 verdict rule; all built in',
         'ok    secrets: from `piloop secret set` (PILOOP_SECRETS_COMMAND unset)',
         f'ok    skills (pi): current in {common.settings.agent_skills_dir}',
         'ok    harnesses: on PATH: none configured',
@@ -1793,7 +1795,7 @@ def test_upgrade_of_a_checkout_install_without_a_daemon_creates_the_schema(fake_
         cli_check(),
         'ok    daemon: not running',
         f'ok    database: {common.settings.home}/piloop.db at schema {HEADS}, current',
-        'ok    plugins: 1 archive provider, 1 campaign type, 5 CAS providers, 1 executor, 3 fact sources, 3 harness providers, 1 memory provider, 2 networks, 1 provisioner, 4 roles, 1 runtime, 1 secrets provider, 21 sections, 1 stop rule, 9 triggers, 1 vcs provider, 1 verdict rule; all built in',
+        'ok    plugins: 1 archive provider, 1 campaign type, 5 CAS providers, 1 executor, 3 fact sources, 3 harness providers, 1 memory provider, 2 networks, 1 provisioner, 5 roles, 1 runtime, 1 secrets provider, 21 sections, 1 stop rule, 10 triggers, 1 vcs provider, 1 verdict rule; all built in',
         'ok    secrets: from `piloop secret set` (PILOOP_SECRETS_COMMAND unset)',
         f'ok    skills (Agent Skills): current in {common.settings.agent_skills_dir}',
         'ok    harnesses: on PATH: none configured',

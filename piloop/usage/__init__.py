@@ -26,6 +26,12 @@ class Usage(BaseModel):
     turns: int
     """The number of model responses (API calls) in the session."""
 
+    def since(self, before: Usage | None) -> Usage:
+        """The usage after ``before``, the usage of the same session file when its agent resumed it. None: all of it."""
+        if before is None:
+            return self
+        return Usage.model_validate({k: getattr(self, k) - getattr(before, k) for k in Usage.model_fields})
+
 
 class UsageError(RuntimeError):
     """The usage could not be read.

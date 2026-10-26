@@ -156,6 +156,13 @@ class Claude(Harness):
     def sessions(self) -> JsonlSessions:
         return JsonlSessions(f'{self.home}/projects/{{cwd}}/{{session_id}}.jsonl', dash_non_alnum, tally, said)
 
+    def restore(self, session_id: str, cwd: Path) -> Path:
+        """Its session file under the project folder of ``cwd``.
+
+        ``--resume`` finds a restored file by its id from any cwd (measured with Claude Code 2.1.310).
+        """
+        return Path(expand_env(f'{self.home}/projects/{dash_non_alnum(cwd)}/{session_id}.jsonl')).expanduser()
+
     @classmethod
     def messages(cls, lines: list[str]) -> str:
         """The output of a ``PostToolUse`` hook, which gives the agent the messages (``additionalContext``)."""

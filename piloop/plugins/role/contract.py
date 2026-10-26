@@ -34,6 +34,35 @@ class Files(StrEnum):
     """Defined ideas (``piloop idea add``, ``piloop idea develop``) and seeds."""
 
 
+type Verb = tuple[str, ...]
+"""A ``piloop`` command by its words, such as ``('idea', 'seed')``."""
+
+RELAYED: frozenset[Verb] = frozenset(
+    {
+        ('sql',),
+        ('idea', 'add'),
+        ('idea', 'seed'),
+        ('idea', 'develop'),
+        ('idea', 'status'),
+        ('candidate', 'import'),
+        ('restore',),
+        ('cas', 'get'),
+    }
+)
+"""The commands that the prompts of the built-in roles name, besides the orchestrator's: what ``RoleConfig.RELAYED``
+lets their agents run on a worker elsewhere."""
+
+
+class Continuity(StrEnum):
+    """How the agents of a sweeping role follow each other (``continuity``)."""
+
+    FRESH = 'fresh'
+    """Each agent starts a new harness session from its whole brief."""
+    RESUME = 'resume'
+    """Each agent continues the harness session of the role's last agent, from the CAS, on any machine, with only the
+    new part of its brief. When that cannot work, it starts fresh, and ``agent_session.not_resumed`` says why."""
+
+
 class RoleConfig(Parameters):
     """The keys that every ``[roles.<name>]`` table accepts. Each role's table below adds keys and sets defaults."""
 
@@ -47,6 +76,9 @@ class RoleConfig(Parameters):
     PROMPT: ClassVar[Traversable | None] = None
     """The prompt that starts the brief of the role's agents: a resource of the role's package, such as
     ``files(__package__) / 'auditor.md'``. ``prompt`` in the table overrides it. A role with neither is refused."""
+    RELAYED: ClassVar[frozenset[Verb]] = RELAYED
+    """The ``piloop`` commands that an agent of the role on a worker elsewhere may run: those that its prompt names. The
+    worker relays them to the server (``piloop.plugins.executor.kit.relay``), and refuses the rest."""
     IDEAS: ClassVar[str] = ''
     """The ideas line of a built-in role's brief when the line for its ``files`` does not fit it. ``{piloop}`` is the CLI
     and ``{campaign}`` is the campaign's name. Empty: the line for ``files`` (``piloop.agents.roles.IDEAS``)."""
@@ -172,6 +204,10 @@ class SweepRole(RoleConfig):
     count. ``low_water`` requests enough sweeps to fill the backlog at this many ideas each. 0 pauses the role's new
     ideas: ``low_water`` is off, and an idea that a sweep of the role adds (``piloop idea add``) is ``proposed``, so it
     waits for a review, also from a sweep that started before the change."""
+    continuity: Continuity = Continuity.FRESH
+    """``fresh``: each agent starts a new harness session. ``resume``: each agent continues the session of the role's
+    last agent, written back from the CAS, so it remembers what the agents before it did. The harness needs
+    ``resume``, and a provider that restores its session files (``Harness.restore``): ``claude`` and ``codex``."""
     incident_prompt: str | None = None
     """A file that follows ``prompt`` in the brief of an incident sweep, a sweep that got incidents from a
     trigger that investigates, such as ``run_failed``: a path relative to the repo root, or an absolute path. When unset, the role's own (the watchdog's

@@ -13,6 +13,7 @@ The daemon makes a pass when an event of a campaign's state arrives, or of a kin
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from enum import StrEnum
 from typing import TYPE_CHECKING, Annotated, ClassVar, Protocol
 
 from piloop.plugins.host import Capability, Parameters
@@ -107,6 +108,17 @@ class Backlog:
         return f'{self.idle} free implementer slots without a runnable idea; {backlog}' if self.idle > 0 else backlog
 
 
+class Quiet(StrEnum):
+    """A phase in which the triggers of a campaign do not fire, unless a trigger names it (``Trigger.WHILE``)."""
+
+    PAUSED = 'paused'
+    """``piloop pause``."""
+    HELD = 'held'
+    """The stop rule holds the campaign's launches, such as at a spend limit."""
+    STOPPED = 'stopped'
+    """The campaign stopped, and its closing review was requested."""
+
+
 class Pass(Protocol):
     """What a trigger reads to decide. The scheduler makes one for each sweeping role of each campaign on each pass.
 
@@ -137,6 +149,11 @@ class Pass(Protocol):
     @property
     def last(self) -> AgentSession | None:
         """The role's latest row. None before the first."""
+        ...
+
+    @property
+    def quiet(self) -> Quiet | None:
+        """The quiet phase of the campaign in which this pass checks the trigger (``Trigger.WHILE``). None: it runs."""
         ...
 
     @property
@@ -211,6 +228,9 @@ class Trigger(Parameters, ABC):
     ON_STOP: ClassVar[bool] = False
     """The daemon checks the trigger once after each stop, when the stopped campaign's last runs are judged, instead of
     on every pass while it runs."""
+    WHILE: ClassVar[frozenset[Quiet]] = frozenset()
+    """The quiet phases in which the daemon still checks the trigger, and launches what it requests. A trigger that
+    names ``stopped`` is checked on every pass after the campaign's closing review was requested."""
     WAKES_ON: ClassVar[frozenset[type[EventModel]]] = frozenset()
     """The event models that make the daemon check the trigger, beyond those of its campaign's state: its ideas,
     runs, candidates and agents, its status and config. A trigger that reads anything else, such as the events of a

@@ -9,6 +9,7 @@ the agent reads it there (``Launcher.launch``), whichever process applied it.
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Literal, assert_never
 
@@ -90,6 +91,8 @@ class AgentSessionStarted(EventModel):
     model: str | None
     reason: str | None
     """The row's ``reason``: why it was requested."""
+    resumes: AgentSessionId | None = None
+    """The earlier agent whose harness session this one continues (``continuity = "resume"``), or None."""
 
 
 class AgentSessionRunning(EventModel):
@@ -296,6 +299,29 @@ class Identified(EventModel):
     without a run."""
 
 
+class Unresumed(StrEnum):
+    """Why an agent of a role that resumes its sessions (``continuity = "resume"``) started a new one."""
+
+    NO_SESSION = 'no_session'
+    """No earlier agent of the role left a session in the CAS on the harness that this one runs."""
+    HARNESS = 'harness'
+    """The harness cannot resume a session from the CAS: it has no ``resume`` argv, or its provider restores no session
+    file (``Harness.restore``)."""
+    FAILED = 'failed'
+    """The agent before resumed the same session and did not end well: its session may be what broke it."""
+    UNRESTORED = 'unrestored'
+    """The worker could not write the session file back: a missing or broken blob, a full disk."""
+
+
+class SessionNotResumed(EventModel):
+    """An agent of a role that resumes its sessions started a new session from its whole brief, and why."""
+
+    kind: Literal['agent_session.not_resumed'] = 'agent_session.not_resumed'
+    reason: Unresumed
+    detail: str
+    """What the reason was about: the session, the harness, or the worker's error."""
+
+
 class SessionSaved(EventModel):
     """A snapshot of an agent's harness session file is in the CAS (``saved``): while the agent runs, and when it ends.
 
@@ -444,6 +470,9 @@ class CampaignResults:
                 w.state, w.error = AgentSessionState.KILLED, reason
                 ended: Ran | NotStarted = NotStarted(reason)
             case AgentFinished(process=process):
+                if report.unrestored is not None:
+                    unrestored = SessionNotResumed(reason=Unresumed.UNRESTORED, detail=report.unrestored)
+                    emit(s, unrestored, TargetRef(TargetKind.AGENT_SESSION, w.id), System.DAEMON)
                 learn(s, w, report.session_id)
                 saved(s, w, report.session_file)
                 for comment in report.read:

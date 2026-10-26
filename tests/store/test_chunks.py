@@ -1,13 +1,15 @@
 """Files as chunks and a manifest (``piloop.store.chunks``): cuts at line ends that appends never move."""
 
 import random
+import threading
 from pathlib import Path
 
 import pytest
 from covalence import Cid, Value
 
+from piloop.plugins.cas.disk import DiskCas
 from piloop.store.chunks import AVERAGE_CHUNK, MAX_CHUNK, MIN_CHUNK, Chunked, cuts, read
-from piloop.store.tree import Missing
+from piloop.store.tree import RAW, Missing
 from tests.conftest import disk
 
 
@@ -50,3 +52,19 @@ def test_read_joins_the_parts_of_a_chunked_file_nested_or_not(tmp_path: Path) ->
     cas.put(tree.encode())
     with pytest.raises(ValueError, match='chunks'):
         read(cas, tree.cid())
+
+
+def test_read_fetches_the_parts_of_a_manifest_at_once(tmp_path: Path) -> None:
+    both = threading.Barrier(2, timeout=10)
+
+    class Slow(DiskCas):
+        """A CAS whose gets of the two chunks each wait for the other: one at a time, the barrier breaks."""
+
+        def get(self, cid: Cid) -> bytes | None:
+            if cid.codec == RAW:
+                both.wait()
+            return super().get(cid)
+
+    cas = Slow(tmp_path / 'store')
+    file = Chunked(chunks=(cas.put(b'{"a":1}\n'), cas.put(b'{"b":2}\n'))).put(cas)
+    assert read(cas, file) == b'{"a":1}\n{"b":2}\n'

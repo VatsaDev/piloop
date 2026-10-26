@@ -147,7 +147,7 @@ def test_wake_budget_is_the_budget_of_the_lessons_section_of_each_role(campaign_
         name: next((s.budget for s in role.shown() if isinstance(s, Lessons)), None)
         for name, role in cfg.roles.all().items()
     }
-    assert lessons == {'implementer': 200, 'watchdog': 400, 'research': None, 'scout': 200}, (
+    assert lessons == {'implementer': 200, 'orchestrator': None, 'watchdog': 400, 'research': None, 'scout': 200}, (
         "[memory]'s budget for every role but the watchdog, whose old default was its own; 0 leaves them out"
     )
 

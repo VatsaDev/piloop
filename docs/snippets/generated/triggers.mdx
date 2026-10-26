@@ -6,6 +6,7 @@
 | `dead_at_startup` | An agent of the campaign did not start to work, and no agent got it yet. The agent gets it to investigate. | none |
 | `leaking_funnel` | Fewer than `measured` of the last `window` attempts under the current evaluator reached a measurement. | `window`, `measured` |
 | `low_water` | The backlog of runnable ideas is shorter than its target, and there is a reason to sweep now. | `buffer` |
+| `news` | New inbox items for the role's party, seeds, anomalies, verdicts and the stop: `piloop inbox wait`'s news. | `quiet_seconds`, `routine_every` |
 | `run_failed` | A run failed or timed out, and no agent of the campaign got it yet. The agent gets it to investigate. | none |
 | `seed` | A seed was filed after the role's latest agent started, and a slot of the role is free. | none |
 | `sql` | A query on the piloop database returns at least one row. | `when` |

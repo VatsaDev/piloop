@@ -129,7 +129,7 @@ def campaigns(s: Session, now: datetime, me: Actor) -> list[Item]:
                     ', '.join(NONE if delta is None else metric(delta, signed=True) for _, _, delta in values) or NONE,
                     f'{len(live_agent_sessions(s, p))} agents',
                     f'{len(ready)} ready',
-                    f'{len(inbox.waiting_for(s, me, campaign_id=p.id))} inbox',
+                    f'{len(inbox.waiting_for(s, me.party, campaign_id=p.id))} inbox',
                     f'{human(spent)} tok' if spent else NONE,
                     NONE if latest is None else f'{latest.kind} {age(latest.at, now)} ago',
                 ),
@@ -158,7 +158,7 @@ class InboxPanel:
                 c.id,
                 (f'p{c.priority}', str(c.kind), c.author, age(c.created_at, ctx.now), cell(c.body)),
             )
-            for c, _ in inbox.waiting_for(s, ctx.me, campaign_id=ctx.campaign.id)
+            for c, _ in inbox.waiting_for(s, ctx.me.party, campaign_id=ctx.campaign.id)
         ]
 
     def detail(self, s: Session, ctx: Context, key: int) -> RenderableType:

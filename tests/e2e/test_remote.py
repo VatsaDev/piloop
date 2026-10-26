@@ -4,9 +4,10 @@
         [--e2e-secret ANTHROPIC_API_KEY] [--e2e-campaign <name>] [--e2e-harness claude] [--e2e-model <model>]
 
 The server is any ``piloop serve --listen`` that this machine reaches with a bearer token in ``PILOOP_HTTPS_TOKEN``, of
-``act`` access. A person registers a toy repository by its URL, files a seed and writes to the orchestrator. The tests act
-as that orchestrator from the CLI (``PILOOP_SERVER``): they add an idea, develop the seed, answer the message, pause,
-resume and stop the campaign. Two implementers run on the server's workers, and their candidates are judged.
+``act`` access. A person registers a toy repository by its URL, files a seed and writes to the orchestrator. piloop
+launches the orchestrator on the server's workers, and it answers the message. The tests also act as an orchestrator from
+the CLI (``PILOOP_SERVER``): they add an idea, develop the seed, pause, resume and stop the campaign. Two implementers run
+on the server's workers, and their candidates are judged.
 
 The toy is published as a secret gist (``gh``, logged in with the ``gist`` scope), which the server clones: the server
 needs to reach github.com. Its ``piloop.toml`` gives the harness each ``--e2e-secret`` from the server's secret of that
@@ -44,7 +45,7 @@ from piloop.api.contract import (
     StopBody,
 )
 from piloop.api.views import AckOutcome, CampaignState, Envelope
-from piloop.ids import CampaignId, Ending
+from piloop.ids import CampaignId, Ending, RoleName
 from piloop.plugins.network.https import TOKEN_ENV, Https
 from tests.e2e.campaign import CHEAPEST_MODEL, CommandFailed, needs
 from tests.e2e.conftest import Install
@@ -61,12 +62,23 @@ CONFIG = {
         'implementer': {'timeout': ROLE_TIMEOUT, 'max_concurrent': 2},
         'research': {'triggers': [], 'max_ideas': 0},
         'watchdog': {'triggers': [], 'interval': 0},
+        'orchestrator': {
+            'triggers': [{'provider': 'news', 'quiet_seconds': 5, 'routine_every': 86_400}],
+            'addendum': 'orchestrator.md',
+            'timeout': ROLE_TIMEOUT,
+        },
     },
     'plugins': {'stop_rule': {'max_runs': 3, 'max_tokens': 4_000_000, 'hold_at': {'tokens': 3_000_000}}},
     'metrics': [{'name': 'bytes', 'direction': 'lower', 'role': 'primary'}],
 }
-"""The toy's ``piloop.toml``, without its name and harness: no sweeps (the tests are the orchestrator), and limits only as
-a backstop on what it costs. Two ideas run, so ``max_runs`` never stops it."""
+"""The toy's ``piloop.toml``, without its name and harness: no research or watchdog sweeps, an orchestrator that piloop
+launches on a message or an escalation (and on routine news once), and limits only as a backstop on what it costs. Two
+ideas run, so ``max_runs`` never stops it."""
+ORCHESTRATOR = """# This campaign is a test
+
+Answer each message and escalation, and acknowledge it. Change nothing else: add, develop or change no idea, override no
+verdict, and launch, pause or stop nothing. The tests do that themselves.
+"""
 BRIEF = """# Make primes.py smaller
 
 `primes.py` prints the first 50 prime numbers, one per line. Make the file as small as you can, in bytes, while it prints
@@ -175,6 +187,19 @@ class Server:
             self.events += batch.events
             self.cursor = batch.next
 
+    def none(self, match: Callable[[Envelope], bool], what: str, seconds: float) -> None:
+        """Read the feed for ``seconds`` with long-polls, and fail on the first new event that ``match`` takes."""
+        deadline = time.monotonic() + seconds
+        while (left := deadline - time.monotonic()) > 0:
+            query = EventsQuery(
+                campaign=self.name, after=self.cursor, limit=MAX_LIMIT, wait=min(left, MAX_POLL_SECONDS)
+            )
+            batch = self.api.events(query)
+            self.events += batch.events
+            self.cursor = batch.next
+            found = next((e for e in batch.events if match(e)), None)
+            assert found is None, f'{what}: {found}'
+
     def of(self, kind: str) -> list[Envelope]:
         """The events of ``kind`` read so far."""
         return [e for e in self.events if e.kind == kind]
@@ -236,6 +261,7 @@ def server(request: pytest.FixtureRequest) -> Iterator[Server]:
         'brief.md': BRIEF,
         'evaluate.py': EVALUATE,
         'primes.py': PRIMES,
+        'orchestrator.md': ORCHESTRATOR,
         '.gitignore': 'workspace\n__pycache__\n',
     }
     gist = publish(directory, files)
@@ -344,24 +370,37 @@ def test_a_person_files_a_seed_that_the_orchestrator_develops(server: Server) ->
 
 
 @needs(test_measures_the_baseline)
-def test_a_message_to_the_orchestrator_is_answered(server: Server) -> None:
-    """``POST /v1/campaigns/{campaign}/messages`` wakes the orchestrator, whose reply reaches the person's thread.
+def test_a_message_wakes_the_orchestrator_that_piloop_launches_and_it_answers(server: Server) -> None:
+    """``POST /v1/campaigns/{campaign}/messages`` launches the orchestrator on a worker, whose reply reaches the person.
 
     Each acknowledges what the other wrote: the author of a comment cannot.
     """
+    assert server.state().roles[RoleName('orchestrator')].triggered
     after = server.cursor
-    sent = server.api.message(server.name, MessageBody(body='e2e: what runs now?'))
-    woke = server.piloop('inbox', 'wait', server.name, '--after', str(after), '--timeout', str(WAIT))
-    assert f'comment#{sent.comment.id}' in woke, woke
-    server.piloop('inbox', 'reply', str(sent.comment.id), 'e2e: two ideas, one from your seed.')
+    sent = server.api.message(
+        server.name, MessageBody(body='e2e: how many bytes is primes.py now? Reply with the number.')
+    )
+
+    def launched(e: Envelope) -> bool:
+        return e.id > after and e.kind == 'agent_session.started' and payload(e)['role'] == 'orchestrator'
+
+    agent = server.seen(launched, 'an orchestrator for the message', 600).subject.id
+    server.seen(kind_on('agent_session.running', 'agent_session', agent), f'orchestrator#{agent} running', 900)
+
+    def answered(e: Envelope) -> bool:
+        return e.kind == 'comment.decision' and e.actor.startswith('orchestrator#')
+
+    server.seen(answered, "the orchestrator's reply", ROLE_TIMEOUT + 300)
     thread = server.api.thread(sent.comment.id)
-    replies = [c for c in thread.linked if c.author.startswith(ORCHESTRATING)]
-    assert replies, thread
-    server.piloop('inbox', 'ack', str(sent.comment.id))
-    assert server.api.thread(sent.comment.id).comment.acked_by == f'{ORCHESTRATING}{sent.comment.author}'
-    [acked] = server.api.ack(AckBody(ids=(replies[0].id,))).results
+    [reply, *_] = [c for c in thread.linked if c.author.startswith('orchestrator#')]
+    assert reply.in_reply_to == sent.comment.id, thread
+    server.seen(
+        kind_on('comment.acked_at', 'comment', sent.comment.id), 'the orchestrator acknowledges the message', 600
+    )
+    assert server.api.thread(sent.comment.id).comment.acked_by == reply.author
+    [acked] = server.api.ack(AckBody(ids=(reply.id,))).results
     assert acked.outcome is AckOutcome.ACKED, acked
-    print(f'comment#{sent.comment.id} by {sent.comment.author}, answered by comment#{replies[0].id}')
+    print(f'comment#{sent.comment.id} by {sent.comment.author}, answered by {reply.author}: {reply.body[:200]}')
 
 
 @needs(test_the_orchestrator_adds_an_idea, test_a_person_files_a_seed_that_the_orchestrator_develops)
@@ -421,14 +460,26 @@ def test_pause_and_resume(server: Server) -> None:
 
 @needs(test_registers_a_repository_by_its_url)
 def test_stop(server: Server) -> None:
-    """``piloop campaign stop``: the campaign stops and closes, with no agent left."""
+    """``piloop campaign stop``: the campaign stops and closes. The stop wakes the orchestrator once, to report; after that
+    wake ends, no agent is left and none starts."""
     server.piloop('campaign', 'stop', server.name, '--reason', 'e2e: the scenario ends')
-    server.seen(lambda e: e.kind == 'campaign.status' and payload(e)['new'] == 'stopped', 'the stop', 120)
+    stopped = server.seen(lambda e: e.kind == 'campaign.status' and payload(e)['new'] == 'stopped', 'the stop', 120)
     server.seen(lambda e: e.kind == 'campaign.closed', 'the campaign closed', ROLE_TIMEOUT + 300)
+
+    def reports(e: Envelope) -> bool:
+        return e.id > stopped.id and e.kind == 'agent_session.started' and payload(e)['role'] == 'orchestrator'
+
+    report = server.seen(reports, 'the orchestrator woken by the stop', 600).subject.id
+    finished = server.seen(kind_on('agent_session.finished', 'agent_session', report), f'orchestrator#{report}', 900)
+    server.none(
+        lambda e: e.id > finished.id and e.kind == 'agent_session.started', 'an agent started after the report', 90
+    )
     state = server.state()
     assert state.status == 'stopped', state
     assert state.agents == [], state.agents
-    print(f'{server.name}: {state.tokens} tokens, head {state.head}')
+    orchestrator = state.roles[RoleName('orchestrator')]
+    assert (orchestrator.requested, orchestrator.live) == (0, 0), orchestrator
+    print(f'{server.name}: {state.tokens} tokens, head {state.head}; orchestrator#{report} reported the stop')
 
 
 @needs(test_stop)

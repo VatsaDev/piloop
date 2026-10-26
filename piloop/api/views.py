@@ -126,6 +126,19 @@ class LiveAgent(View):
     run: RunId | None
 
 
+class RoleView(View):
+    """A sweeping role of a campaign, as a console shows it: off, idle, starting or running."""
+
+    triggered: bool
+    """Whether it has triggers: false, and the daemon launches its agents only on request (``piloop launch``)."""
+    requested: int
+    """Its agents that wait for a slot."""
+    live: int
+    """Its agents that are starting or running: ``agents`` lists them."""
+    last_ended: str | None
+    """When its latest agent ended, or null."""
+
+
 class Named(View):
     """A campaign, by its id and its name."""
 
@@ -160,6 +173,8 @@ class CampaignState(View):
     runs: list[OpenRun]
     agents: list[LiveAgent]
     """The agents that are starting or running."""
+    roles: dict[RoleName, RoleView]
+    """Each sweeping role, by name."""
     inbox: int
     """The unacknowledged inbox items that wait for the caller: those that it did not write."""
     tokens: int

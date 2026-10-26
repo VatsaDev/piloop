@@ -323,7 +323,7 @@ class HotPaths:
                 )
             ),
             'history.renderables': each(lambda p, cfg: history.renderables(s, p, cfg, table_box=box.SIMPLE)),
-            'inbox.news': lambda: inbox.news(s, 0, me=System.ORCHESTRATOR),
+            'inbox.news': lambda: inbox.news(s, 0, party=System.ORCHESTRATOR.party),
         }
 
     def __exit__(self, *_: object) -> None:

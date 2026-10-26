@@ -8,7 +8,7 @@ from inline_snapshot import snapshot
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from piloop.actor import Actor, Person, System
+from piloop.actor import Actor, Agent, Orchestrating, Person, Service, System, party_of
 from piloop.api.views import AckOutcome, Relation, thread_lines
 from piloop.campaign import inbox
 from piloop.campaign.anomaly import AnomalyReported
@@ -143,8 +143,8 @@ def test_an_author_never_has_its_own_comment_waiting_nor_acknowledges_it(db: Dat
     ana = Person(name='ana')
     with db.session() as s:
         sent = inbox.message(s, campaign.id, 'what next?', author=ana, priority=1)
-        assert [c.id for c, _ in inbox.waiting_for(s, ana)] == [], 'not for its author'
-        assert [c.id for c, _ in inbox.waiting_for(s, System.ORCHESTRATOR)] == [sent.id]
+        assert [c.id for c, _ in inbox.waiting_for(s, ana.party)] == [], 'not for its author'
+        assert [c.id for c, _ in inbox.waiting_for(s, System.ORCHESTRATOR.party)] == [sent.id]
         assert [r.line() for r in inbox.ack(s, [sent.id], ana)] == [
             'comment#1 is yours: only its recipients acknowledge it'
         ]
@@ -152,6 +152,44 @@ def test_an_author_never_has_its_own_comment_waiting_nor_acknowledges_it(db: Dat
         assert [r.outcome for r in inbox.ack(s, [sent.id], System.ORCHESTRATOR)] == [AckOutcome.ACKED]
         [own] = inbox.ack(s, [sent.id], ana)
         assert (own.outcome, own.acked_by) == (AckOutcome.OWN, 'orchestrator'), 'yours, whoever acknowledged it'
+
+
+def test_every_agent_of_a_role_and_the_outside_orchestrator_are_one_party_for_what_waits_and_what_is_news(
+    db: Database, campaign: Campaign
+) -> None:
+    earlier, later = Agent(role='orchestrator', session=41), Agent(role='orchestrator', session=42)
+    with db.session() as s:
+        cursor = db_feed.newest(s)
+        decided = Comment(
+            author=earlier.signature,
+            kind=CommentKind.DECISION,
+            priority=3,
+            body='parked idea#1',
+            target=TargetRef(TargetKind.CAMPAIGN, campaign.id),
+        )
+        s.add(decided)
+        s.flush()
+        emit(
+            s,
+            CandidateJudged(verdict=Outcome.INTERESTING, score=1.0, reason='mine'),
+            TargetRef(TargetKind.CANDIDATE, 1),
+            earlier,
+        )
+        emit(
+            s,
+            CandidateJudged(verdict=Outcome.KEEP, score=2.0, reason='the daemon'),
+            TargetRef(TargetKind.CANDIDATE, 1),
+            System.DAEMON,
+        )
+        s.commit()
+        for me in (later, System.ORCHESTRATOR, Orchestrating(by=Person(name='ana'))):
+            assert inbox.waiting_for(s, me.party) == [], f'{me} wrote it, as one party'
+            assert news_lines(s, cursor, me=me)[1] == ['candidate#1 keep: the daemon'], 'its own verdict is no news'
+            assert [r.outcome for r in inbox.ack(s, [decided.id], me)] == [AckOutcome.OWN]
+        assert [c.id for c, _ in inbox.waiting_for(s, Agent(role='watchdog', session=41).party)] == [decided.id]
+        assert party_of('not an actor') == 'not an actor'
+        assert Service(name='ci').party == Service(name='ci').signature, 'a service writes for itself'
+        assert party_of('orchestrator via human:ana') == party_of('orchestrator#7') == 'orchestrator'
 
 
 def test_thread_follows_citations_both_ways_and_the_replies_not_the_rest_of_the_target(
@@ -387,5 +425,5 @@ def test_a_reply_answers_the_root_of_the_thread_and_wakes_the_orchestrator_but_n
 
 def news_lines(s: Session, after: int, *, campaign_id: CampaignId | None = None, me: Actor) -> tuple[int, list[str]]:
     """The news after ``after``, as ``piloop inbox wait`` prints it, and the next cursor."""
-    found = inbox.news(s, after, campaign_id=campaign_id, me=me)
+    found = inbox.news(s, after, campaign_id=campaign_id, party=me.party)
     return found.next, [item.text() for item in found.items]

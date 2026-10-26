@@ -191,6 +191,13 @@ class Harness(Parameters):
             return None
         return self.sessions()
 
+    def restore(self, session_id: str, cwd: Path) -> Path | None:
+        """Where to write a session file back from the CAS, so that ``resume`` continues it in ``cwd`` on any machine.
+
+        None, by default: its sessions start anew, and ``continuity = "resume"`` falls back to a fresh brief.
+        """
+        return None
+
     @classmethod
     def messages(cls, lines: list[str]) -> str:
         """What ``piloop agent messages --harness <provider>`` prints for the messages it takes: by default, one a line.

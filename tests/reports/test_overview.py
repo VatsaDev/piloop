@@ -247,9 +247,9 @@ head: candidate#2 · score: 3 · score vs baseline: 2 · kept: 2 · candidates: 
 ## Agents
 
 - Agents live: none
-- Agents so far: 3 implementer (1 killed), 1 research, 0 scout, 0 watchdog; 0 of 1 ended research sweeps defined no idea.
+- Agents so far: 3 implementer (1 killed), 0 orchestrator, 1 research, 0 scout, 0 watchdog; 0 of 1 ended research sweeps defined no idea.
 - Ideas by source: research 4 ideas, 3 ran → 1 keep, 0 interesting.
-- Tokens: 4k (implementer 3k, research 500, scout 0, watchdog 0); 500 by agents that ended in the last hour.
+- Tokens: 4k (implementer 3k, orchestrator 0, research 500, scout 0, watchdog 0); 500 by agents that ended in the last hour.
 
 ## Evaluations
 
@@ -439,9 +439,9 @@ def test_the_queue_the_live_agents_the_inbox_and_the_events(db: Database, campai
 
 - Agents live: 1; requested: watchdog#6
   - research#5 script/m 5m, on low_water: 2 ready < 10: ran evaluate.py: METRIC score=3
-- Agents so far: 3 implementer (1 killed), 2 research, 0 scout, 1 watchdog; 0 of 1 ended research sweeps defined no idea.
+- Agents so far: 3 implementer (1 killed), 0 orchestrator, 2 research, 0 scout, 1 watchdog; 0 of 1 ended research sweeps defined no idea.
 - Ideas by source: research 6 ideas, 3 ran → 1 keep, 0 interesting.
-- Tokens: 4k (implementer 3k, research 500, scout 0, watchdog 0); 500 by agents that ended in the last hour.
+- Tokens: 4k (implementer 3k, orchestrator 0, research 500, scout 0, watchdog 0); 500 by agents that ended in the last hour.
 
 ## Evaluations
 

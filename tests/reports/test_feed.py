@@ -3,6 +3,7 @@
 import json
 import re
 import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -305,8 +306,13 @@ def test_snapshots_carry_the_cursor_they_were_read_at(db: Database, campaign: Ca
             state=AgentSessionState.RUNNING,
             harness='script',
         )
+        ended = datetime(2026, 10, 26, 7, tzinfo=UTC)
         s.add_all(
-            [agent_session, AgentSession(kind='watchdog', campaign_id=campaign.id, state=AgentSessionState.EXITED)]
+            [
+                agent_session,
+                AgentSession(kind='watchdog', campaign_id=campaign.id, state=AgentSessionState.EXITED, ended_at=ended),
+                AgentSession(kind='orchestrator', campaign_id=campaign.id),
+            ]
         )
         s.add(escalation(campaign.id, 'look'))
         s.commit()
@@ -352,6 +358,12 @@ def test_snapshots_carry_the_cursor_they_were_read_at(db: Database, campaign: Ca
                 'run': run_id,
             }
         ],
+        'roles': {
+            'orchestrator': {'triggered': False, 'requested': 1, 'live': 0, 'last_ended': None},
+            'research': {'triggered': True, 'requested': 0, 'live': 0, 'last_ended': None},
+            'scout': {'triggered': True, 'requested': 0, 'live': 0, 'last_ended': None},
+            'watchdog': {'triggered': True, 'requested': 0, 'live': 0, 'last_ended': '2026-10-26T07:00:00.000000Z'},
+        },
         'inbox': 1,
         'tokens': 0,
     }, 'the escalation written after the cursor is not in the snapshot'

@@ -53,7 +53,7 @@ from piloop.plugins.executor.kit.relay import RELAY_ARGV
 from piloop.plugins.executor.kit.sessions import POLL_SECONDS, SessionFile
 from piloop.plugins.executor.kit.transfers import send_of_record
 from piloop.plugins.harness.contract import MCP, McpLaunch, expand
-from piloop.plugins.runtime.contract import AgentExit, AgentSpec, ExitStatus, Handle, Runtime, taken
+from piloop.plugins.runtime.contract import AgentExit, AgentSpec, AgentStart, ExitStatus, Handle, Runtime, taken
 from piloop.plugins.vcs.contract import Repository
 from piloop.proc import AGENT_TOKEN_ENV, PILOOP_ARGV, child_env, kill_group
 from piloop.scoring.evaluate import (
@@ -67,8 +67,9 @@ from piloop.scoring.evaluate import (
     run_evaluate,
 )
 from piloop.settings import INPUTS_DIR
+from piloop.store.chunks import read as read_chunks
 from piloop.store.tree import Materialised, Seen, evict_unlinked, put_tree
-from piloop.usage import UsageError
+from piloop.usage import Usage, UsageError
 
 TRANSCRIPT_LINES = 2000
 STOPPED = 'the worker stopped before the job started'
@@ -82,6 +83,8 @@ INPUTS_CHANGED = 'inputs.changed'
 """An event: an evaluation changed a linked input that it read, so what it measured is a crash, not a measurement."""
 SESSION_UNSAVED = 'agent_session.session_unsaved'
 """An event: a snapshot of an agent's session file did not go into the CAS. The next one tries again."""
+SESSION_UNRESTORED = 'agent_session.session_unrestored'
+"""An event: the session file of a job's ``resume`` could not be written back, and the agent starts a new session."""
 SHOWN = 10
 """How many paths or blobs an event or an error names."""
 CLI_SHIM = '#!/bin/sh\nPILOOP_HOME={home} exec {argv} "$@"\n'
@@ -237,7 +240,8 @@ def run_agent(job: AgentJob, runtime: Runtime, control: Control, site: Site, spa
         log_dir.mkdir(parents=True, exist_ok=True)
         if site.cas.get_file(job.brief_cid, log_dir / BRIEF_FILE) is None:
             raise LookupError(f'the CAS lacks the brief {job.brief_cid}')
-        spec = rendered(job, job.spec.at(cwd, log_dir, site.env()), control.secrets())
+        job, start, restored = restore_session(job, job.spec, site, span)
+        spec = rendered(job, start.at(cwd, log_dir, site.env()), control.secrets())
     except Exception as e:  # a full disk, a locked index, a missing secret: a fault of the host, not of the agent
         span.error(e)
         return _unstarted(job, site, f'{type(e).__name__}: {e}', started_at)
@@ -268,22 +272,79 @@ def run_agent(job: AgentJob, runtime: Runtime, control: Control, site: Site, spa
     finally:
         control.running(None if handle is None else _killer(runtime, handle))
     assert handle is not None
-    return watch_agent(job, runtime, handle, 0, control, site, span)
+    return watch_agent(job, runtime, handle, 0, control, site, span, restored)
+
+
+@dataclass(frozen=True)
+class Restored:
+    """The session file of a resumed agent was written back: the usage it held then is not the agent's."""
+
+    before: Usage | None
+
+
+@dataclass(frozen=True)
+class Unrestored:
+    """The session file of the job's ``resume`` could not be written back: the agent starts a new session."""
+
+    reason: str
+
+
+def restore_session(
+    job: AgentJob, start: AgentStart, site: Site, span: Span
+) -> tuple[AgentJob, AgentStart, Restored | Unrestored | None]:
+    """The job and the start of an agent, after its ``resume``: its file and brief written back and the resume argv.
+
+    A resumed job takes the resumed session's id. Else the job, its start and its whole brief stay as they are. None: the
+    job resumes nothing.
+    """
+    if (resume := job.resume) is None:
+        return job, start, None
+    cwd = site.cwd(job)
+    try:
+        if job.harness is None or (path := job.harness.restore(resume.session_id, cwd)) is None:
+            raise LookupError('the harness has no path to write a session file back to (Harness.restore)')
+        if (data := read_chunks(site.cas, resume.file)) is None:
+            raise LookupError(f'the CAS lacks the session file {resume.file}')
+        brief = site.cas.get(resume.brief)
+        if brief is None:
+            raise LookupError(f'the CAS lacks the resumed brief {resume.brief}')
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        (site.log_dir(job) / BRIEF_FILE).write_bytes(brief)
+    except Exception as e:  # a missing or broken blob, a full disk: the agent starts anew, and its report says why
+        span.event(SESSION_UNRESTORED, agent_session=job.agent_session, error=f'{type(e).__name__}: {e}')
+        return job, start, Unrestored(f'{type(e).__name__}: {e}')
+    reader = job.harness.usage()
+    try:
+        before = None if reader is None else reader.read(resume.session_id, cwd, None)
+    except UsageError:  # a session without a response yet: every token is the agent's
+        before = None
+    restored = job.model_copy(update={'session_id': resume.session_id})
+    return restored, replace(start, args=resume.args), Restored(before)
 
 
 def watch_agent(
-    job: AgentJob, runtime: Runtime, handle: Handle, elapsed: float, control: Control, site: Site, span: Span
+    job: AgentJob,
+    runtime: Runtime,
+    handle: Handle,
+    elapsed: float,
+    control: Control,
+    site: Site,
+    span: Span,
+    restored: Restored | Unrestored | None = None,
 ) -> AgentFinished | None:
     """Watch a started agent to its end, then return its report. ``elapsed``: the seconds it ran before this.
 
-    None after a hand-over: the next daemon re-attaches, and the job and its worktree stay.
+    None after a hand-over: the next daemon re-attaches, and the job and its worktree stay. ``restored``: what
+    ``restore_session`` did at the start, which a re-attach no longer knows.
     """
     reader = job.harness.usage() if job.harness is not None else None
     file = None if reader is None else SessionFile(reader, site.cas, site.cwd(job), job.session_id)
     outcome, session_id = _watch(job, runtime, handle, max(job.timeout - elapsed, 0), control, site, file, span)
     if control.handing_over():
         return None
-    return _finish(job, replace(outcome, seconds=elapsed + outcome.seconds), session_id, control, site, file, span)
+    outcome = replace(outcome, seconds=elapsed + outcome.seconds)
+    return _finish(job, outcome, session_id, control, site, file, span, restored)
 
 
 def _killer(runtime: Runtime, handle: Handle) -> Callable[[], None]:
@@ -399,9 +460,17 @@ def _finish(
     site: Site,
     file: SessionFile | None,
     span: Span,
+    restored: Restored | Unrestored | None,
 ) -> AgentFinished:
     """Take the last snapshot of the session file, read the usage, bring the versions back, and return the report."""
     report = AgentFinished(process=outcome, session_id=session_id)
+    match restored:
+        case Unrestored(reason=reason):
+            report.unrestored = reason
+        case Restored() | None:
+            pass
+        case _:
+            assert_never(restored)
     span.set(session_id=session_id)
     log_dir, cwd = site.log_dir(job), site.cwd(job)
     if file is not None:
@@ -414,6 +483,8 @@ def _finish(
     if file is not None:
         try:
             usage = file.reader.read(session_id, cwd, log_dir)
+            if isinstance(restored, Restored):
+                usage = usage.since(restored.before)
             report.usage = usage
             span.set(tokens=usage.total)
         except Exception as e:  # an unreadable file or a bug in a reader must not stop the report

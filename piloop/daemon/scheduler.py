@@ -29,7 +29,7 @@ from enum import StrEnum
 from functools import partial
 from pathlib import Path
 from queue import SimpleQueue
-from typing import Literal
+from typing import Literal, assert_never
 
 from pydantic import Field, ValidationError
 from sqlalchemy import Boolean, ColumnElement, Select, delete, exists, func, or_, select
@@ -37,7 +37,7 @@ from sqlalchemy.orm import Session
 
 from piloop import deprecated
 from piloop.actor import Agent, System
-from piloop.agents.launcher import rotate
+from piloop.agents.launcher import rotate, turn
 from piloop.agents.refill import usage_of
 from piloop.agents.results import (
     AgentEnded,
@@ -47,13 +47,14 @@ from piloop.agents.results import (
     Identified,
     JobEnded,
     PromptOutcome,
+    SessionNotResumed,
     SessionSaved,
     StartupAnomaly,
     WorkspaceConflict,
     WrapUp,
     queue_prompt,
 )
-from piloop.agents.roles import compose_brief, role_of
+from piloop.agents.roles import compose_brief, compose_resumed, role_of
 from piloop.campaign.anomaly import AnomalyReported, assigned
 from piloop.campaign.campaigns import WORKSPACE, CampaignAdded, vcs_of, workspace_dir
 from piloop.campaign.ideas import defined_by, park_stranded, runnable, supersede, waiting
@@ -170,10 +171,10 @@ from piloop.plugins.fact_source import facts
 from piloop.plugins.fact_source.contract import FactReadError, FactSource
 from piloop.plugins.fact_source.facts import Facts
 from piloop.plugins.memory.contract import MEMORY
-from piloop.plugins.role.contract import ImplementerRole, SweepRole, ideas_taken
+from piloop.plugins.role.contract import Continuity, ImplementerRole, SweepRole, ideas_taken
 from piloop.plugins.section.contract import Rendering, markdown
 from piloop.plugins.stop_rule.contract import GO, STOP_RULES, Go, Hold, Stop, WhileHeld
-from piloop.plugins.trigger.contract import TRIGGERS, Backlog, Fire, TrackBacklog
+from piloop.plugins.trigger.contract import TRIGGERS, Backlog, Fire, Quiet, TrackBacklog
 from piloop.plugins.vcs.contract import NotARepository
 from piloop.runtime.factory import RuntimeFactory, handle_for, make_runtime, runtime_for
 from piloop.scoring.ledger import (
@@ -328,11 +329,11 @@ IGNORED: Kinds = frozenset(
         CommentDeleted,
         Identified,
         SessionSaved,
+        SessionNotResumed,
         JobEnded,
         AgentEnded,
         WorkspaceConflict,
         WrapUp,
-        AnomalyReported,
         CampaignTypeChanged,
         CampaignParentChanged,
         RunBriefChanged,
@@ -653,7 +654,7 @@ class Scheduler:
         self._collect()
         self._soonest = Soonest()
         self._soonest.add(self._facts_due)
-        launching: list[tuple[Campaign, CampaignConfig]] = []
+        launching: list[Launching] = []
         with self._db.session() as s:
             for campaign in s.scalars(select(Campaign).where(NOT_RETIRED)).all():
                 try:
@@ -681,8 +682,17 @@ class Scheduler:
                 if campaign.status is CampaignStatus.STOPPED and unclosed(s, campaign) and settled(s, campaign):
                     self._close_campaign(s, campaign, cfg, cfg.roles.sweeping(), turn.now)
                     held = held_now(s, campaign, cfg)  # a closing review may wait for the hold
+                phase = quiet_phase(s, campaign, held)
+                awake = awake_roles(cfg, phase)
+                if phase is not None and awake:
+                    for name in awake:
+                        self._request(
+                            s, campaign, cfg, name, cfg.roles.sweeping()[name], turn.now, Facts(), quiet=phase
+                        )
                 if launches(campaign, cfg, held):
-                    launching.append((campaign, cfg))
+                    launching.append(Launching(campaign, cfg, None))
+                elif awake:
+                    launching.append(Launching(campaign, cfg, awake))
             launched = self._launch(s, launching, turn.now)
             s.commit()
         unsubmitted = self._controller.launcher.unsubmitted
@@ -1083,11 +1093,13 @@ class Scheduler:
         left: Facts,
         *,
         stopping: bool = False,
+        quiet: Quiet | None = None,
     ) -> None:
         """Insert requested rows when the role's triggers fire. One batch per call, however many triggers fire.
 
         The triggers fire in the order of the role's list (``piloop.plugins.trigger``): those with ``ON_STOP`` when the
-        campaign is ``stopping``, else the others. A fire that needs a row of its
+        campaign is ``stopping``, else the others, and in a ``quiet`` phase only those that name it
+        (``Trigger.WHILE``). A fire that needs a row of its
         own (``Fire.alone``) shares its row only with the other such fires, when one comes first, and otherwise waits
         for a later pass. The others share one batch: the largest count of rows, with every reason. The first row gets the events of the fires. A
         trigger that raises is traced and does not fire. The ``due_in`` of each trigger that did not fire goes into the
@@ -1101,9 +1113,9 @@ class Scheduler:
         ).first()
         if latest is not None and latest.state is AgentSessionState.REQUESTED:
             return  # One pending request per role is enough.
-        p = self._pass(s, campaign, cfg, name, role, now, left)
+        p = self._pass(s, campaign, cfg, name, role, now, left, quiet)
         fires: list[Fire] = []
-        for trigger in (t for t in role.triggers if t.ON_STOP is stopping):
+        for trigger in (t for t in role.triggers if t.ON_STOP is stopping and (quiet is None or quiet in t.WHILE)):
             try:
                 fire = trigger.fire(p)
                 due = trigger.due_in(p) if fire is None else None
@@ -1138,6 +1150,7 @@ class Scheduler:
         role: SweepRole,
         now: datetime,
         left: Facts,
+        quiet: Quiet | None = None,
     ) -> RolePass:
         """Return what the triggers of role ``name`` read in this pass, with what the stop rule ``left``."""
         last = s.scalars(
@@ -1152,6 +1165,7 @@ class Scheduler:
             campaign=campaign,
             role=name,
             last=last,
+            quiet=quiet,
             max_concurrent=role.max_concurrent,
             interval=role.interval,
             backlog=partial(self._backlog, s, campaign, cfg, name, left),
@@ -1418,7 +1432,7 @@ class Scheduler:
         return {harness for harness, cap in cfg.max_concurrent.items() if agents[harness] >= cap}
 
     def _launch(
-        self, s: Session, launching: Sequence[tuple[Campaign, CampaignConfig]], now: datetime
+        self, s: Session, launching: Sequence[Launching], now: datetime
     ) -> list[tuple[AgentSessionId, RunId | None]]:
         """Take the requested agents of ``launching`` while the executor has a free agent slot (``_take``).
 
@@ -1434,8 +1448,9 @@ class Scheduler:
         left = list(launching)
         taken: list[tuple[AgentSessionId, RunId | None]] = []
         while left and (free is None or free > 0):
-            campaign, cfg = nxt = min(left, key=lambda entry: (live[entry[0].id], entry[0].id))
-            got = self._take(s, campaign, cfg, now, most=None if free is None else 1)
+            nxt = min(left, key=lambda entry: (live[entry.campaign.id], entry.campaign.id))
+            campaign = nxt.campaign
+            got = self._take(s, campaign, nxt.cfg, now, most=None if free is None else 1, roles=nxt.roles)
             if free is None or not got:
                 left.remove(nxt)
             else:
@@ -1445,9 +1460,18 @@ class Scheduler:
         return taken
 
     def _take(
-        self, s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime, *, most: int | None = None
+        self,
+        s: Session,
+        campaign: Campaign,
+        cfg: CampaignConfig,
+        now: datetime,
+        *,
+        most: int | None = None,
+        roles: frozenset[RoleName] | None = None,
     ) -> list[tuple[AgentSessionId, RunId | None]]:
         """Mark requested rows ``starting``, up to each role's ``max_concurrent``, and ``most`` in all.
+
+        With ``roles``, only the rows of those roles: in a quiet phase, the roles awake in it (``awake_roles``).
 
         A run role's row without a run is refused.
 
@@ -1463,18 +1487,20 @@ class Scheduler:
         if (resumes := self._paused(s, campaign, now)) is not None:
             self._soonest.add(resumes)
             return taken
-        roles = cfg.roles.all()
+        all_roles = cfg.roles.all()
         unknown = select(AgentSession).where(
             AgentSession.campaign_id == campaign.id,
             AgentSession.state == AgentSessionState.REQUESTED,
-            AgentSession.kind.not_in(roles),
+            AgentSession.kind.not_in(all_roles),
         )
         for agent_session in s.scalars(unknown):
             self._close(s, agent_session, f'no [roles.{agent_session.kind}] in piloop.toml')
             if agent_session.run_id is not None:
                 self._fail_run(s, s.get_one(Run, agent_session.run_id), RunEnd.ROLE_REMOVED)
         full = self._full(s, campaign, cfg)
-        for kind, rc in roles.items():
+        for kind, rc in all_roles.items():
+            if roles is not None and kind not in roles:
+                continue
             mine = (AgentSession.campaign_id == campaign.id, AgentSession.kind == kind)
             active = count(s, select(AgentSession).where(*mine, AgentSession.state.in_(LIVE)))
             requested = s.scalars(
@@ -1494,7 +1520,9 @@ class Scheduler:
                     if not self._reroute(s, cfg, agent_session, rotation, full):
                         continue
                 else:
-                    harness = agent_session.harness or free_harness(rotation, rotate(s, agent_session, rotation), full)
+                    harness = agent_session.harness or free_harness(
+                        rotation, turn(s, agent_session, rc, rotation), full
+                    )
                     if harness is None or harness in full:
                         continue
                     agent_session.harness = harness
@@ -1611,23 +1639,27 @@ class Scheduler:
                 '',
                 markdown(table.shown(), rendering),
             ]
-            brief = compose_brief(
-                role,
-                campaign,
-                Agent(role=agent_session.kind, session=agent_session_id),
-                reason=agent_session.reason or 'requested',
-                context='\n'.join(lines),
-                incident=bool(given),
-            )
+            agent = Agent(role=agent_session.kind, session=agent_session_id)
+            reason, context = agent_session.reason or 'requested', '\n'.join(lines)
+            brief = compose_brief(role, campaign, agent, reason=reason, context=context, incident=bool(given))
+            match table.continuity:
+                case Continuity.RESUME:
+                    resumed = compose_resumed(role, campaign, agent, reason=reason, context=context)
+                case Continuity.FRESH:
+                    resumed = None
+                case _:
+                    assert_never(table.continuity)
         sources = self._controller.sources  # outside the session: it puts the linked inputs into the CAS
         artifact = sources.agent(campaign, base.revision)
         place = sweep_place(agent_session_id)
+        cas = self._controller.cas
         self._controller.launcher.launch(
             agent_session_id,
-            brief=self._controller.cas.put(brief.encode()),
+            brief=cas.put(brief.encode()),
             place=place,
             artifact=artifact,
             timeout=timeout,
+            resumed_brief=None if resumed is None else cas.put(resumed.encode()),
         )
 
     def _reattach_sweep(self, agent_session_id: AgentSessionId) -> None:
@@ -1735,6 +1767,7 @@ class RolePass:
     campaign: Campaign
     role: RoleName
     last: AgentSession | None
+    quiet: Quiet | None
     max_concurrent: int
     interval: float
     backlog: Callable[[int], Backlog]
@@ -1828,6 +1861,44 @@ def pause_body(deaths: Sequence[tuple[Event, StartupAnomaly]], load: str) -> str
 def free_harness(rotation: Sequence[str], turn: str, full: Collection[str]) -> str | None:
     """Return ``turn``, the rotation's pick, unless it is ``full``. Then return the first harness that is not full."""
     return turn if turn not in full else next((h for h in rotation if h not in full), None)
+
+
+@dataclass(frozen=True)
+class Launching:
+    """A campaign whose requested agents the pass launches: every role's, or only ``roles`` in a quiet phase."""
+
+    campaign: Campaign
+    cfg: CampaignConfig
+    roles: frozenset[RoleName] | None
+
+
+def quiet_phase(s: Session, campaign: Campaign, held: str | None) -> Quiet | None:
+    """The quiet phase of ``campaign``, given why the stop rule holds it (``held``), or None while it runs.
+
+    A stopped campaign is quiet once its closing review was requested.
+    """
+    match campaign.status:
+        case CampaignStatus.STOPPED:
+            return None if unclosed(s, campaign) else Quiet.STOPPED
+        case CampaignStatus.ACTIVE if held is not None:
+            return Quiet.HELD
+        case CampaignStatus.ACTIVE if campaign.paused is not None:
+            return Quiet.PAUSED
+        case CampaignStatus.ACTIVE:
+            return None
+        case CampaignStatus.RETIRED:
+            raise ValueError(f'{campaign.name} is retired: the pass over the campaigns leaves it out')
+        case _:
+            assert_never(campaign.status)
+
+
+def awake_roles(cfg: CampaignConfig, phase: Quiet | None) -> frozenset[RoleName]:
+    """The sweeping roles with a trigger that names ``phase`` (``Trigger.WHILE``). None of them while the campaign runs."""
+    if phase is None:
+        return frozenset()
+    return frozenset(
+        name for name, role in cfg.roles.sweeping().items() if any(phase in t.WHILE for t in role.triggers)
+    )
 
 
 def launches(campaign: Campaign, cfg: CampaignConfig, held: str | None) -> bool:

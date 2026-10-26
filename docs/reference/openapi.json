@@ -3668,6 +3668,14 @@
             "title": "Agents",
             "description": "The agents that are starting or running."
           },
+          "roles": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/RoleView"
+            },
+            "type": "object",
+            "title": "Roles",
+            "description": "Each sweeping role, by name."
+          },
           "inbox": {
             "type": "integer",
             "title": "Inbox",
@@ -3696,6 +3704,7 @@
           "runnable",
           "runs",
           "agents",
+          "roles",
           "inbox",
           "tokens"
         ],
@@ -5975,6 +5984,46 @@
         "type": "string",
         "format": "password",
         "writeOnly": true
+      },
+      "RoleView": {
+        "properties": {
+          "triggered": {
+            "type": "boolean",
+            "title": "Triggered",
+            "description": "Whether it has triggers: false, and the daemon launches its agents only on request (``piloop launch``)."
+          },
+          "requested": {
+            "type": "integer",
+            "title": "Requested",
+            "description": "Its agents that wait for a slot."
+          },
+          "live": {
+            "type": "integer",
+            "title": "Live",
+            "description": "Its agents that are starting or running: ``agents`` lists them."
+          },
+          "last_ended": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Ended",
+            "description": "When its latest agent ended, or null."
+          }
+        },
+        "type": "object",
+        "required": [
+          "triggered",
+          "requested",
+          "live",
+          "last_ended"
+        ],
+        "title": "RoleView",
+        "description": "A sweeping role of a campaign, as a console shows it: off, idle, starting or running."
       },
       "RunAnswer": {
         "properties": {

@@ -5,6 +5,7 @@ that starts, waits for and closes an agent process. It never raises: a failure g
 """
 
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
@@ -20,19 +21,22 @@ from piloop.agents.results import (
     Ended,
     HandedOver,
     NotStarted,
+    SessionNotResumed,
+    Unresumed,
     ended_of,
     learn,
     session_finished,
 )
 from piloop.agents.roles import harness_of
-from piloop.config import BRIEF_FILE
-from piloop.db.events import emit
-from piloop.db.models import LIVE, AgentSession, AgentSessionState, Campaign, utcnow
+from piloop.config import BRIEF_FILE, CampaignConfig
+from piloop.db.events import emit, latest
+from piloop.db.models import LIVE, AgentSession, AgentSessionState, Campaign, Event, utcnow
 from piloop.db.session import Database
 from piloop.ids import AgentSessionId, RunId, TargetKind, TargetRef
 from piloop.otel import Span, Tracer
-from piloop.plugins.executor.contract import AgentJob, AgentKey, Executor, ExecutorConfig, LeftJob, Source
+from piloop.plugins.executor.contract import AgentJob, AgentKey, Executor, ExecutorConfig, LeftJob, Resume, Source
 from piloop.plugins.harness.contract import SESSION_ID, cleared_env, fill, of_provider, takes_session_id
+from piloop.plugins.role.contract import Continuity, RoleConfig, SweepRole
 from piloop.plugins.runtime.contract import AgentStart
 
 PROMPT = 'Your brief is in {path}. Read all of it, in parts if a read comes back cut short, then follow it.'
@@ -82,6 +86,7 @@ class Launcher:
         artifact: Source,
         timeout: float,
         capture: RunId | None = None,
+        resumed_brief: Cid | None = None,
     ) -> Ended:
         """Run agent session row ``agent_session_id`` to the end on the executor, and return how it ended.
 
@@ -89,14 +94,15 @@ class Launcher:
         which closes the row (``piloop.agents.results``). The executor makes the job's ``place`` (its log directory),
         materializes ``artifact`` in it (a worktree), starts the agent, and removes the worktree after. Its log files
         come back into ``place`` under this home. With ``capture``, its work comes back too: ``Ran.work``. ``timeout``
-        is the seconds that the agent may run.
+        is the seconds that the agent may run. With ``resumed_brief``, the brief of a resumed session (only what is
+        new), the agent continues the harness session of its role's last agent (``resumable``), else it starts anew.
         """
         with self.tracer.span('piloop.agent', agent_session=agent_session_id) as span:
             with self.lock:
                 try:
                     if self.cancelled.is_set():
                         return DaemonStopped()
-                    job = self._prepare(agent_session_id, span, brief, place, artifact, timeout, capture)
+                    job = self._prepare(agent_session_id, span, brief, place, artifact, timeout, capture, resumed_brief)
                     self.executor.submit(job)
                 except Exception as e:  # a harness or a runtime that piloop.toml no longer has, an executor's refusal
                     span.error(e)
@@ -146,16 +152,23 @@ class Launcher:
         artifact: Source,
         timeout: float,
         capture: RunId | None,
+        resumed_brief: Cid | None,
     ) -> AgentJob:
         """Fill in the row, mark it ``starting``, emit ``<kind>.started``, and return the agent's job.
 
-        The harness and the model are picked here, and the job describes the agent's start (``AgentJob``).
+        The harness and the model are picked here, and the job describes the agent's start (``AgentJob``). A session
+        that it resumes picks the harness: that session's.
         """
         with self.db.session() as s:
             w = s.get_one(AgentSession, agent_session_id)
             campaign = s.get_one(Campaign, w.campaign_id)
             cfg = campaign.config
-            harness = w.harness or rotate(s, w, cfg.role_harnesses(w.kind))
+            source = None if resumed_brief is None else resumable(s, w, cfg, Path(place))
+            if isinstance(source, SessionNotResumed):
+                emit(s, source, TargetRef(TargetKind.AGENT_SESSION, w.id), System.DAEMON)
+                span.set(unresumed=source.reason)
+                source = None
+            harness = source.harness if source is not None else w.harness or rotate(s, w, cfg.role_harnesses(w.kind))
             model = w.model or cfg.role_models(w.kind)[harness]
             effort = cfg.role(w.kind).effort
             definition = cfg.harness_for(harness)
@@ -186,6 +199,17 @@ class Launcher:
                 session_id_pattern=definition.session_id_pattern,
                 resume_args=resume,
             )
+            resumes = None
+            if source is not None and resumed_brief is not None:
+                resumes = Resume(
+                    session_id=source.session_id,
+                    file=source.file,
+                    brief=resumed_brief,
+                    args=[
+                        fill(a, model=model, effort=effort, prompt=prompt, session_id=source.session_id)
+                        for a in definition.resume
+                    ],
+                )
             job = AgentJob(
                 agent_session=agent_session_id,
                 runtime=runtime_kind,
@@ -199,12 +223,19 @@ class Launcher:
                 secrets=cfg.role_secrets(kind, harness),
                 session_id=session_id,
                 capture=capture,
+                resume=resumes,
             )
             w.harness, w.model, w.runtime, w.log_dir = harness, model, runtime_kind, str(self.home / place)
             w.state, w.started_at = AgentSessionState.STARTING, utcnow()
-            started = AgentSessionStarted(role=kind, harness=harness, model=model, reason=reason)
+            started = AgentSessionStarted(
+                role=kind,
+                harness=harness,
+                model=model,
+                reason=reason,
+                resumes=None if source is None else source.agent_session,
+            )
             emit(s, started, TargetRef(TargetKind.AGENT_SESSION, agent_session_id), System.DAEMON)
-            learn(s, w, session_id)
+            learn(s, w, resumes.session_id if resumes is not None else session_id)
             s.commit()
             return job
 
@@ -234,6 +265,89 @@ class Launcher:
             capture=capture,
         )
         return LeftJob(AgentKey(w.id), job, dict(w.handle) or None, w.started_at)
+
+
+@dataclass(frozen=True)
+class Resumable:
+    """An earlier agent's harness session that an agent continues."""
+
+    agent_session: AgentSessionId
+    harness: str
+    session_id: str
+    file: Cid
+
+
+def resumable(s: Session, w: AgentSession, cfg: CampaignConfig, place: Path) -> Resumable | SessionNotResumed:
+    """The earlier agent of ``w``'s role whose harness session ``w`` continues, or why ``w`` starts anew.
+
+    It is the latest one with a session in the CAS, on ``w``'s harness when the request named one. The role's last
+    agent resumed a session and did not end well: that session may be what broke it, so ``w`` starts anew.
+    """
+    earlier = (
+        select(AgentSession)
+        .where(AgentSession.campaign_id == w.campaign_id, AgentSession.kind == w.kind, AgentSession.id < w.id)
+        .order_by(AgentSession.id.desc())
+    )
+    if (last := s.scalars(earlier.limit(1)).first()) is not None and (failed := _failed_resume(s, last)) is not None:
+        return failed
+    saved = earlier.where(AgentSession.session_file.is_not(None), AgentSession.session_id.is_not(None))
+    if w.harness is not None:
+        saved = saved.where(AgentSession.harness == w.harness)
+    match s.scalars(saved.limit(1)).first():
+        case AgentSession(id=row, harness=str(harness), session_id=str(session_id), session_file=Cid() as file):
+            source = Resumable(row, harness, session_id, file)
+        case _:
+            on = f' on {w.harness}' if w.harness is not None else ''
+            return SessionNotResumed(reason=Unresumed.NO_SESSION, detail=f'no earlier {w.kind} left a session{on}')
+    try:
+        definition = cfg.harness_for(source.harness)
+    except KeyError:
+        return SessionNotResumed(reason=Unresumed.HARNESS, detail=f'piloop.toml no longer names {source.harness}')
+    if not definition.resume or definition.restore(source.session_id, place) is None:
+        return SessionNotResumed(
+            reason=Unresumed.HARNESS,
+            detail=f'{source.harness} has no resume argv, or its provider restores no session file',
+        )
+    return source
+
+
+def _failed_resume(s: Session, w: AgentSession) -> SessionNotResumed | None:
+    """Why the agent after ``w`` starts anew: ``w`` resumed a session, its file was written back, and ``w`` failed."""
+    on = Event.target == TargetRef(TargetKind.AGENT_SESSION, w.id)
+    started = latest(s, AgentSessionStarted, on)
+    if started is None or started[1].resumes is None or latest(s, SessionNotResumed, on) is not None:
+        return None
+    match w.state, w.error:
+        case (AgentSessionState.KILLED, _) | (AgentSessionState.EXITED, str()):
+            detail = f'agent_session#{w.id} resumed a session and ended {w.state}'
+            return SessionNotResumed(reason=Unresumed.FAILED, detail=detail)
+        case _:
+            return None
+
+
+def turn(s: Session, w: AgentSession, table: RoleConfig, harnesses: list[str]) -> str:
+    """Return the harness whose turn it is for the sweep ``w`` of a role whose table is ``table``.
+
+    A role that resumes its sessions keeps the harness of its last session while ``harnesses`` has it, so that the
+    next agent can resume it. Any other takes the next one (``rotate``).
+    """
+    match table:
+        case SweepRole(continuity=Continuity.RESUME):
+            kept = s.scalar(
+                select(AgentSession.harness)
+                .where(
+                    AgentSession.campaign_id == w.campaign_id,
+                    AgentSession.kind == w.kind,
+                    AgentSession.id < w.id,
+                    AgentSession.session_file.is_not(None),
+                    AgentSession.harness.in_(harnesses),
+                )
+                .order_by(AgentSession.id.desc())
+                .limit(1)
+            )
+            return kept if kept is not None else rotate(s, w, harnesses)
+        case _:
+            return rotate(s, w, harnesses)
 
 
 def rotate(s: Session, agent_session: AgentSession, harnesses: list[str]) -> str:

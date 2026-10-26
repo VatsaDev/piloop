@@ -19,7 +19,7 @@ from typing import Final
 from sqlalchemy import ColumnElement, ScalarSelect, case, select
 from sqlalchemy.orm import Mapped, Session, aliased
 
-from piloop.actor import Actor
+from piloop.actor import Actor, party_of
 from piloop.api.views import (
     AckOutcome,
     AckResult,
@@ -86,18 +86,20 @@ def items(
 
 def waiting_for(
     s: Session,
-    me: Actor,
+    party: str,
     *,
     campaign_id: CampaignId | None = None,
     kinds: Collection[CommentKind] = (),
     acked: bool = False,
 ) -> list[tuple[Comment, Campaign | None]]:
-    """Return the inbox items of ``items`` that ``me`` did not write: what ``me`` has to look at.
+    """Return the inbox items of ``items`` that ``party`` did not write: what its actors have to look at (``Actor.party``).
 
     A comment is for its recipients. Its author sees it in its thread (``thread_of``), with the answers, and never as
-    an item to acknowledge (``ack``).
+    an item to acknowledge (``ack``). An agent's party is its role (``Agent.party``), so an orchestrator never waits for
+    what an earlier orchestrator wrote.
     """
-    return [(c, p) for c, p in items(s, campaign_id=campaign_id, kinds=kinds, acked=acked) if c.author != me.signature]
+    found = items(s, campaign_id=campaign_id, kinds=kinds, acked=acked)
+    return [(c, p) for c, p in found if party_of(c.author) != party]
 
 
 def seeds(s: Session, *, campaign_id: CampaignId | None = None) -> list[tuple[Idea, Campaign]]:
@@ -127,17 +129,17 @@ WAKES: Final = tuple(
 PAGE = 500
 
 
-def news(s: Session, after: int, *, campaign_id: CampaignId | None = None, me: Actor) -> News:
+def news(s: Session, after: int, *, campaign_id: CampaignId | None = None, party: str) -> News:
     """Return the events after event#``after`` that the orchestrator must look at, and the next cursor.
 
     The news reports:
 
-    - new unacknowledged inbox items that wait for ``me`` (``waiting_for``). The orchestrator's own decisions are for
+    - new unacknowledged inbox items that wait for ``party`` (``waiting_for``). The orchestrator's own decisions are for
       the human.
-    - seeds that someone else filed.
+    - seeds that another party filed.
     - campaigns that the daemon stopped.
     - anomalies that the daemon gave to a watchdog.
-    - the daemon's verdicts.
+    - the verdicts that another party gave: the daemon's, or a person's.
 
     It reads the ``WAKES`` events from the feed (``piloop.db.feed``), a page at a time until a page gives a line.
     ``campaign_id`` filters all of them. The returned cursor passes every event that it read, so no event is missed.
@@ -147,15 +149,15 @@ def news(s: Session, after: int, *, campaign_id: CampaignId | None = None, me: A
         page = db_feed.after(s, cursor, WAKES, limit=PAGE)
         cursor, more = page.next, page.more
         events = s.scalars(select(Event).where(Event.id.in_(page.ids)).order_by(Event.id)).all()
-        found = _news(s, events, campaign_id, me)
+        found = _news(s, events, campaign_id, party)
     return News(next=cursor, items=found)
 
 
-def _news(s: Session, events: Sequence[Event], campaign_id: CampaignId | None, me: Actor) -> list[NewsItem]:
+def _news(s: Session, events: Sequence[Event], campaign_id: CampaignId | None, party: str) -> list[NewsItem]:
     fresh = {e.target_id for e in events if isinstance(e.payload, Commented)}
     found: list[NewsItem] = [
         CommentNews(comment=comment_view(c), campaign_name=campaign.name if campaign else None)
-        for c, campaign in waiting_for(s, me, campaign_id=campaign_id)
+        for c, campaign in waiting_for(s, party, campaign_id=campaign_id)
         if c.id in fresh
     ]
     for e in events:
@@ -168,11 +170,11 @@ def _news(s: Session, events: Sequence[Event], campaign_id: CampaignId | None, m
                 agent_session = s.get(AgentSession, e.target_id)
                 if agent_session is not None and campaign_id in (None, agent_session.campaign_id):
                     found.append(AnomalyNews(role=agent_session.kind, agent_session=agent_session.id, line=line))
-            case IdeaCreated() if e.actor != me.signature:
+            case IdeaCreated() if party_of(e.actor) != party:
                 idea = s.get(Idea, e.target_id)
                 if idea is not None and idea.status is IdeaStatus.SEED and campaign_id in (None, idea.campaign_id):
                     found.append(SeedNews(seed=seed_of(idea, idea.campaign)))
-            case CandidateJudged(verdict=verdict, reason=reason):
+            case CandidateJudged(verdict=verdict, reason=reason) if party_of(e.actor) != party:
                 candidate = s.get(Candidate, e.target_id)
                 if candidate is not None and campaign_id in (None, candidate.campaign_id):
                     found.append(VerdictNews(candidate=candidate.id, verdict=str(verdict), reason=str(reason)))
@@ -182,7 +184,8 @@ def _news(s: Session, events: Sequence[Event], campaign_id: CampaignId | None, m
 def ack(s: Session, ids: Sequence[CommentId], actor: Actor) -> list[AckResult]:
     """Acknowledge the inbox items ``ids`` as ``actor`` and commit. Return what happened to each id.
 
-    An id that is not an inbox item, that ``actor`` wrote, or that is already acknowledged, is reported and not changed.
+    An id that is not an inbox item, that ``actor``'s party wrote, or that is already acknowledged, is reported and not
+    changed.
     """
     now = utcnow()
     results = []
@@ -190,7 +193,7 @@ def ack(s: Session, ids: Sequence[CommentId], actor: Actor) -> list[AckResult]:
         match comment := s.get(Comment, comment_id):
             case None | Comment(priority=None):
                 results.append(AckResult(id=comment_id, outcome=AckOutcome.NOT_IN_INBOX, acked_by=None))
-            case Comment(author=author) if author == actor.signature:
+            case Comment(author=author) if party_of(author) == actor.party:
                 results.append(AckResult(id=comment_id, outcome=AckOutcome.OWN, acked_by=comment.acked_by))
             case Comment(acked_at=datetime()):
                 results.append(AckResult(id=comment_id, outcome=AckOutcome.ALREADY, acked_by=comment.acked_by))

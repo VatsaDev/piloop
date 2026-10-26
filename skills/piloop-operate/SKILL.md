@@ -91,7 +91,10 @@ Steps:
 Run the loop yourself, or give it to a background subagent so that the human's session stays free. Give the subagent
 this skill and the campaign name. Tell it to report decisions and status back.
 
-Run one orchestrator per campaign. Two loops answer the same escalation twice.
+Run one orchestrator per campaign. Two loops answer the same escalation twice. When `piloop status` lists live or
+past `orchestrator#…` agents, or `[roles.orchestrator]` in `piloop.toml` has triggers, piloop launches the campaign's
+orchestrator itself: do not loop. Write to it with `piloop message <name> '<text>'`, and read its answer in
+`piloop inbox`.
 
 ## Status
 

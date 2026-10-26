@@ -239,8 +239,8 @@ def latest_events(s: Session, campaign: Campaign, limit: int) -> Sequence[Event]
 
 
 def defining(cfg: CampaignConfig) -> list[str]:
-    """Return the sweeping roles that define ideas (``files = "ideas"``): the ones that fill the queue."""
-    return [name for name, role in cfg.roles.sweeping().items() if role.files is Files.IDEAS]
+    """Return the sweeping roles that define ideas (``files = "ideas"``) and have triggers: the ones that fill the queue."""
+    return [name for name, role in cfg.roles.sweeping().items() if role.files is Files.IDEAS and role.triggers]
 
 
 def minutes(seconds: float) -> str:

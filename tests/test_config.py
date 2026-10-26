@@ -13,6 +13,7 @@ from piloop.ids import IMPLEMENTER, RoleName, TrackName
 from piloop.plugins.harness.contract import Harness, each_provider
 from piloop.plugins.metric import Direction
 from piloop.plugins.role.contract import Files, ImplementerRole
+from piloop.plugins.role.orchestrator import OrchestratorRole
 from piloop.plugins.role.research import ResearchRole
 from piloop.plugins.role.scout import ScoutRole
 from piloop.plugins.role.watchdog import WatchdogRole
@@ -124,6 +125,7 @@ def test_roles_are_typed_per_kind(campaign_path: Path) -> None:
     cfg = load_campaign_config(campaign_path)
     assert cfg.roles.all() == {
         IMPLEMENTER: ImplementerRole(timeout=AGENT_TIMEOUT, max_concurrent=1),
+        RoleName('orchestrator'): OrchestratorRole(),
         RESEARCH: ResearchRole(timeout=AGENT_TIMEOUT, max_ideas=0, max_concurrent=1),
         SCOUT: ScoutRole(),
         WATCHDOG: WatchdogRole(harnesses=['script'], model={'script': 'watchdog-model'}, timeout=AGENT_TIMEOUT),
@@ -478,8 +480,8 @@ def test_a_table_with_a_new_name_defines_a_role_that_needs_a_prompt_file_and_tri
     when = 'SELECT 1 FROM ideas WHERE campaign_id = :campaign AND created_at > :since'
     good = {'prompt': 'reviewer.md', 'triggers': [{'provider': 'sql', 'when': when}], 'runtime': 'subprocess'}
     cfg = load_campaign_config(campaign_path, roles={'reviewer': good})
-    assert list(cfg.roles.all()) == ['implementer', 'research', 'scout', 'watchdog', 'reviewer']
-    assert list(cfg.roles.sweeping()) == ['research', 'scout', 'watchdog', 'reviewer'], (
+    assert list(cfg.roles.all()) == ['implementer', 'orchestrator', 'research', 'scout', 'watchdog', 'reviewer']
+    assert list(cfg.roles.sweeping()) == ['orchestrator', 'research', 'scout', 'watchdog', 'reviewer'], (
         'the implementer does runs, not sweeps'
     )
     assert cfg.role_runtime(RoleName('reviewer')) == 'subprocess'
@@ -536,9 +538,9 @@ def test_a_table_with_a_new_name_defines_a_role_that_needs_a_prompt_file_and_tri
 def test_a_table_with_runs_defines_a_role_that_does_runs_with_the_implementer_defaults(campaign_path: Path) -> None:
     quick = {'runs': True, 'takes': "priority >= 3 OR track = 'speed'", 'timeout': 60, 'max_concurrent': 1}
     cfg = load_campaign_config(campaign_path, roles={'quick': quick})
-    assert list(cfg.roles.all()) == ['implementer', 'research', 'scout', 'watchdog', 'quick']
+    assert list(cfg.roles.all()) == ['implementer', 'orchestrator', 'research', 'scout', 'watchdog', 'quick']
     assert list(cfg.roles.doing_runs()) == ['quick', 'implementer'], 'the roles of the file fill their slots first'
-    assert list(cfg.roles.sweeping()) == ['research', 'scout', 'watchdog']
+    assert list(cfg.roles.sweeping()) == ['orchestrator', 'research', 'scout', 'watchdog']
     role = cfg.roles.doing_runs()[RoleName('quick')]
     assert (role.prompt, role.PROMPT, role.files, role.explore_every) == (
         None,

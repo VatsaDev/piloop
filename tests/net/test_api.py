@@ -443,14 +443,18 @@ def test_a_proxy_caller_s_ack_reply_and_pause_sign_as_the_person_it_names(
         paused = client.pause('demo', PauseBody(reason='waits for comment#2')).campaign
         with (
             httpx.Client(base_url=tcp.url, headers={**stamped, PROXY.actor_header: 'orchestrator'}) as asking,
-            Client.on(cfg.socket_file, System.ORCHESTRATOR) as local,
+            Client.on(cfg.socket_file, System.HUMAN) as local,
+            Client.on(cfg.socket_file, System.ORCHESTRATOR) as orchestrator,
         ):
             start = local.news(NewsQuery()).next
             acted = Client(asking).reply(CommentId(1), ReplyBody(body='mine')).comment
             [news] = local.news(NewsQuery(after=start)).items
+            assert orchestrator.news(NewsQuery(after=start)).items == [], (
+                'the orchestrator at the terminal is the same party as the network orchestrator: nothing waits'
+            )
     me = 'human:ana@example.com'
     assert news.text() == f'comment#{acted.id} decision p2 on comment#1 (demo) by orchestrator via {me}: mine', (
-        "the orchestrator at the terminal sees the network orchestrator's decision, and whose it is"
+        "the person at the terminal sees the network orchestrator's decision, and whose it is"
     )
     assert isinstance(paused, CampaignState)
     assert (acked.acked_by, replied.author, paused.paused) == (me, me, 'launches')
@@ -943,7 +947,9 @@ def test_an_admin_makes_a_token_whose_secret_only_its_answer_carries_and_revokes
 def test_an_agent_is_requested_of_a_sweeping_role_only(db: Database, campaign: Campaign, cfg: Settings) -> None:
     with serving_api(cfg), Client.on(cfg.socket_file, System.ORCHESTRATOR) as client:
         asked = client.launch('demo', LaunchBody(role=RoleName('research'), model='opus', reason='look again'))
-        with pytest.raises(Refused, match="^demo has no sweeping role 'janitor'; it has research, ") as refused:
+        with pytest.raises(
+            Refused, match="^demo has no sweeping role 'janitor'; it has orchestrator, research, "
+        ) as refused:
             client.launch('demo', LaunchBody(role=RoleName('janitor'), reason='sweep'))
     assert refused.value.error == Problem.REFUSED
     with db.session() as s:

@@ -12,13 +12,15 @@ import pytest
 from covalence import Cas as Covalence
 from sqlalchemy import select
 
+from piloop.actor import System
+from piloop.campaign import ops
 from piloop.campaign.stop import left
 from piloop.cli import common, main as cli
 from piloop.cli.plugins import selections
 from piloop.config import CampaignConfig, ConfigError, load_campaign_config
 from piloop.daemon.main import Daemon
 from piloop.daemon.run_controller import RunController
-from piloop.daemon.scheduler import Scheduler
+from piloop.daemon.scheduler import Scheduler, awake_roles, quiet_phase
 from piloop.db.models import (
     AgentSession,
     AgentSessionState,
@@ -33,7 +35,7 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database
-from piloop.ids import AgentSessionId, CommentKind, IdeaStatus, RoleName, TargetKind, TargetRef
+from piloop.ids import AgentSessionId, CampaignStatus, CommentKind, Ending, IdeaStatus, RoleName, TargetKind, TargetRef
 from piloop.otel import Tracer
 from piloop.plugins import host as plugins_module
 from piloop.plugins.cas.contract import CAS
@@ -41,7 +43,7 @@ from piloop.plugins.executor.workers import Workers
 from piloop.plugins.host import PluginError, compose
 from piloop.plugins.role.contract import ROLES
 from piloop.plugins.runtime.contract import RUNTIMES, Runtime
-from piloop.plugins.trigger.contract import TRIGGERS
+from piloop.plugins.trigger.contract import TRIGGERS, Quiet
 from piloop.runtime.factory import RuntimeFactory
 from piloop.settings import Settings
 from tests.conftest import (
@@ -382,6 +384,7 @@ def test_a_hand_over_leaves_a_sweep_running_and_the_next_scheduler_re_attaches_t
 
 ENTRY_POINTS = [
     EntryPoint('every_pass', f'{PLUGIN}:EveryPass', TRIGGER_GROUP),
+    EntryPoint('awake', f'{PLUGIN}:Awake', TRIGGER_GROUP),
     EntryPoint('broken', f'{PLUGIN}:Broken', TRIGGER_GROUP),
     EntryPoint('auditor', f'{PLUGIN}:Auditor', ROLE_GROUP),
     EntryPoint('quick', f'{PLUGIN}:Quick', ROLE_GROUP),
@@ -451,6 +454,49 @@ def test_a_package_adds_a_role_and_triggers_through_entry_points(
     assert 'trigger.failed Ns campaign=demo role=auditor trigger=broken error=the probe is down' in console_lines(
         capsys.readouterr().err
     )
+
+
+def test_only_a_trigger_that_names_the_quiet_phase_fires_and_launches_while_its_campaign_is_paused_or_stopped(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, plugins: None
+) -> None:
+    configure(
+        db, campaign, '#!/bin/sh\ntrue\n', auditor={'triggers': [{'provider': 'every_pass'}, {'provider': 'awake'}]}
+    )
+    with db.session() as s:
+        ops.pause(s, campaign.id, evals=False, reason='a person reads the results')
+        s.add(AgentSession(kind=WATCHDOG, campaign_id=campaign.id, reason='by hand'))
+        s.commit()
+    sched = scheduler(db, recording(runtime, []), tmp_path)
+    [audit] = sched.run_all()
+    sched.wait()
+    assert agent_sessions(db, 'auditor') == [(audit, AgentSessionState.EXITED, 'every pass for auditor (paused)')], (
+        'every_pass sleeps through the pause, and awake fires alone'
+    )
+    assert [state for _, state, _ in agent_sessions(db, WATCHDOG)] == [AgentSessionState.REQUESTED], (
+        'a role without such a trigger launches nothing while paused'
+    )
+    with db.session() as s:
+        ops.resume(s, campaign.id)
+        ops.stop(s, campaign.id, System.HUMAN, reason='done', ending=Ending.WRAP_UP)
+        s.commit()
+    sched.run_all()
+    sched.wait()
+    sched.run_all()
+    sched.wait()
+    sched.stop(timeout=5)
+    reasons = [reason for _, _, reason in agent_sessions(db, 'auditor')]
+    assert 'every pass for auditor (stopped)' in reasons, 'checked again once the campaign is closed'
+    with db.session() as s:
+        row = s.get_one(Campaign, campaign.id)
+        assert (quiet_phase(s, row, None), quiet_phase(s, row, 'at the spend limit')) == (Quiet.STOPPED,) * 2
+        row.status, row.paused = CampaignStatus.ACTIVE, None
+        assert (quiet_phase(s, row, None), quiet_phase(s, row, 'at the spend limit')) == (None, Quiet.HELD)
+        row.status = CampaignStatus.RETIRED
+        with pytest.raises(ValueError, match='demo is retired'):
+            quiet_phase(s, row, None)
+        row.status = CampaignStatus.ACTIVE
+        assert awake_roles(row.config, None) == frozenset()
+        assert awake_roles(row.config, Quiet.HELD) == {RoleName('auditor')}
 
 
 MINIMAL = """

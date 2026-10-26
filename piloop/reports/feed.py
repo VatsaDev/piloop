@@ -16,6 +16,7 @@ These functions read the database and nothing else. The API serves what they ret
 
 import json
 import math
+from collections import Counter
 from collections.abc import Collection, Sequence
 from datetime import UTC, datetime
 
@@ -37,6 +38,7 @@ from piloop.api.views import (
     LiveAgent,
     Named,
     OpenRun,
+    RoleView,
     Subject,
     Target,
     TrackScore,
@@ -45,8 +47,19 @@ from piloop.campaign import inbox
 from piloop.campaign.inbox import campaign_of
 from piloop.config import CampaignConfig, explain
 from piloop.db import feed as db_feed
-from piloop.db.models import OPEN_RUNS, Campaign, Event, Idea, Run, campaign_runs, count
-from piloop.ids import CampaignId, CommentKind, IdeaStatus
+from piloop.db.models import (
+    LIVE,
+    OPEN_RUNS,
+    AgentSession,
+    AgentSessionState,
+    Campaign,
+    Event,
+    Idea,
+    Run,
+    campaign_runs,
+    count,
+)
+from piloop.ids import CampaignId, CommentKind, IdeaStatus, RoleName
 from piloop.reports.overview import head_scores, live_agent_sessions, produced, queued_ideas
 from piloop.scoring.ledger import keeps
 from piloop.text import iso
@@ -183,9 +196,38 @@ def _state(s: Session, campaign: Campaign, cfg: CampaignConfig, me: Actor) -> Ca
             LiveAgent(id=w.id, kind=w.kind, state=str(w.state), harness=w.harness, model=w.model, run=w.run_id)
             for w in live_agent_sessions(s, campaign)
         ],
-        inbox=len(inbox.waiting_for(s, me, campaign_id=campaign.id)),
+        roles=roles_of(s, campaign),
+        inbox=len(inbox.waiting_for(s, me.party, campaign_id=campaign.id)),
         tokens=campaign_tokens(s, campaign.id),
     )
+
+
+def roles_of(s: Session, campaign: Campaign) -> dict[RoleName, RoleView]:
+    """Each sweeping role of ``campaign``: its triggers, and how many of its agents wait or run."""
+    mine = (AgentSession.campaign_id == campaign.id,)
+    states = Counter(
+        (kind, state)
+        for kind, state in s.execute(
+            select(AgentSession.kind, AgentSession.state).where(
+                *mine, AgentSession.state.in_((AgentSessionState.REQUESTED, *LIVE))
+            )
+        )
+    )
+    ended = dict(
+        s.execute(
+            select(AgentSession.kind, func.max(AgentSession.ended_at)).where(*mine).group_by(AgentSession.kind)
+        ).all()
+    )
+    views = {}
+    for name, role in campaign.config.roles.sweeping().items():
+        last = ended.get(name)
+        views[name] = RoleView(
+            triggered=bool(role.triggers),
+            requested=states[(name, AgentSessionState.REQUESTED)],
+            live=sum(states[(name, state)] for state in LIVE),
+            last_ended=None if last is None else iso(last),
+        )
+    return views
 
 
 def parent_of(s: Session, campaign: Campaign) -> Named | None:
@@ -226,7 +268,7 @@ def inbox_view(
                 acked_by=c.acked_by,
                 body=c.body,
             )
-            for c, p in inbox.waiting_for(s, me, campaign_id=campaign_id, kinds=kinds, acked=acked)
+            for c, p in inbox.waiting_for(s, me.party, campaign_id=campaign_id, kinds=kinds, acked=acked)
         ],
         seeds=[inbox.seed_of(i, p) for i, p in inbox.seeds(s, campaign_id=campaign_id)],
     )
