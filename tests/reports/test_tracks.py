@@ -53,7 +53,7 @@ head: candidate#4 · score: 3 · score vs baseline: 2 · size: 8 · size vs base
 ## Goal
 
 - Tracks, each a primary its keeps improve while holding the others: score (score, higher, margin 1, floor 0.5, share 0.75); size (size, lower, margin 2, floor 20, share 0.25)
-- Campaign: active. Progress: run 3 · 1.9h (no limit stops it: open-ended).
+- Campaign: active. Progress: run 3 · 1.9h · no limit stops it: open-ended.
 - The goal in words is the campaign's brief.md: weigh the metric against it.
 
 ## Tracks
@@ -117,7 +117,7 @@ def test_watch_shows_the_head_per_track(db: Database, campaign: Campaign) -> Non
         p = s.get_one(Campaign, campaign.id)
         assert header(s, p, cfg, NOW).plain == snapshot("""\
 demo · head candidate#4: score 3 (+2), size 8 (-4) · 3 kept / 4 candidates · 4k tok
-run 3 · 1.9h\
+run 3 · 1.9h · no limit stops it: open-ended\
 """)
         [row] = campaigns(s, NOW, System.ORCHESTRATOR)
         assert row.cells[2:4] == snapshot(('3 score, 8 size', '+2, -4'))

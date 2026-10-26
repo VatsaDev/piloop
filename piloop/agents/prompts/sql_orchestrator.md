@@ -89,8 +89,7 @@ daemon never overwrites a verdict that is not its own.
 - No watchdog starts for an anomaly while paused; it gets the anomaly after the resume. Paused time does not count
   toward `max_hours`.
 - `piloop resume <campaign>` ends it. `campaigns.paused` and `paused_reason` show it, and `campaign.paused` events log it.
-- Never pause with a `[spend]` command that reads a file: the `[spend]` hold escalates each time it holds, and it
-  stops every measurement.
+- Pause with `piloop pause`, never with a `hold_at` fact that you set by hand: a hold stops every measurement too.
 
 ### Stop, cancel, or resume a stopped campaign
 

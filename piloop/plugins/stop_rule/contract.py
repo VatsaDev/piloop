@@ -8,63 +8,33 @@ facts. Then it calls ``check`` with a ``StopCase``: those facts. The rule return
 - ``Hold``: piloop starts no agent and no evaluation for the campaign. Work that runs finishes. The hold is not a
   pause: on each pass piloop asks again, and the hold ends when the rule answers ``Go``.
 - ``Stop``: piloop stops the campaign.
+- ``Escalate``: piloop tells a human why, one priority-0 escalation for each distinct reason, and then acts on its
+  ``then``: by default, the campaign goes on. A rule escalates itself: piloop posts no escalation of its own for a
+  hold.
+
+``describe`` returns the rule's own view of the campaign against its limits, for ``piloop status`` and the briefs:
+piloop formats none of the facts itself. ``while_held`` says what the closing review of a stop does while the rule
+holds.
 
 The rule reads nothing else: it is a pure provider. ``[plugins.stop_rule] provider`` in ``piloop.toml`` selects the
 rule, and the other keys of that table are its fields, its limits among them. Without the table, the rule is
-``limits``. piloop reads the limits too, by fact (``limits``): it starts no more runs than a limit on ``runs``, research
-pivots at half a limit on ``without_keep``, and a limit on ``spend`` escalates when the spend reaches it.
+``limits``. piloop reads the limits too, by fact (``limits``): it starts no more runs than a limit on ``runs``, and
+research pivots at half a limit on ``without_keep``.
 
-This module imports only the Python standard library, the plugin host, and the metric types (``piloop.plugins.metric``).
-A rule imports this module, and nothing else of piloop.
+A fact is a typed key (``piloop.plugins.fact_source.facts``) that a fact source of the campaign supplies, by its name.
+Every fact that a rule reads needs a source in the campaign.
+
+This module imports only the Python standard library, the plugin host, the facts and the metric types. A rule imports
+this module and the facts it reads, and nothing else of piloop.
 """
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import StrEnum
 
+from piloop.plugins.fact_source.facts import Fact, Facts, FactValue
 from piloop.plugins.host import Capability, Choice, Parameters, Scope, Tier
 from piloop.plugins.metric import Direction
-
-
-class Fact(StrEnum):
-    """A fact of the campaign. Most facts cost queries on every pass, so a rule names the ones it reads."""
-
-    HEAD = 'head'
-    RUNS = 'runs'
-    HOURS = 'hours'
-    TOKENS = 'tokens'
-    WITHOUT_KEEP = 'without_keep'
-    KEEPS = 'keeps'
-    SPEND = 'spend'
-
-
-@dataclass(frozen=True)
-class Progress:
-    """Where the campaign is, counted on this pass. A fact that the rule does not read is None."""
-
-    head: float | None = None
-    """``head``: the primary metric at the head under the current evaluator. Also None without a head, or when the
-    head has no score."""
-    runs: int | None = None
-    """``runs``: the runs that hold a place under ``max_runs``: those that count, and the attempts that may still
-    count."""
-    unsettled: int | None = None
-    """``runs`` too: the attempts whose outcome can still change: queued, running, or being scored."""
-    hours: float | None = None
-    """``hours``: the hours since the first run started, without the time that the campaign was paused. Also None
-    before the first run."""
-    tokens: int | None = None
-    """``tokens``: the tokens that the agents of the campaign spent, summed over the agents that ended."""
-    without_keep: int | None = None
-    """``without_keep``: the finished runs that count since the latest keep, or since the campaign was last set
-    active again."""
-    keeps: int | None = None
-    """``keeps``: the candidates of runs that are kept, on the trunk or on a branch. The baseline is not one."""
-    spend: float | None = None
-    """``spend``: the spend in USD that ``[spend] command`` printed last. Also None before its first reading, and
-    while its latest run failed."""
-    spend_error: str | None = None
-    """``spend`` too: why the latest run of ``[spend] command`` failed, or None after a run that printed a spend."""
 
 
 @dataclass(frozen=True)
@@ -74,7 +44,9 @@ class StopCase:
     primary: str
     """The name of the primary metric of the campaign's first track."""
     direction: Direction
-    progress: Progress
+    """Whether a larger or a smaller value of the primary metric is better."""
+    facts: Facts
+    """The facts that the rule reads (``reads``), from the campaign's fact sources."""
 
 
 @dataclass(frozen=True)
@@ -101,20 +73,52 @@ class Stop:
     """Why, for ``campaigns.stopped_reason`` and the closing review."""
 
 
+@dataclass(frozen=True)
+class Escalate:
+    """piloop posts one escalation at priority 0 for each distinct ``reason``, and then acts on ``then``."""
+
+    reason: str
+    """What a human must decide, for the escalation: ``Stop rule <name>: <reason>``."""
+    then: Go | Hold | Stop = GO
+    """What piloop does with the campaign: by default it goes on."""
+
+
+class WhileHeld(StrEnum):
+    """What the closing review does when the campaign stopped while its stop rule held launches."""
+
+    RUN = 'run'
+    """The review runs, also while the hold lasts."""
+    SKIP = 'skip'
+    """No review: the stop ends at once, and the daemon posts an escalation that says so."""
+    WAIT = 'wait'
+    """The review starts when the hold ends. The daemon goes on asking the stop rule until it does."""
+
+
 class StopRule(Parameters, ABC):
     """A stop rule: its fields are its parameters. A rule has no error: it answers every case."""
 
+    while_held: WhileHeld = WhileHeld.RUN
+    """What the closing review does when the campaign stops (``piloop campaign stop``) while the rule holds its
+    launches: ``run`` it anyway, ``skip`` it, or ``wait`` until the hold ends."""
+
     @abstractmethod
-    def limits(self) -> dict[Fact, float]:
+    def limits(self) -> dict[Fact[FactValue], float]:
         """Return the limit that the rule sets on each fact that it limits."""
 
-    def reads(self) -> list[Fact]:
-        """Return the facts that ``check`` reads. piloop gets only those. By default, the facts that it limits."""
+    def reads(self) -> list[Fact[FactValue]]:
+        """Return the facts that ``check`` and ``describe`` read: piloop gets only those. By default, its limits'."""
         return list(self.limits())
 
+    def describe(self, case: StopCase) -> list[str]:
+        """Return where the campaign stands against the rule, in short parts: ``run 7/200``, ``2.1h/12h``.
+
+        ``piloop status`` and the briefs join them into the campaign's progress line. By default, none.
+        """
+        return []
+
     @abstractmethod
-    def check(self, case: StopCase) -> Go | Hold | Stop:
-        """Return whether the campaign goes on, holds, or stops now."""
+    def check(self, case: StopCase) -> Go | Hold | Stop | Escalate:
+        """Return whether the campaign goes on, holds or stops, or tell a human why and then do one of those."""
 
 
 STOP_RULES = Capability('stop_rule', StopRule, tier=Tier.PURE, choice=Choice(Scope.CAMPAIGN, default='limits'))

@@ -136,11 +136,13 @@ Map each answer to its keys:
 - **Objective target and budget → `[plugins.stop_rule]`:** `target`, `max_runs`, `max_hours`, `max_tokens`, and
   `plateau` when the human wants the campaign to end by itself. Leave them out only if the human explicitly wants an
   open-ended campaign. Never write `[stop]`: it is deprecated.
-- **Money spent outside piloop (a GPU cloud, a paid API) → `[spend]`:**
-  - `command` prints the spend so far in USD.
-  - `notices` are thresholds that post a note.
-  - `max_spend` in `[plugins.stop_rule]` is hard: at it the daemon stops launches. Never write the budget only in a
-    brief.
+- **Money spent outside piloop (a GPU cloud, a paid API) → a `[[facts]]` source, `provider = "command"`, after
+  `{ provider = "campaign" }` and `{ provider = "optimization" }`:**
+  - `command` prints `METRIC spend=<usd>` lines, as the evaluate command does; `metrics = ["spend"]` names them. GPU
+    hours or any other budget is one more name.
+  - `notices = { spend = [...] }` are thresholds that post a note.
+  - `hold_at = { spend = <usd> }` in `[plugins.stop_rule]` is hard: at it the daemon stops launches. Never write the
+    budget only in a brief.
   - Put the secrets of the command in the environment of the daemon, never in the repo.
 
 The file lists every key. A key that is set shows its default, unless its comment says otherwise, and the optional keys
@@ -155,7 +157,11 @@ Wire the existing measurement, or write `evaluate.py`. The contract:
 - It prints `METRIC <name>=<value>` for every metric in `piloop.toml`.
 - It exits 0. A non-zero exit is recorded as a crash.
 - It is deterministic: fixed seeds and splits.
+- When an evaluation costs money, it prints `METRIC eval_cost_usd=<usd>` as a watch metric, also when it fails.
+- In `brief.md`, tell implementers to compare a local check with the head's stored scores, not to measure the head
+  again.
 
+Audit the evaluator end to end before the launch: read it, and check its output on a sample of the head's units.
 Run it once now. Compare the METRIC lines and the duration with what the human said about measurement.
 
 Show both files to the human. Ask once more before you register.

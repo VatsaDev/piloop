@@ -1,0 +1,24 @@
+{/* WARNING: This file is auto-generated (uv run -m scripts.generate_all). Update `piloop/plugins/fact_source/facts.py` if you want to change anything here. */}
+
+| Fact | Source | Type | What it is |
+|---|---|---|---|
+| `HOURS` (`hours`) | `campaign` | `float` | The hours since the first run started, without the time that the campaign was paused. |
+| `TOKENS` (`tokens`) | `campaign` | `int` | The tokens that the agents of the campaign spent, summed over the agents that ended. |
+| `HEAD` (`head`) | `optimization` | `float` | The primary metric of the first track at the head, under the current evaluator. |
+| `RUNS` (`runs`) | `optimization` | `int` | The runs that hold a place under a limit on runs: those that count, and the attempts that may still count. |
+| `UNSETTLED` (`unsettled`) | `optimization` | `int` | The attempts whose outcome can still change: queued, running, or being scored. |
+| `WITHOUT_KEEP` (`without_keep`) | `optimization` | `int` | The finished runs that count since the latest keep, or since the campaign was last set active again. |
+| `KEEPS` (`keeps`) | `optimization` | `int` | The candidates of runs that are kept, on the trunk or on a branch. The baseline is not one. |
+| `EVALUATIONS` (`evaluations`) | `optimization` | `int` | The runs of the evaluate command under every evaluator: each measurement, failed ones and bar samples among them. |
+| `METRIC_SUMS` (`metric_sums`) | `optimization` | `dict[str, float]` | Each metric summed over every measurement. A rule that reads a cost metric names it. |
+| `ATTEMPTS` (`attempts`) | `optimization` | `int` | The runs that are an attempt at their idea: the open ones, and those whose end is one. |
+| `FUNNEL` (`funnel`) | `optimization` | `Funnel` | How far the attempts that ended and are judged got (`Funnel`). |
+
+| Ratio | What it is |
+|---|---|
+| `reading(name: str) -> Fact[float]` | The fact of a value that a source reads under `name`, such as a `METRIC spend=412.3` line of `command`. |
+| `since_keep(name: str) -> Fact[float]` | How much the value of `reading(name)` grew since the latest keep: `<name>_since_keep`. |
+| `per_keep(facts: Facts, spend: str) -> float \| None` | The fact `spend` per keep. Reads `reading(spend)` and `KEEPS`. |
+| `per_evaluation(facts: Facts, cost: str) -> float \| None` | The sum of the evaluator's metric `cost` per evaluation. Reads `EVALUATIONS` and `METRIC_SUMS`. |
+| `worker_spend(facts: Facts, spend: str, cost: str) -> float \| None` | The fact `spend` less the sum of the evaluator's metric `cost`. Reads `reading(spend)` and `METRIC_SUMS`. |
+| `per_run(facts: Facts, spend: str, cost: str) -> float \| None` | `worker_spend` per attempt. Reads `reading(spend)`, `METRIC_SUMS` and `ATTEMPTS`. |

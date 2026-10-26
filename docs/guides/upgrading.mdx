@@ -164,6 +164,44 @@ piloop keeps each agent's session, the harness's own file, in the CAS: `agent_se
 A network plugin implements `actor(headers)`: whom a request asks to act as. Its `client(server, actor)` sends that
 ask. A person whom the network names signs as `human:<name>`, not `human`. `piloop pause` prints `paused (all)`.
 
+### Spend is a fact
+
+piloop gives no fact a meaning: what a campaign spends outside piloop is a fact that a source of `[[facts]]` reads, as
+GPU hours or anything else would be. The built-in `command` source prints `METRIC <name>=<value>` lines, as the
+evaluate command does, and `hold_at` of `limits` holds on any fact that it names:
+
+| Before 0.4.0 | Since 0.4.0 |
+|---|---|
+| `[spend] command` (prints one number) | a `[[facts]]` entry with `provider = "command"` and `metrics = ["spend"]`, whose command prints `METRIC spend=<number>` |
+| `[spend] notices`, `interval` | `notices = { spend = [...] }` and `interval` of that entry |
+| `[spend] closing_review` | `[plugins.stop_rule] while_held` |
+| `[plugins.stop_rule] max_spend` | `[plugins.stop_rule] hold_at = { spend = ... }` |
+
+```toml
+[[facts]]
+provider = "campaign"
+
+[[facts]]
+provider = "optimization"
+
+[[facts]]
+provider = "command"
+command = ["uv", "run", "scripts/spend.py"]   # prints METRIC spend=412.3
+metrics = ["spend"]
+
+[plugins.stop_rule]
+hold_at = { spend = 1000 }
+while_held = "wait"
+```
+
+The old keys still work until 0.4.0, with a warning: the old command runs in a wrapper that prints its number as
+`METRIC spend=`. The upgrade rewrites the stored configs the same way, and turns the latest reading of each campaign
+into `fact.read` events: `campaigns.spend_usd`, `spend_error` and `spend_at` are gone.
+
+A stop rule reads `StopCase.facts` by typed key (`case.facts.get(KEEPS)`, `case.facts.get(reading('spend'))`) instead
+of `Progress`. It shows its own progress line (`describe`), escalates itself (`Escalate(reason, then=...)`), and says
+what a stop while it holds does (`while_held`). A hold no longer posts an escalation of piloop's own.
+
 ## Upgrading to 0.3.0
 
 ### First, piloop 0.2.1

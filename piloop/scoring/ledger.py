@@ -8,12 +8,13 @@ import json
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from statistics import fmean
 from typing import Literal, assert_never
 
 from pydantic import Field
-from sqlalchemy import ColumnElement, Select, literal, select
+from sqlalchemy import ColumnElement, Select, func, literal, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -150,6 +151,11 @@ def head(s: Session, campaign: Campaign, *, excluding: Candidate | None = None) 
     trunk = [n for n in _trunk(s, campaign) if excluding is None or n.id != excluding.id]
     chosen = verdict_rule(campaign.config).head(trunk)
     return s.get_one(Candidate, _among(trunk, chosen, 'the head')) if chosen is not None else None
+
+
+def last_keep_at(s: Session, campaign: Campaign) -> datetime | None:
+    """When the run of the campaign's latest keep finished, or None before the first keep. The baseline is no keep."""
+    return s.scalar(keeps(campaign).join(Run, Candidate.run_id == Run.id).with_only_columns(func.max(Run.finished_at)))
 
 
 def trunk_keeps(s: Session, campaign: Campaign) -> list[Candidate]:

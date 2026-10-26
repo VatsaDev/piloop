@@ -6,6 +6,7 @@ answers (``piloop.db.requests``).
 """
 
 import math
+from collections.abc import Collection
 from datetime import datetime, timedelta
 from typing import Literal, assert_never
 
@@ -13,7 +14,6 @@ from sqlalchemy import ColumnElement, exists, func, select
 from sqlalchemy.orm import Session
 
 from piloop.actor import Actor
-from piloop.campaign.spend import review_waits
 from piloop.config import CampaignConfig
 from piloop.db.events import emit, has, in_order, latest
 from piloop.db.models import (
@@ -39,10 +39,10 @@ from piloop.db.requests import answer, pending
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.db.triggers.changelog import CampaignPausedChanged, CampaignStatusChanged
 from piloop.ids import CampaignStatus, CommentKind, Ending, IdeaStatus, RunId, TargetKind, TargetRef
-from piloop.plugins.stop_rule.contract import STOP_RULES, Fact, Go, Hold, Progress, Stop, StopCase
-from piloop.scoring.ledger import head, keeps, score
+from piloop.plugins.fact_source.facts import HOURS, WITHOUT_KEEP, Fact, Facts, FactValue
+from piloop.plugins.stop_rule.contract import STOP_RULES, Escalate, Go, Hold, Stop, StopCase, WhileHeld
+from piloop.scoring.ledger import keeps, last_keep_at
 from piloop.scoring.verdict import pending_clause
-from piloop.usage.totals import campaign_tokens
 
 
 class StopRequested(EventModel):
@@ -99,7 +99,7 @@ def counted() -> ColumnElement[bool]:
 
     Such a run has a candidate that is measured or waiting for its verdict (``scored``). A run that stopped with no
     version, or with only versions that asked to be skipped, does not count: it stopped at a cheap check, or a harness
-    or host fault ended it before it saved one. It says nothing about the idea's effect on the metric. ``[spend]``,
+    or host fault ended it before it saved one. It says nothing about the idea's effect on the metric. ``hold_at``,
     ``max_tokens`` and ``max_hours`` limit what such runs cost. This is the one rule for both limits.
     """
     return attempt() & scored()
@@ -119,7 +119,7 @@ class CampaignClosed(EventModel):
     """The daemon closed a stopped campaign: it requested the closing sweeps, the ``stopped`` triggers.
 
     It closes a campaign once the runs that the stop wound down ended and their commits are judged (``settled``), so
-    the closing review sees the final head. ``[spend] closing_review = "skip"`` closes it at the stop, with no sweep.
+    the closing review sees the final head. Stop triggers with ``while_held = "skip"`` close it at the stop, with no sweep.
     """
 
     kind: Literal['campaign.closed'] = 'campaign.closed'
@@ -234,12 +234,12 @@ def park_cancelled(s: Session, run: Run) -> None:
     )
 
 
-def limits(cfg: CampaignConfig) -> dict[Fact, float]:
+def limits(cfg: CampaignConfig) -> dict[Fact[FactValue], float]:
     """The limits of the campaign's stop rule, by fact (``StopRule.limits``)."""
     return STOP_RULES.selected(cfg.plugins).limits()
 
 
-def check(s: Session, campaign: Campaign, cfg: CampaignConfig) -> Go | Hold | Stop:
+def check(s: Session, campaign: Campaign, cfg: CampaignConfig) -> Go | Hold | Stop | Escalate:
     """Ask the campaign's stop rule whether ``campaign`` goes on, holds, or stops now.
 
     The rule is ``[plugins.stop_rule]``, else ``limits``. Only the facts that it reads are gathered
@@ -247,23 +247,54 @@ def check(s: Session, campaign: Campaign, cfg: CampaignConfig) -> Go | Hold | St
     for a campaign with more than one track. A stop request is not the rule's: see ``requested``.
     """
     rule = STOP_RULES.selected(cfg.plugins)
+    return rule.check(_case(s, campaign, cfg, utcnow()))
+
+
+def describe(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime) -> list[str]:
+    """Ask the campaign's stop rule where the campaign stands against it (``StopRule.describe``)."""
+    return STOP_RULES.selected(cfg.plugins).describe(_case(s, campaign, cfg, now))
+
+
+def _case(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime) -> StopCase:
+    """The case of the campaign's stop rule: the facts that it reads, gathered as of ``now``."""
     primary = cfg.all_tracks[0].primary
-    reads = set(rule.reads())
-    trunk = head(s, campaign) if Fact.HEAD in reads else None
-    counting = Fact.RUNS in reads
-    spending = Fact.SPEND in reads
-    progress = Progress(
-        head=score(trunk, campaign.evaluator_id, primary) if trunk is not None else None,
-        runs=runs(s, campaign) if counting else None,
-        unsettled=(_over_runs(s, campaign, func.count(Run.id), attempt(), unsettled()) or 0) if counting else None,
-        hours=hours(s, campaign, utcnow()) if Fact.HOURS in reads else None,
-        tokens=campaign_tokens(s, campaign.id) if Fact.TOKENS in reads else None,
-        without_keep=runs_without_keep(s, campaign) if Fact.WITHOUT_KEEP in reads else None,
-        keeps=kept(s, campaign) if Fact.KEEPS in reads else None,
-        spend=campaign.spend_usd if spending else None,
-        spend_error=campaign.spend_error if spending else None,
-    )
-    return rule.check(StopCase(primary.name, primary.direction, progress))
+    reads = STOP_RULES.selected(cfg.plugins).reads()
+    return StopCase(primary.name, primary.direction, gather(s, campaign, cfg, reads, now))
+
+
+def escalated(
+    s: Session, campaign: Campaign, cfg: CampaignConfig, answer: Go | Hold | Stop | Escalate
+) -> Go | Hold | Stop:
+    """Act on an ``Escalate``: post its escalation, once for each distinct reason, and return its ``then``.
+
+    The caller commits. The escalation is the record: a reason that one of the campaign's escalations already says posts nothing.
+    """
+    match answer:
+        case Escalate(reason=reason, then=then):
+            body = f'Stop rule {STOP_RULES.name_of(STOP_RULES.selected(cfg.plugins))}: {reason}'
+            target = TargetRef(TargetKind.CAMPAIGN, campaign.id)
+            said = select(Comment.id).where(
+                Comment.target == target, Comment.kind == CommentKind.ESCALATION, Comment.body == body
+            )
+            if s.scalar(said.limit(1)) is None:
+                s.add(Comment(target=target, author=DAEMON_ACTOR, kind=CommentKind.ESCALATION, priority=0, body=body))
+            return then
+        case Go() | Hold() | Stop():
+            return answer
+        case _:
+            assert_never(answer)
+
+
+def gather(
+    s: Session, campaign: Campaign, cfg: CampaignConfig, reads: Collection[Fact[FactValue]], now: datetime
+) -> Facts:
+    """Gather the facts in ``reads`` from the campaign's fact sources (``[[facts]]``), as of ``now``. Most cost queries."""
+    wanted = frozenset(reads)
+    values: dict[str, FactValue] = {}
+    for source in cfg.fact_sources():
+        if mine := wanted & set(source.supplies()):
+            values |= {fact.name: value for fact, value in source.gather(s, campaign, mine, now).items()}
+    return Facts(values)
 
 
 def timeout(s: Session, campaign: Campaign, cfg: CampaignConfig, role_timeout: float, started_at: datetime) -> float:
@@ -273,7 +304,7 @@ def timeout(s: Session, campaign: Campaign, cfg: CampaignConfig, role_timeout: f
     (``StopRule.limits``): a run that starts minutes before the stop ends with it. A stopped campaign cuts nothing, so
     its closing review has its whole timeout.
     """
-    limit = STOP_RULES.selected(cfg.plugins).limits().get(Fact.HOURS)
+    limit = STOP_RULES.selected(cfg.plugins).limits().get(HOURS)
     if campaign.status is not CampaignStatus.ACTIVE or limit is None:
         return role_timeout
     now = utcnow()
@@ -293,11 +324,38 @@ def requested(s: Session, campaign: Campaign) -> Stop | None:
     return Stop(f'stopped by {asked.actor}: {stop.reason}' if stop.reason else f'stopped by {asked.actor}')
 
 
+def review_waits(s: Session, campaign: Campaign, cfg: CampaignConfig) -> bool:
+    """Whether the stopped campaign's closing review waits for the hold to end.
+
+    That is ``while_held = "wait"``, with an agent still requested. piloop asks the stop rule about such a campaign, and
+    reads its facts, so that the hold can end.
+    """
+    if (
+        campaign.status is not CampaignStatus.STOPPED
+        or STOP_RULES.selected(cfg.plugins).while_held is not WhileHeld.WAIT
+    ):
+        return False
+    requested = select(AgentSession.id).where(
+        AgentSession.campaign_id == campaign.id, AgentSession.state == AgentSessionState.REQUESTED
+    )
+    return s.scalar(requested.limit(1)) is not None
+
+
+def review_skipped(s: Session, campaign: Campaign, held: str) -> None:
+    """Post the escalation of a closing review that ``while_held = "skip"`` dropped. The caller commits."""
+    body = (
+        f'Closing review skipped: the campaign stopped while the stop rule held its launches ({held}), and the rule'
+        ' skips a review then (while_held = "skip").'
+    )
+    target = TargetRef(TargetKind.CAMPAIGN, campaign.id)
+    s.add(Comment(target=target, author=DAEMON_ACTOR, kind=CommentKind.ESCALATION, priority=0, body=body))
+
+
 def asked(s: Session, campaign: Campaign, cfg: CampaignConfig) -> bool:
     """Whether piloop asks the campaign's stop rule now.
 
     It asks about an active campaign, and about a stopped one whose closing review waits for the hold to end
-    (``spend.review_waits``). The daemon reads the spend of the same campaigns.
+    (``review_waits``).
     """
     return campaign.status is CampaignStatus.ACTIVE or review_waits(s, campaign, cfg)
 
@@ -310,7 +368,8 @@ def held(s: Session, campaign: Campaign, cfg: CampaignConfig) -> str | None:
     if not asked(s, campaign, cfg):
         return None
     answer = check(s, campaign, cfg)
-    return answer.reason if isinstance(answer, Hold) else None
+    acted = answer.then if isinstance(answer, Escalate) else answer
+    return acted.reason if isinstance(acted, Hold) else None
 
 
 def kept(s: Session, campaign: Campaign) -> int:
@@ -336,7 +395,7 @@ def hours_due(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime
 
     None without such a limit, before the first run, or while time does not count. The pass then checks the rule.
     """
-    limit = limits(cfg).get(Fact.HOURS)
+    limit = limits(cfg).get(HOURS)
     if limit is None or campaign.status is not CampaignStatus.ACTIVE or campaign.paused is not None:
         return None
     spent = hours(s, campaign, now)
@@ -377,9 +436,7 @@ def runs_without_keep(s: Session, campaign: Campaign, before: datetime | None = 
     after a stop (``piloop init``, or an UPDATE), whichever is later. A reactivated campaign gets a fresh window, so
     a ``plateau`` stop does not fire again at once. An evaluator change alone does not reset the window.
     """
-    last_keep = s.scalar(
-        keeps(campaign).join(Run, Candidate.run_id == Run.id).with_only_columns(func.max(Run.finished_at))
-    )
+    last_keep = last_keep_at(s, campaign)
     reactivated = s.scalar(
         select(func.max(Event.at)).where(
             has(CampaignStatusChanged, new=CampaignStatus.ACTIVE),
@@ -398,7 +455,7 @@ def stall(cfg: CampaignConfig) -> tuple[int, str]:
     The number is half of the stop rule's limit on runs without a keep, so half of the campaign's patience remains after
     the pivot. Without that limit, it is two rounds of the run slots (``CampaignConfig.run_slots``).
     """
-    if (plateau := limits(cfg).get(Fact.WITHOUT_KEEP)) is not None:
+    if (plateau := limits(cfg).get(WITHOUT_KEEP)) is not None:
         return math.ceil(plateau / 2), f"half of the stop rule's limit of {plateau:g} runs without a keep"
     slots = ' + '.join(f'[roles.{name}] max_concurrent' for name in cfg.roles.doing_runs())
     return 2 * cfg.run_slots, f'two rounds of {slots} = {cfg.run_slots}'

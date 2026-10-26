@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import get_type_hints
 
 import piloop_inline
+import piloop_keep_cost
 import piloop_min_gain
 import piloop_nice
 import piloop_sqlite_cas
@@ -27,6 +28,7 @@ from sqlalchemy.orm import Session
 from piloop import capabilities
 from piloop.db import models
 from piloop.plugins import metric
+from piloop.plugins.fact_source import facts
 from piloop.plugins.host import BUILT_IN, CAPABILITIES, Capability, Parameters, Tier
 from piloop.plugins.runtime.contract import NotSteerable
 
@@ -82,8 +84,11 @@ HELPERS: set[object] = {
     capabilities.SubprocessRuntime,
     capabilities.TriggerEntry,  # the type of a role's triggers, which a plugin's role declares
     capabilities.SectionEntry,  # the type of a list of sections, which a plugin's role declares
+    capabilities.FactSourceEntry,  # the type of an entry of [[facts]]
+    capabilities.FactSourceEntry,  # the type of an entry of [[facts]]
     capabilities.Block,  # type aliases of the blocks that a section returns
     capabilities.Value,
+    capabilities.FactValue,  # a type alias
     capabilities.HttpsNetwork,
     capabilities.Revision,  # a NewType
     capabilities.Fetch,  # type aliases
@@ -94,6 +99,26 @@ HELPERS: set[object] = {
     capabilities.GitRepository,  # what a built-in provider's open makes
     capabilities.values,  # what an executor calls at an agent's start
     capabilities.Owner,  # a type alias
+    capabilities.FactSource,  # what a provider that supplies facts implements, which no signature names
+    capabilities.HEAD,  # the facts that a rule reads, and the ratios over them
+    capabilities.RUNS,
+    capabilities.UNSETTLED,
+    capabilities.HOURS,
+    capabilities.TOKENS,
+    capabilities.WITHOUT_KEEP,
+    capabilities.KEEPS,
+    capabilities.EVALUATIONS,
+    capabilities.METRIC_SUMS,
+    capabilities.ATTEMPTS,
+    capabilities.FUNNEL,
+    capabilities.CAMPAIGN,  # the facts of each built-in source
+    capabilities.OPTIMIZATION,
+    capabilities.reading,
+    capabilities.since_keep,
+    capabilities.per_keep,
+    capabilities.per_evaluation,
+    capabilities.worker_spend,
+    capabilities.per_run,
 }
 """What a provider raises, calls or returns that no signature of a contract names."""
 
@@ -200,9 +225,10 @@ def _imports(path: Path) -> set[str]:
 
 
 def test_each_capability_is_a_package_of_its_contract_its_built_in_providers_and_its_kit() -> None:
-    """``plugins/<capability>/``: ``contract.py`` declares the capability, every other module is a built-in provider
-    by the name of its entry point, ``kit/`` holds what any provider of the capability may use, and a directory
-    without Python holds the providers' resources (``role/prompts/``)."""
+    """``plugins/<capability>/``: ``contract.py`` declares the capability, ``facts.py`` the facts that it supplies
+    (pure, so that a pure provider reads them), every other module is a built-in provider by the name of its entry
+    point, ``kit/`` holds what any provider of the capability may use, and a directory without Python holds the
+    providers' resources (``role/prompts/``)."""
     plugins = Path(capabilities.__file__).parent / 'plugins'
     declared = _own(CAPABILITIES)
     assert {p.name for p in plugins.iterdir() if p.is_dir() and p.name != '__pycache__'} == {c.name for c in declared}
@@ -210,7 +236,7 @@ def test_each_capability_is_a_package_of_its_contract_its_built_in_providers_and
         assert capability.module == f'piloop.plugins.{capability.name}.contract'
         providers = _own(capability.load().group)
         assert [p.module for p in providers] == [f'piloop.plugins.{capability.name}.{p.name}' for p in providers]
-        others = {'__init__.py', '__pycache__', 'contract.py', 'kit'}
+        others = {'__init__.py', '__pycache__', 'contract.py', 'facts.py', 'kit'}
         resources = {p.name for p in (plugins / capability.name).iterdir() if p.is_dir() and not any(p.rglob('*.py'))}
         modules = {
             p.name.removesuffix('.py')
@@ -241,6 +267,7 @@ def test_the_example_plugins_import_piloop_only_from_the_module() -> None:
         piloop_min_gain,
         piloop_nice,
         piloop_stop_after_keeps,
+        piloop_keep_cost,
     ]
     for plugin in plugins:
         own = plugin.__name__.split('.')[0]
@@ -254,11 +281,11 @@ def test_the_example_plugins_import_piloop_only_from_the_module() -> None:
 
 def test_a_pure_example_plugin_uses_only_pure_contracts_and_pure_providers() -> None:
     """A pure provider still imports only data and other pure providers through the one module: a pure contract, the
-    metric types, or a pure built-in provider."""
+    metric types, the facts, or a pure built-in provider."""
     pure = [c for c in _declared() if c.tier is Tier.PURE]
     modules = {c.contract.__module__ for c in pure} | {p.__module__ for c in pure for p in c.builtins().values()}
-    modules |= {Capability.__module__, metric.__name__}
-    plugins = [piloop_min_gain, piloop_stop_after_keeps]
+    modules |= {Capability.__module__, metric.__name__, facts.__name__}
+    plugins = [piloop_min_gain, piloop_stop_after_keeps, piloop_keep_cost]
     for plugin in plugins:
         tree = ast.parse(Path(plugin.__file__ or '').read_text())
         imports = [n for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module == 'piloop.capabilities']

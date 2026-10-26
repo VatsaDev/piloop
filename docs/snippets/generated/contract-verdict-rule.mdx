@@ -1,0 +1,32 @@
+{/* WARNING: This file is auto-generated (uv run -m scripts.generate_all). Update the docstrings in `piloop/plugins/verdict_rule/contract.py` if you want to change anything here. */}
+
+| Member | What it is |
+|---|---|
+| `VerdictRule.decide(case: Case) -> Judgement` | Return the verdict on `case.candidate` against `case.bar`, and the reason. |
+| `VerdictRule.bar(ancestry: Sequence[Node]) -> CandidateId` | Return the bar of a run that starts from `ancestry[0]`. The ancestry goes from it, parent by parent, to its root. |
+| `VerdictRule.raises_bar(node: Node, lineage: Lineage) -> bool` | Return whether `node`, a commit of a run that keeps on `lineage`, becomes the bar of the run's next commits. |
+| `VerdictRule.head(trunk: Sequence[Node]) -> CandidateId \| None` | Return the head among the trunk's keeps, oldest first, or None when there is none. |
+| `VerdictRule.on_moved(moved: Moved) -> Rebase \| Leave` | Return what follows a keep that lacks the head. By default its merge onto the head, and a seed on a conflict. |
+| `Case.primary: Criterion` | The primary metric of the candidate's track. |
+| `Case.guardrails: tuple[Criterion, ...]` | The campaign's guardrails, then the primary of every other track. |
+| `Case.candidate: Side` | The candidate that the rule judges. |
+| `Case.bar: Side` | What the candidate must beat: its run's bar (https://piloop.autoresearch.inc/concepts/verdict#the-head-and-the-bar). |
+| `Case.parent: Side \| None` | The candidate's parent, which the candidate changed. None for a candidate without one. |
+| `Criterion.name: str` | The metric's name, as its `METRIC` line prints it. |
+| `Criterion.direction: Direction` | Whether a larger or a smaller value is better. |
+| `Criterion.margin: float \| None` | The largest regression from the bar that a guardrail may show, in the metric's units. None on a primary. |
+| `Criterion.floor: float \| None` | The worst value that a candidate may have, whatever the bar, or None. |
+| `Side.name: str` | How a reason names it: `candidate#73`. |
+| `Side.means: dict[str, float]` | The mean of each metric over its successful measurements. Empty when none succeeded. |
+| `Side.units: dict[str, dict[str, float]]` | The per-unit results of each metric that has them: unit id → the unit's mean contribution. |
+| `Side.samples: dict[str, list[float]]` | The samples of each metric that ran in pairs with the other side's: the i-th of the candidate and the i-th of the bar ran one after the other, on one worker. Empty without pairs. |
+| `Judgement.verdict: Outcome` | `keep`, `interesting`, `discard` or `crash`. |
+| `Judgement.reason: str` | Why, as piloop stores and shows it with the verdict. |
+| `Node.id: CandidateId` | The candidate's id. |
+| `Node.verdict: Outcome \| None` | None while it is pending, and for a commit that is never judged. |
+| `Node.made: Lineage \| Imported` | Where it was made: on the side of the run that made it, or imported. The baseline is on the trunk. |
+| `Node.means: dict[str, float]` | The mean of each metric over its successful measurements under the current evaluator. |
+| `Branch.root: CandidateId` | The candidate that the branch run started from. |
+| `Moved.candidate: Node` | The keep that lacks the head. |
+| `Moved.head: Node` | The head that it lacks. |
+| `Rebase.conflicts: Seed \| Leave` | What follows when the merge conflicts. |

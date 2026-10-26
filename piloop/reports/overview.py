@@ -10,7 +10,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import assert_never
 
 from covalence import Cid
 from sqlalchemy import Select, select
@@ -19,7 +18,7 @@ from sqlalchemy.orm import Session
 from piloop.agents.roles import harness_of
 from piloop.campaign.ideas import runnable
 from piloop.campaign.inbox import campaign_of
-from piloop.campaign.stop import held, hours, kept, limits, runs, runs_without_keep
+from piloop.campaign.stop import describe, held
 from piloop.config import TRANSCRIPT, CampaignConfig, Metric, Track
 from piloop.db.models import (
     LIVE,
@@ -35,9 +34,7 @@ from piloop.db.models import (
 )
 from piloop.ids import CampaignStatus, EvaluatorId, IdeaStatus
 from piloop.plugins.cas.contract import Cas
-from piloop.plugins.metric import Direction
 from piloop.plugins.role.contract import Files
-from piloop.plugins.stop_rule.contract import Fact
 from piloop.runtime.factory import handle_for, runtime_for
 from piloop.scoring.ledger import (
     baseline,
@@ -124,44 +121,15 @@ def holds(campaign: Campaign) -> str:
 
 
 def progress(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime) -> str:
-    """Return the runs and hours so far, then each limit of the stop rule against its fact: ``run 7/200 · 2.1h/12h``.
+    """Return where the campaign stands against its stop rule, as the rule describes it: ``run 7/200 · 2.1h/12h``.
 
-    A limit on the spend shows it: ``$412.30/$1,000.00 spend``. When the stop rule holds launches, the line ends with
-    why: `` (launches held: spend limit reached)``.
+    piloop formats no fact itself (``StopRule.describe``). When the stop rule holds launches, the line ends with why:
+    `` (launches held: spend at its limit)``.
     """
-    limited = limits(cfg)
-    shown = [Fact.RUNS, Fact.HOURS, *(fact for fact in limited if fact not in (Fact.RUNS, Fact.HOURS))]
-    parts = [_against(s, campaign, cfg, now, fact, limited.get(fact)) for fact in shown]
     hold = held(s, campaign, cfg)
-    return ' · '.join(parts) + (f' (launches held: {hold})' if hold is not None else '')
-
-
-def _against(
-    s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime, fact: Fact, limit: float | None
-) -> str:
-    """One fact of the campaign, against its limit when there is one."""
-    of = '' if limit is None else f'/{limit:g}'
-    match fact:
-        case Fact.RUNS:
-            return f'run {runs(s, campaign)}{of}'
-        case Fact.HOURS:
-            return f'{hours(s, campaign, now) or 0:.1f}h{of}{"" if limit is None else "h"}'
-        case Fact.TOKENS:
-            return f'{human(campaign_tokens(s, campaign.id))}{"" if limit is None else f"/{human(round(limit))}"} tok'
-        case Fact.WITHOUT_KEEP:
-            return f'{runs_without_keep(s, campaign)}{of} runs without a keep'
-        case Fact.KEEPS:
-            return f'{kept(s, campaign)}{of} keeps'
-        case Fact.HEAD:  # A limit on the head is only allowed with one track.
-            at = head_scores(s, campaign, cfg)
-            value = at[1][0][1] if at is not None else None
-            sign = '≥' if cfg.all_tracks[0].primary.direction is Direction.HIGHER else '≤'
-            return f'head {num(value)}' if limit is None else f'target {sign} {metric(limit)} (head {num(value)})'
-        case Fact.SPEND:
-            usd = '$?' if campaign.spend_usd is None else f'${campaign.spend_usd:,.2f}'
-            return f'{usd}{"" if limit is None else f"/${limit:,.2f}"} spend'
-        case _:
-            assert_never(fact)
+    return (' · '.join(describe(s, campaign, cfg, now)) or NONE) + (
+        f' (launches held: {hold})' if hold is not None else ''
+    )
 
 
 def produced(campaign: Campaign) -> Select[Candidate]:

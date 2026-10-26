@@ -115,7 +115,7 @@ def model_in(annotation: object) -> tuple[type[BaseModel], bool] | None:
 
 
 def unnamed_keys(template: str) -> list[str]:
-    """The keys of ``CampaignConfig``, at every depth, and of each default rule, that a ``piloop.toml`` text does not name.
+    """The keys of ``CampaignConfig``, at every depth, and of each default provider, that a ``piloop.toml`` text does not name.
 
     A key is named by an assignment (``key =`` or ``# key =``) in its table, or by a header (``[table]``,
     ``# [table]``) at its path. A table that lists its keys in a ``keys:`` comment may name a key there instead. A
@@ -154,9 +154,12 @@ def unnamed_keys(template: str) -> list[str]:
     for capability in declared():
         if capability.choice is None or capability.choice.scope is not Scope.CAMPAIGN:
             continue
-        default = capability.get(str(capability.choice.default)).model
+        # a capability without a default provider names the keys of its built-in ones
+        default = capability.choice.default
+        models = [capability.get(default).model] if default is not None else capability.builtins().values()
         table = f'plugins.{capability.name}'
-        missing += walk(default, re.escape(table), table, sections.get(table, ''))
+        for model in models:
+            missing += walk(model, re.escape(table), table, sections.get(table, ''))
     return missing
 
 

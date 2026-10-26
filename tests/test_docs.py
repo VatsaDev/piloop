@@ -272,7 +272,7 @@ def db(tmp_path_factory: pytest.TempPathFactory, schema: Path) -> Path:
 def examples(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
     """The example plugins installed, so that a page that selects one (``runtime = "nice"``) validates."""
     site = tmp_path_factory.mktemp('site')
-    for name in ('nice-runtime', 'sqlite-cas', 'min-gain', 'stop-after-keeps', 'inline-executor'):
+    for name in ('nice-runtime', 'sqlite-cas', 'min-gain', 'stop-after-keeps', 'keep-cost', 'inline-executor'):
         example(site, name)
     with pytest.MonkeyPatch.context() as patch:
         patch.syspath_prepend(str(site))
@@ -314,3 +314,10 @@ def test_a_pyproject_block_puts_its_entry_points_under_project(tmp_path: Path) -
         check_toml(Block(ROOT / 'README.md', 1, 'toml', renamed), tmp_path)
     with pytest.raises(tomllib.TOMLDecodeError):
         check_toml(Block(ROOT / 'README.md', 1, 'toml', '[build-system]\nrequires = [\n'), tmp_path)
+
+
+def test_the_extension_points_page_lists_no_member_of_a_contract_by_hand() -> None:
+    """A member list written by hand drifts from the code: the page shows them from ``scripts/generate/contracts.py``."""
+    page = (ROOT / 'docs' / 'architecture' / 'extension-points.mdx').read_text()
+    by_hand = re.findall(r'^- `\w+\(.*$', page, re.MULTILINE)
+    assert by_hand == [], 'list the contract in CONTRACTS of scripts/generate/contracts.py, and import its snippet'

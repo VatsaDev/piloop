@@ -16,8 +16,8 @@ from piloop.db.models import (
     campaign_runs,
     count,
 )
+from piloop.plugins.fact_source.facts import RUNS
 from piloop.plugins.section.contract import Rendering, Section, Surface
-from piloop.plugins.stop_rule.contract import Fact
 from piloop.reports.overview import defining
 from piloop.text import age
 
@@ -37,7 +37,7 @@ class IdleQueue(Section):
         if campaign.status is not CampaignStatus.ACTIVE or campaign.paused is not None:
             return None
         free = cfg.run_slots - count(s, campaign_runs(campaign.id).where(Run.status.in_(OPEN_RUNS)))
-        if (max_runs := limits(cfg).get(Fact.RUNS)) is not None:
+        if (max_runs := limits(cfg).get(RUNS)) is not None:
             free = min(free, math.floor(max_runs) - runs(s, campaign))
         if free <= 0 or count(s, select(Idea).where(Idea.campaign_id == campaign.id, runnable())):
             return None

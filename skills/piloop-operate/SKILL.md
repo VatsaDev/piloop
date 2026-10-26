@@ -74,7 +74,8 @@ Steps:
 6. **Act.** Apply the decision with a piloop command: `piloop idea status|link|base|track`, `piloop candidate
    verdict`, `piloop pause`, sweeps, or `piloop.toml` followed by `piloop init .`. Use `piloop sql` for a write only
    when no command does it.
-   Never raise `max_spend` in `[plugins.stop_rule]` yourself. A `Spend limit reached` escalation belongs to the human.
+   Never raise `hold_at` in `[plugins.stop_rule]` yourself. An escalation that a fact reached its `hold_at` belongs to
+   the human.
 7. **Journal** each decision, plan and result as you go, one line with its ids:
    `PILOOP_ACTOR=orchestrator piloop journal 'sync-r1: parked idea#412 (dup of #398); next: compose c#486+c#501'`.
    At most 280 bytes. A session that loses its context (a crash, a full window) starts again from `piloop wake`, so
@@ -84,6 +85,7 @@ Steps:
      decided. `piloop status <name>` has the numbers.
    - Include the keeps by source in every digest: the "Ideas by source" line of `piloop status <name>`.
      This shows whether research earns its sweeps.
+   - Include the progress line of `piloop status <name>` in every digest, with the spend.
    - When every campaign you watch has stopped, report the result and stop the loop.
 
 Run the loop yourself, or give it to a background subagent so that the human's session stays free. Give the subagent
@@ -212,8 +214,8 @@ PILOOP_ACTOR=orchestrator piloop resume <name>
   resume. Watch the running work yourself during a long pause. Paused time does not count toward `max_hours`.
 - The daemon still measures what a new evaluator or `piloop candidate remeasure` needs, so the pause ends on a measured
   head. `--evals` holds those measurements too.
-- Never pause with a `[spend]` command that reads a file, nor with a gate idea and `after` links: the `[spend]` hold
-  escalates p0 each time it holds and stops every measurement, and research files ideas without the link.
+- Never pause with a `hold_at` fact that you set by hand, nor with a gate idea and `after` links: a hold stops every
+  measurement, and research files ideas without the link.
 - Pausing a campaign is a scope decision for the human: record it (see "Every decision you take for the human").
 
 ### Steer an idea

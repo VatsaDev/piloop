@@ -224,7 +224,7 @@ head: candidate#2 · score: 3 · score vs baseline: 2 · kept: 2 · candidates: 
 ## Goal
 
 - Primary metric: score, higher is better; also measured: size (lower, watch)
-- Campaign: active. Progress: run 2 · 1.9h (no limit stops it: open-ended).
+- Campaign: active. Progress: run 2 · 1.9h · no limit stops it: open-ended.
 - The goal in words is the campaign's brief.md: weigh the metric against it.
 
 ## Trajectory
@@ -557,7 +557,7 @@ def test_progress_lists_only_the_configured_conditions(db: Database, campaign: C
             overview_module.progress(s, p, config({'target': 0.5}, 'lower'), NOW)
             == 'run 0 · 0.0h · target ≤ 0.5 (head 1)'
         )
-        assert overview_module.progress(s, p, config({}), NOW) == 'run 0 · 0.0h'
+        assert overview_module.progress(s, p, config({}), NOW) == 'run 0 · 0.0h · no limit stops it: open-ended'
         s.get_one(Candidate, 1).verdict = None
         assert overview_module.progress(s, p, config({'target': 0.5}), NOW) == 'run 0 · 0.0h · target ≥ 0.5 (head —)'
 

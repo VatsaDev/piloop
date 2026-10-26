@@ -1,0 +1,14 @@
+{/* WARNING: This file is auto-generated (uv run -m scripts.generate_all). Update the docstrings in `piloop/plugins/network/contract.py` if you want to change anything here. */}
+
+| Member | What it is |
+|---|---|
+| `NetworkConfig.listen: Address \| None` | Where the server listens, as `HOST:PORT`. None: no server. `piloop serve --listen` overrides it. |
+| `NetworkConfig.open(host: NetworkHost) -> Network` | Make the server's side of the network. The daemon calls it once, when it starts. |
+| `NetworkConfig.client(server: str, actor: Actor \| None = None) -> httpx.Client` | The dialing side, which needs no host: a client of the server at `server`, with this machine's credential. |
+| `NetworkConfig.listening(listen: Address \| None) -> NetworkConfig` | This network, with `listen` (`piloop serve --listen`) in place of its own when it is not None. |
+| `Network.takes_tokens: bool` | Whether core admits piloop's own tokens (`plt_`) on this network. False: the network authenticates every caller itself (`identify`), and core refuses a `plt_` bearer, so no token minted in the home opens a way around it. |
+| `Network.listener() -> Listener \| None` | Bind `listen`, or return None when it is None. The daemon calls it once. |
+| `Network.identify(headers: Mapping[str, str], peer: Peer) -> Caller \| Refused` | Who sends a request with these headers (their names in lower case), from `peer`. |
+| `Network.actor(headers: Mapping[str, str]) -> str \| None` | Whom a request asks to act as: an actor's signature, such as `orchestrator`, or None for the caller itself. |
+| `Network.enroll(principal: str, access: Access) -> Enrollment` | Give the machine called `principal` a credential of `access`, in place of any that it had. |
+| `Network.revoke(principal: str) -> None` | End the credential of `principal`: its next call is refused. One that is gone already is a success. |

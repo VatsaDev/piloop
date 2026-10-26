@@ -95,14 +95,14 @@ class Panel(Protocol):
 
 
 def header(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime) -> Text:
-    """Return the summary line (head, kept, stopped) and the progress line against the stop rule (with the spend)."""
+    """Return the summary line (head, kept, stopped) and the progress line against the stop rule."""
     text = Text(f'{summary(s, campaign, cfg)}{stopped(campaign)}\n', style='bold')
     text.append(progress(s, campaign, cfg, now), style='dim')
     return text
 
 
 def campaigns(s: Session, now: datetime, me: Actor) -> list[Item]:
-    """Return one row per campaign, active ones first: status, head, delta to baseline, agents, queue, inbox, spend."""
+    """Return one row per campaign, active ones first: status, head, delta to baseline, agents, queue, inbox, tokens."""
     rows = []
     every = sorted(s.scalars(select(Campaign)).all(), key=lambda p: (p.status is not CampaignStatus.ACTIVE, p.id))
     for p in every:

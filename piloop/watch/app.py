@@ -1,7 +1,7 @@
 """``piloop watch``: the campaign on one screen, with keys to act on it. A Textual app with a layout like lazygit.
 
 The first screen lists every campaign, one row each. ``enter`` opens a campaign, and ``piloop watch <campaign>`` starts
-there. A campaign screen has a header (head, spend, progress against ``[stop]``), four numbered panels on the left
+there. A campaign screen has a header (head, progress against the stop rule), four numbered panels on the left
 (inbox, agents, ideas, candidates), and on the right the detail of the selected row of the focused panel. Each panel
 has its own keys, which the key bar and ``?`` show. ``/`` filters the focused panel.
 

@@ -39,12 +39,14 @@ from piloop import deprecated
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
 from piloop.ids import IMPLEMENTER, ROLE_NAME, RoleName, TrackName
 from piloop.mcp import EnvName, McpServer, ServerName, env_names
+from piloop.plugins.fact_source.contract import FACT_SOURCES, FactSource, FactSourceEntry, sources
+from piloop.plugins.fact_source.facts import HEAD
 from piloop.plugins.host import Plugins, PluginTables, Scope
 from piloop.plugins.metric import Direction
 from piloop.plugins.role.contract import ROLES, ImplementerRole, RoleConfig, SweepRole, new_role
 from piloop.plugins.runtime.contract import RuntimeName
 from piloop.plugins.section.contract import Section, SectionEntry, Surface, chosen
-from piloop.plugins.stop_rule.contract import STOP_RULES, Fact
+from piloop.plugins.stop_rule.contract import STOP_RULES
 
 CONFIG_FILE = 'piloop.toml'
 BRIEF_FILE = 'brief.md'
@@ -168,42 +170,6 @@ class Track:
 """The form of a role name: the agents' signature and ``agent_sessions.kind``."""
 RESERVED_NAMES = frozenset({'run', 'orchestrator', 'human', 'daemon'})
 """Names that already sign writes: a run, and the actors that are not roles."""
-
-
-class ClosingReview(StrEnum):
-    """What happens to the closing review of a campaign that stops while ``[spend]`` holds its launches."""
-
-    RUN = 'run'
-    """The review runs, also past the limit or with an unknown spend."""
-    SKIP = 'skip'
-    """No review: the stop ends at once, and the daemon posts an escalation that says so."""
-    WAIT = 'wait'
-    """The review starts when the hold ends. The daemon goes on reading the spend until it starts."""
-
-
-class Spend(BaseModel):
-    """``[spend]``: what the campaign costs outside piloop, for example GPUs or APIs, in USD.
-
-    Every ``interval`` seconds, the daemon runs ``command`` to read the spend from the campaign (``campaigns.spend_usd``,
-    ``spend_error``, ``spend_at``). When the spend passes a ``notices`` threshold, the daemon posts one note to the
-    inbox at priority 1. ``[plugins.stop_rule] max_spend`` is the limit: there, the daemon posts one escalation at
-    priority 0, and the stop rule holds the campaign. A command that fails holds the campaign in the same way, with one
-    escalation for each series of failures: an unknown spend is never read as $0.
-    """
-
-    model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
-
-    command: list[str] = Field(min_length=1)
-    """The command (argv) that prints the campaign's spend so far in USD, as one number. It runs at the repo root with
-    the daemon's environment, which is where its secrets come from. It must exit with code 0 within one minute.
-    Example: ``["uv", "run", "scripts/spend.py"]``."""
-    notices: list[Annotated[float, Field(gt=0)]] = []
-    """Amounts in USD below the spend limit. When the spend passes one, the daemon posts one note to the inbox."""
-    interval: float = Field(default=300, gt=0)
-    """The number of seconds between two runs of ``command``."""
-    closing_review: ClosingReview = ClosingReview.RUN
-    """What happens to the closing review when the campaign stops while launches are held (``piloop campaign
-    stop``): ``run`` it anyway, ``skip`` it, or ``wait`` until the hold ends."""
 
 
 class Memory(BaseModel):
@@ -332,12 +298,15 @@ class CampaignConfig(BaseModel):
     outline, newest first, so that every sweep that reads the pack reads them before it proposes work."""
     mcp: dict[ServerName, McpServer] = {}
     """``[mcp.<name>]``: the MCP servers that a role can list in ``[roles.<name>] mcp``."""
-    spend: Spend | None = None
-    """``[spend]``: how the daemon reads what the campaign spends outside piloop. None by default."""
     memory: Memory = Memory()
     """``[memory]``: documents for every agent to search."""
     status: StatusConfig = StatusConfig()
     """``[status]``: the sections that ``piloop status``, the API and a UI show."""
+    facts: list[FactSourceEntry] | None = None
+    """``[[facts]]``: where the campaign's facts come from, which its stop rule and its sections read: a list of
+    ``{ provider = "<source>", ... }`` entries. When unset, every installed source that is on by default: ``campaign``,
+    the hours and tokens of any campaign, and ``optimization``, its research. A list that adds a source lists those
+    too, to keep their facts."""
     plugins: Annotated[Plugins, PluginTables(Scope.CAMPAIGN)] = {}
     """``[plugins.<capability>]``: the provider of each capability of the campaign, by its name (``provider``), and its
     parameters, the other keys of the table. A capability without a table, or a table without ``provider``,
@@ -359,6 +328,7 @@ class CampaignConfig(BaseModel):
     @model_validator(mode='after')
     def _check(self) -> Self:
         self._check_tracks()
+        self._check_facts()
         self._check_limits()
         self._check_harnesses(self.harnesses, self.model, 'campaign')
         if unknown := [h for h in self.max_concurrent if h not in DEFAULT_HARNESSES and h not in self.harness]:
@@ -379,13 +349,27 @@ class CampaignConfig(BaseModel):
         """Check the stop rule's limits against the rest of the file, by fact."""
         rule = STOP_RULES.selected(self.plugins)
         limits, name = rule.limits(), STOP_RULES.name_of(rule)
-        if Fact.HEAD in limits and self.multitrack:
+        if HEAD in limits and self.multitrack:
             raise ValueError(f'the stop rule {name!r} limits the head, which needs a campaign of one track')
-        if Fact.SPEND in rule.reads() and self.spend is None:
-            raise ValueError(f'the stop rule {name!r} reads the spend: add [spend] with the command that prints it')
-        spend = limits.get(Fact.SPEND)
-        if self.spend is not None and spend is not None and (above := [n for n in self.spend.notices if n >= spend]):
-            raise ValueError(f'[spend] notices {above} are not below the spend limit {spend:g}')
+        supplied = {fact for source in self.fact_sources() for fact in source.supplies()}
+        if missing := [fact.name for fact in rule.reads() if fact not in supplied]:
+            raise ValueError(
+                f'the stop rule {name!r} reads {", ".join(missing)}, which no fact source of this campaign supplies: add'
+                ' one to [[facts]] that does'
+            )
+
+    def _check_facts(self) -> None:
+        """Check that no two fact sources supply the same fact."""
+        seen: dict[str, FactSource] = {}
+        for source in self.fact_sources():
+            for fact in source.supplies():
+                if (other := seen.setdefault(fact.name, source)) is not source:
+                    names = f'{FACT_SOURCES.name_of(other)} and {FACT_SOURCES.name_of(source)}'
+                    raise ValueError(f'the fact {fact.name!r} comes from two sources of [[facts]]: {names}')
+
+    def fact_sources(self) -> list[FactSource]:
+        """The campaign's fact sources: ``facts``, else every installed source that is on by default."""
+        return sources(self.facts)
 
     def _check_tracks(self) -> None:
         """Check that each track has one primary.

@@ -41,7 +41,9 @@ class Criterion:
     """A metric that decides the verdict: the primary of the candidate's track, or one of its guardrails."""
 
     name: str
+    """The metric's name, as its ``METRIC`` line prints it."""
     direction: Direction
+    """Whether a larger or a smaller value is better."""
     margin: float | None = None
     """The largest regression from the bar that a guardrail may show, in the metric's units. None on a primary."""
     floor: float | None = None
@@ -68,10 +70,13 @@ class Case:
     """All that a rule gets to judge one candidate."""
 
     primary: Criterion
+    """The primary metric of the candidate's track."""
     guardrails: tuple[Criterion, ...]
     """The campaign's guardrails, then the primary of every other track."""
     candidate: Side
+    """The candidate that the rule judges."""
     bar: Side
+    """What the candidate must beat: its run's bar (https://piloop.autoresearch.inc/concepts/verdict#the-head-and-the-bar)."""
     parent: Side | None = None
     """The candidate's parent, which the candidate changed. None for a candidate without one."""
 
@@ -81,7 +86,9 @@ class Judgement:
     """What a rule returns: the verdict, and the reason that piloop stores and shows with it."""
 
     verdict: Outcome
+    """``keep``, ``interesting``, ``discard`` or ``crash``."""
     reason: str
+    """Why, as piloop stores and shows it with the verdict."""
 
 
 @dataclass(frozen=True)
@@ -94,6 +101,7 @@ class Branch:
     """A lineage that a branch run (``runs.branch``) started from ``root``."""
 
     root: CandidateId
+    """The candidate that the branch run started from."""
 
 
 type Lineage = Trunk | Branch
@@ -110,6 +118,7 @@ class Node:
     """One candidate, as the lineage methods of a rule read it."""
 
     id: CandidateId
+    """The candidate's id."""
     verdict: Outcome | None
     """None while it is pending, and for a commit that is never judged."""
     made: Lineage | Imported
@@ -126,7 +135,9 @@ class Moved:
     """
 
     candidate: Node
+    """The keep that lacks the head."""
     head: Node
+    """The head that it lacks."""
 
 
 @dataclass(frozen=True)

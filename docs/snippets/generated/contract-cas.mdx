@@ -1,0 +1,19 @@
+{/* WARNING: This file is auto-generated (uv run -m scripts.generate_all). Update the docstrings in `piloop/plugins/cas/contract.py` if you want to change anything here. */}
+
+| Member | What it is |
+|---|---|
+| `CasProvider.open(home: Path) -> Cas` | The store that these parameters describe, for the PILOOP_HOME `home`. |
+| `CasProvider.where(home: Path) -> str` | Where its blobs are, in one spelling (`s3://bucket/prefix`): a cache over it records which store it fills. |
+| `Cas.has(cid: Cid) -> bool` | Whether the store holds the blob, without checking its bytes. |
+| `Cas.missing(cids: Sequence[Cid]) -> list[Cid]` | Those of `cids` that the store lacks, in order. |
+| `Cas.put(data: bytes) -> Cid` | Store `data` and return its raw BLAKE3 CID. |
+| `Cas.get(cid: Cid) -> bytes \| None` | The bytes under `cid`, checked, or None if missing. |
+| `Cas.put_file(path: str \| PathLike[str]) -> Cid` | Store the file at `path`, read twice (to hash, to store), and return its raw BLAKE3 CID. |
+| `Cas.get_file(cid: Cid, path: str \| PathLike[str]) -> int \| None` | Write the blob to `path`, checked in a temporary file beside it that then replaces it; its length. |
+| `Cas.put_fileobj(file: BinaryIO, *, max_bytes: int, expected_length: int \| None = None) -> Cid` | Store a seekable file object, read twice from its start, and return its raw BLAKE3 CID. |
+| `Cas.get_to(cid: Cid, writer: Writer, *, max_bytes: int, expected_length: int \| None = None) -> int \| None` | Write the blob to `writer` and return its length, or None if missing. |
+| `Upkeep.usage() -> TierUsage` | Count the blobs of the local tier: one scan of it. |
+| `Upkeep.flush(*, evict: bool) -> Flushed` | Upload what the remote tier lacks; with `evict`, then drop the local copies that the policy says to. |
+| `Upkeep.integrity(cid: Cid) -> Integrity` | Read and hash a local copy; ask the remote tier about an evicted blob, without fetching it. |
+| `Evictable.held() -> Iterator[Held]` | Every blob whose bytes the tier holds: one scan of it. |
+| `Evictable.release(cid: Cid) -> int` | Drop the tier's bytes of `cid`; the bytes freed, 0 when it held none. |

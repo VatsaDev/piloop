@@ -9,8 +9,9 @@ from pathlib import Path
 
 import pytest
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from piloop_keep_cost import KeepCost
 from piloop_stop_after_keeps import AfterKeeps
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from piloop.actor import Agent, System
@@ -19,6 +20,7 @@ from piloop.campaign.ops import pause
 from piloop.campaign.stop import (
     StopRequested,
     check as check_campaign,
+    gather,
     hours,
     hours_due,
     request_stop,
@@ -30,7 +32,7 @@ from piloop.campaign.stop import (
 )
 from piloop.config import CampaignConfig, ConfigError, load_campaign_config
 from piloop.daemon.run_controller import NO_CHANGES, SKIPPED_REASON, RunFinished
-from piloop.db.events import in_order
+from piloop.db.events import has, in_order
 from piloop.db.models import (
     AgentSession,
     AgentSessionState,
@@ -64,10 +66,34 @@ from piloop.ids import (
 )
 from piloop.otel import Tracer
 from piloop.plugins import host
+from piloop.plugins.fact_source.contract import FactReadError
+from piloop.plugins.fact_source.facts import (
+    ATTEMPTS,
+    CAMPAIGN,
+    EVALUATIONS,
+    FUNNEL,
+    HOURS,
+    KEEPS,
+    METRIC_SUMS,
+    OPTIMIZATION,
+    RUNS,
+    TOKENS,
+    UNSETTLED,
+    Facts,
+    FactValue,
+    Funnel,
+    per_evaluation,
+    per_keep,
+    per_run,
+    reading,
+    since_keep,
+    worker_spend,
+)
+from piloop.plugins.fact_source.kit.readings import FactRead, Readings
 from piloop.plugins.host import data_errors
 from piloop.plugins.metric import Direction
 from piloop.plugins.stop_rule import limits as limits_module
-from piloop.plugins.stop_rule.contract import GO, STOP_RULES, Fact, Hold, Progress, Stop, StopCase, StopRule
+from piloop.plugins.stop_rule.contract import GO, STOP_RULES, Escalate, Hold, Stop, StopCase, StopRule
 from piloop.plugins.stop_rule.limits import Limits
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.reports.overview import progress
@@ -631,9 +657,15 @@ def stop_while_held(db: Database, campaign: Campaign, hold: str, review: str | N
     """
     configure(db, campaign)
     if hold == 'spend':
-        budget = {'command': ['cat', str(Path(campaign.path).parent / 'bill')]}
-        spend = budget | ({'closing_review': review} if review else {})
-        set_config(db, campaign, spend=spend, plugins={'stop_rule': {'max_spend': 10}})
+        bill = str(Path(campaign.path).parent / 'bill')
+        source = {'provider': 'command', 'command': ['cat', bill], 'metrics': ['spend']}
+        rule = {'hold_at': {'spend': 10}} | ({'while_held': review} if review else {})
+        set_config(
+            db,
+            campaign,
+            facts=[{'provider': 'campaign'}, {'provider': 'optimization'}, source],
+            plugins={'stop_rule': rule},
+        )
     (idea,) = add_ideas(db, campaign, 'queued before the stop')
     with db.session() as s:
         s.get_one(Idea, idea).status = IdeaStatus.SCHEDULED
@@ -643,6 +675,14 @@ def stop_while_held(db: Database, campaign: Campaign, hold: str, review: str | N
         request_stop(s, s.get_one(Campaign, campaign.id), System.HUMAN, reason='over budget', ending=Ending.WRAP_UP)
         s.commit()
     return idea
+
+
+def due_now(db: Database, campaign: Campaign) -> None:
+    """Make the next spend reading of ``campaign`` due: its readings are an hour old."""
+    with db.session() as s:
+        readings = select(Event.id).where(has(FactRead), Event.target == TargetRef(TargetKind.CAMPAIGN, campaign.id))
+        s.execute(update(Event).where(Event.id.in_(readings)).values(at=utcnow() - timedelta(hours=1)))
+        s.commit()
 
 
 def closing_reviews(db: Database, campaign: Campaign) -> list[AgentSessionState]:
@@ -659,8 +699,8 @@ def test_a_requested_stop_ends_a_held_campaign_and_by_default_its_closing_review
 ) -> None:
     """Someone stops a campaign because it spends, so a stop works while the spend holds launches, or a pause does.
 
-    The queued run is dropped. The closing review runs: a pause ends with the stop, and ``[spend] closing_review``
-    is ``run`` by default.
+    The queued run is dropped. The closing review runs: a pause ends with the stop, and the stop rule's
+    ``while_held`` is ``run`` by default.
     """
     idea = stop_while_held(db, campaign, hold)
     sched = make_scheduler(db, runtime, tmp_path)
@@ -692,16 +732,14 @@ def test_closing_review_skip_ends_the_stop_at_once_with_an_escalation(
         last = s.scalars(select(Comment).order_by(Comment.id.desc()).limit(1)).one()
         assert (last.kind, last.priority, last.author) == (CommentKind.ESCALATION, 0, 'daemon')
         assert last.body.startswith(
-            'Closing review skipped: the campaign stopped while the stop rule held its launches (spend unknown: exit'
+            'Closing review skipped: the campaign stopped while the stop rule held its launches (spend not known)'
         )
-        assert last.body.endswith('[spend] closing_review = "skip".')
-        s.get_one(Campaign, campaign.id).spend_at = None
-        s.commit()
+        assert last.body.endswith('(while_held = "skip").')
+        reads = len(in_order(s, FactRead))
+    due_now(db, campaign)
     sched.run_all()
     with db.session() as s:
-        assert s.get_one(Campaign, campaign.id).spend_at is None, (
-            'no review waits: the spend of a stopped campaign is not read'
-        )
+        assert len(in_order(s, FactRead)) == reads, 'no review waits: the spend of a stopped campaign is not read'
     sched.stop(timeout=5)
 
 
@@ -714,10 +752,8 @@ def test_closing_review_wait_starts_the_review_once_the_spend_hold_lifts(
     assert sched.run_all() == []
     assert campaign_state(db, campaign)[0] is CampaignStatus.STOPPED
     assert closing_reviews(db, campaign) == [AgentSessionState.REQUESTED], 'requested, waiting for the hold'
-    (Path(campaign.path).parent / 'bill').write_text('3')
-    with db.session() as s:
-        s.get_one(Campaign, campaign.id).spend_at = None  # the next reading is due
-        s.commit()
+    (Path(campaign.path).parent / 'bill').write_text('METRIC spend=3')
+    due_now(db, campaign)
     assert sched.run_all() == [1], 'a spend below the limit: the review starts'
     sched.wait()
     sched.stop(timeout=5)
@@ -921,61 +957,77 @@ def imports_outside_the_standard_library(module: object) -> set[str]:
 def test_the_built_in_stop_rule_imports_only_the_standard_library_pydantic_its_contract_and_the_metric_types() -> None:
     """``limits`` is a pure provider: it reads nothing of piloop's state. pydantic declares its parameters.
     test_capabilities checks the example."""
-    contracts = {'piloop.plugins.stop_rule.contract', 'piloop.plugins.metric', 'pydantic'}
+    contracts = {
+        'piloop.plugins.stop_rule.contract',
+        'piloop.plugins.fact_source.facts',
+        'piloop.plugins.metric',
+        'pydantic',
+    }
     assert imports_outside_the_standard_library(limits_module) == contracts
 
 
-def test_limits_holds_while_the_spend_is_unknown_or_at_its_limit_and_a_hold_comes_before_a_stop() -> None:
-    """``max_spend`` holds. A hold releases itself: the next check that sees a spend below it goes on.
+def test_limits_holds_while_a_fact_is_unknown_or_at_its_hold_at_and_a_hold_comes_before_a_stop() -> None:
+    """``hold_at`` holds, on any fact that a source reads. A hold releases itself: the next check that sees the value
+    below it goes on.
 
-    A held campaign does not stop: a stop requests the closing review, and nothing may launch while the spend is
+    A held campaign does not stop: a stop requests the closing review, and nothing may launch while the value is
     unknown or at its limit.
     """
-    rule = Limits(max_runs=3, max_spend=300)
-    assert rule.limits() == {Fact.RUNS: 3, Fact.SPEND: 300}
-    assert rule.reads() == [Fact.RUNS, Fact.SPEND]
-    assert Fact.SPEND not in Limits(max_runs=3).reads(), 'no limit on the spend: no spend to read'
+    spend = reading('spend')
+    rule = Limits(max_runs=3, hold_at={'spend': 300})
+    assert rule.limits() == {RUNS: 3, spend: 300}
+    assert rule.reads() == [RUNS, HOURS, spend, UNSETTLED], 'what it shows, its limits, and what decides each'
+    assert spend not in Limits(max_runs=3).reads(), 'no hold on the spend: no spend to read'
 
-    def check(spend: float | None, *, runs: int = 1, spend_error: str | None = None) -> object:
-        progress = Progress(runs=runs, unsettled=0, spend=spend, spend_error=spend_error)
-        return rule.check(StopCase('score', Direction.HIGHER, progress))
+    def check(value: float | None, *, runs: int = 1) -> object:
+        return rule.check(StopCase('score', Direction.HIGHER, facts(runs=runs, unsettled=0, spend=value)))
 
-    assert check(spend=299.99) == GO
-    assert check(spend=None) == Hold('spend not read yet')
-    assert check(spend=None, spend_error='exit 1: billing down') == Hold('spend unknown: exit 1: billing down')
-    assert check(spend=300.0) == Hold('spend limit reached')
-    assert check(spend=300.0, runs=3) == Hold('spend limit reached'), 'held, so max_runs waits'
-    assert check(spend=12.0, runs=3) == Stop('max_runs: 3 runs')
+    assert check(299.99) == GO
+    assert check(None) == Hold('spend not known'), 'not read yet, or the latest reading failed'
+    at_limit = Escalate(
+        'spend reached its hold_at of 300: nothing launches until you raise it and run piloop init',
+        then=Hold('spend at its limit'),
+    )
+    assert check(300.0) == at_limit, 'it tells a human itself, once for each limit'
+    assert check(300.0, runs=3) == at_limit, 'held, so max_runs waits'
+    assert check(12.0, runs=3) == Stop('max_runs: 3 runs')
+    gpu = Limits(hold_at={'gpu_hours': 8})
+    assert gpu.check(StopCase('score', Direction.HIGHER, facts(gpu_hours=9))) == Escalate(
+        'gpu_hours reached its hold_at of 8: nothing launches until you raise it and run piloop init',
+        then=Hold('gpu_hours at its limit'),
+    ), 'no fact is special'
 
 
 def test_the_example_stop_rule_ends_after_its_keeps_or_at_a_limit_of_limits() -> None:
-    """``examples/plugins/stop-after-keeps``: ``limits`` with one more limit, so it reads only the facts that it
-    limits, and every limit of ``limits`` still applies."""
-    rule = AfterKeeps(keeps=3, max_hours=12, max_tokens=1000, max_spend=300)
-    assert AfterKeeps(keeps=3).reads() == [Fact.KEEPS]
-    assert rule.limits() == {Fact.HOURS: 12, Fact.TOKENS: 1000, Fact.SPEND: 300, Fact.KEEPS: 3}
+    """``examples/plugins/stop-after-keeps``: ``limits`` with one more limit, so it reads the facts that it limits and
+    that ``limits`` shows, and every limit of ``limits`` still applies."""
+    rule = AfterKeeps(keeps=3, max_hours=12, max_tokens=1000, hold_at={'spend': 300})
+    assert AfterKeeps(keeps=3).reads() == [RUNS, HOURS, KEEPS]
+    assert rule.limits() == {HOURS: 12, TOKENS: 1000, reading('spend'): 300, KEEPS: 3}
 
-    def check(progress: Progress) -> object:
-        return rule.check(StopCase('score', Direction.HIGHER, progress))
+    def check(known: Facts) -> object:
+        return rule.check(StopCase('score', Direction.HIGHER, known))
 
-    assert check(Progress(keeps=2, hours=1, tokens=10, spend=12)) == GO
-    assert check(Progress(keeps=3, hours=1, tokens=10, spend=12)) == Stop('after_keeps: 3 keeps')
-    assert check(Progress(keeps=0, hours=12.5, tokens=10, spend=12)) == Stop('max_hours: 12.5h since the first run')
-    assert check(Progress(keeps=0, hours=1, tokens=1000, spend=12)) == Stop('max_tokens: 1000 tokens spent')
-    assert check(Progress(keeps=3, hours=1, tokens=10, spend=300)) == Hold('spend limit reached')
-    assert check(Progress(keeps=0, hours=1, tokens=10)) == Hold('spend not read yet')
+    assert check(facts(keeps=2, hours=1, tokens=10, spend=12)) == GO
+    assert check(facts(keeps=3, hours=1, tokens=10, spend=12)) == Stop('after_keeps: 3 keeps')
+    assert check(facts(keeps=0, hours=12.5, tokens=10, spend=12)) == Stop('max_hours: 12.5h since the first run')
+    assert check(facts(keeps=0, hours=1, tokens=1000, spend=12)) == Stop('max_tokens: 1000 tokens spent')
+    assert isinstance(answer := check(facts(keeps=3, hours=1, tokens=10, spend=300)), Escalate)
+    assert answer.then == Hold('spend at its limit')
+    assert check(facts(keeps=0, hours=1, tokens=10)) == Hold('spend not known')
 
 
-def test_a_rule_that_reads_the_spend_needs_spend_and_spend_alone_only_posts_notices(
+def test_a_rule_that_reads_a_fact_needs_a_source_of_it_and_a_source_alone_only_posts_notices(
     campaign: Campaign, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The spend fact comes from ``[spend] command``: a rule that reads it without one would hold forever."""
+    """A rule that reads a fact without a source of it would hold forever."""
     installed(monkeypatch, [EntryPoint('goes_on', f'{PLUGIN}:GoesOn', STOP_RULES.group)])
     try:
-        budget = {'command': ['true'], 'notices': [10]}
-        load_campaign_config(Path(campaign.path), plugins={'stop_rule': {'provider': 'goes_on'}}, spend=budget)
-        with pytest.raises(ConfigError, match=re.escape("the stop rule 'limits' reads the spend: add [spend]")):
-            load_campaign_config(Path(campaign.path), plugins={'stop_rule': {'max_spend': 10}})
+        source = {**SOURCE, 'notices': {'spend': [10]}}
+        load_campaign_config(Path(campaign.path), facts=[*OWN, source], plugins={'stop_rule': {'provider': 'goes_on'}})
+        refused = "the stop rule 'limits' reads spend, which no fact source of this campaign supplies"
+        with pytest.raises(ConfigError, match=re.escape(refused)):
+            load_campaign_config(Path(campaign.path), plugins={'stop_rule': {'hold_at': {'spend': 10}}})
     finally:
         host.close()
 
@@ -1048,3 +1100,155 @@ def test_an_agent_may_run_its_role_timeout_cut_at_the_time_that_the_campaign_sto
     with db.session() as s:
         row = s.get_one(Campaign, campaign.id)
         assert agent_timeout(s, row, cfg, 1800, utcnow()) == 0, 'past the stop: no time, never a negative one'
+
+
+def facts(**values: FactValue) -> Facts:
+    """The facts of a case, by name."""
+    return Facts(dict(values))
+
+
+def test_the_ratios_are_defined_once_and_take_the_facts_a_rule_names() -> None:
+    """piloop knows no cost: a rule names the fact of what the campaign spent and the evaluator's cost metric."""
+    known = facts(spend=400, keeps=2, evaluations=10, metric_sums={'usd': 100, 'score': 7}, attempts=6)
+    ratios = (
+        per_evaluation(known, 'usd'),
+        worker_spend(known, 'spend', 'usd'),
+        per_run(known, 'spend', 'usd'),
+        per_keep(known, 'spend'),
+    )
+    assert ratios == (10, 300, 50, 200)
+    assert (per_evaluation(known, 'cost'), worker_spend(known, 'spend', 'cost')) == (None, 400), 'no row printed it'
+    assert per_keep(known, 'gpu_hours') is None, 'a fact that the case does not have'
+    unknown = facts(keeps=0, evaluations=0, attempts=0)
+    ratios = (
+        per_evaluation(unknown, 'usd'),
+        worker_spend(unknown, 'spend', 'usd'),
+        per_run(unknown, 'spend', 'usd'),
+        per_keep(unknown, 'spend'),
+    )
+    assert ratios == (None,) * 4
+    assert per_run(facts(spend=10, metric_sums={'usd': 4}, attempts=0), 'spend', 'usd') is None, 'no attempt yet'
+
+
+COST = {'name': 'eval_cost_usd', 'direction': 'lower'}
+OWN = [{'provider': 'campaign'}, {'provider': 'optimization'}]
+SOURCE = {'provider': 'command', 'command': ['true'], 'metrics': ['spend']}
+
+
+def test_the_campaign_facts_sum_every_evaluation_count_the_attempts_and_a_reading_grows_since_the_latest_keep(
+    db: Database, campaign: Campaign
+) -> None:
+    metrics = [{'name': 'score', 'direction': 'higher', 'role': 'primary'}, {'name': 'size', 'direction': 'lower'}]
+    set_config(db, campaign, metrics=[*metrics, COST], facts=[*OWN, SOURCE])
+    measured = add_run(db, campaign)
+    add_run(db, campaign, status=RunStatus.FAILED, end=RunEnd.CANCELLED, measured=False)
+    add_run(db, campaign, status=RunStatus.RUNNING)
+    with db.session() as s:
+        evaluator = s.get_one(Campaign, campaign.id).evaluator_id or 0
+        candidate = s.scalars(select(Candidate).where(Candidate.run_id == measured)).one()
+        s.add(Measurement(candidate_id=candidate.id, evaluator_id=evaluator, metrics={'eval_cost_usd': 2}))
+        failed = {'eval_cost_usd': 1.5}
+        s.add(Measurement(candidate_id=candidate.id, evaluator_id=evaluator, metrics=failed, error='evaluate exit 1'))
+        s.commit()
+    spend, since = reading('spend'), since_keep('spend')
+    every = [*CAMPAIGN, *OPTIMIZATION, spend, since]
+
+    def known() -> Facts:
+        with db.session() as s:
+            row = s.get_one(Campaign, campaign.id)
+            return gather(s, row, row.config, every, utcnow())
+
+    def read(values: dict[str, float] | FactReadError, ago: timedelta = timedelta(0)) -> None:
+        with db.session() as s:
+            row = s.get_one(Campaign, campaign.id)
+            [_, _, source] = row.config.fact_sources()
+            assert isinstance(source, Readings)
+            source.record(s, row, values)
+            s.flush()
+            s.execute(update(Event).where(Event.id == s.scalar(func.max(Event.id))).values(at=utcnow() - ago))
+            s.commit()
+
+    assert known().get(spend) is None, 'no reading yet'
+    read({'spend': 100}, ago=timedelta(minutes=10))
+    before = known()
+    assert (before.get(EVALUATIONS), before.get(METRIC_SUMS), before.get(ATTEMPTS)) == (
+        4,
+        {'score': 1, 'size': 5, COST['name']: 3.5},
+        2,
+    ), 'every row, a failed one and the baseline among them; a row adds only what it printed; the open attempt too'
+    assert before.get(FUNNEL) == Funnel(ideas=3, attempts=1, reached=1, measured=1, keeps=0, unmeasured={}), (
+        'the funnel waits for the open run, and a cancelled run is no attempt'
+    )
+    assert [before.get(f) for f in (spend, KEEPS, since)] == [100, 0, 100], 'no keep yet: all of the spend'
+    add_run(db, campaign, keep_score=1, finished_at=timedelta(minutes=5))
+    read({'spend': 150})
+    after = known()
+    assert [after.get(f) for f in (KEEPS, ATTEMPTS, since)] == [1, 3, 50], 'the spend read before the keep'
+    assert (per_evaluation(after, COST['name']), per_keep(after, 'spend')) == (3.5 / 5, 150)
+    read(FactReadError('billing down'))
+    assert (known().get(spend), known().get(since)) == (None, None), 'a failed reading: the value is not known'
+    add_run(db, campaign, measured=False)
+    assert known().get(FUNNEL) == Funnel(
+        ideas=5, attempts=3, reached=2, measured=2, keeps=1, unmeasured={'finished': 1}
+    ), 'an attempt that left no candidate never reached the evaluator'
+    with db.session() as s:
+        row = s.get_one(Campaign, campaign.id)
+        assert gather(s, row, row.config, [KEEPS], utcnow()) == facts(keeps=1), 'only the facts a rule reads'
+
+
+def test_a_rule_that_escalates_lets_the_campaign_go_on_and_tells_a_human_once_per_reason(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    installed(monkeypatch, [EntryPoint('escalates', f'{PLUGIN}:Escalates', STOP_RULES.group)])
+    try:
+        set_config(db, campaign, plugins={'stop_rule': {'provider': 'escalates', 'reason': '$900 since the last keep'}})
+        add_ideas(db, campaign, 'a', 'b')
+        sched = make_scheduler(db, runtime, tmp_path)
+        assert sched.run_all() == [1], 'the campaign goes on'
+        sched.wait()
+        sched.run_all()
+        set_config(db, campaign, plugins={'stop_rule': {'provider': 'escalates', 'reason': '$1,800 since the keep'}})
+        sched.run_all()
+        sched.wait()
+        sched.stop(timeout=5)
+        with db.session() as s:
+            said = s.scalars(select(Comment).where(Comment.kind == CommentKind.ESCALATION).order_by(Comment.id))
+            assert [(c.target, c.author, c.priority, c.body) for c in said] == [
+                (TargetRef(TargetKind.CAMPAIGN, campaign.id), 'daemon', 0, f'Stop rule escalates: {reason}')
+                for reason in ('$900 since the last keep', '$1,800 since the keep')
+            ], 'one escalation for each distinct reason: the comment is the record'
+    finally:
+        host.close()
+
+
+def test_the_example_keep_cost_rule_escalates_once_per_keep_then_stops_at_its_harder_line() -> None:
+    """``examples/plugins/keep-cost``: the spend since the latest keep against the spend per keep, over ``limits``."""
+    rule = KeepCost(escalate_at=2, stop_at=4, max_hours=12)
+    assert rule.reads() == [RUNS, HOURS, reading('spend'), KEEPS, since_keep('spend')]
+
+    def check(since: float, *, keeps: int = 2, spend: float = 400, hours: float = 1) -> object:
+        known = facts(hours=hours, spend=spend, keeps=keeps, spend_since_keep=since)
+        return rule.check(StopCase('score', Direction.HIGHER, known))
+
+    assert check(399) == GO, 'below 2 × $200 per keep'
+    escalation = 'keep_cost: since keep 2, spend passed 2 × its value per keep; it stops at 4 ×'
+    assert check(400) == check(700) == Escalate(escalation), 'one reason for the keep, whatever the amount'
+    assert check(800) == Stop('keep_cost: spend 800 since the latest keep, 4 × the 200 per keep')
+    assert check(5000, keeps=0) == GO, 'no keep yet: no spend per keep'
+    other = KeepCost(spend='gpu_hours')
+    assert since_keep('gpu_hours') in other.reads(), 'the rule reads the fact that it names'
+    assert check(800, hours=13) == Stop('max_hours: 13.0h since the first run'), 'the limits of limits come first'
+
+
+def test_a_rule_that_reads_the_spend_since_a_keep_needs_a_source_of_it(
+    campaign: Campaign, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    installed(monkeypatch, [EntryPoint('keep_cost', 'piloop_keep_cost:KeepCost', STOP_RULES.group)])
+    try:
+        refused = "the stop rule 'keep_cost' reads spend, spend_since_keep, which no fact source of this campaign"
+        with pytest.raises(ConfigError, match=re.escape(refused)):
+            load_campaign_config(Path(campaign.path), plugins={'stop_rule': {'provider': 'keep_cost'}})
+        rule = {'stop_rule': {'provider': 'keep_cost'}}
+        load_campaign_config(Path(campaign.path), facts=[*OWN, SOURCE], plugins=rule)
+    finally:
+        host.close()

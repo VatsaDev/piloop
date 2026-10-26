@@ -152,19 +152,55 @@ def stop_table(toml: Path, raw: dict[str, object], removed_in: Version) -> None:
     warn(toml, 'stop', '[stop] is deprecated; write its keys in [plugins.stop_rule]', removed_in=removed_in)
 
 
-@bridge('0.4.0', '[spend] limit is [plugins.stop_rule] max_spend: delete the spend_limit bridge')
+@bridge('0.4.0', '[spend] limit is [plugins.stop_rule] hold_at of the spend: delete the spend_limit bridge')
 def spend_limit(toml: Path, raw: dict[str, object], removed_in: Version) -> None:
-    """``[spend] limit`` is ``[plugins.stop_rule] max_spend``. A value that ``[plugins.stop_rule]`` sets too wins."""
+    """``[spend] limit`` is ``[plugins.stop_rule] hold_at = { spend = <value> }``. A value that it sets too wins."""
     spend = _table(raw, 'spend')
     if spend is None or 'limit' not in spend:
         return
-    _into(raw, 'stop_rule', {'max_spend': spend.pop('limit')})
+    _held(raw, spend.pop('limit'))
     warn(
         toml,
         'spend.limit',
-        '[spend] limit is deprecated; write max_spend in [plugins.stop_rule]',
+        '[spend] limit is deprecated; write hold_at = { spend = ... } in [plugins.stop_rule]',
         removed_in=removed_in,
         nth=_nth(toml, 'spend', 'limit'),
+    )
+
+
+SPEND_COMMAND = ('sh', '-c', 'out=$("$@") && printf "METRIC spend=%s\\n" "$out"', 'sh')
+"""What runs a ``[spend] command``, which prints one number, so that it prints ``METRIC spend=<number>``."""
+
+
+@bridge('0.4.0', '[spend] is a command source of [[facts]]: delete the spend_table bridge and SPEND_COMMAND')
+def spend_table(toml: Path, raw: dict[str, object], removed_in: Version) -> None:
+    """``[spend]`` is a ``command`` source of ``[[facts]]`` that reads ``spend``, after ``campaign`` and ``optimization``.
+
+    Its command prints one number, so it runs in ``SPEND_COMMAND``. ``notices`` are those of ``spend``, and
+    ``closing_review`` is ``while_held`` of ``[plugins.stop_rule]``. A ``[[facts]]`` that the file lists keeps its
+    sources, and the spend's comes after them.
+    """
+    spend = raw.get('spend')
+    if not isinstance(spend, dict):
+        return
+    del raw['spend']
+    review = spend.pop('closing_review', None)
+    source: dict[str, object] = {'provider': 'command', 'metrics': ['spend']}
+    command = spend.get('command')
+    source['command'] = [*SPEND_COMMAND, *command] if isinstance(command, list) else command
+    if 'interval' in spend:
+        source['interval'] = spend['interval']
+    if 'notices' in spend:
+        source['notices'] = {'spend': spend['notices']}
+    listed = raw.get('facts', [{'provider': 'campaign'}, {'provider': 'optimization'}])
+    raw['facts'] = [*listed, source] if isinstance(listed, list) else listed
+    if review is not None:
+        _into(raw, 'stop_rule', {'while_held': review})
+    warn(
+        toml,
+        'spend',
+        '[spend] is deprecated; write a [[facts]] source with provider = "command" whose command prints METRIC spend=',
+        removed_in=removed_in,
     )
 
 
@@ -178,8 +214,8 @@ def confidence(toml: Path, raw: dict[str, object], removed_in: Version) -> None:
 
 
 OLD_RULE_ENV = re.compile(r'PILOOP_CAMPAIGN_(?:STOP__(?P<stop>\w+)|(?P<confidence>CONFIDENCE))', re.IGNORECASE)
-"""The variable of a key of ``[stop]``, or of ``confidence``: those keys are in a rule's table now. ``[spend] limit`` has
-none: ``[spend]`` is still a table, so its variable fails as an unknown key."""
+"""The variable of a key of ``[stop]``, or of ``confidence``: those keys are in a rule's table now. ``[spend]`` has
+none: its variables fail as unknown keys."""
 
 
 @bridge('0.4.0', "the variables of [stop] and confidence are the rules': delete rule_env and OLD_RULE_ENV")
@@ -204,6 +240,14 @@ def _into(raw: dict[str, object], rule: str, keys: Mapping[str, object]) -> None
     if (table := _rule(raw, rule)) is not None:
         for key, value in keys.items():
             table.setdefault(key, value)
+
+
+def _held(raw: dict[str, object], limit: object) -> None:
+    """Hold the campaign at ``limit`` of the fact ``spend``: ``[plugins.stop_rule] hold_at``, under what it sets."""
+    found = _rule(raw, 'stop_rule')
+    rule = found if found is not None else {}  # None: a value on the way is not a table, which the validation refuses
+    held = rule.get('hold_at', {})
+    rule['hold_at'] = {'spend': limit, **held} if isinstance(held, dict) else held
 
 
 def _rule(raw: dict[str, object], rule: str) -> dict[str, object] | None:
@@ -240,6 +284,22 @@ def anomaly_trigger(toml: Path, raw: dict[str, object], removed_in: Version) -> 
             removed_in=removed_in,
             nth=_nth(toml, f'roles.{name}', 'triggers'),
         )
+
+
+@bridge('0.4.0', 'max_spend is hold_at of the spend: delete the max_spend bridge')
+def max_spend(toml: Path, raw: dict[str, object], removed_in: Version) -> None:
+    """``[plugins.stop_rule] max_spend`` is ``hold_at = { spend = <value> }``. A value that ``hold_at`` sets too wins."""
+    plugins = raw.get('plugins')
+    rule = plugins.get('stop_rule') if isinstance(plugins, dict) else None
+    if not isinstance(rule, dict) or 'max_spend' not in rule:
+        return
+    _held(raw, rule.pop('max_spend'))
+    warn(
+        toml,
+        'plugins.stop_rule.max_spend',
+        'max_spend is deprecated; write hold_at = { spend = ... }',
+        removed_in=removed_in,
+    )
 
 
 LESSONS = 'lessons'

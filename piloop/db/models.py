@@ -565,12 +565,6 @@ class Campaign(Tracked, Base):
     ``campaign.paused`` event with ``paused_reason``."""
     paused_reason: Mapped[str | None]
     """Why the campaign is paused, as ``piloop pause --reason`` said it. NULL while it is not paused."""
-    spend_usd: Mapped[float | None]
-    """What ``[spend] command`` printed last: the campaign's outside spend so far in USD. None until it first runs."""
-    spend_error: Mapped[str | None]
-    """Why the last run of ``[spend] command`` failed. None after a run succeeds. While it is set, nothing launches."""
-    spend_at: Mapped[datetime | None]
-    """When ``[spend] command`` ran last, whatever the result. Its ``interval`` counts from this time."""
     repo: Mapped[str | None]
     """The repository that the campaign works on, the same for every clone of it: the URL of its ``origin`` remote
     (else of its first remote) as ``host/owner/name``, else ``path``. ``piloop init`` sets it. Past work on the same

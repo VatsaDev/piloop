@@ -137,16 +137,22 @@ max_concurrent = 1
 # max_hours = 12                          # hours since the campaign's first run started
 # max_tokens = 50000000                   # tokens that all the agents of the campaign spent together
 # plateau = 50                            # runs counted as for max_runs, since the last keep or reactivation
-# max_spend = 1000                        # USD from [spend] at which nothing starts; raise it, then run `piloop init` again
+# hold_at = { spend = 1000 }              # facts of [[facts]] at which nothing starts; raise one, then `piloop init` again
+# while_held = "run"                      # the closing review of a stop while held: run | skip | wait (until the hold ends)
+
+# [[facts]]                               # where the facts of the stop rule and the sections come from; default: these two
+# provider = "campaign"                   # the hours and the tokens of any campaign
+# [[facts]]
+# provider = "optimization"               # the research: head, runs, keeps, evaluations, the funnel
+# [[facts]]                               # a list that adds a source lists campaign and optimization too
+# provider = "command"                    # a command that prints METRIC <name>=<value> lines, as the evaluate command does
+# command = ["uv", "run", "scripts/spend.py"]  # runs at the repo root; it gets secrets from the daemon's environment
+# metrics = ["spend"]                     # the names that it prints, each a fact of the campaign
+# notices = { spend = [300, 600] }        # piloop posts one inbox note when a value crosses each
+# interval = 300                          # seconds between two readings
 
 # [memory]                                # what past campaigns leave for the next ones; see the research memory page
 # documents = ["docs/evidence/**/*.md"]   # repo files that `piloop init` and the stop copy into `documents`; default none
-
-# [spend]                                 # what the campaign costs outside piloop (GPUs, APIs), in USD; its limit is max_spend
-# command = ["uv", "run", "scripts/spend.py"]  # prints the spend so far in USD; it gets secrets from the daemon's environment
-# notices = [300, 600]                    # piloop posts one inbox note when the spend crosses each value
-# interval = 300                          # seconds between two runs of the command
-# closing_review = "run"                  # a stop while held: run the closing review, skip it, or wait for the hold
 
 [[metrics]]                               # one entry for each METRIC <name>=<value> line; one primary for each track
 name = "score"

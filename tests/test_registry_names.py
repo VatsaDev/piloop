@@ -115,6 +115,7 @@ HOST_CONTRACTS = {
     'provisioner': 'starts and stops machines on a platform',
     'vcs provider': 'runs the version control tool on checkouts, and moves versions through the CAS',
     'secrets provider': "stores values in the session of the operation that calls it, or in a platform's store",
+    'fact source': 'gathers facts through a Session, and a source that reads does I/O at the repo root',
 }
 """The capabilities whose contract passes live objects of the host, and why. Every other one is pure."""
 

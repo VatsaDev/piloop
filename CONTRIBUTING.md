@@ -208,7 +208,7 @@ Write docs, skills and agent prompts in Simplified Technical English. Less is mo
 can infer, and each mechanism that the reader does not act on. These rules apply, each with an example:
 
 1. Open a page with one sentence that says what it is for, then an example. Before: "A campaign costs money in two
-   ways: …". After: "`max_tokens` and `max_spend` limit what a campaign costs.", then the TOML.
+   ways: …". After: "`max_tokens` and `hold_at` limit what a campaign costs.", then the TOML.
 2. Show what a command prints, copied from a real run. Before: "To see the progress, run `piloop status enwik8`."
    After: the command, then the lines of its output that the reader looks at.
 3. Use one example on a page, and grow it. Before: `my-campaign`, Titanic and enwik8 on one page. After: enwik8 in

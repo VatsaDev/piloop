@@ -65,6 +65,7 @@ network = "piloop.plugins.network.contract:NETWORKS"
 vcs = "piloop.plugins.vcs.contract:VCS"
 secrets = "piloop.plugins.secrets.contract:SECRETS"
 section = "piloop.plugins.section.contract:SECTIONS"
+fact_source = "piloop.plugins.fact_source.contract:FACT_SOURCES"
 
 [project.entry-points."piloop.runtimes"]
 subprocess = "piloop.plugins.runtime.subprocess:Subprocess"
@@ -129,6 +130,11 @@ incidents = "piloop.plugins.section.incidents:Incidents"
 pack = "piloop.plugins.section.pack:Pack"
 history = "piloop.plugins.section.history:History"
 lessons = "piloop.plugins.section.lessons:Lessons"
+
+[project.entry-points."piloop.fact_sources"]
+campaign = "piloop.plugins.fact_source.campaign:CampaignFacts"
+optimization = "piloop.plugins.fact_source.optimization:OptimizationFacts"
+command = "piloop.plugins.fact_source.command:Command"
 
 [project.entry-points."piloop.roles"]
 implementer = "piloop.plugins.role.implementer:ImplementerRole"
@@ -205,7 +211,7 @@ quote-style = "single"
 
 [tool.ty.environment]
 python-version = "3.14"
-extra-paths = ["examples/plugins/nice-runtime", "examples/plugins/sqlite-cas", "examples/plugins/min-gain", "examples/plugins/stop-after-keeps", "examples/plugins/inline-executor"]
+extra-paths = ["examples/plugins/nice-runtime", "examples/plugins/sqlite-cas", "examples/plugins/min-gain", "examples/plugins/stop-after-keeps", "examples/plugins/keep-cost", "examples/plugins/inline-executor"]
 
 [tool.ty.src]
 include = ["piloop", "tests", "scripts", "examples"]
@@ -218,7 +224,7 @@ exclude = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # The example plugins import as packages; their entry points register only where a test installs them.
-pythonpath = ["examples/plugins/nice-runtime", "examples/plugins/sqlite-cas", "examples/plugins/min-gain", "examples/plugins/stop-after-keeps", "examples/plugins/inline-executor"]
+pythonpath = ["examples/plugins/nice-runtime", "examples/plugins/sqlite-cas", "examples/plugins/min-gain", "examples/plugins/stop-after-keeps", "examples/plugins/keep-cost", "examples/plugins/inline-executor"]
 # The e2e tests run real agents and cost money: only `make e2e` (`-m e2e`, which overrides this) selects them.
 addopts = ["-m", "not e2e"]
 markers = [

@@ -2,9 +2,10 @@
 
 | Key | Meaning |
 |---|---|
+| `while_held` | What the closing review does when the campaign stops (`piloop campaign stop`) while the rule holds its launches: `run` it anyway, `skip` it, or `wait` until the hold ends. |
 | `target` | Stop when the primary metric at the head (the latest keep on the trunk) reaches this value, in its direction. Only for a campaign with one track. |
 | `max_runs` | Stop after this many runs that count, once none is queued, running or being scored. A run counts when it reached the evaluator, and also while it is queued, running or being scored, so piloop never starts more runs than this. A finished run that does not count frees its place, and piloop starts another run in it. |
 | `max_hours` | Stop after this many hours of wall-clock time since the first run of the campaign started. The time that the campaign was paused (`piloop pause`) does not count. An agent's timeout ends at the stop too. |
 | `max_tokens` | Stop when all the agents of the campaign together spent this many tokens (the `total` of `agent_sessions.usage`), summed over the agents that ended. |
 | `plateau` | Stop after this many finished runs that reached the evaluator without a new `keep` candidate. The count starts again at each keep, and when the campaign is set `active` after a stop (`piloop init`, or an UPDATE of `campaigns.status`), so a reactivated campaign gets this many runs again. A new evaluator alone does not reset it. |
-| `max_spend` | Hold the campaign when the spend that `[spend] command` prints reaches this many USD: the daemon launches no agent and starts no evaluation. Work that already runs finishes and is scored. Needs `[spend]`. To resume, raise it and run `piloop init`. |
+| `hold_at` | Hold the campaign while a fact that a source reads, by its name, is at this value or above, and while it is unknown: the daemon launches no agent and starts no evaluation. Work that already runs finishes and is scored. Example: `{ spend = 1000 }`, with a source in `[[facts]]` that reads `spend`. To resume, raise it and run `piloop init`. |

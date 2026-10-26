@@ -8,11 +8,12 @@ from importlib.resources import files
 from typing import Annotated
 
 from piloop.ids import CandidateId
+from piloop.plugins.fact_source.facts import ATTEMPTS, EVALUATIONS, FUNNEL, Fact, FactValue, since_keep
 from piloop.plugins.host import Capability, Parameters, Tier
 from piloop.plugins.role.contract import ImplementerRole, SweepRole
 from piloop.plugins.runtime.contract import RUNTIMES, Handle, RuntimeName
 from piloop.plugins.runtime.subprocess import Subprocess, SubprocessRuntime
-from piloop.plugins.stop_rule.contract import GO, Fact, Go, Hold, Stop, StopCase, StopRule
+from piloop.plugins.stop_rule.contract import GO, Escalate, Go, Hold, Stop, StopCase, StopRule
 from piloop.plugins.trigger.contract import Fire, Pass, Trigger, TriggerEntry
 from piloop.plugins.verdict_rule.bootstrap import Bootstrap
 from piloop.plugins.verdict_rule.contract import (
@@ -69,11 +70,40 @@ class ShownRuntime(SubprocessRuntime):
 class GoesOn(StopRule):
     """``goes_on``: a stop rule without limits, so it reads no fact and never holds or stops a campaign."""
 
-    def limits(self) -> dict[Fact, float]:
+    def limits(self) -> dict[Fact[FactValue], float]:
         return {}
 
     def check(self, case: StopCase) -> Go | Hold | Stop:
         return GO
+
+
+class Watches(StopRule):
+    """``watches``: limits on the facts that ``limits`` does not limit, which it never acts on."""
+
+    def limits(self) -> dict[Fact[FactValue], float]:
+        return {EVALUATIONS: 100, ATTEMPTS: 50, since_keep('spend'): 300, FUNNEL: 1}
+
+    def check(self, case: StopCase) -> Go:
+        return GO
+
+    def describe(self, case: StopCase) -> list[str]:
+        shown = {fact: case.facts.get(fact) for fact in self.limits()}
+        return [
+            f'{fact.name} {value if isinstance(value, int | float) else "—"}/{self.limits()[fact]:g}'
+            for fact, value in shown.items()
+        ]
+
+
+class Escalates(StopRule):
+    """``escalates``: a stop rule that always tells a human ``reason``, and lets the campaign go on."""
+
+    reason: str
+
+    def limits(self) -> dict[Fact[FactValue], float]:
+        return {}
+
+    def check(self, case: StopCase) -> Escalate:
+        return Escalate(self.reason)
 
 
 class Auditor(SweepRole):

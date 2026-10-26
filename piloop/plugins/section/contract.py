@@ -38,6 +38,7 @@ class Rendering:
     """
 
     s: Session
+    """The session to read with. A section writes nothing."""
     now: datetime
     """The time of the rendering. A section that shows an age reads this, not the clock."""
     campaign: Campaign

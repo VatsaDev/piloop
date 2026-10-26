@@ -1,0 +1,13 @@
+{/* WARNING: This file is auto-generated (uv run -m scripts.generate_all). Update the docstrings in `piloop/plugins/section/contract.py` if you want to change anything here. */}
+
+| Member | What it is |
+|---|---|
+| `Section.SHOWN_IN: ClassVar[frozenset[Surface]]` | The surfaces whose list shows the section, with its defaults, when the list is not set. Empty: only a list that names it shows it. |
+| `Section.ORDER: ClassVar[int]` | Where the section goes in a default list: a lower number comes first. The built-in sections leave gaps, so that a package can put one between two of them. |
+| `Section.render(r: Rendering) -> Rendered \| None` | Return the section now, or None when it has nothing to show: then the reader leaves it out. |
+| `Rendering.s: Session` | The session to read with. A section writes nothing. |
+| `Rendering.now: datetime` | The time of the rendering. A section that shows an age reads this, not the clock. |
+| `Rendering.campaign: Campaign` | The campaign, with its config (`campaign.config`). |
+| `Rendering.workspace: Path` | The campaign's shared workspace, where agents leave notes and artifacts for each other. |
+| `Rendering.cas: Cas` | The home's CAS: the agents' sessions are there (`agent_sessions.session_file`). |
+| `Rendering.given: tuple[str, ...]` | The anomaly lines that the agent who reads got to investigate, in order. Empty for every other reader. |

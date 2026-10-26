@@ -1,0 +1,13 @@
+[project]
+name = "piloop-keep-cost"
+version = "0.1.0"
+description = "A piloop stop rule that escalates when a keep costs too much, and stops at a harder line"
+requires-python = ">=3.14"
+dependencies = ["piloop"]
+
+[project.entry-points."piloop.stop_rules"]
+keep_cost = "piloop_keep_cost:KeepCost"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

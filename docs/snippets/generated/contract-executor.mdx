@@ -1,0 +1,18 @@
+{/* WARNING: This file is auto-generated (uv run -m scripts.generate_all). Update the docstrings in `piloop/plugins/executor/contract.py` if you want to change anything here. */}
+
+| Member | What it is |
+|---|---|
+| `ExecutorConfig.open(host: Host) -> Executor[Self]` | Make the executor. The daemon calls it once, when it starts. |
+| `Executor.capacity() -> Capacity` | How many more jobs of each kind it can take now: its free slots, less the jobs it has and has not started. |
+| `Executor.upkeep_events() -> frozenset[type[EventModel]]` | The events of this executor after which its `upkeep` runs at once, without waiting for its time. |
+| `Executor.capacity_events() -> frozenset[type[EventModel]]` | The events of this executor that say its capacity grew: core then launches what waits for a slot. |
+| `Executor.configure(config: C) -> None` | Take `config`, the one that opened it with the live limits applied. The daemon calls it when one changes. |
+| `Executor.submit(job: AgentJob \| EvaluationJob) -> None` | Run `job`, now or when a slot is free. Every job ends with `Results.finished` or `Results.lost`. |
+| `Executor.prompt(key: AgentKey, prompt: Prompt) -> None` | Give `prompt` to the running agent's runtime at least once, then call `Results.queued`. |
+| `Executor.cancel(key: JobKey) -> None` | Stop a job: a kill or a cancel. It still reports how it ended. Called again, it tries again. |
+| `Executor.adopt(left: Sequence[LeftJob]) -> list[JobKey]` | Take over the jobs that a previous daemon process left, and return the keys of those it cannot. |
+| `Executor.routes() -> Sequence[Route]` | The routes that its workers on other machines call, under `/v1/executor/` (`piloop serve --listen`). |
+| `Executor.upkeep(now: datetime, absent: timedelta) -> datetime \| None` | Do the executor's own housekeeping, and return when it next has some: the daemon calls it then. |
+| `Executor.stop(timeout: float) -> None` | Stop every job, and wait up to `timeout` for them to report. Submit no more. |
+| `Executor.hand_over() -> None` | Leave the jobs running for the next daemon process (an in-place restart), which adopts them. |
+| `Executor.close() -> None` | Release what the executor holds. The daemon calls it last. |

@@ -55,8 +55,8 @@ def stop(
 ) -> None:
     """Stop a campaign. The daemon stops it at once, as when a `[stop]` condition holds.
 
-    This works also while the campaign is paused or held at its `[spend]` limit. A paused campaign gets its closing
-    review; a held one as `[spend] closing_review` says. It drops the queued runs and the requested agents, and the
+    This works also while the campaign is paused or held by its stop rule. A paused campaign gets its closing
+    review; a held one as the stop rule's `while_held` says. It drops the queued runs and the requested agents, and the
     `stopped` triggers request the closing review. Each
     running implementer is told to save its work and stop, and is ended 10 minutes later. What the implementers saved is scored.
     With `--kill`, the implementers are ended at once, and what they committed is still scored. On a stopped campaign,

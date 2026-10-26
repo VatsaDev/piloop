@@ -24,7 +24,7 @@ from piloop.actor import System
 from piloop.agents.roles import PROCEDURES, PROMPTS
 from piloop.campaign import inbox
 from piloop.campaign.campaigns import BLANK, workspace_dir
-from piloop.campaign.stop import check
+from piloop.campaign.stop import check, escalated
 from piloop.cli.database import ORCHESTRATOR_PROCEDURES
 from piloop.config import CampaignConfig, load_campaign_config
 from piloop.daemon.run_controller import RunController
@@ -306,7 +306,7 @@ class HotPaths:
             return lambda: [body(p, cfg) for p, cfg in rows]
 
         def pass_over(p: Campaign, cfg: CampaignConfig) -> None:
-            answer = check(s, p, cfg)
+            answer = escalated(s, p, cfg, check(s, p, cfg))
             if not isinstance(answer, Hold):
                 scheduler._triggers(s, p, cfg, answer, None, utcnow())
             s.flush()

@@ -1,0 +1,18 @@
+{/* WARNING: This file is auto-generated (uv run -m scripts.generate_all). Update the docstrings in `piloop/plugins/fact_source/` if you want to change anything here. */}
+
+| Member | What it is |
+|---|---|
+| `FactSource.ON_BY_DEFAULT: ClassVar[bool]` | Whether a campaign that does not list its `[[facts]]` has this source, with its defaults. |
+| `FactSource.supplies() -> tuple[Fact[FactValue], ...]` | The facts that it supplies. Two sources of a campaign never supply the same one. |
+| `FactSource.gather(s: Session, campaign: Campaign, wanted: frozenset[Fact[FactValue]], now: datetime) -> dict[Fact[FactValue], FactValue]` | The values of the facts in `wanted` that it supplies, as of `now`. It reads with `s`, never writes. |
+| `FactSource.due(s: Session, campaign: Campaign) -> datetime \| None` | When the daemon calls `read` next: a time at or before now reads now. |
+| `FactSource.read(repo: Path) -> dict[str, float]` | Read values by name, at the campaign's repo root. The daemon calls it outside any transaction, when it is due. |
+| `FactSource.record(s: Session, campaign: Campaign, values: dict[str, float] \| FactReadError) -> None` | Record what `read` returned or raised. The caller commits. By default, nothing. |
+| `Readings.interval: float` | The number of seconds between two readings. |
+| `Readings.notices: dict[str, list[float]]` | Values by the name that it reads. When a value passes one, the daemon posts one note to the inbox, at priority 1. |
+| `Readings.names() -> tuple[str, ...]` | The names of the values that it reads. |
+| `Readings.read(repo: Path) -> dict[str, float]` | Read every value of `names`. The daemon calls it outside any transaction, at the campaign's repo root. |
+| `Readings.supplies() -> tuple[Fact[FactValue], ...]` | `reading(name)` and `since_keep(name)` for each name of `names`. |
+| `Readings.gather(s: Session, campaign: Campaign, wanted: frozenset[Fact[FactValue]], now: datetime) -> dict[Fact[FactValue], FactValue]` | Each value of the latest reading that has it, None after a failed one, and its growth since the latest keep. |
+| `Readings.due(s: Session, campaign: Campaign) -> datetime \| None` | When the source reads next: `interval` after its latest reading, or now before the first. |
+| `Readings.record(s: Session, campaign: Campaign, values: dict[str, float] \| FactReadError) -> None` | Record a reading as a `fact.read` event, with a note for each notice that it passed. The caller commits. |

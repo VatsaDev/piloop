@@ -913,7 +913,8 @@ def test_0011_makes_scout_sweeps_scout_rows_and_stored_configs_valid_and_downgra
 
 def upgraded(config: dict[str, object]) -> object:
     """``config`` as revisions 0018 (``roles.implementer``), 0034 (no herdr), 0035 (no ``workdir``), 0036 (no Entire),
-    0038 (a trigger's ``provider``), 0039 (the rules' limits) and 0055 (the incident triggers) store it, so that today's
+    0038 (a trigger's ``provider``), 0039 (the rules' limits), 0055 (the incident triggers) and 0056 (``[[facts]]``) store
+    it, so that today's
     piloop reads it."""
     roles = config.get('roles')
     if isinstance(roles, dict) and 'worker' in roles:
@@ -924,7 +925,8 @@ def upgraded(config: dict[str, object]) -> object:
     config = revisions.get_revision('0036').module.upgraded(config)
     config = revisions.get_revision('0038').module.renamed(config, 'kind', 'provider')
     config = revisions.get_revision('0039').module.upgraded(config)
-    return revisions.get_revision('0055').module.upgraded(config)
+    config = revisions.get_revision('0055').module.upgraded(config)
+    return revisions.get_revision('0056').module.upgraded(config)
 
 
 def test_0012_leaves_the_cached_input_out_of_the_input_of_codex_rows_and_downgrades(tmp_path: Path) -> None:
@@ -2309,3 +2311,74 @@ def test_0054_puts_each_session_file_still_on_this_machine_in_the_cas_drops_ever
         assert 'session_file' not in [c[1] for c in con.execute('PRAGMA table_info(agent_sessions)')]
         sources = [loads(u)['source'] if u else None for (u,) in con.execute('SELECT usage FROM agent_sessions')]
     assert sources == [rows[0][0], '', None], 'the older piloop reads a source on every usage'
+
+
+def test_0056_makes_spend_a_command_source_of_facts_its_latest_reading_events_and_downgrades(tmp_path: Path) -> None:
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0055')
+    watchdog = {'triggers': [{'provider': 'run_failed'}, {'provider': 'stopped'}]}
+    spending = {
+        'spend': {'command': ['cat', 'bill'], 'notices': [5], 'interval': 60, 'closing_review': 'wait'},
+        'roles': {'watchdog': watchdog},
+        'plugins': {'stop_rule': {'provider': 'limits', 'max_spend': 10}},
+    }
+    plain = {'spend': None, 'roles': {'watchdog': {'triggers': [{'provider': 'stopped'}]}}}
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        for name, config in (('a', spending), ('b', plain)):
+            con.execute(
+                'INSERT INTO campaigns (name, path, config) VALUES (?, ?, ?)', (name, f'/{name}', dumps(config))
+            )
+        con.execute(
+            "UPDATE campaigns SET spend_usd = 12.5, spend_error = 'down', spend_at = '2026-01-01 00:00:00' WHERE id = 1"
+        )
+    command.upgrade(cfg, '0056')
+    configs = 'SELECT config FROM campaigns ORDER BY id'
+    reads = "SELECT at, target_id, payload FROM events WHERE kind = 'fact.read' ORDER BY id"
+    wrapped = ['sh', '-c', 'out=$("$@") && printf "METRIC spend=%s\\n" "$out"', 'sh', 'cat', 'bill']
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert [loads(c) for (c,) in con.execute(configs)] == [
+            {
+                'roles': {'watchdog': watchdog},
+                'plugins': {'stop_rule': {'provider': 'limits', 'hold_at': {'spend': 10}, 'while_held': 'wait'}},
+                'facts': [
+                    {'provider': 'campaign'},
+                    {'provider': 'optimization'},
+                    {
+                        'provider': 'command',
+                        'command': wrapped,
+                        'metrics': ['spend'],
+                        'interval': 60,
+                        'notices': {'spend': [5]},
+                    },
+                ],
+            },
+            {'roles': {'watchdog': {'triggers': [{'provider': 'stopped'}]}}},
+        ]
+        assert [(at, c, loads(p)) for at, c, p in con.execute(reads)] == [
+            ('2026-01-01 00:00:00', 1, {'kind': 'fact.read', 'values': {'spend': 12.5}, 'error': None}),
+            ('2026-01-01 00:00:00', 1, {'kind': 'fact.read', 'values': {'spend': None}, 'error': 'down'}),
+        ], 'the spend it read, then its error'
+        assert 'spend_usd' not in [c[1] for c in con.execute('PRAGMA table_info(campaigns)')]
+        stored = CampaignConfig.model_validate(
+            {
+                'name': 'a',
+                'evaluate': ['true'],
+                'model': {'pi': 'm'},
+                'metrics': [{'name': 'score', 'direction': 'higher', 'role': 'primary'}],
+            }
+            | loads(con.execute(configs).fetchone()[0])
+        )
+        assert len(stored.fact_sources()) == 3, 'the upgraded config loads'
+    command.downgrade(cfg, '0055')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute('SELECT spend_usd, spend_error, spend_at FROM campaigns ORDER BY id').fetchall() == [
+            (12.5, 'down', '2026-01-01 00:00:00'),
+            (None, None, None),
+        ]
+        [first, second] = [loads(c) for (c,) in con.execute(configs)]
+        assert first['spend'] == {'command': ['cat', 'bill'], 'notices': [5], 'interval': 60, 'closing_review': 'wait'}
+        assert first['plugins'] == {'stop_rule': {'provider': 'limits', 'max_spend': 10}}
+        assert 'facts' not in first
+        assert second['spend'] is None
+        assert con.execute(reads).fetchall() == []

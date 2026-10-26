@@ -2,10 +2,10 @@
 
 Use it for a campaign that wants a few good changes and no more, for example "make the build pass on the new
 compiler". It stops when enough candidates are kept. The rule is the built-in rule ``limits`` with one more limit, so
-``max_hours``, ``max_tokens``, ``max_spend`` and the others still apply.
+``max_hours``, ``max_tokens``, ``hold_at`` and the others still apply.
 """
 
-from piloop.capabilities import Fact, Go, Hold, Limits, Stop, StopCase
+from piloop.capabilities import KEEPS, Escalate, Fact, FactValue, Go, Hold, Limits, Stop, StopCase
 
 
 class AfterKeeps(Limits):
@@ -14,12 +14,12 @@ class AfterKeeps(Limits):
     keeps: int
     """The number of keeps that ends the campaign."""
 
-    def limits(self) -> dict[Fact, float]:
-        return super().limits() | {Fact.KEEPS: self.keeps}
+    def limits(self) -> dict[Fact[FactValue], float]:
+        return super().limits() | {KEEPS: self.keeps}
 
-    def check(self, case: StopCase) -> Go | Hold | Stop:
+    def check(self, case: StopCase) -> Go | Hold | Stop | Escalate:
         answer = super().check(case)
-        keeps = case.progress.keeps
+        keeps = case.facts.get(KEEPS)
         if not isinstance(answer, Go) or keeps is None or keeps < self.keeps:
             return answer
         return Stop(f'after_keeps: {keeps} keeps')

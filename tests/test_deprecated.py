@@ -19,10 +19,13 @@ import pytest
 from piloop import deprecated
 from piloop.config import ConfigError, load_campaign_config
 from piloop.deprecated import PiloopDeprecationWarning
+from piloop.plugins.fact_source.campaign import CampaignFacts
+from piloop.plugins.fact_source.command import Command
+from piloop.plugins.fact_source.optimization import OptimizationFacts
 from piloop.plugins.role.research import ResearchRole
 from piloop.plugins.role.watchdog import WatchdogRole
 from piloop.plugins.section.lessons import Lessons
-from piloop.plugins.stop_rule.contract import STOP_RULES
+from piloop.plugins.stop_rule.contract import STOP_RULES, WhileHeld
 from piloop.plugins.stop_rule.limits import Limits
 from piloop.plugins.trigger.contract import TRIGGERS
 from piloop.plugins.verdict_rule.bootstrap import Bootstrap
@@ -378,18 +381,56 @@ def test_stop_the_spend_limit_and_confidence_are_keys_of_the_rules(campaign_path
     toml.write_text('confidence = 0.9\n' + toml.read_text())
     with pytest.warns(PiloopDeprecationWarning) as record:
         cfg = load_campaign_config(campaign_path)
-    assert STOP_RULES.selected(cfg.plugins) == Limits(max_runs=7, plateau=9, max_spend=300), 'the table keeps its own'
+    assert STOP_RULES.selected(cfg.plugins) == Limits(max_runs=7, plateau=9, hold_at={'spend': 300}), (
+        'the table keeps its own'
+    )
     assert VERDICT_RULES.selected(cfg.plugins) == Bootstrap(confidence=0.9)
     lines = toml.read_text().splitlines()
     assert sorted((w.lineno, str(w.message).partition(';')[0]) for w in record) == [
         (1, 'confidence is deprecated'),
         (lines.index('[stop]') + 1, '[stop] is deprecated'),
+        (lines.index('[spend]') + 1, '[spend] is deprecated'),
         (lines.index('limit = 300') + 1, '[spend] limit is deprecated'),
     ]
     toml = deprecated_config(campaign_path, '[stop]\nmax_runs = 7\n')
     toml.write_text('plugins = 3\n' + toml.read_text())
     with pytest.warns(PiloopDeprecationWarning), pytest.raises(ConfigError, match='plugins'):
         load_campaign_config(campaign_path)
+
+
+def test_spend_is_a_command_source_that_reads_spend_and_closing_review_is_while_held_of_the_stop_rule(
+    campaign_path: Path, tmp_path: Path
+) -> None:
+    (tmp_path / 'bill').write_text('12.5\n')
+    toml = deprecated_config(
+        campaign_path,
+        f'[spend]\ncommand = ["cat", "{tmp_path / "bill"}"]\nnotices = [50]\ninterval = 60\nclosing_review = "wait"\n',
+    )
+    with pytest.warns(PiloopDeprecationWarning, match=r'\[spend\] is deprecated; write a \[\[facts\]\] source'):
+        cfg = load_campaign_config(campaign_path)
+    [campaign, optimization, spend] = cfg.fact_sources()
+    command = [*deprecated.SPEND_COMMAND, 'cat', str(tmp_path / 'bill')]
+    assert (campaign, optimization, spend) == (
+        CampaignFacts(),
+        OptimizationFacts(),
+        Command(command=command, metrics=['spend'], notices={'spend': [50]}, interval=60),
+    ), "after piloop's own sources"
+    assert isinstance(spend, Command) and spend.read(tmp_path) == {'spend': 12.5}, (
+        'the old command, which prints one number, still reads'
+    )
+    assert STOP_RULES.selected(cfg.plugins).while_held is WhileHeld.WAIT
+    assert 'closing_review = "wait"' in toml.read_text(), 'the file is not rewritten'
+
+
+def test_max_spend_is_hold_at_of_the_spend(campaign_path: Path) -> None:
+    deprecated_config(
+        campaign_path,
+        '[[facts]]\nprovider = "campaign"\n\n[[facts]]\nprovider = "optimization"\n\n[[facts]]\nprovider = "command"\ncommand = ["true"]\nmetrics = ["spend"]\n\n'
+        '[plugins.stop_rule]\nmax_spend = 300\n',
+    )
+    with pytest.warns(PiloopDeprecationWarning, match=r'max_spend is deprecated; write hold_at = \{ spend = \.\.\. \}'):
+        cfg = load_campaign_config(campaign_path)
+    assert STOP_RULES.selected(cfg.plugins) == Limits(hold_at={'spend': 300})
 
 
 def test_the_variables_of_stop_and_confidence_set_the_rules_and_win_over_the_file(

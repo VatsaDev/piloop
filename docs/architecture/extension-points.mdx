@@ -7,6 +7,7 @@ import ExampleNiceRuntime from '/snippets/generated/example-nice-runtime.mdx';
 import ExampleInlineExecutor from '/snippets/generated/example-inline-executor.mdx';
 import ExampleMinGain from '/snippets/generated/example-min-gain.mdx';
 import ExampleStopAfterKeeps from '/snippets/generated/example-stop-after-keeps.mdx';
+import ExampleKeepCost from '/snippets/generated/example-keep-cost.mdx';
 import Capabilities from '/snippets/generated/capabilities.mdx';
 import Roles from '/snippets/generated/roles.mdx';
 import Triggers from '/snippets/generated/triggers.mdx';
@@ -23,6 +24,16 @@ import Tallies from '/snippets/generated/tallies.mdx';
 import CwdEncoders from '/snippets/generated/cwd-encoders.mdx';
 import Renderers from '/snippets/generated/renderers.mdx';
 import Stop from '/snippets/generated/stop.mdx';
+import ContractCas from '/snippets/generated/contract-cas.mdx';
+import ContractExecutor from '/snippets/generated/contract-executor.mdx';
+import ContractNetwork from '/snippets/generated/contract-network.mdx';
+import ContractVerdictRule from '/snippets/generated/contract-verdict-rule.mdx';
+import ContractTrigger from '/snippets/generated/contract-trigger.mdx';
+import ContractSection from '/snippets/generated/contract-section.mdx';
+import ContractStopRule from '/snippets/generated/contract-stop-rule.mdx';
+import ContractFactSource from '/snippets/generated/contract-fact-source.mdx';
+import StopAnswers from '/snippets/generated/stop-answers.mdx';
+import Facts from '/snippets/generated/facts.mdx';
 
 You can change what piloop does in two ways: with configuration, or with a plugin.
 
@@ -76,6 +87,7 @@ A plugin can also do two more things:
 | [The evaluate command](#the-evaluate-command) | `evaluate` | your command |
 | [Usage readers and MCP renderers](#usage-readers-and-mcp-renderers) | `[harness.<name>]` | built-in ones only |
 | [Stop conditions](#stop-conditions) | `[plugins.stop_rule] provider` | a plugin: `piloop.stop_rules` |
+| [Fact sources](#fact-sources) | `[[facts]]` | a `command` source, or a plugin: `piloop.fact_sources` |
 | [A capability of your own](#let-other-plugins-extend-your-plugin) | where your plugin uses it | a plugin: `piloop.capabilities` |
 
 ## Runtimes
@@ -138,22 +150,18 @@ path = "/var/lib/piloop/blobs.sqlite"
 ### The contract
 
 A provider is a pydantic model, a subclass of `CasProvider`: the name of its entry point is its `provider`, and its
-fields are the other keys of `[plugins.cas]`. Its `open(home)` returns the store, and `where(home)` names where the
-blobs are, such as `s3://bucket/prefix`. A key whose value is another provider's table, as the `remote` of `cached`,
-is a `Annotated[CasProvider, CAS.entry]` field.
+fields are the other keys of `[plugins.cas]`. A key whose value is another provider's table, as the `remote` of
+`cached`, is a `Annotated[CasProvider, CAS.entry]` field.
 
 The store is a `Cas`: the methods of covalence's Python `Cas` that piloop calls, with the same signatures, so a
 `covalence.Cas` is a store as it is. A blob's address is a raw BLAKE3 CID of its content. A missing blob reads as
-`None`, and bytes that do not match their CID raise covalence's `IntegrityError`.
+`None`, and bytes that do not match their CID raise covalence's `IntegrityError`. A store with a local tier over a
+remote one also implements `Upkeep`, which `piloop store` and the daemon's hourly upkeep use. A store that can be such
+a local tier is `Evictable`. Its provider is a `LocalProvider`, and an `Annotated[LocalProvider, CAS.entry]` key, as
+`cached`'s `local`, takes only those.
 
-- `has(cid)`, `missing(cids)`: what the store holds, without reading it.
-- `put(data)`, `put_file(path)`, `put_fileobj(file, *, max_bytes, expected_length=None)`: store, and return the CID.
-- `get(cid)`, `get_file(cid, path)`, `get_to(cid, writer, *, max_bytes, expected_length=None)`: read back, checked.
-
-A store with a local tier over a remote one also implements `Upkeep` (`usage`, `flush`, `integrity`), which
-`piloop store` and the daemon's hourly upkeep use. A store that can be such a local tier is `Evictable`: `held()` lists
-each blob it holds (`Held`: CID, stored size, modified time) and `release(cid)` drops one. Its provider is a
-`LocalProvider`, and an `Annotated[LocalProvider, CAS.entry]` key, as `cached`'s `local`, takes only those. `ObjectsCas` (`piloop.plugins.cas.kit.objects`) is a store of
+<ContractCas />
+ `ObjectsCas` (`piloop.plugins.cas.kit.objects`) is a store of
 compressed objects over anything that puts, opens and finds whole files by key: `disk`, `s3` and `gcs` are three.
 
 `check_cas(cas, scratch)` runs the contract against a store, as piloop's tests do with each built-in provider and
@@ -182,22 +190,11 @@ provider = "inline"
 ### The contract
 
 The entry point names a subclass of `ExecutorConfig`: its fields are the other keys of `[plugins.executor]`. The
-daemon calls its `open(host)` once, when it starts, to make the `Executor`:
+daemon calls its `open(host)` once, when it starts, to make the `Executor`. The live
+[limits](/architecture/leases#capacity) reach it through `configure`, and a [network](#networks) says who may call
+its `routes`.
 
-- `submit(job)` runs an `AgentJob` or an `EvaluationJob`.
-- `cancel(key)` stops a job. It still reports.
-- `adopt(left)` takes over the jobs that the previous daemon left, and returns those it cannot.
-- `capacity()` is how many more agents and evaluations it can take now: its free slots. The daemon submits no more.
-- `configure(config)` takes the config that opened it, with the live [limits](/architecture/leases#capacity) applied.
-- `prompt(key, prompt)` gives a comment to a running agent's runtime, then calls `host.results.queued`. The agent's
-  report says which prompts the agent read (`read` and `unread`).
-- `routes()` are the HTTP routes that its workers on other machines call, under `/v1/executor/`. The server of
-  `piloop serve --listen` serves them, and a [network](#networks) says who may call them.
-- `capacity_events()` are the executor's own events that say that its capacity grew, such as a worker that joins. The
-  daemon launches what waits when one comes.
-- `upkeep(now, absent)` is the executor's housekeeping. It returns when it next has some, and the daemon calls it then.
-  `absent` is how long the daemon was away past that time, as in a suspend: no work expires for it.
-- `stop`, `hand_over` and `close` are the daemon's stop, its in-place restart and its end.
+<ContractExecutor />
 
 A job's end goes to `host.results`: `finished` or `lost`, in a session that the executor commits. Core raises
 `Settled` for a job whose row is closed already. An executor whose workers can report late uses
@@ -217,14 +214,12 @@ executor with routes needs one.
 
 ### The contract
 
-The entry point names a subclass of `NetworkConfig`, which has `listen`: its fields are the other keys of
-`[plugins.network]`. Its `client(server)` is an HTTP client of the server with this machine's credential, which the
-provider finds itself, or it raises `NoCredential` with what to set: `piloop worker` dials with it. The daemon calls
-its `open(host)` once, when it starts, to make the server's `Network`:
+The entry point names a subclass of `NetworkConfig`: its fields are the other keys of `[plugins.network]`. Its
+`client` finds this machine's credential itself, or raises `NoCredential` with what to set: `piloop worker` dials with
+it. The daemon calls its `open(host)` once, when it starts, to make the server's `Network`. A request that `identify`
+refuses gets 401.
 
-- `listener()` binds `listen`, and returns the socket with its TLS, or None when `listen` is unset.
-- `identify(headers, peer)` returns the `Caller` of a request that sends no token of `piloop token`, or `Refused`
-  with the reason. The server answers 401. piloop checks its own tokens itself, on every network. `peer` is the other end of the connection: its `address`, and the `certificate` that it presented over TLS, if any.
+<ContractNetwork />
 
 ### Built in
 
@@ -307,29 +302,16 @@ min_gain = 100
 
 ### The contract
 
-A verdict rule is a [pure](#pure-plugins) provider, a subclass of `VerdictRule` that implements
-`decide(case: Case) -> Judgement`. Import the types from `piloop.capabilities`.
+A verdict rule is a [pure](#pure-plugins) provider, a subclass of `VerdictRule`. Import the types from
+`piloop.capabilities`.
 
-- `Case.primary`: the primary metric of the candidate's track, as a `Criterion` (name, direction, margin, floor).
-- `Case.guardrails`: the guardrail metrics, each a `Criterion`.
-- `Case.candidate` and `Case.bar`: each a `Side`. A `Side` has a name for the reason (`candidate#73`), the mean of
-  each metric, the per-unit results of the metrics that have them, and the samples that ran in pairs with the other
-  side's.
-- `Case.parent`: the candidate's parent, as a `Side`, or `None`.
-- `Judgement.verdict`: `keep`, `interesting`, `discard` or `crash`.
-- `Judgement.reason`: the text that piloop stores and shows with the verdict.
+<ContractVerdictRule />
 
 A rule has no error case: it returns a verdict for every case.
 
-The rule also decides the lineage. Each of these methods reads `Node`s: a candidate's id, verdict, where it was made
-(`Trunk`, `Branch` or `Imported`) and its means. Each has the built-in behaviour as its default:
-
-| Method | Returns | Default |
-|---|---|---|
-| `bar(ancestry)` | the bar of a run that starts from `ancestry[0]`, from the base to its root | the nearest keep or reference, else the root |
-| `raises_bar(node, lineage)` | whether a run's commit becomes the bar of its next commits, on the `Trunk` or a `Branch` | a keep; on the trunk, not a branch run's |
-| `head(trunk)` | the head among the trunk keeps (the keeps that raise the trunk's bar), oldest first | the latest |
-| `on_moved(moved)` | for a trunk keep that lacks the head: `Rebase(conflicts=Seed() \| Leave())` or `Leave()` | `Rebase()`: merge onto the head, and a compose seed on a conflict |
+The rule also decides the lineage: `bar`, `raises_bar`, `head` and `on_moved` read `Node`s (a candidate's id,
+verdict, where it was made, `Trunk`, `Branch` or `Imported`, and its means), and each has the built-in behaviour as its
+default.
 
 piloop applies the answers: it moves the head, merges, files the seed, and applies the `Piloop-Note` of a commit.
 
@@ -487,13 +469,12 @@ code of its own comes from a plugin: see `no_keep` above.
 
 A trigger is an entry of `[roles.<name>] triggers`: `{ provider = "<trigger>", <parameter> = <value> }`. A plugin's
 trigger is a subclass of `Trigger`: its fields are its parameters. On each pass, for each sweeping role
-without a pending request, the daemon calls `fire(p)` of each trigger of the role in order. It returns a `Fire`
-(the reason, how many agents) or None, and reads with `p` (a `Pass`: the session, the time, the campaign, the role and
-the queries of the built-in triggers). A pass comes when something changes in the campaign, or in what a trigger names
-in `WAKES_ON`, and when the time that a trigger's `due_in` returns comes. A trigger that compares a time returns when
-the comparison turns: there is no pass on a timer. The rows that it reads are the models of `piloop.db.models`, the
-[data model](/architecture/data-model). A trigger with `ON_STOP` fires only once after a stop, when the
-campaign's last runs are judged.
+without a pending request, the daemon calls `fire(p)` of each trigger of the role in order. A pass comes when
+something changes in the campaign, or in what a trigger names in `WAKES_ON`, and when the time that a trigger's
+`due_in` returns comes. A trigger that compares a time returns when the comparison turns: there is no pass on a timer.
+The rows that it reads are the models of `piloop.db.models`, the [data model](/architecture/data-model).
+
+<ContractTrigger />
 
 ### Built in
 
@@ -532,12 +513,11 @@ Declare it with an entry point in `piloop.sections`. `piloop status` then shows 
 ### The contract
 
 A section is an entry of a list of sections: `{ provider = "<section>", <parameter> = <value> }`. A plugin's section is
-a subclass of `Section`: its fields are its parameters. `SHOWN_IN` names the surfaces whose list shows it when the list
-is not set (`STATUS`, `SWEEP`, `RUN`), and `ORDER` places it there: a lower number first. `render(r)` reads with `r` (a `Rendering`: the session, the
-time, the campaign, its workspace, and the anomalies that the reading agent got) and writes nothing. It returns a
-`Rendered`, a title and its blocks, or None to be left out. A block is one of four kinds: `Text`, `Lines`, `Figures`
-(named values, a number with its unit) and `Table`. `piloop status`, a brief, the API and a UI render each kind their
-own way, so a section never formats for one reader.
+a subclass of `Section`: its fields are its parameters. Its `render` returns a `Rendered`, a title and its blocks. A
+block is one of four kinds: `Text`, `Lines`, `Figures` (named values, a number with its unit) and `Table`.
+`piloop status`, a brief, the API and a UI render each kind their own way, so a section never formats for one reader.
+
+<ContractSection />
 
 ### Built in
 
@@ -643,24 +623,20 @@ one.
 
 On each pass, the daemon asks the stop rule of each active campaign whether the campaign
 goes on, holds, or stops. piloop gives the rule a `StopCase`: the facts that the rule asked for. The rule returns one
-of three answers:
+of four answers:
 
-| Answer | What piloop does |
-|---|---|
-| `Go` | It starts what the campaign needs: runs, sweeps and evaluations. |
-| `Hold(reason)` | It starts no agent and no evaluation for the campaign. Work that runs finishes, and piloop scores it. `piloop status` shows `launches held: <reason>`. |
-| `Stop(reason)` | It stops the campaign. [Cost and spend limits](/concepts/cost#stop-conditions) says what a stop does. |
+<StopAnswers />
 
 A hold is not a pause. piloop asks the rule again on each pass, and the hold ends when the rule answers `Go`. piloop
 does not stop a paused campaign, but it holds one.
 
-The built-in rule is `limits`. It holds the campaign while the spend of `[spend]` is unknown or at `max_spend`. Else
-it stops the campaign at the first of its other limits that the campaign reaches.
+The built-in rule is `limits`. It holds the campaign while a fact of `hold_at` is unknown or at its limit. Else it
+stops the campaign at the first of its other limits that the campaign reaches.
 
 ### Example: end the campaign after a number of keeps
 
 This rule stops the campaign after `keeps` candidates are kept. It [calls the built-in rule](#call-a-built-in-provider)
-`limits` and adds one limit, so the limits of `limits`, such as `max_hours` and `max_spend`, still apply:
+`limits` and adds one limit, so the limits of `limits`, such as `max_hours` and `hold_at`, still apply:
 
 <ExampleStopAfterKeeps />
 
@@ -678,49 +654,56 @@ keeps = 3
 max_hours = 12
 ```
 
+### Example: escalate when a keep costs too much
+
+This rule compares the fact that `spend` names, since the latest keep, with its value per keep so far. Past
+`escalate_at` times, it answers `Escalate` once for each keep; past `stop_at` times, it stops the campaign:
+
+<ExampleKeepCost />
+
+```text
+[plugins.stop_rule]
+provider = "keep_cost"
+spend = "spend"
+escalate_at = 2
+stop_at = 4
+```
+
 ### The contract
 
 A stop rule is a [pure](#pure-plugins) provider, a subclass of `StopRule`. Its fields are its limits and other
-parameters. Import the types from `piloop.capabilities`.
+parameters. Import the types from `piloop.capabilities`. Most facts cost database queries on every pass, so piloop
+gets only those of `reads`. `piloop status` and the briefs join the parts of `describe` into the progress line:
+piloop formats no fact itself.
 
-- `limits() -> dict[Fact, float]`: the limit that the rule sets on each fact that it limits.
-- `reads() -> list[Fact]`: the facts that the rule needs. Most facts cost database queries on every pass, so piloop
-  gets only these. By default, the facts of `limits()`.
-- `check(case: StopCase) -> Go | Hold | Stop`: the answer. `Hold` and `Stop` have a `reason`.
+<ContractStopRule />
 
 piloop cuts each agent's timeout where the rule's limit on `hours` stops the campaign, so a run that starts just
 before the stop ends with it.
 
-The facts are:
+A fact is a typed key, `Fact[T]`, that a [fact source](#fact-sources) of the campaign supplies.
+`case.facts.get(KEEPS)` reads one, and `case.facts.get(reading('spend'))` one that a source reads by name. Every fact
+that a rule reads needs a source in the campaign, or piloop refuses the configuration. The facts of the built-in
+sources `campaign` and `optimization`, from `piloop.capabilities`, and the ratios over facts that a rule names (`spend`, the fact of what the
+campaign spent; `cost`, the evaluator's metric of what one evaluation costs):
 
-- `head`: the primary metric of the head.
-- `runs`: the runs that count toward `max_runs`, and the runs that can still count.
-- `hours`: the hours since the first run started, without the time that the campaign was paused.
-- `tokens`: the tokens that the agents spent.
-- `without_keep`: the runs since the last keep.
-- `keeps`: the candidates of runs that are kept.
-- `spend`: the spend in USD that the `[spend]` command printed last, and why its last run failed, if it failed.
+<Facts />
 
-A `StopCase` has the name and direction of the primary metric, and the facts that the rule asked for (the others are
-None in `case.progress`).
+Each is None while a term is, or when its count is 0. A rule that reads a ratio asks for the facts of its terms.
 
-piloop reads the limits too, by fact. It starts no more runs than the limit on `runs` allows. Research pivots at half
-the limit on `without_keep`. The daemon posts an escalation when the spend reaches the limit on `spend`. A limit on
-`head` needs a campaign of one track.
+piloop reads the limits too, by fact. It starts no more runs than the limit on `RUNS` allows. Research pivots at half
+the limit on `WITHOUT_KEEP`. A limit on `HEAD` needs a campaign of one track.
 
 A stop that a person requests (`piloop campaign stop`) stops the campaign whatever the rule answers, also when the
-rule holds it. The closing review of that stop then follows `closing_review` of `[spend]`
+rule holds it. The closing review of that stop then follows the rule's `while_held`
 ([Cost and spend limits](/concepts/cost#spend-outside-piloop)).
-
-Only the stop rule holds the campaign at the spend limit. A rule that asks for `spend` needs a `[spend]` table, or
-piloop refuses the configuration.
 
 ### Built in
 
 `limits` is the rule of a campaign without `[plugins.stop_rule]`:
 
-1. It holds the campaign while the `[spend]` command has not printed a spend yet, while its last run failed, or while
-   the spend is at `max_spend` or above.
+1. With `hold_at`, it holds the campaign while a fact that it names is not known (no reading yet, or the latest one
+   failed), or is at its limit or above. At the limit, it escalates once.
 2. Else it stops the campaign at the first of its other limits that the campaign reaches.
 
 The hold comes first: a limit does not stop a held campaign.
@@ -732,6 +715,37 @@ plateau = 30
 ```
 
 <Stop />
+
+## Fact sources
+
+A fact source is a provider of `FACT_SOURCES`, a subclass of `FactSource`. `[[facts]]` lists a campaign's sources; a
+campaign that does not list them has every installed source that is on by default (`ON_BY_DEFAULT`): `campaign`, the
+hours and tokens of any campaign, and `optimization`, its research. A list that adds a source lists those too. Two
+sources never supply the same fact.
+
+A `Readings` source (`piloop.plugins.fact_source.kit.readings`) is one that the daemon reads every `interval` seconds,
+outside any transaction. It implements `names` and `read`, and piloop does the rest: each reading is a `fact.read`
+event on the campaign, its one record. It posts a note at each of its `notices`, and escalates once when its readings
+start to fail.
+
+<ContractFactSource />
+
+The built-in `command` runs a command that prints `METRIC <name>=<value>` lines, as the evaluate command does:
+
+```toml
+[[facts]]
+provider = "campaign"
+
+[[facts]]
+provider = "optimization"
+
+[[facts]]
+provider = "command"
+command = ["uv", "run", "scripts/spend.py"]   # prints METRIC spend=412.3
+metrics = ["spend"]
+```
+
+piloop gives no fact a meaning: a stop rule or a section names the facts that it reads.
 
 ## Call a built-in provider
 

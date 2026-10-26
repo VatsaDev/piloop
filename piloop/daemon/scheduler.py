@@ -54,12 +54,10 @@ from piloop.agents.results import (
     queue_prompt,
 )
 from piloop.agents.roles import compose_brief, role_of
-from piloop.campaign import spend
 from piloop.campaign.anomaly import AnomalyReported, assigned
 from piloop.campaign.campaigns import WORKSPACE, CampaignAdded, vcs_of, workspace_dir
 from piloop.campaign.ideas import defined_by, park_stranded, runnable, supersede, waiting
 from piloop.campaign.memory import sync_documents
-from piloop.campaign.spend import SpendError
 from piloop.campaign.stop import (
     CampaignClosed,
     CancelRequested,
@@ -70,11 +68,14 @@ from piloop.campaign.stop import (
     attempts,
     cancelled,
     check as check_stop,
+    escalated,
     held as held_now,
     hours_due,
     limits,
     park_cancelled,
     requested,
+    review_skipped,
+    review_waits,
     runs,
     runs_without_keep,
     settled,
@@ -82,7 +83,7 @@ from piloop.campaign.stop import (
     timeout as agent_timeout,
     unclosed,
 )
-from piloop.config import CampaignConfig, ClosingReview, Spend
+from piloop.config import CampaignConfig
 from piloop.daemon.archiver import Archiver, Archiving, DiskAnomaly
 from piloop.daemon.loop import Consumer, Kinds, Loop, Soonest, Turn
 from piloop.daemon.run_controller import (
@@ -166,9 +167,11 @@ from piloop.ids import (
 )
 from piloop.otel import Tracer
 from piloop.plugins.executor.contract import AgentKey, LeftJob, Prompt
+from piloop.plugins.fact_source import facts
+from piloop.plugins.fact_source.contract import FactReadError, FactSource
 from piloop.plugins.role.contract import ImplementerRole, Stall, SweepRole, ideas_taken
 from piloop.plugins.section.contract import Rendering, markdown
-from piloop.plugins.stop_rule.contract import GO, Fact, Go, Hold, Stop
+from piloop.plugins.stop_rule.contract import GO, STOP_RULES, Go, Hold, Stop, WhileHeld
 from piloop.plugins.trigger.contract import TRIGGERS, Backlog, Fire, TrackBacklog
 from piloop.plugins.vcs.contract import NotARepository
 from piloop.runtime.factory import RuntimeFactory, handle_for, make_runtime, runtime_for
@@ -314,7 +317,8 @@ CAMPAIGN_STATE: Kinds = frozenset(
     }
 )
 """What the pass over the campaigns reads: their ideas, runs, candidates and agents, their status and config, and the
-slots, with the executor's ``capacity_events``. Every fact of a stop rule (``Fact``) changes with one of these, or with time (``hours_due``)."""
+slots, with the executor's ``capacity_events``. Every fact of the ``campaign`` and ``optimization`` sources changes with one of these, or with time (``hours_due``); a reading of a
+source that reads has its own due."""
 IGNORED: Kinds = frozenset(
     {
         PromptOutcome,
@@ -398,8 +402,8 @@ class Scheduler:
         self._stop = threading.Event()
         self._wake: SimpleQueue[None] = SimpleQueue()
         """Ends the loop (``interrupt``): a signal handler may put to it, where it may not set an ``Event``."""
-        self._spend_due: datetime | None = None
-        """When the next ``[spend]`` reading is due: the campaigns' pass then reads it."""
+        self._facts_due: datetime | None = None
+        """When the next reading of a fact source is due (``FactSource.due``): the campaigns' pass then reads it."""
         self._soonest = Soonest()
         """The earliest due that the campaigns' pass found so far."""
         self._launched: list[AgentSessionId] = []
@@ -604,7 +608,7 @@ class Scheduler:
             Consumer('evaluations', EVALUATIONS | capacity, self._evaluations),
             Consumer('prompts', frozenset({Commented, AgentSessionRunning}), self._prompts),
             Consumer('wind_down', WINDING, self._wind_down),
-            Consumer('spend', frozenset({CampaignStatusChanged}), self._read_spend),
+            Consumer('facts', frozenset({CampaignStatusChanged}), self._read_facts),
             Consumer('archiver', ARCHIVING, self._archive),
             Consumer('campaigns', campaign_kinds() | capacity, self._campaigns),
         )
@@ -633,21 +637,21 @@ class Scheduler:
         """Pass over every campaign: its ideas, its stop rule, its remeasures, its triggers, and the launches.
 
         Returns when a pass must come for time alone: the earliest ``due_in`` of a trigger, the end of a ``max_hours``
-        or of a startup pause, or the next spend reading.
+        or of a startup pause, or the next reading of a fact source.
 
         Before the triggers, the pass rejects the ideas that a newer idea superseded (``piloop.campaign.ideas.supersede``),
         and parks those after a prerequisite that ended without a keep (``park_stranded``). This also happens for a
         stopped campaign, which requests nothing and is measured again only on request (``ledger.due``). Then the pass
         asks the stop rule (``piloop.campaign.stop.check``) of each active campaign, and of each stopped one whose
-        closing review waits for a hold (``spend.review_waits``). A campaign that it holds gets only the first step. A
+        closing review waits for a hold (``stop.review_waits``). A campaign that it holds gets only the first step. A
         paused campaign (``piloop pause``) gets no triggers, does not stop at a limit of its stop rule, and launches
         nothing, and with ``all`` it is not measured again either. A stop request stops a held or paused campaign too.
         A stopped campaign launches its closing review, and what a human requests, whatever the pause; while the stop
-        rule holds, as ``[spend] closing_review`` says (``launches``).
+        rule holds, as its ``while_held`` says (``launches``).
         """
         self._collect()
         self._soonest = Soonest()
-        self._soonest.add(self._spend_due)
+        self._soonest.add(self._facts_due)
         launching: list[tuple[Campaign, CampaignConfig]] = []
         with self._db.session() as s:
             for campaign in s.scalars(select(Campaign)).all():
@@ -661,7 +665,7 @@ class Scheduler:
                 for idea_id, prerequisite in park_stranded(s, campaign.id).items():
                     reason = f'after idea#{prerequisite}, which ended without a keep'
                     self._tracer.event('idea.parked', campaign=campaign.name, idea=idea_id, reason=reason)
-                answer = check_stop(s, campaign, cfg) if asked(s, campaign, cfg) else GO
+                answer = escalated(s, campaign, cfg, check_stop(s, campaign, cfg)) if asked(s, campaign, cfg) else GO
                 self._soonest.add(hours_due(s, campaign, cfg, turn.now))
                 held = answer.reason if isinstance(answer, Hold) else None
                 if held is None and campaign.paused is not Pause.ALL:
@@ -703,45 +707,46 @@ class Scheduler:
         """The archiver's job ended: the next turn starts the next one."""
         self.loop.wake('archiver')
 
-    def _read_spend(self, turn: Turn) -> datetime | None:
-        """Run the ``[spend] command`` of each campaign whose ``interval`` is up, and record the result.
+    def _read_facts(self, turn: Turn) -> datetime | None:
+        """Read each fact source of each campaign that is due (``FactSource.due``), and record what it read.
 
         That is each active campaign, and each stopped one whose closing review waits for the hold to end
-        (``spend.review_waits``).
+        (``stop.review_waits``).
 
-        This runs outside any transaction, because the command can take up to ``spend.TIMEOUT``. A write lock held for
-        that long locks all other clients out. The reading is a fact for the stop rule (``Fact.SPEND``): ``limits``
-        holds the campaign while it is unknown or at the limit.
+        The source reads outside any transaction, because a command can take a minute. A write lock held for that long
+        locks all other clients out. The values are facts, for the stop rule among others.
         """
         with self._db.session() as s:
-            todo: list[tuple[int, Path, Spend, float | None]] = []
-            later: list[datetime] = []
+            todo: list[tuple[int, Path, FactSource]] = []
+            later = Soonest()
             for campaign in s.scalars(select(Campaign)):
                 try:
                     cfg = campaign.config
                 except ValidationError:
                     continue  # The campaigns' pass records this error for each campaign.
-                if cfg.spend is None:
+                if not (campaign.status is CampaignStatus.ACTIVE or review_waits(s, campaign, cfg)):
                     continue
-                if not (campaign.status is CampaignStatus.ACTIVE or spend.review_waits(s, campaign, cfg)):
-                    continue
-                if (at := spend.next_at(campaign, cfg.spend)) is not None and at > turn.now:
-                    later.append(at)
-                    continue
-                todo.append((campaign.id, Path(campaign.path), cfg.spend, limits(cfg).get(Fact.SPEND)))
-                later.append(turn.now + timedelta(seconds=cfg.spend.interval))
-        for campaign_id, path, budget, limit in todo:
+                for source in cfg.fact_sources():
+                    if (at := source.due(s, campaign)) is None:
+                        continue
+                    if at > turn.now:
+                        later.add(at)
+                        continue
+                    todo.append((campaign.id, Path(campaign.path), source))
+        for campaign_id, path, source in todo:
             try:
-                reading: float | SpendError = spend.read(budget.command, path)
-            except SpendError as e:
+                reading: dict[str, float] | FactReadError = source.read(path)
+            except FactReadError as e:
                 reading = e
             with self._db.session() as s:
-                spend.record(s, s.get_one(Campaign, campaign_id), budget, limit, reading)
+                campaign = s.get_one(Campaign, campaign_id)
+                source.record(s, campaign, reading)
                 s.commit()
-            self._tracer.event('spend.read', campaign=campaign_id, reading=str(reading))
+                later.add(source.due(s, campaign))
+            self._tracer.event('fact.read', campaign=campaign_id, reading=str(reading))
         # a reading is a fact of the stop rule: the campaigns' pass shares this due, and runs right after the reading
-        self._spend_due = min(later, default=None)
-        return self._spend_due
+        self._facts_due = later.at
+        return self._facts_due
 
     def _remeasure(self, s: Session, campaign: Campaign) -> None:
         """Measure what the current evaluator must measure (``ledger.due``), one candidate at a time per campaign.
@@ -1010,8 +1015,9 @@ class Scheduler:
     ) -> None:
         """Stop the campaign if the answer is a stop. Otherwise queue runs and check every role's triggers.
 
-        ``held`` is why the stop rule holds launches: then only a stop request gets here. ``[spend] closing_review
-        = "skip"`` then closes the campaign with no closing review (``CampaignClosed``) and posts an escalation.
+        ``held`` is why the stop rule holds launches: then only a stop request gets here. A stop rule with
+        ``while_held = "skip"`` then closes the campaign with no closing review (``CampaignClosed``) and posts an
+        escalation.
 
         Triggers requested everything that is pending when the campaign stops, so it is all cancelled. Requested rows
         are closed and queued runs end ``RunEnd.CAMPAIGN_STOPPED``. Their ideas go back to ``ready``. Implementers in
@@ -1030,8 +1036,8 @@ class Scheduler:
         self._drain(s, campaign)
         s.flush()
         answer_done(s)  # a stop with ``now`` waits for ``_wind_down`` to end the running implementers
-        if held is not None and cfg.spend is not None and cfg.spend.closing_review is ClosingReview.SKIP:
-            spend.review_skipped(s, campaign, held)
+        if held is not None and STOP_RULES.selected(cfg.plugins).while_held is WhileHeld.SKIP:
+            review_skipped(s, campaign, held)
             self._close_campaign(s, campaign, cfg, {}, now)
 
     def _close_campaign(
@@ -1040,8 +1046,8 @@ class Scheduler:
         """Close a stopped campaign: sync its ``[memory]`` documents, fire the ``stopped`` triggers of ``sweeping``.
 
         The pass closes a campaign that the daemon stopped once it ``settled``, with every sweeping role: by default,
-        the watchdog's closing review, which can then search the campaign's reports. ``[spend] closing_review =
-        "skip"`` closes it at the stop, with none. The stop and the close are events (``unclosed``), so a daemon that
+        the watchdog's closing review, which can then search the campaign's reports. A stop rule with
+        ``while_held = "skip"`` closes it at the stop, with none. The stop and the close are events (``unclosed``), so a daemon that
         restarts in between still closes it, once.
         """
         try:
@@ -1148,7 +1154,7 @@ class Scheduler:
     def _backlog(self, s: Session, campaign: Campaign, cfg: CampaignConfig, name: RoleName, buffer: int) -> Backlog:
         """Return the campaign's backlog as role ``name`` fills it: ``buffer`` beyond the run slots, its own sweeps."""
         target = cfg.run_slots + buffer
-        if (max_runs := limits(cfg).get(Fact.RUNS)) is not None:
+        if (max_runs := limits(cfg).get(facts.RUNS)) is not None:
             target = min(target, math.floor(max_runs) - runs(s, campaign))
         sweeps = count(
             s,
@@ -1192,7 +1198,7 @@ class Scheduler:
         free = sum(
             max(role.max_concurrent - count(s, open_runs.where(done_by(name))), 0) for name, role in roles.items()
         )
-        if (max_runs := limits(cfg).get(Fact.RUNS)) is not None:
+        if (max_runs := limits(cfg).get(facts.RUNS)) is not None:
             free = min(free, math.floor(max_runs) - runs(s, campaign))
         return max(free, 0)
 
@@ -1814,9 +1820,9 @@ def launches(campaign: Campaign, cfg: CampaignConfig, held: str | None) -> bool:
     """Whether the pass launches the campaign's requested agents, given why the stop rule holds (``held``).
 
     An active campaign launches when nothing holds it: no hold and no pause. A stopped campaign launches its closing
-    review and what a human requests, paused or not. While the stop rule holds, it launches unless ``[spend]
-    closing_review`` is ``wait``.
+    review and what a human requests, paused or not. While the stop rule holds, it launches unless the rule's
+    ``while_held`` is ``wait``.
     """
     if campaign.status is CampaignStatus.ACTIVE:
         return held is None and campaign.paused is None
-    return held is None or cfg.spend is None or cfg.spend.closing_review is not ClosingReview.WAIT
+    return held is None or STOP_RULES.selected(cfg.plugins).while_held is not WhileHeld.WAIT

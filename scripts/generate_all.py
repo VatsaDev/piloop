@@ -13,11 +13,13 @@ from scripts.generate import (
     capabilities,
     cas_providers,
     configuration,
+    contracts,
     cwd_encoders,
     data_model,
     emit,
     evaluate_examples,
     example_inline_executor,
+    example_keep_cost,
     example_min_gain,
     example_nice_runtime,
     example_sqlite_cas,
@@ -66,6 +68,7 @@ GENERATORS = (
     example_sqlite_cas,
     example_min_gain,
     example_stop_after_keeps,
+    example_keep_cost,
     example_inline_executor,
     capabilities,
     openapi,
@@ -76,6 +79,8 @@ def main(mode: Mode) -> None:
     """Generate every file in ``mode``."""
     for generator in GENERATORS:
         emit(generator.PATH, generator.generate(), mode)
+    for path, content in contracts.generate_each().items():  # one module, a file for each contract
+        emit(path, content, mode)
 
 
 if __name__ == '__main__':
