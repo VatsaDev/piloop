@@ -227,6 +227,13 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         action='append',
         help='run the scenarios in this mode only; give it twice for both (default: both)',
     )
+    group.addoption('--e2e-server', help='the URL of the server of tests/e2e/test_remote.py; without it, it is skipped')
+    group.addoption(
+        '--e2e-secret',
+        action='append',
+        help="a secret of the server that the remote scenario's harness gets in its environment. Repeatable.",
+    )
+    group.addoption('--e2e-campaign', help="the name of the remote scenario's campaign (default: e2e-<UTC time>)")
 
 
 @pytest.fixture(autouse=True)
