@@ -47,6 +47,8 @@ from piloop.plugins.section.runs import Runs
 from piloop.plugins.section.queue import Queue
 from piloop.plugins.section.agents import Agents
 from piloop.plugins.section.evaluations import Evaluations
+from piloop.plugins.section.funnel import RunFunnel
+from piloop.plugins.section.cost import Cost
 from piloop.plugins.section.candidates import Candidates
 from piloop.plugins.section.idle_queue import IdleQueue
 from piloop.plugins.section.same_as_parent import SameAsParent

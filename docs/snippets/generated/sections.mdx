@@ -13,11 +13,13 @@
 | `idle_queue` | Free implementer slots with no runnable idea, in an active campaign that is not paused: a cost. | status, sweep | 155 | none |
 | `agents` | The agents: the live ones with their last line, the count of each role, the yield of each source, the tokens. | status, sweep | 160 | none |
 | `evaluations` | The evaluations under the current evaluator: how many crashed, their minutes, and the candidates without a verdict. | status, sweep | 170 | none |
+| `funnel` | The run funnel: ideas → attempts → reached the evaluator → measured → keeps, and how the unmeasured attempts ended. | status, sweep | 175 | none |
 | `candidates` | The latest candidates, oldest first, each with its verdict and its primary score against its parent's. | status, sweep | 180 | none |
 | `same_as_parent` | The candidates whose primary score is exactly their parent's: a cost, since the evaluation saw no change. | status, sweep | 185 | none |
 | `reported` | The latest incidents that the triggers gave to agents, newest first, each with the agent that got it. | status, sweep | 190 | none |
 | `inbox` | The unacknowledged inbox items and the latest decisions and escalations, newest first. | status, sweep | 200 | none |
 | `events` | The latest events of the campaign, newest first. | status, sweep | 210 | none |
+| `cost` | What the campaign spent: per keep, since the latest keep, and with `metric` per evaluation and per attempt. | none | 500 | `spend`, `metric` |
 | `tools` | How an agent queries the database, the transcripts and the history, with every table and its columns. | sweep | 900 | none |
 | `pack` | The research pack, which `piloop history` prints: what a sweep needs to propose work. | sweep | 910 | none |
 | `history` | What was tried: the ideas and their outcomes, the kept lineage, the starting points and the latest findings. | run | 920 | none |

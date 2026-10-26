@@ -255,6 +255,14 @@ head: candidate#2 · score: 3 · score vs baseline: 2 · kept: 2 · candidates: 
 
 evaluations: 3 · crashed: 0 · median: 3 min · first 5: 3 min · latest 5: 3 min · in all: 6 min · waiting for a verdict: 0 candidates
 
+## Funnel
+
+ideas: 4 · attempts: 2 · reached the evaluator: 1 · measured: 1 · keeps: 1
+
+| ended | unmeasured attempts |
+|---|---|
+| failed | 1 |
+
 ## Recent candidates (3 of 3; score)
 
 | candidate | verdict | score | vs parent | run | age | summary |
@@ -438,6 +446,14 @@ def test_the_queue_the_live_agents_the_inbox_and_the_events(db: Database, campai
 ## Evaluations
 
 evaluations: 3 · crashed: 0 · median: 3 min · first 5: 3 min · latest 5: 3 min · in all: 6 min · waiting for a verdict: 0 candidates
+
+## Funnel
+
+ideas: 6 · attempts: 2 · reached the evaluator: 1 · measured: 1 · keeps: 1
+
+| ended | unmeasured attempts |
+|---|---|
+| failed | 1 |
 
 ## Recent candidates (3 of 3; score)
 
