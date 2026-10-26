@@ -23,6 +23,7 @@ from pydantic import JsonValue, ValidationError
 from sqlalchemy import String, case, cast, func, select
 from sqlalchemy.orm import Session
 
+from piloop.actor import Actor
 from piloop.api.contract import LIMIT, MAX_LIMIT
 from piloop.api.views import (
     Batch,
@@ -111,15 +112,15 @@ def read(
     return Batch(events=events, next=page.next, more=page.more)
 
 
-def status_view(s: Session, campaigns: Sequence[Campaign]) -> list[CampaignEntry]:
-    """The state of each campaign, as ``piloop status`` shows it. Call it inside a snapshot for one consistent view."""
+def status_view(s: Session, campaigns: Sequence[Campaign], me: Actor) -> list[CampaignEntry]:
+    """The state of each campaign, as ``piloop status`` shows it to ``me``. Call it inside a snapshot for one view."""
     states: list[CampaignEntry] = []
     for campaign in campaigns:
         match configured(s, campaign):
             case InvalidConfig() as invalid:
                 states.append(invalid)
             case cfg:
-                states.append(_state(s, campaign, cfg))
+                states.append(_state(s, campaign, cfg, me))
     return states
 
 
@@ -139,7 +140,7 @@ def configured(s: Session, campaign: Campaign) -> CampaignConfig | InvalidConfig
         )
 
 
-def _state(s: Session, campaign: Campaign, cfg: CampaignConfig) -> CampaignState:
+def _state(s: Session, campaign: Campaign, cfg: CampaignConfig, me: Actor) -> CampaignState:
     at = head_scores(s, campaign, cfg)
     by_status = select(Idea.status, func.count()).where(Idea.campaign_id == campaign.id).group_by(Idea.status)
     counts: dict[IdeaStatus, int] = {status: n for status, n in s.execute(by_status)}
@@ -182,7 +183,7 @@ def _state(s: Session, campaign: Campaign, cfg: CampaignConfig) -> CampaignState
             LiveAgent(id=w.id, kind=w.kind, state=str(w.state), harness=w.harness, model=w.model, run=w.run_id)
             for w in live_agent_sessions(s, campaign)
         ],
-        inbox=len(inbox.items(s, campaign_id=campaign.id)),
+        inbox=len(inbox.waiting_for(s, me, campaign_id=campaign.id)),
         tokens=campaign_tokens(s, campaign.id),
     )
 
@@ -198,12 +199,13 @@ def parent_of(s: Session, campaign: Campaign) -> Named | None:
 def inbox_view(
     s: Session,
     cursor: int,
+    me: Actor,
     *,
     campaign_id: CampaignId | None = None,
     kinds: Collection[CommentKind] = (),
     acked: bool = False,
 ) -> Inbox:
-    """What ``piloop inbox`` lists, as data, with the same filters (``piloop.campaign.inbox.items``).
+    """What ``piloop inbox`` lists for ``me``, as data, with the same filters (``piloop.campaign.inbox.waiting_for``).
 
     Call it inside the snapshot whose cursor is ``cursor``.
     """
@@ -217,13 +219,14 @@ def inbox_view(
                 campaign=p.id if p else None,
                 campaign_name=p.name if p else None,
                 target=Target(kind=str(c.target_kind), id=c.target_id),
+                in_reply_to=c.in_reply_to,
                 author=c.author,
                 created=iso(c.created_at),
                 acked_at=iso(c.acked_at) if c.acked_at else None,
                 acked_by=c.acked_by,
                 body=c.body,
             )
-            for c, p in inbox.items(s, campaign_id=campaign_id, kinds=kinds, acked=acked)
+            for c, p in inbox.waiting_for(s, me, campaign_id=campaign_id, kinds=kinds, acked=acked)
         ],
         seeds=[inbox.seed_of(i, p) for i, p in inbox.seeds(s, campaign_id=campaign_id)],
     )

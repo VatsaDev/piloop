@@ -126,7 +126,15 @@ def test_documented_procedures_work_verbatim(con: sqlite3.Connection) -> None:
         con, "SELECT kind, actor, target_kind, target_id, payload FROM events WHERE kind = 'comment.escalation'"
     )
     assert events.rows == snapshot(
-        [('comment.escalation', 'me', 'comment', 1, '{"kind":"comment.escalation","target_kind":"idea","target_id":1}')]
+        [
+            (
+                'comment.escalation',
+                'me',
+                'comment',
+                1,
+                '{"kind":"comment.escalation","target_kind":"idea","target_id":1,"in_reply_to":null}',
+            )
+        ]
     )
     with pytest.raises(sqlite3.IntegrityError, match='CHECK constraint failed'):
         sql.run(con, "UPDATE ideas SET status = 'urgent'")
@@ -393,7 +401,13 @@ def test_deletes_leave_tombstones_and_cascades_too(con: sqlite3.Connection) -> N
     assert events(con) == snapshot(
         [
             ('idea.created', 'me', 'idea', 1, '{"kind":"idea.created"}'),
-            ('comment.note', 'me', 'comment', 1, '{"kind":"comment.note","target_kind":"idea","target_id":1}'),
+            (
+                'comment.note',
+                'me',
+                'comment',
+                1,
+                '{"kind":"comment.note","target_kind":"idea","target_id":1,"in_reply_to":null}',
+            ),
             (
                 'comment.deleted',
                 'human',
@@ -428,17 +442,41 @@ def test_every_comment_kind_is_an_event_shaped_like_the_escalation_one(con: sqli
         )
     assert events(con) == snapshot(
         [
-            ('comment.note', 'pi', 'comment', 1, '{"kind":"comment.note","target_kind":"run","target_id":7}'),
-            ('comment.finding', 'pi', 'comment', 2, '{"kind":"comment.finding","target_kind":"run","target_id":7}'),
-            ('comment.decision', 'pi', 'comment', 3, '{"kind":"comment.decision","target_kind":"run","target_id":7}'),
+            (
+                'comment.note',
+                'pi',
+                'comment',
+                1,
+                '{"kind":"comment.note","target_kind":"run","target_id":7,"in_reply_to":null}',
+            ),
+            (
+                'comment.finding',
+                'pi',
+                'comment',
+                2,
+                '{"kind":"comment.finding","target_kind":"run","target_id":7,"in_reply_to":null}',
+            ),
+            (
+                'comment.decision',
+                'pi',
+                'comment',
+                3,
+                '{"kind":"comment.decision","target_kind":"run","target_id":7,"in_reply_to":null}',
+            ),
             (
                 'comment.escalation',
                 'pi',
                 'comment',
                 4,
-                '{"kind":"comment.escalation","target_kind":"run","target_id":7}',
+                '{"kind":"comment.escalation","target_kind":"run","target_id":7,"in_reply_to":null}',
             ),
-            ('comment.message', 'pi', 'comment', 5, '{"kind":"comment.message","target_kind":"run","target_id":7}'),
+            (
+                'comment.message',
+                'pi',
+                'comment',
+                5,
+                '{"kind":"comment.message","target_kind":"run","target_id":7,"in_reply_to":null}',
+            ),
         ]
     ), 'one event per comment: the persistent escalation trigger and the per-connection one never both fire'
 

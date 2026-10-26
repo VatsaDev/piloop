@@ -182,7 +182,7 @@
     "/v1/inbox": {
       "get": {
         "summary": "Inbox",
-        "description": "The inbox items and the seeds, at a cursor.",
+        "description": "The inbox items that the caller did not write, and the seeds, at a cursor.",
         "operationId": "inbox",
         "parameters": [
           {
@@ -559,7 +559,7 @@
     "/v1/inbox/{comment}": {
       "get": {
         "summary": "Thread",
-        "description": "An inbox item in full, and the comments that it cites, that cite it, or that reply to it.",
+        "description": "The thread of a comment, the same for each comment of it: the root in full, its replies, and its citations.",
         "operationId": "thread",
         "parameters": [
           {
@@ -3160,7 +3160,8 @@
         "enum": [
           "acked",
           "already",
-          "not_in_inbox"
+          "not_in_inbox",
+          "own"
         ],
         "title": "AckOutcome",
         "description": "What an acknowledgement did to one id."
@@ -3184,7 +3185,7 @@
               }
             ],
             "title": "Acked By",
-            "description": "Who acknowledged it: the caller, or whoever did before. Null for an id that is not in the inbox."
+            "description": "Who acknowledged it: the caller, or whoever did before. Null while nobody has."
           }
         },
         "type": "object",
@@ -3566,7 +3567,7 @@
           "inbox": {
             "type": "integer",
             "title": "Inbox",
-            "description": "The unacknowledged inbox items."
+            "description": "The unacknowledged inbox items that wait for the caller: those that it did not write."
           },
           "tokens": {
             "type": "integer",
@@ -3835,6 +3836,18 @@
             "title": "Target",
             "description": "What it is about, as ``idea#12``."
           },
+          "in_reply_to": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "In Reply To",
+            "description": "The comment that it answers, when it is a reply. Its target is then the root of the thread."
+          },
           "author": {
             "type": "string",
             "title": "Author"
@@ -3887,6 +3900,7 @@
           "id",
           "kind",
           "target",
+          "in_reply_to",
           "author",
           "created",
           "priority",
@@ -4550,7 +4564,7 @@
             },
             "type": "array",
             "title": "Items",
-            "description": "Most urgent first, then oldest first."
+            "description": "The items that the caller did not write, most urgent first, then oldest first."
           },
           "seeds": {
             "items": {
@@ -4567,7 +4581,7 @@
           "seeds"
         ],
         "title": "Inbox",
-        "description": "What ``piloop inbox`` lists, read at ``cursor``."
+        "description": "What ``piloop inbox`` lists for the caller, read at ``cursor``."
       },
       "InvalidConfig": {
         "properties": {
@@ -4671,6 +4685,18 @@
           "target": {
             "$ref": "#/components/schemas/Target"
           },
+          "in_reply_to": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "In Reply To",
+            "description": "The comment that it answers, when it is a reply. Its target is then the root of the thread."
+          },
           "author": {
             "type": "string",
             "title": "Author"
@@ -4714,6 +4740,7 @@
           "campaign",
           "campaign_name",
           "target",
+          "in_reply_to",
           "author",
           "created",
           "acked_at",
@@ -4860,6 +4887,101 @@
         ],
         "title": "LinkKind",
         "description": "How one idea relates to another in ``idea_links``: it runs *after* the target, or it *supersedes* the target."
+      },
+      "Linked": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "target": {
+            "type": "string",
+            "title": "Target",
+            "description": "What it is about, as ``idea#12``."
+          },
+          "in_reply_to": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "In Reply To",
+            "description": "The comment that it answers, when it is a reply. Its target is then the root of the thread."
+          },
+          "author": {
+            "type": "string",
+            "title": "Author"
+          },
+          "created": {
+            "type": "string",
+            "title": "Created"
+          },
+          "priority": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Priority",
+            "description": "Null for a comment that is not in the inbox."
+          },
+          "acked_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acked At"
+          },
+          "acked_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acked By"
+          },
+          "body": {
+            "type": "string",
+            "title": "Body"
+          },
+          "relation": {
+            "$ref": "#/components/schemas/Relation",
+            "description": "A reply that also cites the root is a ``reply``."
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "target",
+          "in_reply_to",
+          "author",
+          "created",
+          "priority",
+          "acked_at",
+          "acked_by",
+          "body",
+          "relation"
+        ],
+        "title": "Linked",
+        "description": "A comment linked to the root of a thread, and how."
       },
       "LiveAgent": {
         "properties": {
@@ -5504,6 +5626,16 @@
         ],
         "title": "Registered",
         "description": "A campaign that registering added, read at ``cursor``, with its baseline candidate, which the daemon measures."
+      },
+      "Relation": {
+        "type": "string",
+        "enum": [
+          "reply",
+          "cites",
+          "cited_by"
+        ],
+        "title": "Relation",
+        "description": "How a comment of ``Thread.linked`` relates to the root of the thread."
       },
       "RemeasureBody": {
         "properties": {
@@ -6227,14 +6359,16 @@
       "Thread": {
         "properties": {
           "comment": {
-            "$ref": "#/components/schemas/CommentView"
+            "$ref": "#/components/schemas/CommentView",
+            "description": "The root of the thread: the comment itself, or the comment that its target is."
           },
           "linked": {
             "items": {
-              "$ref": "#/components/schemas/CommentView"
+              "$ref": "#/components/schemas/Linked"
             },
             "type": "array",
-            "title": "Linked"
+            "title": "Linked",
+            "description": "The replies, oldest first, then the other comments that cite the root or that it cites, oldest first."
           }
         },
         "type": "object",
@@ -6243,7 +6377,7 @@
           "linked"
         ],
         "title": "Thread",
-        "description": "An inbox item, and the comments that it cites, that cite it, or that reply to it."
+        "description": "The thread of a comment: its root, and the comments linked to the root. Each comment of it has the same thread."
       },
       "TokenBody": {
         "properties": {

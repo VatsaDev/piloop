@@ -21,6 +21,7 @@ from piloop.ids import (
     CampaignId,
     CampaignStatus,
     CandidateId,
+    CommentId,
     CommentKind,
     IdeaId,
     IdeaStatus,
@@ -180,6 +181,8 @@ class Commented(EventModel):
     kind: Literal['comment.note', 'comment.finding', 'comment.decision', 'comment.escalation', 'comment.message']
     target_kind: TargetKind
     target_id: int
+    in_reply_to: CommentId | None = None
+    """The comment that a reply answers (``comments.in_reply_to``). Missing from the events before piloop recorded it."""
 
 
 class AgentSessionRequested(EventModel):

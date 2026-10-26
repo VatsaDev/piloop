@@ -11,7 +11,7 @@ from sqlalchemy import func, select, text, update
 from piloop.actor import System
 from piloop.api.contract import MAX_LIMIT
 from piloop.api.views import CampaignState
-from piloop.campaign import ops
+from piloop.campaign import inbox, ops
 from piloop.db import feed as db_feed
 from piloop.db.events import emit
 from piloop.db.models import (
@@ -237,6 +237,27 @@ def test_a_campaign_filter_follows_each_subject_to_its_campaign(
     ], 'once its row is gone, an event has no campaign, and every campaign filter keeps it: nothing is lost'
 
 
+def test_a_reply_event_is_in_the_tail_of_its_campaign_alone(db: Database, campaign: Campaign, tmp_path: Path) -> None:
+    with db.session() as s:
+        other = Campaign(name='other', path=str(tmp_path / 'other'), config=campaign.config)
+        s.add(other)
+        item = Comment(
+            target=TargetRef(TargetKind.CAMPAIGN, campaign.id), author='watchdog#1', priority=1, body='SSO expired'
+        )
+        s.add(item)
+        s.commit()
+        start = newest(db)
+        answer = inbox.reply(s, item.id, 'logged in', author=System.HUMAN, priority=2).id
+        again = inbox.reply(s, answer, 'thanks', author=System.ORCHESTRATOR, priority=3).id
+        mine = feed.read(s, start, campaign_id=campaign.id).model_dump()
+        theirs = feed.read(s, start, campaign_id=other.id).model_dump()
+    assert [(e['subject']['id'], e['subject']['campaign']) for e in mine['events']] == [
+        (answer, campaign.id),
+        (again, campaign.id),
+    ], 'resolved through the root of the thread'
+    assert theirs['events'] == []
+
+
 def test_a_cursor_ahead_of_the_feed_asks_for_a_new_snapshot_and_bad_bounds_are_refused(
     db: Database, campaign: Campaign
 ) -> None:
@@ -293,8 +314,8 @@ def test_snapshots_carry_the_cursor_they_were_read_at(db: Database, campaign: Ca
         with db_feed.snapshot(s) as cursor:
             other.add(escalation(campaign.id, 'after the cursor'))
             other.commit()
-            [state] = feed.status_view(s, [s.get_one(Campaign, campaign.id)])
-            inbox = feed.inbox_view(s, cursor).model_dump()
+            [state] = feed.status_view(s, [s.get_one(Campaign, campaign.id)], System.HUMAN)
+            inbox = feed.inbox_view(s, cursor, System.HUMAN).model_dump()
         assert feed.read(s, cursor).model_dump()['events'][0]['kind'] == 'comment.escalation', (
             'what the snapshot missed follows it'
         )
@@ -356,5 +377,5 @@ def test_a_campaign_without_a_keep_has_no_head(db: Database, campaign: Campaign)
     with db.session() as s:
         s.execute(update(Candidate).values(verdict=Outcome.DISCARD))
         s.commit()
-        [state] = feed.status_view(s, [s.get_one(Campaign, campaign.id)])
+        [state] = feed.status_view(s, [s.get_one(Campaign, campaign.id)], System.HUMAN)
     assert isinstance(state, CampaignState) and state.head is None and state.kept == 0

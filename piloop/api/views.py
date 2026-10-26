@@ -161,7 +161,7 @@ class CampaignState(View):
     agents: list[LiveAgent]
     """The agents that are starting or running."""
     inbox: int
-    """The unacknowledged inbox items."""
+    """The unacknowledged inbox items that wait for the caller: those that it did not write."""
     tokens: int
 
 
@@ -202,6 +202,8 @@ class Item(View):
     campaign: CampaignId | None
     campaign_name: str | None
     target: Target
+    in_reply_to: CommentId | None
+    """The comment that it answers, when it is a reply. Its target is then the root of the thread."""
     author: str
     created: str
     acked_at: str | None
@@ -229,12 +231,12 @@ def seed_line(seed: Seed) -> str:
 
 
 class Inbox(View):
-    """What ``piloop inbox`` lists, read at ``cursor``."""
+    """What ``piloop inbox`` lists for the caller, read at ``cursor``."""
 
     cursor: int
 
     items: list[Item]
-    """Most urgent first, then oldest first."""
+    """The items that the caller did not write, most urgent first, then oldest first."""
     seeds: list[Seed]
 
 
@@ -408,6 +410,8 @@ class CommentView(View):
     kind: str
     target: str
     """What it is about, as ``idea#12``."""
+    in_reply_to: CommentId | None
+    """The comment that it answers, when it is a reply. Its target is then the root of the thread."""
     author: str
     created: str
     priority: int | None
@@ -417,11 +421,43 @@ class CommentView(View):
     body: str
 
 
+class Relation(StrEnum):
+    """How a comment of ``Thread.linked`` relates to the root of the thread."""
+
+    REPLY = 'reply'
+    """It replies in the thread: its target is the root. ``in_reply_to`` says which comment of the thread it answers."""
+    CITES = 'cites'
+    """It cites the root as ``comment#<id>`` in its body."""
+    CITED_BY = 'cited_by'
+    """The root cites it."""
+
+
+class Linked(CommentView):
+    """A comment linked to the root of a thread, and how."""
+
+    relation: Relation
+    """A reply that also cites the root is a ``reply``."""
+
+    def how(self) -> str:
+        """How it links, as ``piloop inbox show`` prints it."""
+        match self.relation:
+            case Relation.REPLY:
+                return 'a reply' if self.in_reply_to is None else f'answers comment#{self.in_reply_to}'
+            case Relation.CITES:
+                return 'cites it'
+            case Relation.CITED_BY:
+                return 'cited by it'
+            case _:
+                assert_never(self.relation)
+
+
 class Thread(View):
-    """An inbox item, and the comments that it cites, that cite it, or that reply to it."""
+    """The thread of a comment: its root, and the comments linked to the root. Each comment of it has the same thread."""
 
     comment: CommentView
-    linked: list[CommentView]
+    """The root of the thread: the comment itself, or the comment that its target is."""
+    linked: list[Linked]
+    """The replies, oldest first, then the other comments that cite the root or that it cites, oldest first."""
 
 
 class CommentNews(View):
@@ -685,6 +721,8 @@ class AckOutcome(StrEnum):
     """Someone acknowledged it before: ``acked_by`` says who."""
     NOT_IN_INBOX = 'not_in_inbox'
     """No such comment, or one without a priority: nothing to acknowledge."""
+    OWN = 'own'
+    """The caller wrote it. Its recipients acknowledge it, not its author."""
 
 
 class AckResult(View):
@@ -693,7 +731,7 @@ class AckResult(View):
     id: CommentId
     outcome: AckOutcome
     acked_by: str | None
-    """Who acknowledged it: the caller, or whoever did before. Null for an id that is not in the inbox."""
+    """Who acknowledged it: the caller, or whoever did before. Null while nobody has."""
 
     def line(self) -> str:
         """The result as ``piloop inbox ack`` prints it."""
@@ -704,6 +742,8 @@ class AckResult(View):
                 return f'comment#{self.id} was acknowledged already, by {self.acked_by}'
             case AckOutcome.NOT_IN_INBOX:
                 return f'comment#{self.id} is not in the inbox'
+            case AckOutcome.OWN:
+                return f'comment#{self.id} is yours: only its recipients acknowledge it'
             case _:
                 assert_never(self.outcome)
 
@@ -730,7 +770,10 @@ class Messaged(View):
 
 
 def thread_lines(thread: Thread, now: datetime) -> tuple[str, list[str]]:
-    """``thread`` as ``piloop inbox show`` prints it: a title line, the body in full, then each linked comment, cut."""
+    """``thread`` as ``piloop inbox show`` prints it: a title line, the root's body in full, then each linked comment.
+
+    Each linked comment says how it links, and its body is cut.
+    """
     c = thread.comment
     if c.priority is None:
         state = 'not in the inbox'
@@ -739,10 +782,9 @@ def thread_lines(thread: Thread, now: datetime) -> tuple[str, list[str]]:
     else:
         state = f'p{c.priority}, acknowledged by {c.acked_by} {age(datetime.fromisoformat(c.acked_at), now)} ago'
     title = f'comment#{c.id} {c.kind} on {c.target} by {c.author}, {age(datetime.fromisoformat(c.created), now)} ago · {state}'
-    lines = c.body.strip().splitlines()
-    if thread.linked:
-        lines += ['', 'linked: the comments it cites, those citing it, its replies']
+    lines = c.body.strip().splitlines() + ([''] if thread.linked else [])
     for other in thread.linked:
-        head = f'- comment#{other.id} {other.kind} by {other.author}, {age(datetime.fromisoformat(other.created), now)} ago: '
+        when = age(datetime.fromisoformat(other.created), now)
+        head = f'- comment#{other.id} {other.kind} by {other.author}, {when} ago, {other.how()}: '
         lines += (head + block(other.body).replace('\n', '\n  ')).splitlines()
     return title, lines

@@ -138,7 +138,7 @@ def inbox_list(
 
 
 def inbox_show(comment: Annotated[CommentId, cyclopts.Parameter(help='The id of the item.')], /) -> None:
-    """Show one item in full, then the comments that it cites as `comment#<id>`, that cite it, or reply to it."""
+    """Show the thread of a comment: its root in full, the replies with what each answers, then the citations."""
     with Client.connect(daemon_http()) as client:
         title, lines = thread_lines(client.thread(comment), clock())
     common.console.print(title, style='bold', markup=False)

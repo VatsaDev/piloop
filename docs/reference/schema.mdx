@@ -41,6 +41,7 @@ CREATE TABLE comments (
 	id INTEGER NOT NULL,
 	target_kind VARCHAR(16) NOT NULL,
 	target_id INTEGER NOT NULL,
+	in_reply_to INTEGER,
 	author VARCHAR NOT NULL,
 	kind VARCHAR(16) DEFAULT 'note' NOT NULL,
 	body VARCHAR NOT NULL,
@@ -52,9 +53,11 @@ CREATE TABLE comments (
 	updated_by VARCHAR,
 	PRIMARY KEY (id),
 	CONSTRAINT escalation_needs_priority CHECK (kind != 'escalation' OR priority IS NOT NULL),
+	CONSTRAINT reply_is_on_a_comment CHECK (in_reply_to IS NULL OR target_kind = 'comment'),
 	CONSTRAINT "comments.author must be a text value" CHECK (typeof(author) IN ('text')),
 	CONSTRAINT "comments.body must be a text value" CHECK (typeof(body) IN ('text')),
 	CONSTRAINT targetkind CHECK (target_kind IN ('campaign', 'idea', 'run', 'candidate', 'measurement', 'agent_session', 'comment', 'instance')),
+	FOREIGN KEY(in_reply_to) REFERENCES comments (id) ON DELETE SET NULL,
 	CONSTRAINT commentkind CHECK (kind IN ('note', 'finding', 'decision', 'escalation', 'message'))
 );
 CREATE INDEX ix_comments_inbox ON comments (priority, id) WHERE priority IS NOT NULL AND acked_at IS NULL;

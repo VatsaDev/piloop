@@ -458,9 +458,9 @@ their outcomes, the kept lineage, the findings and the digests. A research sweep
 piloop inbox [REF] [--kind KIND]... [--all] [--json]
 ```
 
-Lists the unacknowledged items addressed to you, most urgent first, then the seeds that wait for research. `--kind`
-keeps only items of the given kind: `note`, `finding`, `decision`, `escalation` or `message`. Repeat it to keep
-several kinds. `--all` includes acknowledged items. `--json` prints them as one JSON document, read at one cursor of the
+Lists the unacknowledged items that others wrote to you, most urgent first, then the seeds that wait for research.
+`--kind` keeps only items of the given kind: `note`, `finding`, `decision`, `escalation` or `message`. Repeat it to
+keep several kinds. `--all` includes acknowledged items. `--json` prints them as one JSON document, read at one cursor of the
 [event feed](/reference/event-feed). See [The orchestrator and the inbox](/concepts/orchestrator).
 
 ### piloop inbox show
@@ -469,7 +469,8 @@ several kinds. `--all` includes acknowledged items. `--json` prints them as one 
 piloop inbox show COMMENT_ID
 ```
 
-Prints one item, then the comments linked to it: the comments it cites, the comments that cite it, and its replies.
+Prints the thread of a comment: its root in full, then the replies with the comment that each answers, then the
+comments that cite the root as `comment#<id>` or that the root cites. Every comment of a thread prints the same thread.
 
 ### piloop inbox ack
 
@@ -478,8 +479,9 @@ piloop inbox ack IDS...
 piloop inbox ack --up-to ID [--campaign REF] [--kind KIND]...
 ```
 
-Marks items as seen. `--up-to` marks every unacknowledged item up to that id instead. With `--up-to`, `--campaign`
-keeps only the items of one campaign, and `--kind` keeps only the items of the given kinds. With `IDS`, `--campaign` and
+Marks items as seen. Only the recipients of an item acknowledge it: an item that you wrote is refused. `--up-to`
+marks every unacknowledged item up to that id instead. With `--up-to`, `--campaign` keeps only the items of one
+campaign, and `--kind` keeps only the items of the given kinds. With `IDS`, `--campaign` and
 `--kind` are refused.
 Nothing waits on an acknowledgement. To revise a decision, write a `decision` comment on its target.
 
@@ -489,8 +491,8 @@ Nothing waits on an acknowledgement. To revise a decision, write a `decision` co
 piloop inbox reply ID BODY [--priority N]
 ```
 
-Answers an item with a `decision` on the root of its thread. The answer is an inbox item itself, so it ends
-`piloop inbox wait` for every orchestrator but you.
+Answers an item with a `decision` on the root of its thread, `in_reply_to` the item. The answer is an inbox item
+itself, so it ends `piloop inbox wait` for every orchestrator but you.
 
 ### piloop inbox wait
 

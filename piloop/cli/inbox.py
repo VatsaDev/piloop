@@ -49,7 +49,7 @@ def inbox_reply(
     *,
     priority: Annotated[int, cyclopts.Parameter(help='From 0 (urgent) to 4 (someday).')] = 2,
 ) -> None:
-    """Answer an item with a `decision` on the root of its thread, signed as PILOOP_ACTOR.
+    """Answer an item with a `decision` on the root of its thread, `in_reply_to` the item, signed as PILOOP_ACTOR.
 
     The answer is an inbox item of its own, so every orchestrator but you sees it in `piloop inbox wait`.
     """

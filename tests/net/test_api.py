@@ -55,7 +55,7 @@ from piloop.api.contract import (
     TokenBody,
     defaulted,
 )
-from piloop.api.views import CampaignState, InvalidConfig, Pending, Queued, Status, thread_lines
+from piloop.api.views import AckOutcome, CampaignState, InvalidConfig, Pending, Queued, Relation, Status, thread_lines
 from piloop.cli import common, main as cli
 from piloop.daemon.api import ROUTERS, Handlers, daemon_state, openapi, with_api
 from piloop.db.events import emit
@@ -422,6 +422,9 @@ def test_a_message_signs_as_the_caller_wakes_the_orchestrator_and_its_reply_reac
         threading.Timer(0.2, ana.message, ['demo', MessageBody(body=' what next? ', priority=1)]).start()
         [item] = orchestrator.news(NewsQuery(after=start, wait=20)).items
         assert item.text() == f'comment#1 message p1 on campaign#1 (demo) by {me}: what next?'
+        assert ana.inbox(InboxQuery(campaign='demo')).items == [], 'her own message waits for the orchestrator'
+        [own] = ana.ack(AckBody(ids=(CommentId(1),))).results
+        assert own.outcome is AckOutcome.OWN
         answer = orchestrator.reply(CommentId(1), ReplyBody(body='a cache next: idea#3')).comment
         [acked] = orchestrator.ack(AckBody(ids=(CommentId(1),))).results
         [waiting] = ana.inbox(InboxQuery(campaign='demo')).items
@@ -429,7 +432,17 @@ def test_a_message_signs_as_the_caller_wakes_the_orchestrator_and_its_reply_reac
         assert news.text() == (
             f'comment#{answer.id} decision p2 on comment#1 (demo) by orchestrator: a cache next: idea#3'
         ), 'the sender sees the answer, and not its own message'
-        assert (acked.acked_by, waiting.id, waiting.author) == ('orchestrator', answer.id, 'orchestrator')
+        assert (acked.acked_by, waiting.id, waiting.author, waiting.in_reply_to) == (
+            'orchestrator',
+            answer.id,
+            'orchestrator',
+            1,
+        )
+        thread = ana.thread(answer.id)
+        assert (thread.comment.id, [(c.id, c.relation, c.in_reply_to) for c in thread.linked]) == (
+            1,
+            [(answer.id, Relation.REPLY, 1)],
+        ), 'the thread of a reply is the thread of its root'
         with httpx.Client(base_url=tcp.url, headers={**stamped, PROXY.actor_header: 'human'}) as asking:
             plain = Client(asking).message('demo', MessageBody(body='and then?'))
         with httpx.Client(base_url=tcp.url, headers={**stamped, PROXY.actor_header: 'implementer#12'}) as posing:

@@ -22,7 +22,7 @@ from piloop.campaign import inbox
 from piloop.campaign.ideas import links, superseded_by
 from piloop.config import CampaignConfig
 from piloop.db.models import AgentSession, Campaign, Candidate, Comment, Idea, Origin
-from piloop.ids import CampaignId, CampaignStatus, IdeaStatus, TargetKind, TargetRef
+from piloop.ids import CampaignStatus, IdeaStatus, TargetKind, TargetRef
 from piloop.plugins.cas.contract import Cas
 from piloop.reports.overview import (
     agent_output,
@@ -126,7 +126,7 @@ def campaigns(s: Session, now: datetime, me: Actor) -> list[Item]:
                     ', '.join(NONE if delta is None else metric(delta, signed=True) for _, _, delta in values) or NONE,
                     f'{len(live_agent_sessions(s, p))} agents',
                     f'{len(ready)} ready',
-                    f'{len(waiting(s, p.id, me))} inbox',
+                    f'{len(inbox.waiting_for(s, me, campaign_id=p.id))} inbox',
                     f'{human(spent)} tok' if spent else NONE,
                     NONE if latest is None else f'{latest.kind} {age(latest.at, now)} ago',
                 ),
@@ -136,11 +136,6 @@ def campaigns(s: Session, now: datetime, me: Actor) -> list[Item]:
 
 
 CAMPAIGN_COLUMNS = ('campaign', 'status', 'head', 'vs baseline', 'agents', 'ready', 'inbox', 'tokens', 'last event')
-
-
-def waiting(s: Session, campaign_id: CampaignId, me: Actor) -> list[Comment]:
-    """Return the campaign's unacknowledged inbox items that someone other than ``me`` wrote, most urgent first."""
-    return [c for c, _ in inbox.items(s, campaign_id=campaign_id) if c.author != me.signature]
 
 
 def lines(*parts: str) -> Group:
@@ -160,7 +155,7 @@ class InboxPanel:
                 c.id,
                 (f'p{c.priority}', str(c.kind), c.author, age(c.created_at, ctx.now), cell(c.body)),
             )
-            for c in waiting(s, ctx.campaign.id, ctx.me)
+            for c, _ in inbox.waiting_for(s, ctx.me, campaign_id=ctx.campaign.id)
         ]
 
     def detail(self, s: Session, ctx: Context, key: int) -> RenderableType:

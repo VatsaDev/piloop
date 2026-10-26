@@ -178,6 +178,7 @@ erDiagram
         integer id PK
         varchar target_kind
         integer target_id
+        integer in_reply_to FK
         varchar author
         CommentKind kind
         varchar body
@@ -285,6 +286,7 @@ erDiagram
     agent_sessions |o--o{ leases : "agent_session_id"
     campaigns ||--o{ first_transfers : "campaign_id"
     campaigns |o--o{ secrets : "campaign_id"
+    comments |o--o{ comments : "in_reply_to"
     campaigns ||--o{ techniques : "campaign_id"
     campaigns ||--o{ lessons : "campaign_id"
     campaigns ||--o{ documents : "campaign_id"

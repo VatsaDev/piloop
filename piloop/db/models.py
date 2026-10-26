@@ -1141,6 +1141,7 @@ class Comment(Tracked, Base):
         # the inbox: the widget counts the items not acknowledged on every refresh, and the CLI lists them by priority
         Index('ix_comments_inbox', 'priority', 'id', sqlite_where=text('priority IS NOT NULL AND acked_at IS NULL')),
         CheckConstraint("kind != 'escalation' OR priority IS NOT NULL", name='escalation_needs_priority'),
+        CheckConstraint("in_reply_to IS NULL OR target_kind = 'comment'", name='reply_is_on_a_comment'),
         *text_checks('comments', 'author', 'body'),
     )
 
@@ -1148,6 +1149,11 @@ class Comment(Tracked, Base):
     target_kind: Mapped[TargetKind] = mapped_column(CommentTarget())
     target_id: Mapped[int]
     target: Mapped[TargetRef] = composite('target_kind', 'target_id')
+    in_reply_to: Mapped[CommentId | None] = mapped_column(ForeignKey('comments.id', ondelete='SET NULL'))
+    """The comment that a reply answers, as email's In-Reply-To. The target of a reply stays the root of its thread.
+
+    NULL for a comment that is not a reply, and for a reply written before piloop recorded it.
+    """
     author: Mapped[str]
     """Who wrote the comment, for example ``human``, ``orchestrator`` or ``implementer#12``."""
     kind: Mapped[CommentKind] = mapped_column(default=CommentKind.NOTE, server_default=CommentKind.NOTE.value)

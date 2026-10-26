@@ -155,7 +155,7 @@ CREATE TEMP TRIGGER comments_inserted_event AFTER INSERT ON comments
 WHEN NEW.kind != 'escalation'
 BEGIN
   INSERT INTO events (at, actor, target_kind, target_id, payload)
-  VALUES (strftime('%Y-%m-%d %H:%M:%f', 'now'), NEW.author, 'comment', NEW.id, json_object('kind', 'comment.' || NEW.kind, 'target_kind', NEW.target_kind, 'target_id', NEW.target_id));
+  VALUES (strftime('%Y-%m-%d %H:%M:%f', 'now'), NEW.author, 'comment', NEW.id, json_object('kind', 'comment.' || NEW.kind, 'target_kind', NEW.target_kind, 'target_id', NEW.target_id, 'in_reply_to', NEW.in_reply_to));
 END;
 
 -- The outbox: the writes that the daemon reacts to and that no decision above logs (a requested agent, a new idea, a

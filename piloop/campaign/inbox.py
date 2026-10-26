@@ -13,6 +13,7 @@ They need no action from the human. They are listed so that the human can see wh
 
 import re
 from collections.abc import Collection, Sequence
+from datetime import datetime
 from typing import Final
 
 from sqlalchemy import ColumnElement, ScalarSelect, case, select
@@ -25,8 +26,10 @@ from piloop.api.views import (
     AnomalyNews,
     CommentNews,
     CommentView,
+    Linked,
     News,
     NewsItem,
+    Relation,
     Seed,
     SeedNews,
     StoppedNews,
@@ -51,7 +54,7 @@ def items(
     """Return the inbox items with their campaigns, most urgent first, then oldest first.
 
     Only unacknowledged items are returned, unless ``acked`` is True. ``campaign_id`` and ``kinds`` filter the items.
-    An item whose target has no campaign (a reply to a reply) appears only when ``campaign_id`` is None.
+    An item whose target has no campaign (``campaign_of``) appears only when ``campaign_id`` is None.
     """
     owner = campaign_of(Comment.target_kind, Comment.target_id)
     query = (
@@ -67,6 +70,22 @@ def items(
     if kinds:
         query = query.where(Comment.kind.in_(kinds))
     return [(c, p) for c, p in s.execute(query)]
+
+
+def waiting_for(
+    s: Session,
+    me: Actor,
+    *,
+    campaign_id: CampaignId | None = None,
+    kinds: Collection[CommentKind] = (),
+    acked: bool = False,
+) -> list[tuple[Comment, Campaign | None]]:
+    """Return the inbox items of ``items`` that ``me`` did not write: what ``me`` has to look at.
+
+    A comment is for its recipients. Its author sees it in its thread (``thread_of``), with the answers, and never as
+    an item to acknowledge (``ack``).
+    """
+    return [(c, p) for c, p in items(s, campaign_id=campaign_id, kinds=kinds, acked=acked) if c.author != me.signature]
 
 
 def seeds(s: Session, *, campaign_id: CampaignId | None = None) -> list[tuple[Idea, Campaign]]:
@@ -101,7 +120,8 @@ def news(s: Session, after: int, *, campaign_id: CampaignId | None = None, me: A
 
     The news reports:
 
-    - new unacknowledged inbox items not written by ``me``. The orchestrator's own decisions are for the human.
+    - new unacknowledged inbox items that wait for ``me`` (``waiting_for``). The orchestrator's own decisions are for
+      the human.
     - seeds that someone else filed.
     - campaigns that the daemon stopped.
     - anomalies that the daemon gave to a watchdog.
@@ -123,8 +143,8 @@ def _news(s: Session, events: Sequence[Event], campaign_id: CampaignId | None, m
     fresh = {e.target_id for e in events if isinstance(e.payload, Commented)}
     found: list[NewsItem] = [
         CommentNews(comment=comment_view(c), campaign_name=campaign.name if campaign else None)
-        for c, campaign in items(s, campaign_id=campaign_id)
-        if c.id in fresh and c.author != me.signature
+        for c, campaign in waiting_for(s, me, campaign_id=campaign_id)
+        if c.id in fresh
     ]
     for e in events:
         match e.payload:
@@ -150,19 +170,21 @@ def _news(s: Session, events: Sequence[Event], campaign_id: CampaignId | None, m
 def ack(s: Session, ids: Sequence[CommentId], actor: Actor) -> list[AckResult]:
     """Acknowledge the inbox items ``ids`` as ``actor`` and commit. Return what happened to each id.
 
-    An id that is not an inbox item, or that is already acknowledged, is reported and not changed.
+    An id that is not an inbox item, that ``actor`` wrote, or that is already acknowledged, is reported and not changed.
     """
     now = utcnow()
     results = []
     for comment_id in ids:
-        comment = s.get(Comment, comment_id)
-        if comment is None or comment.priority is None:
-            results.append(AckResult(id=comment_id, outcome=AckOutcome.NOT_IN_INBOX, acked_by=None))
-        elif comment.acked_at is not None:
-            results.append(AckResult(id=comment_id, outcome=AckOutcome.ALREADY, acked_by=comment.acked_by))
-        else:
-            comment.acked_at, comment.acked_by = now, actor.signature
-            results.append(AckResult(id=comment_id, outcome=AckOutcome.ACKED, acked_by=actor.signature))
+        match comment := s.get(Comment, comment_id):
+            case None | Comment(priority=None):
+                results.append(AckResult(id=comment_id, outcome=AckOutcome.NOT_IN_INBOX, acked_by=None))
+            case Comment(author=author) if author == actor.signature:
+                results.append(AckResult(id=comment_id, outcome=AckOutcome.OWN, acked_by=comment.acked_by))
+            case Comment(acked_at=datetime()):
+                results.append(AckResult(id=comment_id, outcome=AckOutcome.ALREADY, acked_by=comment.acked_by))
+            case _:
+                comment.acked_at, comment.acked_by = now, actor.signature
+                results.append(AckResult(id=comment_id, outcome=AckOutcome.ACKED, acked_by=actor.signature))
     s.commit()
     return results
 
@@ -170,15 +192,13 @@ def ack(s: Session, ids: Sequence[CommentId], actor: Actor) -> list[AckResult]:
 def reply(s: Session, comment_id: CommentId, body: str, *, author: Actor, priority: int) -> Comment:
     """Answer inbox item ``comment_id`` as ``author`` with a ``decision`` on the root of its thread, and commit.
 
-    The root is the first comment up the reply chain that is not a reply. A reply to a reply has no campaign, because
-    ``campaign_of`` resolves only one level, so ``piloop inbox wait <campaign>`` would not show it. The priority makes
-    the answer an inbox item, so ``news`` reports it to every orchestrator except its author until it is acknowledged.
+    As in email, the answer is ``in_reply_to`` the item, and its target is the root (``root_of``): threads stay flat,
+    so ``campaign_of`` finds the campaign of every reply. The priority makes the answer an inbox item, so ``news``
+    reports it to every orchestrator except its author until it is acknowledged.
     """
-    root = s.get_one(Comment, comment_id)
-    while root.target_kind is TargetKind.COMMENT and (parent := s.get(Comment, root.target_id)) is not None:
-        root = parent
     answer = Comment(
-        target=TargetRef(TargetKind.COMMENT, root.id),
+        target=TargetRef(TargetKind.COMMENT, root_of(s, s.get_one(Comment, comment_id)).id),
+        in_reply_to=comment_id,
         author=author.signature,
         kind=CommentKind.DECISION,
         priority=priority,
@@ -207,12 +227,20 @@ def message(s: Session, campaign_id: CampaignId, body: str, *, author: Actor, pr
     return sent
 
 
+def root_of(s: Session, comment: Comment) -> Comment:
+    """The root of ``comment``'s thread: the first comment up the chain of targets that is not on a comment."""
+    while comment.target_kind is TargetKind.COMMENT and (parent := s.get(Comment, comment.target_id)) is not None:
+        comment = parent
+    return comment
+
+
 def comment_view(c: Comment) -> CommentView:
     """``c`` as the API shows it."""
     return CommentView(
         id=c.id,
         kind=str(c.kind),
         target=str(c.target),
+        in_reply_to=c.in_reply_to,
         author=c.author,
         created=iso(c.created_at),
         priority=c.priority,
@@ -223,53 +251,61 @@ def comment_view(c: Comment) -> CommentView:
 
 
 def thread_of(s: Session, comment: Comment) -> Thread:
-    """``comment`` and the comments linked to it (``thread``)."""
-    return Thread(comment=comment_view(comment), linked=[comment_view(o) for o in thread(s, comment)])
+    """The thread that ``comment`` is in: its root (``root_of``) and the comments linked to the root (``thread``)."""
+    root = root_of(s, comment)
+    return Thread(
+        comment=comment_view(root),
+        linked=[Linked(**comment_view(c).model_dump(), relation=relation) for c, relation in thread(s, root)],
+    )
 
 
-def thread(s: Session, comment: Comment) -> list[Comment]:
-    """Return the comments linked to an item, in order: those it cites, those that cite it, and its replies.
+def thread(s: Session, root: Comment) -> list[tuple[Comment, Relation]]:
+    """Return the comments linked to the root of a thread, with how: its replies, then those it cites or that cite it.
 
-    A citation is ``comment#<id>`` in the body, for example ``Re: comment#12`` in a decision. Other comments on the
-    same target are not part of the thread. A campaign collects every research finding, and the answer would be
-    lost among them.
+    Each part is oldest first. A citation is ``comment#<id>`` in the body, for example ``Re: comment#12`` in a
+    decision. Other comments on the same target are not part of the thread. A campaign collects every research
+    finding, and the answer would be lost among them.
     """
-    ref = f'comment#{comment.id}'
-    cited = Comment.id.in_(int(n) for n in CITATION.findall(comment.body))
-    citing = Comment.body.op('GLOB', is_comparison=True)(f'*{ref}') | Comment.body.op('GLOB', is_comparison=True)(
+    ref = f'comment#{root.id}'
+    reply = Comment.target == TargetRef(TargetKind.COMMENT, root.id)
+    cites = Comment.body.op('GLOB', is_comparison=True)(f'*{ref}') | Comment.body.op('GLOB', is_comparison=True)(
         f'*{ref}[^0-9]*'
     )
-    replies = Comment.target == TargetRef(TargetKind.COMMENT, comment.id)
-    return list(
-        s.scalars(select(Comment).where(cited | citing | replies, Comment.id != comment.id).order_by(Comment.id))
+    cited = Comment.id.in_(int(n) for n in CITATION.findall(root.body))
+    relation = case((reply, Relation.REPLY.value), (cites, Relation.CITES.value), else_=Relation.CITED_BY.value)
+    rows = s.execute(
+        select(Comment, relation)
+        .where(reply | cites | cited, Comment.id != root.id)
+        .order_by(case((reply, 0), else_=1), Comment.id)
     )
+    return [(c, Relation(r)) for c, r in rows]
 
 
 def campaign_of(target_kind: Mapped[TargetKind], target_id: Mapped[int]) -> ColumnElement[int | None]:
     """Return the campaign that the target of a comment or event belongs to.
 
-    A ``comment`` target, such as a reply or a ``comment.escalation`` event, is resolved one level through that
-    comment's target. A reply to a reply has no campaign.
+    A ``comment`` target is resolved through that comment's target, and through one more comment. That covers every
+    reply, because ``reply`` keeps threads flat: a reply is on its root, and the event of a reply is on the reply.
+    Deeper comments have no campaign.
     """
-    return case(
-        (target_kind == TargetKind.COMMENT, _owner_of_comment(target_id)),
-        *_owner_branches(target_kind, target_id),
-    )
+    return case(*_owner_branches(target_kind, target_id, comments=2))
 
 
-def _owner_of_comment(comment_id: Mapped[int]) -> ColumnElement[int | None]:
+def _owner_of_comment(comment_id: Mapped[int], comments: int) -> ScalarSelect[int | None]:
     parent = aliased(Comment)
     return (
-        select(case(*_owner_branches(parent.target_kind, parent.target_id)))
+        select(case(*_owner_branches(parent.target_kind, parent.target_id, comments)))
         .where(parent.id == comment_id)
         .scalar_subquery()
     )
 
 
 def _owner_branches(
-    target_kind: Mapped[TargetKind], target_id: Mapped[int]
-) -> list[tuple[ColumnElement[bool], Mapped[int] | ScalarSelect[int]]]:
+    target_kind: Mapped[TargetKind], target_id: Mapped[int], comments: int
+) -> list[tuple[ColumnElement[bool], Mapped[int] | ScalarSelect[int] | ScalarSelect[int | None]]]:
+    through = [(target_kind == TargetKind.COMMENT, _owner_of_comment(target_id, comments - 1))] if comments else []
     return [
+        *through,
         (target_kind == TargetKind.CAMPAIGN, target_id),
         (target_kind == TargetKind.IDEA, select(Idea.campaign_id).where(Idea.id == target_id).scalar_subquery()),
         (

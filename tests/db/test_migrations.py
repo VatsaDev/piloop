@@ -220,7 +220,7 @@ CREATE TRIGGER comments_escalation_event AFTER INSERT ON comments
 WHEN NEW.kind = 'escalation'
 BEGIN
   INSERT INTO events (at, actor, target_kind, target_id, payload)
-  VALUES (strftime('%Y-%m-%d %H:%M:%f', 'now'), NEW.author, 'comment', NEW.id, json_object('kind', 'comment.' || NEW.kind, 'target_kind', NEW.target_kind, 'target_id', NEW.target_id));
+  VALUES (strftime('%Y-%m-%d %H:%M:%f', 'now'), NEW.author, 'comment', NEW.id, json_object('kind', 'comment.' || NEW.kind, 'target_kind', NEW.target_kind, 'target_id', NEW.target_id, 'in_reply_to', NEW.in_reply_to));
 END;\
 """,
             'idea_links_campaign': """\
@@ -1872,6 +1872,41 @@ def test_0057_a_built_in_harness_table_that_inherits_an_argv_with_mcp_inherits_i
     command.downgrade(cfg, '0056')
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
         assert con.execute('SELECT config FROM campaigns').fetchall() == [(stored,)]
+
+
+def test_0059_adds_in_reply_to_to_comments_and_their_events_and_downgrades_to_the_old_event(tmp_path: Path) -> None:
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0058')
+    insert = 'INSERT INTO comments (target_kind, target_id, author, kind, priority, body'
+    escalated = "SELECT payload FROM events WHERE kind = 'comment.escalation' ORDER BY id"
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute("INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', '{}')")
+        con.execute(f"{insert}) VALUES ('campaign', 1, 'w', 'escalation', 1, 'SSO')")
+        con.execute(f"{insert}) VALUES ('comment', 1, 'human', 'decision', 2, 'an old reply')")
+    command.upgrade(cfg, '0059')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute('SELECT id, in_reply_to FROM comments ORDER BY id').fetchall() == [(1, None), (2, None)], (
+            'an old reply keeps NULL: nothing says which comment of its thread it answered'
+        )
+        con.execute(f"{insert}, in_reply_to) VALUES ('comment', 1, 'w', 'escalation', 1, 'again', 2)")
+        with pytest.raises(sqlite3.IntegrityError, match='CHECK constraint failed: reply_is_on_a_comment'):
+            con.execute(f"{insert}, in_reply_to) VALUES ('campaign', 1, 'w', 'note', NULL, 'no', 1)")
+        assert [loads(p) for (p,) in con.execute(escalated)] == [
+            {'kind': 'comment.escalation', 'target_kind': 'campaign', 'target_id': 1},
+            {'kind': 'comment.escalation', 'target_kind': 'comment', 'target_id': 1, 'in_reply_to': 2},
+        ], 'the old event keeps its payload'
+        con.execute('PRAGMA foreign_keys = ON')
+        con.execute('DELETE FROM comments WHERE id = 2')
+        assert con.execute('SELECT in_reply_to FROM comments WHERE id = 3').fetchone() == (None,)
+    command.downgrade(cfg, '0058')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute(f"{insert}) VALUES ('campaign', 1, 'w', 'escalation', 1, 'after')")
+        assert loads(con.execute(escalated).fetchall()[-1][0]) == {
+            'kind': 'comment.escalation',
+            'target_kind': 'campaign',
+            'target_id': 1,
+        }, 'the downgraded schema gets the event without the column'
 
 
 def test_0058_admits_the_message_comment_kind_keeps_the_search_and_downgrades_messages_to_notes(

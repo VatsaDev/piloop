@@ -673,10 +673,9 @@ def test_inbox_lists_what_waits_shows_one_with_its_thread_and_acknowledges(
         'comment#2 escalation on campaign#1 by watchdog#2, 0s ago · p1, unacknowledged',
         'SSO expired; log in?',
         '',
-        'linked: the comments it cites, those citing it, its replies',
-        '- comment#1 decision by pi, 0s ago: requeued idea#4, re comment#2',
+        '- comment#5 note by pi, 0s ago, a reply: asked the team in chat',
+        '- comment#1 decision by pi, 0s ago, cites it: requeued idea#4, re comment#2',
         '  Revert: park it',
-        '- comment#5 note by pi, 0s ago: asked the team in chat',
     ]
     run_cli(['inbox', 'ack', '2', '4'])
     assert out().splitlines() == ['comment#2 acknowledged', 'comment#4 is not in the inbox']
@@ -765,9 +764,13 @@ def test_a_message_reaches_the_orchestrator_s_wait_and_its_reply_the_sender_s_in
     assert out().strip() == 'comment#2 decision on comment#1'
     monkeypatch.setattr(common, 'settings', as_human)
     run_cli(['inbox', 'show', '2'])
-    title, answer = out().splitlines()[:2]
-    assert title.startswith('comment#2 decision on comment#1 by orchestrator, ') and answer == 'a cache: idea#3'
-    assert title.endswith(' · p2, unacknowledged')
+    title, *lines = out().splitlines()
+    assert title.startswith('comment#1 message on campaign#1 by human, ') and title.endswith(' · p1, unacknowledged')
+    assert lines == [
+        'what next?',
+        '',
+        '- comment#2 decision by orchestrator, 0s ago, answers comment#1: a cache: idea#3',
+    ], 'a reply shows the thread of its root'
     with pytest.raises(SystemExit, match="^no campaign 'nope'"):
         run_cli(['message', 'nope', 'hello?'])
 

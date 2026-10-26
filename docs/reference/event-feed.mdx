@@ -98,7 +98,7 @@ Every event has the same fields, whatever its kind.
 
 The envelope shows each stored event as it is. It rewrites no row and invents no field. `subject.campaign` is looked up
 when the event is read, so it is null when the row is gone (a deleted idea, its older events and its `idea.deleted`
-included) or has no campaign (a reply to a reply).
+included) or has no campaign (a comment on a reply to a reply).
 
 Only piloop writes events: `piloop sql` cannot insert one, and each payload has the shape of its kind. A row that an
 older piloop let through can still have a payload that is not strict JSON, such as `1e400`, or a time that is not a

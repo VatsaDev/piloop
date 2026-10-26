@@ -1,20 +1,22 @@
 """The inbox: comments with a priority, scoped to a campaign through every target, until someone acknowledges them."""
 
 import re
+from datetime import UTC, datetime
 
 import pytest
 from inline_snapshot import snapshot
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from piloop.actor import Actor, System
+from piloop.actor import Actor, Person, System
+from piloop.api.views import AckOutcome, Relation, thread_lines
 from piloop.campaign import inbox
 from piloop.campaign.anomaly import AnomalyReported
 from piloop.db import feed as db_feed
 from piloop.db.events import emit, in_order
 from piloop.db.models import AgentSession, AgentSessionState, Campaign, Comment, Event, Idea, Measurement, Run, utcnow
 from piloop.db.session import Database
-from piloop.db.triggers.changelog import CommentAcked, IdeaCreated
+from piloop.db.triggers.changelog import CommentAcked, Commented, IdeaCreated
 from piloop.ids import CampaignId, CampaignStatus, CommentId, CommentKind, IdeaStatus, TargetKind, TargetRef
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring.ledger import CandidateJudged
@@ -55,7 +57,8 @@ def test_items_scope_to_the_campaign_through_every_target(db: Database, campaign
                 Comment(target=TargetRef(TargetKind.IDEA, mine.id), author='h', kind=CommentKind.DECISION, body='park'),
                 Comment(target=TargetRef(TargetKind.COMMENT, 1), body='on a comment of the campaign', **escalation),
                 Comment(target=TargetRef(TargetKind.COMMENT, 7), body='on a comment of the other', **escalation),
-                Comment(target=TargetRef(TargetKind.COMMENT, 11), body="two levels deep: nobody's", **escalation),
+                Comment(target=TargetRef(TargetKind.COMMENT, 11), body='two levels deep', **escalation),
+                Comment(target=TargetRef(TargetKind.COMMENT, 13), body="three levels deep: nobody's", **escalation),
             ]
         )
         s.commit()
@@ -67,6 +70,7 @@ def test_items_scope_to_the_campaign_through_every_target(db: Database, campaign
             'on measurement',
             'on implementer',
             'on a comment of the campaign',
+            'two levels deep',
         ], 'the forum (no priority) is not in it'
         assert bodies(inbox.items(s, campaign_id=other.id)) == [
             'other campaign',
@@ -74,20 +78,25 @@ def test_items_scope_to_the_campaign_through_every_target(db: Database, campaign
             'on a comment of the other',
         ]
         everything = inbox.items(s)
-        assert len(everything) == 11, 'unfiltered, the reply to a reply is in it too'
-        assert [p.name if p else None for _, p in everything][-3:] == ['demo', 'other', None]
+        assert len(everything) == 12, 'unfiltered, the comment three levels deep is in it too'
+        assert [p.name if p else None for _, p in everything][-3:] == ['other', 'demo', None]
         lines = [render(db, p).split('## Recent events\n\n')[1].split('\n\n')[0] for p in (campaign, other)]
         recent = [re.sub(r' \d+[smhd] ago', '', line).splitlines() for line in lines]
         assert recent == snapshot(
             [
                 [
+                    '- comment.escalation comment#11',
                     '- comment.decision comment#10',
                     '- comment.finding comment#9',
                     '- comment.escalation comment#6',
                     '- comment.escalation comment#5',
-                    '- comment.escalation comment#4',
                 ],
-                ['- comment.escalation comment#8', '- comment.escalation comment#7', '- idea.created idea#2'],
+                [
+                    '- comment.escalation comment#12',
+                    '- comment.escalation comment#8',
+                    '- comment.escalation comment#7',
+                    '- idea.created idea#2',
+                ],
             ]
         ), "each campaign's escalation events and none of the other's (campaign_of serves events too)"
 
@@ -130,6 +139,21 @@ def test_most_urgent_first_narrowed_by_kind_until_acknowledged(db: Database, cam
         assert [(e.target_id, a.acked_by) for e, a in acked] == [(3, 'human'), (1, 'human')]
 
 
+def test_an_author_never_has_its_own_comment_waiting_nor_acknowledges_it(db: Database, campaign: Campaign) -> None:
+    ana = Person(name='ana')
+    with db.session() as s:
+        sent = inbox.message(s, campaign.id, 'what next?', author=ana, priority=1)
+        assert [c.id for c, _ in inbox.waiting_for(s, ana)] == [], 'not for its author'
+        assert [c.id for c, _ in inbox.waiting_for(s, System.ORCHESTRATOR)] == [sent.id]
+        assert [r.line() for r in inbox.ack(s, [sent.id], ana)] == [
+            'comment#1 is yours: only its recipients acknowledge it'
+        ]
+        assert s.get_one(Comment, sent.id).acked_at is None
+        assert [r.outcome for r in inbox.ack(s, [sent.id], System.ORCHESTRATOR)] == [AckOutcome.ACKED]
+        [own] = inbox.ack(s, [sent.id], ana)
+        assert (own.outcome, own.acked_by) == (AckOutcome.OWN, 'orchestrator'), 'yours, whoever acknowledged it'
+
+
 def test_thread_follows_citations_both_ways_and_the_replies_not_the_rest_of_the_target(
     db: Database, campaign: Campaign
 ) -> None:
@@ -153,12 +177,57 @@ def test_thread_follows_citations_both_ways_and_the_replies_not_the_rest_of_the_
         )
         s.commit()
         escalation, decision = s.get_one(Comment, 2), s.get_one(Comment, 4)
-        assert [c.body for c in inbox.thread(s, escalation)] == [
-            'looking',
-            'floor 2687\nRe: comment#2',
-            'as comment#4 decided, comment#2.',
+        assert [(c.body, r) for c, r in inbox.thread(s, escalation)] == [
+            ('looking', Relation.REPLY),
+            ('floor 2687\nRe: comment#2', Relation.CITES),
+            ('as comment#4 decided, comment#2.', Relation.CITES),
         ]
-        assert [c.id for c in inbox.thread(s, decision)] == [2, 6], 'what it answers, and who cites it'
+        assert [(c.id, r) for c, r in inbox.thread(s, decision)] == [
+            (2, Relation.CITED_BY),
+            (6, Relation.CITES),
+        ], 'what it answers, and who cites it'
+
+
+def test_each_comment_of_a_thread_has_the_thread_of_its_root(db: Database, campaign: Campaign) -> None:
+    on_campaign = TargetRef(TargetKind.CAMPAIGN, campaign.id)
+    with db.session() as s:
+        s.add(Comment(target=on_campaign, author='research#2', kind=CommentKind.FINDING, body='the login expires'))
+        root = Comment(
+            target=on_campaign, author='watchdog#1', kind=CommentKind.ESCALATION, priority=1, body='SSO, see comment#1'
+        )
+        s.add(root)
+        s.commit()
+        first = inbox.reply(s, root.id, 'logged in, Re: comment#2', author=System.ORCHESTRATOR, priority=3)
+        second = inbox.reply(s, first.id, 'thanks', author=System.HUMAN, priority=3)
+        threads = [inbox.thread_of(s, c) for c in (root, first, second)]
+        assert threads[1:] == threads[:-1], 'every member answers the same thread'
+        assert threads[0].comment.id == root.id
+        assert [(c.id, c.relation, c.in_reply_to) for c in threads[0].linked] == [
+            (first.id, Relation.REPLY, root.id),
+            (second.id, Relation.REPLY, first.id),
+            (1, Relation.CITED_BY, None),
+        ], 'a reply that cites its root is a reply'
+        s.add_all(
+            [
+                Comment(target=TargetRef(TargetKind.COMMENT, root.id), author='pi', body='an old reply\nsays nothing'),
+                Comment(target=TargetRef(TargetKind.IDEA, 1), author='pi', body='as comment#2 said'),
+            ]
+        )
+        s.commit()
+        title, lines = thread_lines(inbox.thread_of(s, second), datetime.now(UTC))
+        assert [title.split(', ')[0], *(re.sub(r'\d+s ago', '0s ago', line) for line in lines)] == snapshot(
+            [
+                'comment#2 escalation on campaign#1 by watchdog#1',
+                'SSO, see comment#1',
+                '',
+                '- comment#3 decision by orchestrator, 0s ago, answers comment#2: logged in, Re: comment#2',
+                '- comment#4 decision by human, 0s ago, answers comment#3: thanks',
+                '- comment#5 note by pi, 0s ago, a reply: an old reply',
+                '  says nothing',
+                '- comment#1 finding by research#2, 0s ago, cited by it: the login expires',
+                '- comment#6 note by pi, 0s ago, cites it: as comment#2 said',
+            ]
+        )
 
 
 def test_news_is_what_happened_since_the_cursor_that_the_orchestrator_did_not_write_or_see(
@@ -288,14 +357,27 @@ def test_a_reply_answers_the_root_of_the_thread_and_wakes_the_orchestrator_but_n
         s.commit()
         cursor = s.scalar(select(func.max(Event.id))) or 0
         answer = inbox.reply(s, follow_up.id, '  Revert it: the floor moved.\n', author=System.HUMAN, priority=2)
-        assert (answer.target_kind, answer.target_id, answer.kind, answer.priority, answer.body) == (
+        assert (
+            answer.target_kind,
+            answer.target_id,
+            answer.in_reply_to,
+            answer.kind,
+            answer.priority,
+            answer.body,
+        ) == (
             TargetKind.COMMENT,
             item.id,
+            follow_up.id,
             CommentKind.DECISION,
             2,
             'Revert it: the floor moved.',
-        ), 'a reply to a reply goes to the root: one level from a campaign'
-        assert [c.id for c in inbox.thread(s, item)] == [follow_up.id, answer.id]
+        ), 'a reply to a reply goes to the root, one level from a campaign, and says what it answers'
+        assert [p for e, p in in_order(s, Commented) if e.target_id == answer.id] == [
+            Commented(
+                kind='comment.decision', target_kind=TargetKind.COMMENT, target_id=item.id, in_reply_to=follow_up.id
+            )
+        ]
+        assert [c.id for c, _ in inbox.thread(s, item)] == [follow_up.id, answer.id]
         assert [c.id for c, _ in inbox.items(s, campaign_id=campaign.id)] == [item.id, answer.id, follow_up.id]
         assert news_lines(s, cursor, campaign_id=campaign.id, me=System.ORCHESTRATOR)[1] == [
             'comment#3 decision p2 on comment#1 (demo) by human: Revert it: the floor moved.'

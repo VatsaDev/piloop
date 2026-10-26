@@ -357,10 +357,10 @@ ROUTERS = (router, optimization)
 
 
 @router.get('/status', operation_id='status')
-def status(api: Api, s: Reading, campaigns: Selected) -> Status:
+def status(api: Api, s: Reading, me: Acting, campaigns: Selected) -> Status:
     """The main facts of each campaign, at a cursor."""
     with db_feed.snapshot(s) as cursor:
-        return Status(cursor=cursor, daemon=api.daemon, campaigns=feed.status_view(s, campaigns))
+        return Status(cursor=cursor, daemon=api.daemon, campaigns=feed.status_view(s, campaigns, me))
 
 
 @router.get('/overview', operation_id='overview')
@@ -384,10 +384,10 @@ def overview(api: Api, s: Reading, campaigns: Selected) -> Overview:
 
 
 @router.get('/inbox', operation_id='inbox')
-def inbox(s: Reading, campaign: Narrowed, query: Annotated[InboxQuery, Query()]) -> Inbox:
-    """The inbox items and the seeds, at a cursor."""
+def inbox(s: Reading, me: Acting, campaign: Narrowed, query: Annotated[InboxQuery, Query()]) -> Inbox:
+    """The inbox items that the caller did not write, and the seeds, at a cursor."""
     with db_feed.snapshot(s) as cursor:
-        return feed.inbox_view(s, cursor, campaign_id=campaign, kinds=query.kind, acked=query.acked)
+        return feed.inbox_view(s, cursor, me, campaign_id=campaign, kinds=query.kind, acked=query.acked)
 
 
 @router.get('/events', operation_id='events')
@@ -425,7 +425,7 @@ async def news(
 
 @router.get('/inbox/{comment}', operation_id='thread')
 def thread(s: Reading, comment: CommentId) -> Thread:
-    """An inbox item in full, and the comments that it cites, that cite it, or that reply to it."""
+    """The thread of a comment, the same for each comment of it: the root in full, its replies, and its citations."""
     if (found := s.get(Comment, comment)) is None:
         raise Refusal(HTTPStatus.NOT_FOUND, Problem.UNKNOWN_COMMENT, f'no comment#{comment}')
     return inbox_module.thread_of(s, found)
@@ -443,7 +443,7 @@ def register_campaign(api: Api, s: Writing, me: Acting, body: Registration) -> R
     documents = sync_documents(s, campaign, campaign.config, me)
     s.flush()
     cursor = db_feed.newest(s)  # read in the write: no event of the baseline's measurement can come before it
-    view = feed.status_view(s, [campaign])[0]
+    view = feed.status_view(s, [campaign], me)[0]
     s.commit()
     return Registered(cursor=cursor, campaign=view, baseline=baseline.id, documents=documents)
 
@@ -486,7 +486,9 @@ def sync_campaign(s: Writing, me: Acting, campaign: Addressed) -> CampaignSynced
     documents = sync_documents(s, campaign, campaign.config, me)
     s.commit()
     with db_feed.snapshot(s) as cursor:
-        return CampaignSynced(cursor=cursor, campaign=feed.status_view(s, [campaign])[0], was=was, documents=documents)
+        return CampaignSynced(
+            cursor=cursor, campaign=feed.status_view(s, [campaign], me)[0], was=was, documents=documents
+        )
 
 
 @router.post('/campaigns/{campaign}/messages', operation_id='message', dependencies=[Depends(actor_access)])
@@ -498,19 +500,19 @@ def message(s: Writing, me: Acting, campaign: Addressed, body: MessageBody) -> M
 
 
 @router.post('/campaigns/{campaign}/pause', operation_id='pause', dependencies=[Depends(actor_access)])
-def pause(s: Writing, campaign: Addressed, body: PauseBody) -> CampaignAnswer:
+def pause(s: Writing, me: Acting, campaign: Addressed, body: PauseBody) -> CampaignAnswer:
     """Pause a campaign: nothing new launches, and nothing is escalated. Running work goes on."""
     ops.pause(s, campaign.id, evals=body.evals, reason=body.reason)
     s.commit()
-    return _campaign_answer(s, campaign)
+    return _campaign_answer(s, campaign, me)
 
 
 @router.post('/campaigns/{campaign}/resume', operation_id='resume', dependencies=[Depends(actor_access)])
-def resume(s: Writing, campaign: Addressed) -> CampaignAnswer:
+def resume(s: Writing, me: Acting, campaign: Addressed) -> CampaignAnswer:
     """Resume a paused campaign. The daemon queues runs and requests roles again at once."""
     ops.resume(s, campaign.id)
     s.commit()
-    return _campaign_answer(s, campaign)
+    return _campaign_answer(s, campaign, me)
 
 
 @router.post('/campaigns/{campaign}/stop', operation_id='stop', dependencies=[Depends(actor_access)])
@@ -518,7 +520,7 @@ def stop(s: Writing, me: Acting, campaign: Addressed, body: StopBody) -> Campaig
     """Stop a campaign at once, as when a ``[stop]`` condition holds. The daemon ends its agents as ``ending`` says."""
     ops.stop(s, campaign.id, me, reason=body.reason, ending=body.ending)
     s.commit()
-    return _campaign_answer(s, campaign)
+    return _campaign_answer(s, campaign, me)
 
 
 @optimization.post('/campaigns/{campaign}/ideas', operation_id='add_idea', dependencies=[Depends(actor_access)])
@@ -930,9 +932,9 @@ def reply(s: Writing, me: Acting, comment: Commented, body: ReplyBody) -> Replie
         return Replied(cursor=cursor, comment=inbox_module.comment_view(answer))
 
 
-def _campaign_answer(s: Session, campaign: Campaign) -> CampaignAnswer:
+def _campaign_answer(s: Session, campaign: Campaign, me: Actor) -> CampaignAnswer:
     with db_feed.snapshot(s) as cursor:
-        return CampaignAnswer(cursor=cursor, campaign=feed.status_view(s, [campaign])[0])
+        return CampaignAnswer(cursor=cursor, campaign=feed.status_view(s, [campaign], me)[0])
 
 
 def _news(db: Database, campaign: CampaignId | None, me: Actor, after: int | None) -> News:
