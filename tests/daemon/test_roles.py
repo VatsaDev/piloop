@@ -13,6 +13,7 @@ from covalence import Cas as Covalence
 from sqlalchemy import select
 
 from piloop.actor import System
+from piloop.agents.results import PromptOutcome
 from piloop.campaign import ops
 from piloop.campaign.stop import left
 from piloop.cli import common, main as cli
@@ -21,12 +22,14 @@ from piloop.config import CampaignConfig, ConfigError, load_campaign_config
 from piloop.daemon.main import Daemon
 from piloop.daemon.run_controller import RunController
 from piloop.daemon.scheduler import Scheduler, awake_roles, quiet_phase
+from piloop.db.events import in_order
 from piloop.db.models import (
     AgentSession,
     AgentSessionState,
     Campaign,
     Candidate,
     Comment,
+    Event,
     Idea,
     Measurement,
     Run,
@@ -356,6 +359,26 @@ def test_a_request_for_a_role_that_piloop_toml_no_longer_has_is_refused(
     assert (row.state, row.error) == (AgentSessionState.KILLED, 'no [roles.reviewer] in piloop.toml')
 
 
+def test_a_note_on_a_sweep_that_has_not_started_is_in_its_brief_and_is_not_sent_again(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    configure(db, campaign, '#!/bin/sh\ntrue\n', watchdog={'triggers': []})
+    with db.session() as s:
+        s.add(AgentSession(kind=WATCHDOG, campaign_id=campaign.id, reason='by hand'))
+        s.flush()
+        on_it = TargetRef(TargetKind.AGENT_SESSION, 1)
+        s.add(Comment(target=on_it, author='human', kind=CommentKind.NOTE, body='look at run#4 first'))
+        s.commit()
+    sched = scheduler(db, recording(runtime, []), tmp_path)
+    assert sched.run_all() == [1]
+    sched.wait()
+    sched.stop(timeout=5)
+    assert '\n# Notes\nlook at run#4 first\n' in (tmp_path / 'agent_sessions' / '1' / 'brief.md').read_text()
+    with db.session() as s:
+        got = in_order(s, PromptOutcome, Event.target == on_it)
+        assert [(o.kind, o.comment) for _, o in got] == [('comment.delivered', 1)]
+
+
 def test_a_hand_over_leaves_a_sweep_running_and_the_next_scheduler_re_attaches_to_it(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
@@ -386,7 +409,6 @@ ENTRY_POINTS = [
     EntryPoint('every_pass', f'{PLUGIN}:EveryPass', TRIGGER_GROUP),
     EntryPoint('awake', f'{PLUGIN}:Awake', TRIGGER_GROUP),
     EntryPoint('broken', f'{PLUGIN}:Broken', TRIGGER_GROUP),
-    EntryPoint('steering', f'{PLUGIN}:Steering', TRIGGER_GROUP),
     EntryPoint('auditor', f'{PLUGIN}:Auditor', ROLE_GROUP),
     EntryPoint('quick', f'{PLUGIN}:Quick', ROLE_GROUP),
     EntryPoint('typed', f'{PLUGIN}:Typed', RUNTIME_GROUP),
@@ -432,8 +454,7 @@ def test_a_package_adds_a_role_and_triggers_through_entry_points(
 ) -> None:
     """``piloop init`` stores the package's role with its defaults, under the table of ``piloop.toml``.
 
-    The daemon runs it on the package's trigger. A trigger that raises, or steers while no agent of its role is live,
-    is traced, and the role's other triggers fire.
+    The daemon runs it on the package's trigger. A trigger that raises is traced, and the role's other triggers fire.
     """
     cfg = load_campaign_config(Path(campaign.path))
     auditor = cfg.roles.sweeping()[RoleName('auditor')]
@@ -447,7 +468,7 @@ def test_a_package_adds_a_role_and_triggers_through_entry_points(
         db,
         campaign,
         '#!/bin/sh\ntrue\n',
-        auditor={'triggers': [{'provider': 'broken'}, {'provider': 'steering'}, {'provider': 'every_pass'}]},
+        auditor={'triggers': [{'provider': 'broken'}, {'provider': 'every_pass'}]},
     )
     sched = scheduler(db, recording(runtime, []), tmp_path)
     assert sched.run_all() == [1]
@@ -458,10 +479,6 @@ def test_a_package_adds_a_role_and_triggers_through_entry_points(
     assert brief.startswith('# Audit\n')
     lines = console_lines(capsys.readouterr().err)
     assert 'trigger.failed Ns campaign=demo role=auditor trigger=broken error=the probe is down' in lines
-    assert (
-        'trigger.failed Ns campaign=demo role=auditor trigger=steering'
-        ' error=it steers [roles.auditor], but no agent of the role is live' in lines
-    )
 
 
 def test_only_a_trigger_that_names_the_quiet_phase_fires_and_launches_while_its_campaign_is_paused_or_stopped(

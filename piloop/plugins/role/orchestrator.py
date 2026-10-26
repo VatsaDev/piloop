@@ -2,7 +2,7 @@
 
 Off by default: with ``triggers = []``, the person runs an orchestrator of their own (the ``piloop-operate`` skill), and
 piloop launches none. ``triggers = [{ provider = "news" }]`` turns it on. Each agent of the role resumes the session of
-the one before (``continuity = "resume"``), and takes the news that its row took (``NewsTaken``).
+the one before (``continuity = "resume"``). The news comes in notes on its row (the ``news`` trigger).
 """
 
 from importlib.resources import files
@@ -10,17 +10,9 @@ from typing import ClassVar
 
 from pydantic import Field
 
-from piloop.campaign import inbox
-from piloop.db.events import latest
-from piloop.db.models import Event
-from piloop.ids import TargetKind, TargetRef
-from piloop.plugins.role.contract import Continuity, Files, Sweep, SweepRole, Verb
+from piloop.plugins.role.contract import Continuity, Files, SweepRole, Verb
 from piloop.plugins.section.contract import SectionEntry
 from piloop.plugins.trigger.contract import TriggerEntry
-from piloop.plugins.trigger.news import NewsTaken
-
-SHOWN = 50
-"""The most news items that one brief lists: the newest ones."""
 
 
 class OrchestratorRole(SweepRole):
@@ -35,6 +27,7 @@ class OrchestratorRole(SweepRole):
             ('journal',),
             ('cas', 'get'),
             ('restore',),
+            ('inbox',),
             ('inbox', 'show'),
             ('inbox', 'ack'),
             ('inbox', 'reply'),
@@ -83,22 +76,7 @@ class OrchestratorRole(SweepRole):
             {'provider': 'queue'},
             {'provider': 'agents'},
             {'provider': 'candidates'},
-            {'provider': 'inbox'},
         ],
         validate_default=True,
     )
     """The status that each brief shows after the news: lean, because each one stays in the resumed session."""
-
-    def context(self, sweep: Sweep) -> list[str]:
-        """The news that this agent's row took when it was requested (``NewsTaken``), as ``piloop inbox wait`` prints it.
-
-        News that came after the request goes to the agent in notes once it is live (``Steer``).
-        """
-        s, row = sweep.s, sweep.agent_session
-        took = latest(s, NewsTaken, Event.target == TargetRef(TargetKind.AGENT_SESSION, row.id))
-        if took is None:
-            return ['- News: none; this agent was asked for by hand. Read the inbox and the status.']
-        found = inbox.news(s, took[1].after, campaign_id=row.campaign_id, party=row.kind, upto=took[1].upto).items
-        shown = found[-SHOWN:]
-        more = f' ({len(found) - len(shown)} older items left out)' if len(found) > len(shown) else ''
-        return ['# News', f'{len(found)} items since the last orchestrator{more}:', *(f'- {i.text()}' for i in shown)]

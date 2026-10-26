@@ -5,6 +5,7 @@ that starts, waits for and closes an agent process. It never raises: a failure g
 """
 
 import threading
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
@@ -21,6 +22,7 @@ from piloop.agents.results import (
     Ended,
     HandedOver,
     NotStarted,
+    PromptOutcome,
     SessionNotResumed,
     Unresumed,
     ended_of,
@@ -32,7 +34,7 @@ from piloop.config import BRIEF_FILE, CampaignConfig
 from piloop.db.events import emit, latest
 from piloop.db.models import LIVE, AgentSession, AgentSessionState, Campaign, Event, utcnow
 from piloop.db.session import Database
-from piloop.ids import AgentSessionId, RunId, TargetKind, TargetRef
+from piloop.ids import AgentSessionId, CommentId, RunId, TargetKind, TargetRef
 from piloop.otel import Span, Tracer
 from piloop.plugins.executor.contract import AgentJob, AgentKey, Executor, ExecutorConfig, LeftJob, Resume, Source
 from piloop.plugins.harness.contract import SESSION_ID, cleared_env, fill, of_provider, takes_session_id
@@ -87,6 +89,7 @@ class Launcher:
         timeout: float,
         capture: RunId | None = None,
         resumed_brief: Cid | None = None,
+        read: Sequence[CommentId] = (),
     ) -> Ended:
         """Run agent session row ``agent_session_id`` to the end on the executor, and return how it ended.
 
@@ -96,13 +99,17 @@ class Launcher:
         come back into ``place`` under this home. With ``capture``, its work comes back too: ``Ran.work``. ``timeout``
         is the seconds that the agent may run. With ``resumed_brief``, the brief of a resumed session (only what is
         new), the agent continues the harness session of its role's last agent (``resumable``), else it starts anew.
+        ``read`` are the notes on the row that the brief carries: they are delivered (``comment.delivered``) as the row
+        starts, so they are not sent again.
         """
         with self.tracer.span('piloop.agent', agent_session=agent_session_id) as span:
             with self.lock:
                 try:
                     if self.cancelled.is_set():
                         return DaemonStopped()
-                    job = self._prepare(agent_session_id, span, brief, place, artifact, timeout, capture, resumed_brief)
+                    job = self._prepare(
+                        agent_session_id, span, brief, place, artifact, timeout, capture, resumed_brief, read
+                    )
                     self.executor.submit(job)
                 except Exception as e:  # a harness or a runtime that piloop.toml no longer has, an executor's refusal
                     span.error(e)
@@ -153,6 +160,7 @@ class Launcher:
         timeout: float,
         capture: RunId | None,
         resumed_brief: Cid | None,
+        read: Sequence[CommentId],
     ) -> AgentJob:
         """Fill in the row, mark it ``starting``, emit ``<kind>.started``, and return the agent's job.
 
@@ -234,7 +242,10 @@ class Launcher:
                 reason=reason,
                 resumes=None if source is None else source.agent_session,
             )
-            emit(s, started, TargetRef(TargetKind.AGENT_SESSION, agent_session_id), System.DAEMON)
+            on_it = TargetRef(TargetKind.AGENT_SESSION, agent_session_id)
+            emit(s, started, on_it, System.DAEMON)
+            for note in read:
+                emit(s, PromptOutcome(kind='comment.delivered', comment=note), on_it, System.DAEMON)
             learn(s, w, resumes.session_id if resumes is not None else session_id)
             s.commit()
             return job

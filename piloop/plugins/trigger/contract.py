@@ -221,16 +221,18 @@ class Fire:
 
 @dataclass(frozen=True)
 class Steer:
-    """A trigger that hands its news to the role's live agent (``Pass.live``) instead of requesting a row.
+    """A note for the role's agent: on its newest open row, or else on a row that the daemon requests for it.
 
-    The daemon writes ``text`` as a note on the role's newest live agent, which gets it as any note: in its turn
-    through its harness's hook, or else when its turn ends. The note makes another pass, so a trigger steers only for
-    what its earlier notes did not take.
+    An open row is requested, starting or running. An agent gets the notes written on its row before it starts in its
+    brief, and the later ones as it works: in its turn through its harness's hook, or else when its turn ends. The note
+    makes another pass, so a trigger steers only for what its earlier notes did not take.
     """
 
     text: str
+    reason: str
+    """The ``agent_sessions.reason`` of the row that the daemon requests when the role has none open."""
     events: tuple[EventModel, ...] = ()
-    """The events to emit on the note. Whether the agent read it is its ``comment.delivered`` on the agent."""
+    """The events to emit on the note. Whether the agent got it is its ``comment.delivered`` on the agent."""
 
 
 class Trigger(Parameters, ABC):
@@ -255,7 +257,7 @@ class Trigger(Parameters, ABC):
 
     @abstractmethod
     def fire(self, p: Pass) -> Fire | Steer | None:
-        """Return the request that the trigger makes now, or None. Only while the role is live, a ``Steer``."""
+        """Return the request that the trigger makes now, the note that it writes (``Steer``), or None."""
 
     @abstractmethod
     def due_in(self, p: Pass) -> timedelta | None:

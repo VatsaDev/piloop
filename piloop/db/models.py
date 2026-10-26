@@ -224,6 +224,8 @@ class AgentSessionState(StrEnum):
 
 
 LIVE = (AgentSessionState.STARTING, AgentSessionState.RUNNING, AgentSessionState.ENDING)
+OPEN = (AgentSessionState.REQUESTED, *LIVE)
+"""An agent that is requested or live: its row is not closed yet."""
 ENDED = (AgentSessionState.EXITED, AgentSessionState.KILLED)
 
 

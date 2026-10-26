@@ -103,6 +103,7 @@ from piloop.db.events import emit, has, in_order
 from piloop.db.models import (
     LIVE,
     NOT_RETIRED,
+    OPEN,
     OPEN_RUNS,
     AgentSession,
     AgentSessionState,
@@ -823,29 +824,26 @@ class Scheduler:
     def _unseen(self, s: Session, agent_session: AgentSession) -> list[Comment]:
         """Return the comments for the agent that have no outcome yet: on the agent, or on an implementer's run or idea.
 
-        For a run, only the comments since the run started: the brief has the older ones, because the transaction that
-        composes the brief sets ``Run.started_at``. The comparison uses whole seconds. A raw INSERT sets ``created_at``
-        to ``CURRENT_TIMESTAMP``, which has second precision, but ``started_at`` is a Python timestamp. So a comment
-        written in the same second as the brief can reach the implementer twice. That is better than never. The agent's
-        own comments are not sent back. An implementer signs as ``implementer#<id>`` (its ``PILOOP_ACTOR``) or ``run#<id>``.
+        A comment on the agent reaches it once: a sweep's brief carries those written before it started, and records
+        them delivered. On a run or an idea, only the comments since the run started: the brief has the older ones,
+        because the transaction that composes the brief sets ``Run.started_at``. The comparison uses whole seconds. A
+        raw INSERT sets ``created_at`` to ``CURRENT_TIMESTAMP``, which has second precision, but ``started_at`` is a
+        Python timestamp. So a comment written in the same second as the brief can reach the implementer twice. That is
+        better than never. The agent's own comments are not sent back. An implementer signs as ``implementer#<id>`` (its
+        ``PILOOP_ACTOR``) or ``run#<id>``.
         """
-        on_agent = (Comment.target_kind == TargetKind.AGENT_SESSION) & (Comment.target_id == agent_session.id)
+        pushed = (Comment.target_kind == TargetKind.AGENT_SESSION) & (Comment.target_id == agent_session.id)
         own: tuple[str, ...] = (Agent(role=agent_session.kind, session=agent_session.id).signature,)
-        since = agent_session.started_at
         run = s.get(Run, agent_session.run_id) if agent_session.run_id is not None else None
         if run is not None:
             on_run = (Comment.target_kind == TargetKind.RUN) & (Comment.target_id == run.id)
             on_idea = (Comment.target_kind == TargetKind.IDEA) & (Comment.target_id == run.idea_id)
-            on_agent = on_agent | on_run | on_idea
-            own, since = (*own, f'run#{run.id}'), run.started_at or since
+            since = (run.started_at or agent_session.started_at).strftime('%Y-%m-%d %H:%M:%S')
+            pushed = pushed | ((on_run | on_idea) & (func.strftime('%Y-%m-%d %H:%M:%S', Comment.created_at) >= since))
+            own = (*own, f'run#{run.id}')
         on_agent_session = Event.target == TargetRef(TargetKind.AGENT_SESSION, agent_session.id)
         settled = {p.comment for _, p in in_order(s, PromptOutcome, on_agent_session)}
-        comments = s.scalars(
-            select(Comment)
-            .where(on_agent, Comment.kind.in_(PUSHED_KINDS))
-            .where(func.strftime('%Y-%m-%d %H:%M:%S', Comment.created_at) >= since.strftime('%Y-%m-%d %H:%M:%S'))
-            .order_by(Comment.id)
-        ).all()
+        comments = s.scalars(select(Comment).where(pushed, Comment.kind.in_(PUSHED_KINDS)).order_by(Comment.id)).all()
         return [c for c in comments if c.id not in settled and c.author not in own]
 
     def _wind_down(self, turn: Turn) -> datetime | None:
@@ -1098,16 +1096,16 @@ class Scheduler:
         stopping: bool = False,
         quiet: Quiet | None = None,
     ) -> None:
-        """Insert requested rows when the role's triggers fire. One batch per call, however many triggers fire.
+        """Insert requested rows when the role's triggers fire, and write the notes of those that steer.
 
         The triggers fire in the order of the role's list (``piloop.plugins.trigger``): those with ``ON_STOP`` when the
         campaign is ``stopping``, else the others, and in a ``quiet`` phase only those that name it
-        (``Trigger.WHILE``). A fire that needs a row of its
-        own (``Fire.alone``) shares its row only with the other such fires, when one comes first, and otherwise waits
-        for a later pass. The others share one batch: the largest count of rows, with every reason. The first row gets the events of the fires. A
-        trigger that steers (``Steer``) writes its note at once (``_steer``). A
-        trigger that raises is traced and does not fire. The ``due_in`` of each trigger that did not fire goes into the
-        pass's due.
+        (``Trigger.WHILE``). While a request of the role waits, a fire requests nothing more. A fire that needs a row of
+        its own (``Fire.alone``) shares its row only with the other such fires, when one comes first, and otherwise
+        waits for a later pass. The others share one batch: the largest count of rows, with every reason. The first row
+        gets the events of the fires. Then each note of a trigger that steers goes on the role's open row
+        (``_steer``). A trigger that raises is traced and does not fire. The ``due_in`` of each trigger that did not
+        fire goes into the pass's due.
         """
         latest = s.scalars(
             select(AgentSession)
@@ -1115,29 +1113,37 @@ class Scheduler:
             .order_by(AgentSession.id.desc())
             .limit(1)
         ).first()
-        if latest is not None and latest.state is AgentSessionState.REQUESTED:
-            return  # One pending request per role is enough.
+        waits = latest is not None and latest.state is AgentSessionState.REQUESTED
         p = self._pass(s, campaign, cfg, name, role, now, left, quiet)
         fires: list[Fire] = []
+        steers: list[Steer] = []
         for trigger in (t for t in role.triggers if t.ON_STOP is stopping and (quiet is None or quiet in t.WHILE)):
             try:
                 fire = trigger.fire(p)
                 due = trigger.due_in(p) if fire is None else None
-                match fire:
-                    case Steer():
-                        self._steer(s, p, fire)
-                    case Fire():
-                        fires.append(fire)
-                    case None:
-                        self._soonest.add(None if due is None else now + due)
-                    case _:
-                        assert_never(fire)
             except Exception as e:  # A trigger of a package, or a query that the schema no longer runs.
                 self._tracer.event(
                     'trigger.failed', campaign=campaign.name, role=name, trigger=TRIGGERS.name_of(trigger), error=str(e)
                 )
-        if not fires:
-            return
+                continue
+            match fire:
+                case Steer():
+                    steers.append(fire)
+                case Fire() if waits:  # one pending request per role is enough
+                    pass
+                case Fire():
+                    fires.append(fire)
+                case None:
+                    self._soonest.add(None if due is None else now + due)
+                case _:
+                    assert_never(fire)
+        if fires:
+            self._fire(s, campaign, name, fires)
+        for steer in steers:
+            self._steer(s, p, steer)
+
+    def _fire(self, s: Session, campaign: Campaign, name: RoleName, fires: list[Fire]) -> None:
+        """Insert the requested rows of ``fires``: those of the first's kind (``Fire.alone``), in one batch."""
         fires = [f for f in fires if f.alone is fires[0].alone]
         count = max(f.count for f in fires)
         reason = '; '.join(f.reason for f in fires)
@@ -1150,16 +1156,17 @@ class Scheduler:
         self._tracer.event('agent_session.requested', campaign=campaign.name, kind=name, reason=reason, count=count)
 
     def _steer(self, s: Session, p: RolePass, steer: Steer) -> None:
-        """Write ``steer`` as a note on the role's newest live agent, and its events on the note.
-
-        Raises:
-            LookupError: no agent of the role is live: the trigger steers only while ``Pass.live``.
-        """
-        live = s.scalars(p.mine().where(AgentSession.state.in_(LIVE)).order_by(AgentSession.id.desc()).limit(1)).first()
-        if live is None:
-            raise LookupError(f'it steers [roles.{p.role}], but no agent of the role is live')
+        """Write ``steer`` as a note on the role's newest open row, or on a row requested for it, and its events on it."""
+        row = s.scalars(p.mine().where(AgentSession.state.in_(OPEN)).order_by(AgentSession.id.desc()).limit(1)).first()
+        if row is None:
+            row = AgentSession(kind=p.role, campaign_id=p.campaign.id, reason=steer.reason)
+            s.add(row)
+            s.flush()
+            self._tracer.event(
+                'agent_session.requested', campaign=p.campaign.name, kind=p.role, reason=steer.reason, count=1
+            )
         note = Comment(
-            target=TargetRef(TargetKind.AGENT_SESSION, live.id),
+            target=TargetRef(TargetKind.AGENT_SESSION, row.id),
             author=DAEMON_ACTOR,
             kind=CommentKind.NOTE,
             body=steer.text,
@@ -1168,7 +1175,7 @@ class Scheduler:
         s.flush()
         for event in steer.events:
             emit(s, event, TargetRef(TargetKind.COMMENT, note.id), System.DAEMON)
-        self._tracer.event('agent_session.steered', campaign=p.campaign.name, agent_session=live.id, comment=note.id)
+        self._tracer.event('agent_session.steered', campaign=p.campaign.name, agent_session=row.id, comment=note.id)
 
     def _pass(
         self,
@@ -1634,7 +1641,8 @@ class Scheduler:
         """Run a sweep, an agent without a run, in a worktree at the head, with a brief made from its row.
 
         The context of the brief has the daemon's lines (the checkout, the workspace), then the role's own
-        (``SweepRole.context``), then the role's sections (``[roles.<name>] sections``). A sweep that got anomalies is
+        (``SweepRole.context``), then the notes on the row so far, which it gets here and not again, then the role's
+        sections (``[roles.<name>] sections``). A sweep that got anomalies is
         an incident sweep: its sections read them (``Rendering.given``), and the brief adds the role's incident prompt.
         Every other sweep's brief adds the role's routine prompt. The watchdog's are its incident sweep and its
         progress review. Nothing that a sweep commits is scored. In a worktree at the head, the commits are removed
@@ -1659,6 +1667,12 @@ class Scheduler:
             )
             now = utcnow()
             given = tuple(assigned(s, agent_session_id))
+            notes = s.scalars(
+                select(Comment)
+                .where(Comment.target == TargetRef(TargetKind.AGENT_SESSION, agent_session_id))
+                .where(Comment.kind.in_(PUSHED_KINDS))
+                .order_by(Comment.id)
+            ).all()
             role_pass = self._pass(s, campaign, cfg, agent_session.kind, table, now, left_now(s, campaign, cfg))
             sweep = SweepPass(**vars(role_pass), agent_session=agent_session)
             rendering = Rendering(s, now, campaign, workspace_dir(self._home, campaign.id), self._controller.cas, given)
@@ -1669,6 +1683,7 @@ class Scheduler:
                 ' of a done idea are archived, and removed from it after some days or when the disk is short; `piloop'
                 f' restore {campaign.name} <idea id>|<workspace path>` writes them back.',
                 *table.context(sweep),
+                *(['', '# Notes', *(f'{n.body}\n' for n in notes)] if notes else []),
                 f'- Sweep started at: {now:%Y-%m-%d %H:%M:%S} (UTC; the sections below are as of then).',
                 '',
                 markdown(table.shown(), rendering),
@@ -1694,6 +1709,7 @@ class Scheduler:
             artifact=artifact,
             timeout=timeout,
             resumed_brief=None if resumed is None else cas.put(resumed.encode()),
+            read=[n.id for n in notes],
         )
 
     def _reattach_sweep(self, agent_session_id: AgentSessionId) -> None:

@@ -6,7 +6,7 @@
 | `Trigger.WHILE: ClassVar[frozenset[Quiet]]` | The quiet phases in which the daemon still checks the trigger, and launches what it requests. A trigger that names `stopped` is checked on every pass after the campaign's closing review was requested. |
 | `Trigger.WAKES_ON: ClassVar[frozenset[type[EventModel]]]` | The event models that make the daemon check the trigger, beyond those of its campaign's state: its ideas, runs, candidates and agents, its status and config. A trigger that reads anything else, such as the events of a plugin, names them here. |
 | `Trigger.INVESTIGATES: ClassVar[bool]` | The agent that the trigger requests gets incidents to investigate. An agent of a role with such a trigger that dies at startup is then no incident: the agent that it would request could die the same way, and so on. |
-| `Trigger.fire(p: Pass) -> Fire \| Steer \| None` | Return the request that the trigger makes now, or None. Only while the role is live, a `Steer`. |
+| `Trigger.fire(p: Pass) -> Fire \| Steer \| None` | Return the request that the trigger makes now, the note that it writes (`Steer`), or None. |
 | `Trigger.due_in(p: Pass) -> timedelta \| None` | How long until `fire` can answer otherwise with time alone, or None when only events change its answer. |
 | `Pass.backlog(buffer: int, /) -> Backlog` | The campaign's backlog of ideas, with `buffer` ideas beyond one per run slot, as the role's sweeps fill it. |
 | `Pass.without_keep(before: datetime \| None, /) -> int` | The finished runs that count since the latest keep, or since the campaign was last set active again. |

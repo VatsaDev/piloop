@@ -14,7 +14,7 @@ from piloop.plugins.role.contract import ImplementerRole, SweepRole
 from piloop.plugins.runtime.contract import RUNTIMES, Handle, RuntimeName
 from piloop.plugins.runtime.subprocess import Subprocess, SubprocessRuntime
 from piloop.plugins.stop_rule.contract import GO, Escalate, Go, Hold, Stop, StopCase, StopRule
-from piloop.plugins.trigger.contract import Fire, Pass, Quiet, Steer, Trigger, TriggerEntry
+from piloop.plugins.trigger.contract import Fire, Pass, Quiet, Trigger, TriggerEntry
 from piloop.plugins.verdict_rule.bootstrap import Bootstrap
 from piloop.plugins.verdict_rule.contract import (
     Case,
@@ -55,16 +55,6 @@ class Broken(Trigger):
 
     def fire(self, p: Pass) -> Fire | None:
         raise RuntimeError('the probe is down')
-
-    def due_in(self, p: Pass) -> timedelta | None:
-        return None
-
-
-class Steering(Trigger):
-    """``steering``: hands its role's live agent a note on every pass, also when none is live."""
-
-    def fire(self, p: Pass) -> Steer:
-        return Steer('look again')
 
     def due_in(self, p: Pass) -> timedelta | None:
         return None

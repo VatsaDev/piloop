@@ -93,8 +93,10 @@ def kind(db: Database, agent: AgentSessionId) -> str:
 
 
 def taken(db: Database, agent: AgentSessionId) -> NewsTaken:
+    """The news that the one note on ``agent`` took."""
     with db.session() as s:
-        [(_, event)] = in_order(s, NewsTaken, Event.target == TargetRef(TargetKind.AGENT_SESSION, agent))
+        on_it = select(Comment.id).where(Comment.target == TargetRef(TargetKind.AGENT_SESSION, agent))
+        [(_, event)] = in_order(s, NewsTaken, Event.target_kind == TargetKind.COMMENT, Event.target_id.in_(on_it))
         return event
 
 
@@ -104,9 +106,11 @@ def test_news_launches_the_orchestrator_which_resumes_its_session_and_never_wake
     assert wake(db, runtime, tmp_path) == [], 'no news yet'
     first_message = message(db, campaign, 'how is it going?')
     [first] = wake(db, runtime, tmp_path)
-    assert 'by human:ana: how is it going?' in brief(tmp_path, first)
+    assert brief(tmp_path, first).count('by human:ana: how is it going?') == 1, 'in its notes, and only there'
+    assert '\n# Notes\nNews for you:\n- ' in brief(tmp_path, first)
     assert brief(tmp_path, first).startswith('# Orchestrator'), 'the whole brief: nothing to resume yet'
     assert taken(db, first).after == 0
+    assert outcomes(db, first) == ['comment.delivered'], 'its brief delivered the note'
 
     with db.session() as s:
         s.add(
@@ -181,42 +185,29 @@ def test_news_that_comes_while_a_wake_runs_reaches_that_wake_once(
         wait_until(started.exists, 'the wake')
         first = AgentSessionId(agent_sessions(db, ORCHESTRATOR)[0][0])
         message(db, campaign, 'stop the lzma runs')
-        wait_until(lambda: outcomes(db, first) == ['comment.queued'], 'the note in its queue')
+        wait_until(lambda: outcomes(db, first)[1:] == ['comment.queued'], 'the second note in its queue')
         if hook:
             wait_until(lambda: prompts.is_file() and 'stop the lzma runs' in prompts.read_text(), 'the hook')
         hold.unlink()
         wait_until(lambda: agent_sessions(db, ORCHESTRATOR)[0][1] is AgentSessionState.EXITED, 'its end')
-    [note] = notes(db, first)
-    assert note.startswith('# News\nThis came while you work:\n- ') and 'by human:ana: stop the lzma runs' in note
+    [_, note] = notes(db, first)
+    assert note.startswith('News for you:\n- ') and 'by human:ana: stop the lzma runs' in note
     assert prompts.read_text().count('stop the lzma runs') == 1
-    assert outcomes(db, first) == ['comment.queued', 'comment.delivered']
+    assert outcomes(db, first) == ['comment.delivered', 'comment.queued', 'comment.delivered']
     assert wake(db, runtime, tmp_path) == [], 'the wake took it: the next one does not take it again'
 
 
-def test_news_that_comes_while_a_wake_is_requested_reaches_it_in_its_first_note_and_not_in_its_news_too(
+def test_news_that_comes_while_a_wake_is_requested_goes_on_that_wake_and_its_brief_lists_it_once(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, on: None
 ) -> None:
-    hold, started, prompts = tmp_path / 'hold', tmp_path / 'started', tmp_path / 'prompts-orchestrator#1'
-    hold.touch()
-    turn_on(db, campaign, harness(tmp_path, f'touch {started}; while [ -e {hold} ]; do sleep 0.05; done'))
-    message(db, campaign, 'how is it going?')
     with db.session() as s:
-        upto = inbox.news(s, 0, campaign_id=campaign.id, party=ORCHESTRATOR).next
-    with db.session() as s:  # what the trigger requests: the news so far
-        requested = AgentSession(kind=ORCHESTRATOR, campaign_id=campaign.id, reason='news')
-        s.add(requested)
-        s.flush()
-        emit(s, NewsTaken(after=0, upto=upto), TargetRef(TargetKind.AGENT_SESSION, requested.id), System.DAEMON)
+        requested = ops.request_agent(s, campaign.id, RoleName(ORCHESTRATOR), harness=None, model=None, reason='a look')
         s.commit()
-        first = requested.id
+        requested_id = requested.id
     message(db, campaign, 'stop the lzma runs')
-    with serving(db, runtime, tmp_path):
-        wait_until(lambda: outcomes(db, first) == ['comment.queued'], 'the note in its queue')
-        hold.unlink()
-        wait_until(lambda: agent_sessions(db, ORCHESTRATOR)[0][1] is AgentSessionState.EXITED, 'its end')
-    news = brief(tmp_path, first).split('\n# News\n')[1].split('- Sweep started at:')[0]
-    assert 'how is it going?' in news and 'stop the lzma runs' not in news, 'its brief has the news of its request'
-    assert prompts.read_text().count('stop the lzma runs') == 1, 'in its first note, once'
+    assert wake(db, runtime, tmp_path) == [requested_id], 'the note goes on the waiting row: no second one'
+    assert brief(tmp_path, requested_id).count('stop the lzma runs') == 1
+    assert outcomes(db, requested_id) == ['comment.delivered'], 'its brief delivered it: it is not sent again'
     assert wake(db, runtime, tmp_path) == []
 
 
@@ -252,7 +243,12 @@ def test_a_failed_orchestrator_leaves_its_news_to_the_next_and_off_is_the_defaul
         failed = AgentSession(kind=ORCHESTRATOR, campaign_id=campaign.id, state=AgentSessionState.KILLED)
         s.add(failed)
         s.flush()
-        emit(s, NewsTaken(after=0, upto=10_000), TargetRef(TargetKind.AGENT_SESSION, failed.id), System.DAEMON)
+        on_failed = TargetRef(TargetKind.AGENT_SESSION, failed.id)
+        note = Comment(target=on_failed, author='daemon', kind=CommentKind.NOTE, body='News for you:\n- are you there?')
+        s.add(note)
+        s.flush()
+        emit(s, NewsTaken(after=0, upto=10_000), TargetRef(TargetKind.COMMENT, note.id), System.DAEMON)
+        emit(s, PromptOutcome(kind='comment.delivered', comment=note.id), on_failed, System.DAEMON)
         s.commit()
     [next_one] = wake(db, runtime, tmp_path)
     assert 'are you there?' in brief(tmp_path, next_one) and taken(db, next_one).after == 0
@@ -265,7 +261,7 @@ def test_a_failed_orchestrator_leaves_its_news_to_the_next_and_off_is_the_defaul
     assert wake(db, runtime, tmp_path) == [], 'without triggers, piloop launches no orchestrator'
 
 
-def test_one_launched_by_hand_reads_the_inbox_a_live_one_that_ends_before_it_reads_its_note_leaves_the_news_to_the_next(
+def test_one_launched_by_hand_gets_no_notes_and_a_live_one_that_ends_before_it_reads_its_note_leaves_the_news_to_the_next(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, on: None
 ) -> None:
     with db.session() as s:
@@ -273,7 +269,7 @@ def test_one_launched_by_hand_reads_the_inbox_a_live_one_that_ends_before_it_rea
         s.commit()
         by_hand_id = by_hand.id
     assert wake(db, runtime, tmp_path) == [by_hand_id]
-    assert 'News: none; this agent was asked for by hand' in brief(tmp_path, by_hand_id)
+    assert '\n# Notes\n' not in brief(tmp_path, by_hand_id), 'no news: it reads the inbox, as its prompt says'
 
     with db.session() as s:
         live = AgentSession(kind=ORCHESTRATOR, campaign_id=campaign.id, state=AgentSessionState.RUNNING)

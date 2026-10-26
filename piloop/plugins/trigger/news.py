@@ -1,9 +1,9 @@
 """``news``: what ``piloop inbox wait`` would return to the role since its last agent took the news.
 
-The orchestrator role's trigger. Each requested row takes the news up to a cursor (``NewsTaken``), and the next row
-takes what came after it. While an agent of the role is live, it takes the news that comes meanwhile in notes
-(``Steer``), each with its own ``NewsTaken``. A row that failed did not take its news, and an agent that ended did not
-take a note that it did not read: the next row takes them again.
+The orchestrator role's trigger. The news goes to the role's agent in notes (``Steer``): in its brief when the note
+is written before it starts, else as it works. Each note takes the news up to a cursor (``NewsTaken``), and the next one
+takes what came after it. A row that failed did not take its news, and an agent that ended did not take a note that it
+did not get: the next note takes them again.
 """
 
 from collections.abc import Sequence
@@ -19,18 +19,16 @@ from piloop.api.views import CommentNews, News, NewsItem, StoppedNews
 from piloop.campaign import inbox
 from piloop.db import feed as db_feed
 from piloop.db.events import has, latest
-from piloop.db.models import AgentSession, AgentSessionState, Comment, Event, EventModel
+from piloop.db.models import OPEN, AgentSession, AgentSessionState, Comment, Event, EventModel
 from piloop.ids import CommentKind, TargetKind
-from piloop.plugins.trigger.contract import Fire, Pass, Quiet, Steer, Trigger
+from piloop.plugins.trigger.contract import Pass, Quiet, Steer, Trigger
 
 URGENT: frozenset[str] = frozenset({CommentKind.MESSAGE, CommentKind.ESCALATION})
 """The kinds of inbox item that wake the role after ``quiet_seconds`` alone, also in a quiet phase."""
-TOOK = (AgentSessionState.REQUESTED, AgentSessionState.STARTING, AgentSessionState.RUNNING, AgentSessionState.ENDING)
-"""The states of a row that took its news, besides one that exited cleanly."""
 
 
 class NewsTaken(EventModel):
-    """A row of the role, or a note to its live agent, takes the news of the events after ``after``, up to ``upto``."""
+    """A note to the role's agent takes the news of the events after ``after``, up to ``upto``."""
 
     kind: Literal['agent_session.news_taken'] = 'agent_session.news_taken'
     after: int
@@ -60,14 +58,13 @@ def urgency(item: NewsItem) -> Urgency:
 def taken(p: Pass) -> tuple[int, datetime | None]:
     """The cursor up to which the role's agents took the news, and when the last one took it. ``(0, None)``: never.
 
-    A ``NewsTaken`` on a row counts unless the row failed. One on a note counts while the note's agent is live, and
-    after that only if the agent read the note (``comment.delivered``). An agent reads its notes in order, so the
-    latest one that counts covers those before it.
+    A note's ``NewsTaken`` counts while its row is open, and after that only if the row exited cleanly and the agent got
+    the note (``comment.delivered``): in its brief, or as it worked. An agent gets its notes in order, so the latest one
+    that counts covers those before it.
     """
     mine = select(AgentSession.id).where(AgentSession.campaign_id == p.campaign.id, AgentSession.kind == p.role)
-    took = mine.where(AgentSession.state.in_(TOOK))
     clean = mine.where((AgentSession.state == AgentSessionState.EXITED) & AgentSession.error.is_(None))
-    read = (
+    got = (
         select(func.json_extract(Event.payload, '$.comment'))
         .where(
             has(PromptOutcome, kind='comment.delivered'),
@@ -76,16 +73,21 @@ def taken(p: Pass) -> tuple[int, datetime | None]:
         )
         .correlate(None)  # its own events, not the NewsTaken that the outer query reads
     )
-    open_notes = select(Comment.id).where(Comment.target_kind == TargetKind.AGENT_SESSION, Comment.target_id.in_(took))
-    briefs = (Event.target_kind == TargetKind.AGENT_SESSION) & Event.target_id.in_(took.union(clean))
-    steers = (Event.target_kind == TargetKind.COMMENT) & Event.target_id.in_(open_notes.union(read))
-    last = latest(p.s, NewsTaken, briefs | steers)
+    on_open = select(Comment.id).where(
+        Comment.target_kind == TargetKind.AGENT_SESSION, Comment.target_id.in_(mine.where(AgentSession.state.in_(OPEN)))
+    )
+    last = latest(p.s, NewsTaken, Event.target_kind == TargetKind.COMMENT, Event.target_id.in_(on_open.union(got)))
     return (0, None) if last is None else (last[1].upto, last[0].at)
 
 
 def note(items: Sequence[NewsItem]) -> str:
-    """The note that hands ``items`` to the role's live agent."""
-    return '\n'.join(['# News', 'This came while you work:', *(f'- {i.text()}' for i in items)])
+    """The note that hands ``items`` to the role's agent."""
+    return '\n'.join(['News for you:', *(f'- {i.text()}' for i in items)])
+
+
+def is_open(p: Pass) -> bool:
+    """Whether the role has an agent that a note reaches without a launch: requested, starting or running."""
+    return bool(p.live()) or (p.last is not None and p.last.state is AgentSessionState.REQUESTED)
 
 
 class NewsTrigger(Trigger):
@@ -93,7 +95,7 @@ class NewsTrigger(Trigger):
 
     Messages, escalations and the stop wake the role ``quiet_seconds`` after the first news, also while the campaign is
     paused, held or stopped. The rest wakes it at most once in ``routine_every``, and only while the campaign runs.
-    While an agent of the role is live, the news goes to it in a note instead.
+    An agent of the role that is open already gets the news at once, in a note.
     """
 
     WHILE: ClassVar[frozenset[Quiet]] = frozenset({Quiet.PAUSED, Quiet.HELD, Quiet.STOPPED})
@@ -104,17 +106,15 @@ class NewsTrigger(Trigger):
     routine_every: float = Field(default=900, ge=0)
     """The fewest seconds between two agents that only routine news wakes: verdicts, seeds and anomalies."""
 
-    def fire(self, p: Pass) -> Fire | Steer | None:
+    def fire(self, p: Pass) -> Steer | None:
         cursor, last = taken(p)
         found = inbox.news(p.s, cursor, campaign_id=p.campaign.id, party=p.role)
         due = self._due(p, found, cursor, last)
         if due is None or due > p.now:
             return None
-        took = (NewsTaken(after=cursor, upto=found.next),)
-        if p.live():
-            return Steer(note(found.items), events=took)
         kinds = sorted({item.kind for item in found.items})
-        return Fire(f'news: {len(found.items)} items ({", ".join(kinds)})', events=took)
+        reason = f'news: {len(found.items)} items ({", ".join(kinds)})'
+        return Steer(note(found.items), reason, events=(NewsTaken(after=cursor, upto=found.next),))
 
     def due_in(self, p: Pass) -> timedelta | None:
         cursor, last = taken(p)
@@ -124,14 +124,14 @@ class NewsTrigger(Trigger):
     def _due(self, p: Pass, found: News, cursor: int, last: datetime | None) -> datetime | None:
         """When the role's agents may take ``found``, the news after ``cursor``, or None when none waits for it.
 
-        ``last`` is when the role's agents last took news. A live agent takes urgent news at once: the quiet window
+        ``last`` is when the role's agents last took news. An open agent takes urgent news at once: the quiet window
         only saves launches.
         """
         if not found.items:
             return None
         page = db_feed.after(p.s, cursor, inbox.WAKES, limit=1)
         first = p.s.scalar(select(Event.at).where(Event.id.in_(page.ids))) or p.now
-        quiet = first if p.live() else first + timedelta(seconds=self.quiet_seconds)
+        quiet = first if is_open(p) else first + timedelta(seconds=self.quiet_seconds)
         if any(urgency(item) is Urgency.NOW for item in found.items):
             return quiet
         if p.quiet is not None:  # routine news waits for the campaign to run again

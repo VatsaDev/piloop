@@ -154,6 +154,8 @@ A **runtime** starts, steers and stops the agents' processes. `runtime` sets it 
 | `piloop attach 12` | Prints the last 40 lines that agent 12 wrote. |
 | `piloop prompt 12 "<text>"` | Sends text to the agent's next turn. |
 
+A note on a sweep that has not started yet goes into its brief, under `# Notes`, and reaches it only there.
+
 A run's brief, log and transcript are in `~/.piloop/runs/<run>/`, and a sweep's in `~/.piloop/agent_sessions/<id>/`.
 When an agent ends, piloop ends every process that it started, such as a build server.
 

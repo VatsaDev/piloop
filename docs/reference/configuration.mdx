@@ -205,7 +205,7 @@ name defines a new role, and needs `prompt` and `triggers`.
 | `max_concurrent` | integer | `1` | One orchestrator at a time: two would answer the same news twice. |
 | `writes` | list\[string\] | `["comments(decision) addressed to the human, with a priority", "answers to messages via inbox reply", "journal lines", "ideas, seeds, verdicts and the campaign changes of the piloop commands in this brief"]` |  |
 | `files` | `nothing` \| `seeds` \| `ideas` | `"ideas"` |  |
-| `sections` | list\[object\] \| null | `[{"provider": "headline"}, {"provider": "trajectory"}, {"provider": "runs"}, {"provider": "queue"}, {"provider": "agents"}, {"provider": "candidates"}, {"provider": "inbox"}]` | The status that each brief shows after the news: lean, because each one stays in the resumed session. |
+| `sections` | list\[object\] \| null | `[{"provider": "headline"}, {"provider": "trajectory"}, {"provider": "runs"}, {"provider": "queue"}, {"provider": "agents"}, {"provider": "candidates"}]` | The status that each brief shows after the news: lean, because each one stays in the resumed session. |
 | `triggers` | list\[object\] | `[]` | Off by default. `[{ provider = "news" }]`: an agent starts when news arrives for the orchestrator. |
 | `continuity` | `fresh` \| `resume` | `"resume"` |  |
 
@@ -329,7 +329,7 @@ New inbox items for the role's party, seeds, anomalies, verdicts and the stop: `
 
 Messages, escalations and the stop wake the role `quiet_seconds` after the first news, also while the campaign is
 paused, held or stopped. The rest wakes it at most once in `routine_every`, and only while the campaign runs.
-While an agent of the role is live, the news goes to it in a note instead.
+An agent of the role that is open already gets the news at once, in a note.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
