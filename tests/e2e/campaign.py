@@ -14,7 +14,7 @@ from types import FunctionType
 import pytest
 from pydantic import TypeAdapter
 
-from piloop.api.views import Batch, CampaignState, Envelope, Status
+from piloop.api.views import Batch, CampaignState, DaemonState, Envelope, Status
 from piloop.plugins.runtime.contract import TAG_ENV
 from piloop.plugins.runtime.kit.tags import kill_tagged, tagged
 from piloop.plugins.runtime.subprocess import STDOUT
@@ -146,6 +146,10 @@ class Smoke:
     def status(self) -> Status:
         """``piloop status --json`` of the campaign, checked against its documented shape."""
         return STATUS.validate_json(self.piloop('status', self.name, '--json'))
+
+    def daemon(self) -> DaemonState:
+        """The daemon in ``piloop status --json``, which answers before the campaign is registered."""
+        return STATUS.validate_json(self.piloop('status', '--json')).daemon
 
     def campaign_state(self) -> CampaignState:
         """The campaign in ``piloop status --json``, the only one."""

@@ -74,9 +74,14 @@ def init(
         if found is None:
             added = client.register_campaign(Checkout(path=str(path)))
             campaign, documents = added.campaign, added.documents
+            # the measurement waits for a free evaluation slot, which can be on a worker that has not connected yet
+            common.console.print(
+                f'campaign [bold]{campaign.name}[/] #{campaign.id} registered; measuring baseline'
+                f' candidate#{added.baseline} (`piloop eval queue` shows it; Ctrl-C stops only the wait)'
+            )
             metrics = _measured(client, added)
             common.console.print(
-                f'campaign [bold]{campaign.name}[/] #{campaign.id} registered; baseline candidate#{added.baseline}:'
+                f'baseline candidate#{added.baseline}:'
                 f' {", ".join(f"{name} {metric(value)}" for name, value in metrics.items())}'
             )
             common.console.print(f'next: add ideas: `piloop idea add {campaign.name} "<title>"`')

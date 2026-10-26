@@ -193,10 +193,10 @@ def make_campaign(request: pytest.FixtureRequest, piloop_install: Install, e2e_m
         made.append((live_campaign, f'harness {harness}, model {model}', time.monotonic()))
         live_campaign.piloop('install-skills')
         if e2e_mode is Mode.DISTRIBUTED:
+            # before init, which waits for the baseline: only the worker elsewhere evaluates
             live_campaign.piloop('serve', '--detach', '--listen', '127.0.0.1:0')
-        live_campaign.piloop('init', str(repo), '--example', template)  # starts the daemon, unless it runs
-        if e2e_mode is Mode.DISTRIBUTED:
             live_campaign.elsewhere = elsewhere(live_campaign, piloop_install, directory / 'worker')
+        live_campaign.piloop('init', str(repo), '--example', template)  # starts the daemon, unless it runs
         return live_campaign
 
     try:
@@ -218,8 +218,8 @@ def elsewhere(live_campaign: Smoke, install: Install, home: Path) -> Elsewhere:
 
     The worker reaches the daemon through a fault proxy, and the CAS directly: as a machine elsewhere does.
     """
-    wait_until(lambda: live_campaign.status().daemon.listen, timeout=60)
-    listen = live_campaign.status().daemon.listen
+    wait_until(lambda: live_campaign.daemon().listen, timeout=60)
+    listen = live_campaign.daemon().listen
     assert listen is not None
     secret = live_campaign.piloop('token', 'create', ELSEWHERE).strip()
     argv = ['piloop', 'cas', 'serve', '--listen', '127.0.0.1:0']

@@ -155,9 +155,11 @@ def out(isolated_home: Console):
 @pytest.mark.usefixtures('api')
 def test_campaign_and_idea_lifecycle(campaign_path: Path, out) -> None:
     run_cli(['init', str(campaign_path)])
-    assert out().startswith('campaign demo #1 registered; baseline candidate#1: score 1'), (
-        'a hand-made campaign: nothing to write'
-    )
+    assert out().splitlines()[:2] == [
+        'campaign demo #1 registered; measuring baseline candidate#1 (`piloop eval queue` shows it; Ctrl-C stops only'
+        ' the wait)',
+        'baseline candidate#1: score 1, size 5',
+    ], 'a hand-made campaign: nothing to write; what init waits for comes before the wait'
 
     run_cli(['idea', 'add', 'demo', 'more lines', '--hypothesis', 'lines help', '--priority', '1'])
     run_cli(['idea', 'add', str(campaign_path), 'later', '--proposed'])
@@ -491,7 +493,8 @@ def test_init_blank_then_register_then_reread(tmp_path: Path, out) -> None:
     (path / 'evaluate.py').write_text('print("METRIC score=2")\n')
     run_cli(['init', str(path)])
     text = out()
-    assert 'campaign fresh #1 registered; baseline candidate#1: score 2\n' in text and 'wrote' not in text
+    assert 'campaign fresh #1 registered; measuring baseline candidate#1' in text and 'wrote' not in text
+    assert 'baseline candidate#1: score 2\n' in text
     assert 'next: add ideas: `piloop idea add fresh' in text
     assert Repo(path).head.commit.summary == 'piloop init: evaluate.py' and not Repo(path).is_dirty(), (
         'the edit was committed'
@@ -513,7 +516,7 @@ def test_init_example(tmp_path: Path, out, monkeypatch: pytest.MonkeyPatch) -> N
     with pytest.raises(SystemExit, match='no example'):
         run_cli(['init', '--example', 'missing', str(tmp_path / 'x')])
     run_cli(['init', '--example', 'demo', str(tmp_path / 'd')])
-    assert 'campaign demo #1 registered; baseline candidate#1: score 3\n' in out()
+    assert 'baseline candidate#1: score 3\n' in out()
     with pytest.raises(SystemExit, match="name 'demo' is already used by"):
         run_cli(['init', '--example', 'demo', str(tmp_path / 'e')])
     toml = template / 'piloop.toml'

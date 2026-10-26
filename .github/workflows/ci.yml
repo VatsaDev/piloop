@@ -68,7 +68,7 @@ jobs:
           export PATH="$HOME/.local/bin:$PATH"
           mkdir -p /tmp/enwik8/data && cp /tmp/enwik8.zip /tmp/enwik8/data/
           piloop init --example enwik8 /tmp/enwik8 | tee /tmp/init.txt
-          grep -q "registered; baseline candidate#1" /tmp/init.txt
+          grep -q "^baseline candidate#1: bytes" /tmp/init.txt
           piloop status enwik8
           piloop stop
       - name: the example plugins install next to piloop and are selected through the configuration

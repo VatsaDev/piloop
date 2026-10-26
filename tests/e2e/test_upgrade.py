@@ -56,10 +56,12 @@ STEP_VERSION = '0.2.1'
 STEP = f'piloop=={STEP_VERSION}'
 """The release that the guide says to upgrade to first: its daemon keeps running while this checkout is installed."""
 RENAMES = Renames(
-    columns={'brief': 'brief_cid', 'candidates.commit_sha': 'revision'}, blobs=frozenset({('runs', 'brief_cid')})
+    columns={'brief': 'brief_cid', 'candidates.commit_sha': 'revision', 'archives.idea_id': 'subject_id'},
+    blobs=frozenset({('runs', 'brief_cid')}),
 )
-"""The renames since ``RELEASE`` that the upgrading guide documents (``candidates.commit_sha``: 0045). A rename of a
-later release goes here."""
+"""The renames since ``RELEASE`` that the upgrading guide documents (``candidates.commit_sha``: 0045;
+``archives.idea_id``: the archive's 0002, which adds ``subject_kind`` beside it). A rename of a later release goes
+here."""
 CONFIG_REWRITES = (
     *(f'harness.*.{key}' for key in ('interactive', 'startup_dialogs', 'busy_screens', 'failed_turn_screens')),
     'harness.*.queue_key',
@@ -69,6 +71,7 @@ CONFIG_REWRITES = (
     'roles.*.triggers',
     'stop.*',
     'spend.limit',
+    'spend',
     'confidence',
     'plugins.stop_rule.*',
     'plugins.verdict_rule.*',
@@ -84,17 +87,30 @@ CONFIG_REWRITES = (
 only herdr read (revision 0034), ``workdir`` (0035) and ``entire_agent`` (0036), renames a trigger's ``kind`` to
 ``provider`` (0038), moves ``[stop]``, ``[spend] limit`` and ``confidence`` into the rules' tables (0039), and turns
 ``wake_budget`` into the lessons entry of a role's ``sections`` and lists the overview's in ``[status]`` (0053),
-drops a built-in harness's null ``mcp`` whose table inherits an argv with ``{mcp}`` (0057), and moves ``[memory]
-documents`` into ``plugins.memory`` (0061)."""
-DROPPED = {'agent_sessions.checkpoint_id', 'documents.commit_sha'}
+makes ``[spend]`` a source of ``[[facts]]``, and deletes it without a command (0056), drops a built-in harness's null
+``mcp`` whose table inherits an argv with ``{mcp}`` (0057), and moves ``[memory] documents`` into ``plugins.memory``
+(0061). The keys that a later ``piloop init`` stores again, such as each role's defaults, are not a migration's."""
+DROPPED = {
+    'agent_sessions.checkpoint_id',
+    'documents.commit_sha',
+    *(f'campaigns.{c}' for c in ('spend_usd', 'spend_error', 'spend_at')),  # 0056 makes them fact.read events
+}
 """The columns that this checkout dropped, as the upgrading guide lists them."""
 CURRENT_EVALUATOR = 'current evaluator'
 """The mark of a campaign's current evaluator in ``opened``: revision 0052 gives it a key without the watch metrics."""
 QUEUE = re.compile(r'evaluations#\d+: |home/runs/\d+/eval-\d+/')
 """The evaluation queue, rows and worktrees: a daemon's start empties it, and what still needs a measurement asks
 again (``Scheduler.reap``)."""
-KIND_REWRITES = {'comment.delivered': 'comment.queued'}
-"""The event kinds that a migration renames, besides a role's ``started`` and ``finished`` (0028, 0032)."""
+KIND_REWRITES = {
+    'comment.delivered': 'comment.queued',
+    'candidate.verdict': 'candidate.origin',
+    'candidate.judged': 'candidate.origin',
+}
+"""The event kinds that a migration renames, besides a role's ``started`` and ``finished`` (0028, 0032): a verdict
+that was no judgement, such as ``recovered``, is a ``candidate.origin`` event (0043)."""
+ORIGINS = {'reference', 'unmeasured', 'recovered'}
+"""The verdicts that were no judgement: revision 0043 moves each into ``candidates.origin`` and leaves no verdict.
+A release's cancelled agent that left work uncommitted has a ``recovered`` candidate."""
 CONFIG = {
     'evaluate_timeout': 300,
     'stop': {'max_runs': 6, 'max_hours': 1, 'max_tokens': 20_000_000},
@@ -567,7 +583,7 @@ def test_the_store_restores_what_both_piloops_archived(upgrade: Upgrade) -> None
     new code archived, byte for byte, the release's through its manifest stored again."""
     smoke = upgrade.smoke
     smoke.stop_campaign('e2e: archive the workspace')
-    wait_until(lambda: smoke.sql('SELECT id FROM archives WHERE idea_id IS NULL AND complete'), timeout=600)
+    wait_until(lambda: smoke.sql('SELECT id FROM archives WHERE subject_kind IS NULL AND complete'), timeout=600)
     verified = smoke.piloop('store', 'verify').strip()
     assert re.search(r'(\d+) blob\(s\): \1 ok, 0 missing, 0 corrupt$', verified), verified
     workspace = upgrade.workspace
@@ -690,7 +706,8 @@ def allowed(change: Changed, open_rows: set[tuple[str, object]]) -> bool:
     """A change of a row the campaign still changes; for the campaign row, only its time, signer and the documented
     rewrite of its stored config; for an event, the documented rewrite to its model; for an archive, its manifest's
     address as a CID; for an agent's usage, the path of its session file, which revision 0054 moves into the CAS; for
-    a campaign's current evaluator, its key and definition, which revision 0052 recomputes."""
+    a campaign's current evaluator, its key and definition, which revision 0052 recomputes; for a candidate, a verdict
+    that revision 0043 moves into its origin."""
     match change.table, change.column:
         case 'campaigns', 'config':
             return all(
@@ -706,6 +723,8 @@ def allowed(change: Changed, open_rows: set[tuple[str, object]]) -> bool:
             return json.loads(str(change.after)) == {
                 k: v for k, v in json.loads(str(change.before)).items() if k != 'source'
             }
+        case 'candidates', 'verdict' if change.before in ORIGINS and change.after is None:
+            return True
         case 'evaluators', 'key' | 'definition':
             return (CURRENT_EVALUATOR, change.rowid) in open_rows
         case table, _:
