@@ -79,9 +79,10 @@ EXAMPLE_DATA: dict[str, dict[str, str]] = {
 }
 """Per example template: ``relative path → URL`` downloaded into the campaign (in no version: ``IGNORED``)."""
 EVALUATE_CONTRACT = """The evaluate command is the referee. piloop runs it (the `evaluate` argv in piloop.toml) in a clean checkout of every
-version that an implementer saves. It prints one `METRIC <name>=<value>` line for each metric under [[metrics]] and exits 0.
-A non-zero exit is recorded as a crash, with the reason on stderr. Make it deterministic. Make sure that an implementer
-can change the score only through the code that it is supposed to change."""
+version that an implementer saves. It writes one JSON line with each metric under [[metrics]],
+`{"metrics": {"<name>": <value>}}`, to $PILOOP_RESULT_FILE and exits 0. A non-zero exit is recorded as a crash, with
+the reason on stderr. Make it deterministic. Make sure that an implementer can change the score only through the code
+that it is supposed to change."""
 
 
 class CampaignError(RuntimeError):

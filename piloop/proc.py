@@ -5,20 +5,28 @@ Looking at other processes goes through psutil, so it works the same on Linux an
 
 import contextlib
 import os
+import secrets
 import signal
 import subprocess
 import sys
 import threading
 from collections.abc import Collection
 from dataclasses import dataclass
-from typing import assert_never
+from enum import StrEnum
+from pathlib import Path
+from typing import Self, assert_never
 
 import psutil
+
+from piloop import deprecated
 
 STDERR_IN_ERROR = 500
 """The number of characters of a failed command's stderr that piloop keeps in the error it stores on a row."""
 UNITS_ENV = 'PILOOP_UNITS_FILE'
-"""Where the evaluate command writes its per-unit results. Set only for the daemon's own evaluations."""
+"""Where an evaluate command that prints ``METRIC`` lines writes its per-unit results. Set only for piloop's own
+evaluations."""
+RESULT_ENV = 'PILOOP_RESULT_FILE'
+"""The pipe that a command which piloop reads writes its results to, one JSON object per line (``ResultPipe``)."""
 ACTOR_ENV = 'PILOOP_ACTOR'
 """The signature of an agent. ``child_env`` drops it: a daemon or an evaluation that an agent's ``piloop`` command
 starts must not sign as that agent. Nor must it die with the agent: the CLI drops the agent's process tag when it starts
@@ -29,6 +37,17 @@ with it, and as nobody else. ``child_env`` drops it, as it drops ``ACTOR_ENV``."
 PILOOP_ARGV = (sys.executable, '-P', '-m', 'piloop')
 """The command that runs this process's piloop, from any cwd. ``-P`` keeps the cwd off ``sys.path``: an agent's cwd is a
 campaign's worktree, and its own ``json.py`` or ``piloop/`` would otherwise shadow piloop's imports."""
+
+
+@deprecated.until('0.4.0', 'METRIC lines on stdout: delete Channel, Sample.channel and the METRIC_LINES branches')
+class Channel(StrEnum):
+    """How a command that piloop reads reported its results."""
+
+    RESULT = 'result'
+    """JSON lines on ``RESULT_ENV``."""
+    METRIC_LINES = 'metric_lines'
+    """``METRIC <name>=<value>`` lines on stdout, and per-unit results in ``UNITS_ENV``: the protocol before
+    ``RESULT_ENV``."""
 
 
 @dataclass(frozen=True)
@@ -72,15 +91,64 @@ def running(leader: Leader) -> bool:
 def child_env(*drop: str) -> dict[str, str]:
     """The environment for subprocesses: this process's environment without the variables that it must not pass on.
 
-    These are VIRTUAL_ENV, ``UNITS_ENV``, ``ACTOR_ENV``, ``AGENT_TOKEN_ENV`` and ``drop``. Without VIRTUAL_ENV, uv does not warn about the
-    campaign's own virtual environment. Only ``run_evaluate`` sets ``UNITS_ENV``, so no agent gets a units path. The
-    launcher signs each agent and its runtime tags it, after this.
+    These are VIRTUAL_ENV, ``UNITS_ENV``, ``RESULT_ENV``, ``ACTOR_ENV``, ``AGENT_TOKEN_ENV`` and ``drop``. Without
+    VIRTUAL_ENV, uv does not warn about the campaign's own virtual environment. Only the commands that piloop reads get
+    ``UNITS_ENV`` and ``RESULT_ENV``, so no agent gets a path of them. The launcher signs each agent and its runtime
+    tags it, after this.
 
     This is the only place outside ``Settings`` that reads the environment. It passes the values on and does not
     interpret them.
     """
-    dropped = ('VIRTUAL_ENV', UNITS_ENV, ACTOR_ENV, AGENT_TOKEN_ENV, *drop)
+    dropped = ('VIRTUAL_ENV', UNITS_ENV, RESULT_ENV, ACTOR_ENV, AGENT_TOKEN_ENV, *drop)
     return {k: v for k, v in os.environ.items() if k not in dropped}
+
+
+class ResultPipe:
+    """A named pipe at ``path`` that a child appends lines to, read while the child runs: ``RESULT_ENV``.
+
+    A pipe, not a file, so that each line is read when it is written. A thread reads it with blocking reads: macOS's
+    kqueue does not wake on a named pipe. The reader holds a write end of its own, so the stream does not end when a
+    child that opens and closes the path for each line closes it, nor when no child has opened it yet. ``close`` ends
+    the stream with a line of its own that no child can guess: what the child wrote before is read, and a line that
+    comes later is not. Call it after the child exited. A line that lacks its final newline at the end counts as a line.
+    """
+
+    def __init__(self, path: Path) -> None:
+        os.mkfifo(path, 0o600)
+        self.path = path
+        self._read = os.open(path, os.O_RDONLY | os.O_NONBLOCK)  # opening without a writer would wait
+        self._hold = os.open(path, os.O_WRONLY)
+        os.set_blocking(self._read, True)
+        self._end = secrets.token_hex(16).encode()
+        self._lines: list[str] = []
+        self._thread = threading.Thread(target=self._follow, name=f'results-{path.name}', daemon=True)
+        self._thread.start()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
+    def close(self) -> list[str]:
+        """End the stream, and return every line that the child wrote, in order. Closing twice returns them again."""
+        if self._thread.is_alive():
+            os.write(self._hold, b'\n' + self._end + b'\n')
+            self._thread.join()
+            os.close(self._read)
+            os.close(self._hold)
+            self.path.unlink(missing_ok=True)
+        return self._lines
+
+    def _follow(self) -> None:
+        pending = b''
+        while True:  # no end of file: the reader holds a writer until the end line
+            *whole, pending = (pending + os.read(self._read, 1 << 16)).split(b'\n')
+            for line in whole:
+                if line == self._end:
+                    return
+                if line.strip():
+                    self._lines.append(line.decode(errors='replace'))
 
 
 def withhold(names: Collection[str]) -> None:

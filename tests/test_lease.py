@@ -213,6 +213,8 @@ def evaluation_job(db: Database, campaign: Campaign, tmp_path: Path, runner: str
         command=['true'],
         timeout=60,
         required=['score'],
+        known=['score'],
+        max_evidence_bytes=0,
     )
 
 
@@ -425,6 +427,8 @@ def evaluation_job_for_another_candidate(
         command=['true'],
         timeout=60,
         required=['score'],
+        known=['score'],
+        max_evidence_bytes=0,
     )
 
 

@@ -93,7 +93,12 @@ HARNESS_PROMPT_TO_FILE = '#!/bin/sh\nprintf %s "$1" > prompt.txt\n'
 WRITE_PID = 'echo $$ > ../agent.pid.part\nmv ../agent.pid.part ../agent.pid\n'
 """The agent's pid, by a rename: a test that finds the file never reads it empty."""
 
-EVALUATE = ['sh', '-c', 'echo METRIC score=$(wc -l < solve.txt); echo METRIC size=$(wc -c < solve.txt)']
+EVALUATE = [
+    'sh',
+    '-c',
+    'printf \'{"metrics": {"score": %d, "size": %d}}\\n\' $(wc -l < solve.txt) $(wc -c < solve.txt)'
+    ' >> "$PILOOP_RESULT_FILE"',
+]
 
 TOML = """
 name = "demo"
@@ -180,7 +185,7 @@ def write_toml(
     script = write_script(campaign.parent / 'harness.sh', harness_body)
     (campaign / 'piloop.toml').write_text(
         TOML.format(
-            evaluate=repr(evaluate).replace("'", '"'),
+            evaluate=json.dumps(evaluate),
             implementer_timeout=implementer_timeout,
             sweep_timeout=AGENT_TIMEOUT,
             max_implementers=max_implementers,
@@ -329,6 +334,8 @@ def register(db: Database, campaign_path: Path) -> Campaign:
         log_dir=campaign_path.parent,
         timeout=30,
         required={m.name for m in cfg.metrics},
+        known={m.name for m in cfg.metrics},
+        max_evidence_bytes=0,
     )
     assert isinstance(result, Measured), result
     with db.session() as s:

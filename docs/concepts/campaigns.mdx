@@ -36,20 +36,44 @@ and stores a copy of `piloop.toml`, which the daemon uses: run `piloop init` aga
 
 ## The evaluate command
 
-piloop runs the command at the root of a clean worktree of each commit. It prints one `METRIC <name>=<value>` line for
-each metric:
+piloop runs the command at the root of a clean worktree of each commit. It appends one JSON line, its **result**, to
+the pipe that `$PILOOP_RESULT_FILE` names:
+
+```python
+import json
+import os
+
+def report(result):
+    line = json.dumps(result)
+    if path := os.environ.get("PILOOP_RESULT_FILE"):
+        with open(path, "a") as f:
+            f.write(line + "\n")
+    else:
+        print(line)
+
+report({"metrics": {"bytes": compressed + compressor_size, "seconds": round(cpu_seconds, 2)}})
+```
+
+piloop sets the variable only when it runs the command. Run by hand, the command prints the line:
 
 ```bash
 uv run python evaluate.py
 ```
 
 ```text
-METRIC bytes=3688775
-METRIC seconds=0.85
+{"metrics": {"bytes": 3688775, "seconds": 0.82}}
 ```
 
-A non-zero exit, a missing metric, or a run longer than `evaluate_timeout` seconds makes the commit a `crash`. Print
-the reason on stderr. Fix the seeds and the data splits, so that the same code gets the same score.
+| Key | Holds |
+|---|---|
+| `metrics` | A number for each metric, by its name in `[[metrics]]`. Each primary and guardrail is required, a watch metric is optional. |
+| `units` | Optional: the [per-unit results](#per-unit-results). |
+| `evidence` | Optional: files of the worktree that explain the result, by a label, such as `{"errors": "out/errors.md"}`. piloop keeps them with the evaluation's logs, up to `[evaluation] max_evidence_mb` in `config.toml`. |
+
+A non-zero exit, a missing or unknown metric, a value that is not a number, a second line, or a run longer than
+`evaluate_timeout` seconds makes the commit a `crash`. Print the reason on stderr. Fix the seeds and the data splits,
+so that the same code gets the same score. Until 0.4.0, a command that prints `METRIC <name>=<value>` lines instead
+still works, and piloop posts one inbox note for its evaluator.
 
 <Warning>
   piloop runs the evaluate command from the commit that it measures. An implementer that edits the command changes its
@@ -73,15 +97,14 @@ the reason on stderr. Fix the seeds and the data splits, so that the same code g
 ## Per-unit results
 
 A metric that is a sum over units, such as test examples, can report each unit. Then the verdict can tell a broad
-gain from a gain on a few lucky units. piloop sets `PILOOP_UNITS_FILE` to a path. Write there each unit's part of each
-metric:
+gain from a gain on a few lucky units. Add each unit's part of each metric to the result:
 
 ```json
-{"accuracy": {"test-0001": 0.0056, "test-0002": 0.0, "test-0003": 0.0056}}
+{"metrics": {"accuracy": 0.0112}, "units": {"accuracy": {"test-0001": 0.0056, "test-0002": 0.0, "test-0003": 0.0056}}}
 ```
 
-The parts of a metric must sum to its `METRIC` value, within 0.1%. Leave out metrics that are not sums, such as a
-latency. The agents never see the file.
+The parts of a metric must sum to its value, within 0.1%. Leave out metrics that are not sums, such as a latency. The
+agents never see the units.
 
 ## Evaluators
 

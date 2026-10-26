@@ -6,7 +6,7 @@ sections to fit the problem. `piloop.toml` holds the config. `evaluate.py` gives
 
 ## 1. Objective
 
-The primary metric from `piloop.toml` (`METRIC score=...`) and its direction. Where the baseline is. What "done"
+The primary metric from `piloop.toml` (`score`) and its direction. Where the baseline is. What "done"
 means: a target value, a leaderboard position or a date.
 
 ## 2. Measurement

@@ -18,3 +18,4 @@
 | `PILOOP_CLAUDE_SKILLS_DIR` | none | The directory in which piloop installs the orchestrator skills for Claude Code. Unset, it is the one Claude Code reads: `skills` in its config directory (`CLAUDE_CONFIG_DIR`, by default `~/.claude`). A second piloop on the same machine, such as a build of `main` next to a release, sets this and `agent_skills_dir` to directories of its own, so that its skills do not replace those of the release. |
 | `PILOOP_STORAGE__<KEY>` | [its table](/reference/configuration#storage) | `[storage]` in `config.toml`: how archiving uses the disk of this home. |
 | `PILOOP_TRACING__<KEY>` | [its table](/reference/configuration#tracing) | `[tracing]` in `config.toml`: what this home measures for its exported spans. |
+| `PILOOP_EVALUATION__<KEY>` | [its table](/reference/configuration#evaluation) | `[evaluation]` in `config.toml`: what the daemon allows the evaluate command of its campaigns. |

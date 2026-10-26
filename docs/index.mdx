@@ -32,7 +32,7 @@ The agent sets up the campaign, starts it, and answers for you while it runs. Se
 flowchart LR
     B[(Ideas)] --> W[Implementer<br/>in a worktree]
     W -->|commit| E[Evaluate command]
-    E -->|METRIC lines| V{Verdict}
+    E -->|result| V{Verdict}
     V -->|keep| H[New head]
     H -->|next runs start here| W
 ```
@@ -40,8 +40,8 @@ flowchart LR
 1. You, your agent or the research agent add **ideas** to the **campaign**: one repo, one goal.
 2. The **daemon**, `piloop serve`, starts an **implementer** for each ready idea. An implementer is a coding agent
    (Claude Code, Codex or pi) in a **worktree**: its own checkout of the **head**, the best result so far.
-3. The implementer commits. The daemon runs your **evaluate command** on the commit. The command prints one
-   `METRIC <name>=<value>` line for each metric.
+3. The implementer commits. The daemon runs your **evaluate command** on the commit. The command writes one JSON line
+   with each metric to `$PILOOP_RESULT_FILE`.
 4. The **verdict** is `keep` when the gain is real and no guardrail metric gets worse than you allow. A keep is the new
    head.
 5. A watchdog agent looks for problems. Your agent, the **orchestrator**, answers what the other agents escalate, and

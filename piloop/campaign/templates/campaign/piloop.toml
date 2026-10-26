@@ -5,7 +5,7 @@
 # PILOOP_CAMPAIGN_<KEY> overrides a key when `piloop init` reads the file. Join nested keys with __.
 
 name = "my-campaign"                       # required; short identifier; piloop names git refs after it
-evaluate = ["uv", "run", "python", "evaluate.py"]  # required; run in a clean checkout of each version; prints METRIC lines
+evaluate = ["uv", "run", "python", "evaluate.py"]  # required; run in a clean checkout of each version; writes {"metrics": …} to $PILOOP_RESULT_FILE
 evaluate_timeout = 600                    # seconds; a slower evaluation is stopped and recorded as a crash
 runtime = "subprocess"                    # subprocess: a background process per agent · or a package's runtime
 harnesses = ["pi", "claude", "codex"]     # not the default, which is ["pi"]; runs use these in turn, unless an idea names one
@@ -169,7 +169,7 @@ max_concurrent = 1                        # at most 1: two orchestrators would a
 # [[facts]]
 # provider = "optimization"               # the research: head, runs, keeps, evaluations, the funnel
 # [[facts]]                               # a list that adds a source lists campaign and optimization too
-# provider = "command"                    # a command that prints METRIC <name>=<value> lines, as the evaluate command does
+# provider = "command"                    # a command that writes {"metrics": …} to $PILOOP_RESULT_FILE, as the evaluate command does
 # command = ["uv", "run", "scripts/spend.py"]  # runs at the repo root; it gets secrets from the daemon's environment
 # metrics = ["spend"]                     # the names that it prints, each a fact of the campaign
 # notices = { spend = [300, 600] }        # piloop posts one inbox note when a value crosses each
@@ -178,7 +178,7 @@ max_concurrent = 1                        # at most 1: two orchestrators would a
 # [plugins.memory]                        # what past campaigns leave for the next ones; see the research memory page
 # documents = ["docs/evidence/**/*.md"]   # repo files that `piloop init` and the stop copy into `documents`; default none
 
-[[metrics]]                               # one entry for each METRIC <name>=<value> line; one primary for each track
+[[metrics]]                               # one entry for each metric that evaluate reports; one primary for each track
 name = "score"
 direction = "higher"                      # higher | lower
 role = "primary"                          # primary: must beat the head · guardrail · watch (the default)

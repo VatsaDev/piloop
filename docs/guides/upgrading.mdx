@@ -151,6 +151,22 @@ one. The [changelog](https://github.com/hiloopai/piloop/blob/main/CHANGELOG.md) 
 
 ## Upgrading to 0.4.0
 
+### The evaluate command writes a result line
+
+The evaluate command writes its result as one JSON line to the pipe that `$PILOOP_RESULT_FILE` names, instead of
+printing `METRIC` lines. The per-unit results go into the same line, instead of `$PILOOP_UNITS_FILE`:
+
+| Before | Now |
+|---|---|
+| `print(f'METRIC accuracy={acc}')` | `{"metrics": {"accuracy": 0.83}}` appended to `$PILOOP_RESULT_FILE` |
+| a JSON object in `$PILOOP_UNITS_FILE` | `"units": {"accuracy": {"q-1": 0.002}}` in the same line |
+| a `METRIC` line that `[[metrics]]` does not name is recorded | a name that `[[metrics]]` does not name is a crash |
+| every metric is required | primaries and guardrails are required; a watch metric is optional |
+
+`METRIC` lines and `$PILOOP_UNITS_FILE` still work until 0.4.0: piloop posts one inbox note for each evaluator that
+uses them. A `command` fact source writes `{"metrics": {"spend": 412.3}}` to `$PILOOP_RESULT_FILE` too. Upgrade
+`piloop worker` on every machine with the server: the server refuses a worker of the older protocol.
+
 ### Agent sessions are in the CAS
 
 piloop keeps each agent's session, the harness's own file, in the CAS: `agent_sessions.session_file`. Print it with
@@ -182,12 +198,12 @@ access: no `piloop token`, `limit` or `secret`. The person at the terminal still
 ### Spend is a fact
 
 piloop gives no fact a meaning: what a campaign spends outside piloop is a fact that a source of `[[facts]]` reads, as
-GPU hours or anything else would be. The built-in `command` source prints `METRIC <name>=<value>` lines, as the
-evaluate command does, and `hold_at` of `limits` holds on any fact that it names:
+GPU hours or anything else would be. The built-in `command` source writes `{"metrics": {"<name>": <value>}}` to
+`$PILOOP_RESULT_FILE`, as the evaluate command does, and `hold_at` of `limits` holds on any fact that it names:
 
 | Before 0.4.0 | Since 0.4.0 |
 |---|---|
-| `[spend] command` (prints one number) | a `[[facts]]` entry with `provider = "command"` and `metrics = ["spend"]`, whose command prints `METRIC spend=<number>` |
+| `[spend] command` (prints one number) | a `[[facts]]` entry with `provider = "command"` and `metrics = ["spend"]`, whose command reports `{"metrics": {"spend": <number>}}` |
 | `[spend] notices`, `interval` | `notices = { spend = [...] }` and `interval` of that entry |
 | `[spend] closing_review` | `[plugins.stop_rule] while_held` |
 | `[plugins.stop_rule] max_spend` | `[plugins.stop_rule] hold_at = { spend = ... }` |
@@ -201,7 +217,7 @@ provider = "optimization"
 
 [[facts]]
 provider = "command"
-command = ["uv", "run", "scripts/spend.py"]   # prints METRIC spend=412.3
+command = ["uv", "run", "scripts/spend.py"]   # reports {"metrics": {"spend": 412.3}}
 metrics = ["spend"]
 
 [plugins.stop_rule]
@@ -209,8 +225,8 @@ hold_at = { spend = 1000 }
 while_held = "wait"
 ```
 
-The old keys still work until 0.4.0, with a warning: the old command runs in a wrapper that prints its number as
-`METRIC spend=`. The upgrade rewrites the stored configs the same way, and turns the latest reading of each campaign
+The old keys still work until 0.4.0, with a warning: the old command runs in a wrapper that reports its number as
+`spend`. The upgrade rewrites the stored configs the same way, and turns the latest reading of each campaign
 into `fact.read` events: `campaigns.spend_usd`, `spend_error` and `spend_at` are gone.
 
 A stop rule reads `StopCase.facts` by typed key (`case.facts.get(KEEPS)`, `case.facts.get(reading('spend'))`) instead
@@ -663,8 +679,8 @@ Before 1.0, a minor release may contain breaking changes. These interfaces chang
 - The `piloop` CLI: its commands and their flags.
 - The keys of `piloop.toml`. A renamed or removed key keeps working, with a warning, for at least one minor release.
   See [Deprecated configuration keys](#deprecated-configuration-keys).
-- The contract of the [evaluate command](/concepts/campaigns#the-evaluate-command): the `METRIC <name>=<value>` lines,
-  the exit status and the per-unit results file.
+- The contract of the [evaluate command](/concepts/campaigns#the-evaluate-command): its result line and the exit
+  status.
 - The [database schema](/reference/schema), as `piloop sql` shows it. `piloop upgrade` migrates the database forward.
 
 `piloop.capabilities` is the stable plugin API: its names change only when the contract of a capability changes. Other

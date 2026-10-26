@@ -18,7 +18,6 @@ import shlex
 import subprocess
 import threading
 import time
-import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
@@ -581,8 +580,8 @@ def _evaluate(job: EvaluationJob, control: Control, site: Site, span: Span) -> E
 def sample(result: EvalResult) -> Sample:
     """What the report says of one run of the evaluate command: what it measured, or why it failed."""
     match result:
-        case Measured(metrics=metrics, seconds=seconds, units=units):
-            return Sample(metrics=metrics, seconds=seconds, error=None, units=units)
+        case Measured(metrics=metrics, seconds=seconds, units=units, channel=channel):
+            return Sample(metrics=metrics, seconds=seconds, error=None, units=units, channel=channel)
         case Failed(seconds=seconds) as failed:
             return Sample(metrics=failed.printed, seconds=seconds, error=failed.error)
         case _:
@@ -604,8 +603,9 @@ def _evaluate_once(job: EvaluationJob, control: Control, site: Site, span: Span)
             log_dir=log_dir,
             timeout=job.timeout,
             required=set(job.required),
+            known=set(job.known),
+            max_evidence_bytes=job.max_evidence_bytes,
             track=lambda proc: _track(control, proc),
-            units_file=log_dir.parent / f'.units-{uuid.uuid4().hex}.json',
         )
         if changed := sorted(rel for rel, copy in links.copies.items() if not copy.holds(cwd / rel)):
             span.event(INPUTS_CHANGED, evaluation=job.evaluation, paths=', '.join(changed[:SHOWN]))

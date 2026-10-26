@@ -41,7 +41,7 @@ class Criterion:
     """A metric that decides the verdict: the primary of the candidate's track, or one of its guardrails."""
 
     name: str
-    """The metric's name, as its ``METRIC`` line prints it."""
+    """The metric's name, as the evaluate command reports it."""
     direction: Direction
     """Whether a larger or a smaller value is better."""
     margin: float | None = None

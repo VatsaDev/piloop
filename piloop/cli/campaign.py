@@ -70,8 +70,8 @@ def init(
     if stub_untouched(path):
         common.console.print(EVALUATE_CONTRACT, style='dim', markup=False)
         common.console.print(
-            f'next: {path / EVALUATE_STUB} is still the template stub. Make it measure this campaign and print the'
-            f' METRIC lines that piloop.toml names. Describe the goal in brief.md. Then run `piloop init {path}` again.'
+            f'next: {path / EVALUATE_STUB} is still the template stub. Make it measure this campaign and report the'
+            f' metrics that piloop.toml names. Describe the goal in brief.md. Then run `piloop init {path}` again.'
         )
         return
     if common.settings.server is None and not answers(common.settings.socket_file):

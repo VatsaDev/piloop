@@ -1,10 +1,10 @@
-"""Score ``solve.py``. Prints ``METRIC accuracy=`` and ``METRIC cost_seconds=``.
+"""Score ``solve.py``, and report ``accuracy`` and ``cost_seconds`` as one JSON line.
 
 Kaggle's test set has no labels, so the holdout is a fixed 80/20 split of ``data/train.csv`` by PassengerId.
 ``cost_seconds`` is the CPU time (user + system) that ``solve.py`` takes to train and predict on one thread. It is the
 lowest of ``REPEATS`` runs, so a busy machine changes it less. Any failure exits non-zero with the reason on stderr,
-and piloop records a crash. When piloop sets ``PILOOP_UNITS_FILE``, this script also writes each holdout passenger's
-share of the accuracy there, so the verdict can tell a broad gain from a lucky few rows.
+and piloop records a crash. The result also has each holdout passenger's share of the accuracy (``units``), so the
+verdict can tell a broad gain from a lucky few rows.
 """
 
 import csv
@@ -60,12 +60,19 @@ def main() -> int:
     if missing:
         return _fail(f'missing predictions for {len(missing)} rows')
     correct = sum(preds[k] == v for k, v in labels.items())
-    print(f'METRIC accuracy={correct / len(labels):.4f}')
-    print(f'METRIC cost_seconds={min(cpu):.2f}')
-    if units_file := os.environ.get('PILOOP_UNITS_FILE'):
-        shares = {k: (preds[k] == v) / len(labels) for k, v in labels.items()}
-        Path(units_file).write_text(json.dumps({'accuracy': shares}))
+    shares = {k: (preds[k] == v) / len(labels) for k, v in labels.items()}
+    report({'metrics': {'accuracy': correct / len(labels), 'cost_seconds': min(cpu)}, 'units': {'accuracy': shares}})
     return 0
+
+
+def report(result: dict[str, object]) -> None:
+    """Append the result to ``PILOOP_RESULT_FILE`` when piloop runs this command, else print it."""
+    line = json.dumps(result)
+    if path := os.environ.get('PILOOP_RESULT_FILE'):
+        with open(path, 'a') as f:
+            f.write(line + '\n')
+    else:
+        print(line)
 
 
 def _children_cpu() -> float:

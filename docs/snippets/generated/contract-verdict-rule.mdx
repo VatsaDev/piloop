@@ -12,7 +12,7 @@
 | `Case.candidate: Side` | The candidate that the rule judges. |
 | `Case.bar: Side` | What the candidate must beat: its run's bar (https://piloop.autoresearch.inc/concepts/verdict#the-words). |
 | `Case.parent: Side \| None` | The candidate's parent, which the candidate changed. None for a candidate without one. |
-| `Criterion.name: str` | The metric's name, as its `METRIC` line prints it. |
+| `Criterion.name: str` | The metric's name, as the evaluate command reports it. |
 | `Criterion.direction: Direction` | Whether a larger or a smaller value is better. |
 | `Criterion.margin: float \| None` | The largest regression from the bar that a guardrail may show, in the metric's units. None on a primary. |
 | `Criterion.floor: float \| None` | The worst value that a candidate may have, whatever the bar, or None. |

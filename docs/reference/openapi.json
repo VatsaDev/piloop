@@ -5929,7 +5929,7 @@
             },
             "type": "object",
             "title": "Metrics",
-            "description": "Each metric's value, as the evaluate command's ``METRIC`` lines would give it."
+            "description": "Each metric's value, as the evaluate command's result would give it."
           },
           "seconds": {
             "anyOf": [

@@ -138,8 +138,8 @@ Map each answer to its keys:
   open-ended campaign. Never write `[stop]`: it is deprecated.
 - **Money spent outside piloop (a GPU cloud, a paid API) → a `[[facts]]` source, `provider = "command"`, after
   `{ provider = "campaign" }` and `{ provider = "optimization" }`:**
-  - `command` prints `METRIC spend=<usd>` lines, as the evaluate command does; `metrics = ["spend"]` names them. GPU
-    hours or any other budget is one more name.
+  - `command` writes `{"metrics": {"spend": <usd>}}` to `$PILOOP_RESULT_FILE`, as the evaluate command does;
+    `metrics = ["spend"]` names it. GPU hours or any other budget is one more name.
   - `notices = { spend = [...] }` are thresholds that post a note.
   - `hold_at = { spend = <usd> }` in `[plugins.stop_rule]` is hard: at it the daemon stops launches. Never write the
     budget only in a brief.
@@ -154,15 +154,17 @@ https://piloop.autoresearch.inc/concepts/roles documents the `[roles.*]` tables.
 Wire the existing measurement, or write `evaluate.py`. The contract:
 
 - It runs from the repo root of a clean worktree.
-- It prints `METRIC <name>=<value>` for every metric in `piloop.toml`.
+- It appends one JSON line to `$PILOOP_RESULT_FILE` with every primary and guardrail of `piloop.toml`:
+  `{"metrics": {"<name>": <number>}}`, plus `units` when the metric is a sum over units. A name that `piloop.toml`
+  lacks is a crash. When the variable is unset (a human or an implementer runs it), it prints the line instead.
 - It exits 0. A non-zero exit is recorded as a crash.
 - It is deterministic: fixed seeds and splits.
-- When an evaluation costs money, it prints `METRIC eval_cost_usd=<usd>` as a watch metric, also when it fails.
+- When an evaluation costs money, it reports `eval_cost_usd` as a watch metric, also when it fails.
 - In `brief.md`, tell implementers to compare a local check with the head's stored scores, not to measure the head
   again.
 
 Audit the evaluator end to end before the launch: read it, and check its output on a sample of the head's units.
-Run it once now. Compare the METRIC lines and the duration with what the human said about measurement.
+Run it once now. Compare the result line and the duration with what the human said about measurement.
 
 Show both files to the human. Ask once more before you register.
 

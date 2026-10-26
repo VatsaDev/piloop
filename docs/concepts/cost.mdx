@@ -53,7 +53,7 @@ campaign. piloop has no price table, so it counts tokens, not money.
 ## Spend outside piloop
 
 GPU time and paid APIs are **facts** that a **fact source** reads. The built-in `command` source runs a command that
-prints `METRIC <name>=<value>` lines, and `hold_at` holds the campaign at a limit:
+writes `{"metrics": {"<name>": <value>}}` to `$PILOOP_RESULT_FILE`, and `hold_at` holds the campaign at a limit:
 
 ```toml
 [plugins.stop_rule]
@@ -69,7 +69,7 @@ provider = "optimization"
 
 [[facts]]
 provider = "command"
-command = ["uv", "run", "python", "scripts/spend.py"]   # prints METRIC spend=1012
+command = ["uv", "run", "python", "scripts/spend.py"]   # reports {"metrics": {"spend": 1012}}
 metrics = ["spend"]
 notices = { spend = [300, 600] }              # a note in the inbox as each one is passed
 ```

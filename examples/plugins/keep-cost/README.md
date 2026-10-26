@@ -22,7 +22,7 @@ provider = "optimization"
 
 [[facts]]
 provider = "command"
-command = ["uv", "run", "scripts/spend.py"]   # prints METRIC spend=<usd>
+command = ["uv", "run", "scripts/spend.py"]   # reports {"metrics": {"spend": <usd>}}
 metrics = ["spend"]
 
 [plugins.stop_rule]

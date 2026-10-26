@@ -2,11 +2,23 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import psutil
 import pytest
 
-from piloop.proc import AGENT_TOKEN_ENV, UNITS_ENV, Inherited, Started, child_env, kill_group, started, withhold
+from piloop.proc import (
+    AGENT_TOKEN_ENV,
+    RESULT_ENV,
+    UNITS_ENV,
+    Inherited,
+    ResultPipe,
+    Started,
+    child_env,
+    kill_group,
+    started,
+    withhold,
+)
 
 
 def test_kill_group_tolerates_a_reaped_child() -> None:
@@ -51,9 +63,27 @@ def _eperm(*_: object) -> None:
     raise PermissionError(1, 'Operation not permitted')
 
 
-def test_no_child_inherits_a_units_path(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_no_child_inherits_a_units_or_result_path(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(UNITS_ENV, '/somewhere')
-    assert UNITS_ENV not in child_env()
+    monkeypatch.setenv(RESULT_ENV, '/somewhere')
+    assert UNITS_ENV not in child_env() and RESULT_ENV not in child_env()
+
+
+def test_results_reads_lines_of_a_child_that_reopens_the_pipe_for_each(tmp_path: Path) -> None:
+    """A pipe ends when its last writer closes it: the reader's own write end keeps it open across the child's."""
+    code = (
+        "import os\nfor i in range(3):\n    with open(os.environ['PILOOP_RESULT_FILE'], 'a') as f: f.write(f'{i}\\n')"
+    )
+    with ResultPipe(tmp_path / 'r') as results:
+        subprocess.run([sys.executable, '-c', code], env={RESULT_ENV: str(results.path)}, check=True)
+    assert results.close() == ['0', '1', '2']
+    assert not (tmp_path / 'r').exists()
+
+
+def test_results_of_a_child_that_wrote_nothing_are_none(tmp_path: Path) -> None:
+    with ResultPipe(tmp_path / 'r') as results:
+        pass
+    assert results.close() == []
 
 
 def test_no_child_inherits_the_signature_of_the_agent_that_ran_piloop(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -64,6 +94,7 @@ def test_no_child_inherits_the_signature_of_the_agent_that_ran_piloop(monkeypatc
 
 AFTER_EXEC = """
 import time
+from pathlib import Path
 import psutil
 from piloop.proc import Inherited
 

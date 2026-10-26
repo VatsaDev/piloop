@@ -5,7 +5,7 @@
 - Edit only `solve.py`. Do not edit `evaluate.py`, `data/`, `briefs/` or this file.
 - piloop runs `python solve.py --train <csv> --test <csv> --out <csv>`. It must write a CSV with the columns
   `PassengerId,Survived` and one row for each test row.
-- Measure with `uv run python evaluate.py`. It prints `METRIC accuracy=<float>` and `METRIC cost_seconds=<float>`
+- Measure with `uv run python evaluate.py`. It prints `{"metrics": {"accuracy": <float>, "cost_seconds": <float>}, …}`
   (the CPU seconds that `solve.py` takes to train and predict, on one thread). Run it before you commit. If it fails,
   the candidate is a crash.
 - Use only pandas, numpy and scikit-learn (see `pyproject.toml`). Do not add dependencies.

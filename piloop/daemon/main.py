@@ -151,6 +151,7 @@ class Daemon:
             executor=EXECUTORS.selected(cfg.providers),
             cas=self._cas,
             reserve=cfg.storage.reserve,
+            evaluation=cfg.evaluation,
             runtime_factory=opened,
             network=self.network,
             secrets=SECRETS.selected(cfg.providers),

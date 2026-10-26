@@ -44,7 +44,7 @@ from piloop.campaign.campaigns import (
 )
 from piloop.campaign.ops import hold_on_failed_baseline
 from piloop.campaign.stop import attempts, park_cancelled, run_cancel, timeout as agent_timeout
-from piloop.config import TRANSCRIPT, CampaignConfig, Track
+from piloop.config import TRANSCRIPT, CampaignConfig, MetricRole, Track
 from piloop.db.events import emit, has, in_order, latest
 from piloop.db.models import (
     AgentSession,
@@ -127,7 +127,7 @@ from piloop.scoring.ledger import (
     verdict_rule,
 )
 from piloop.scoring.verdict import UNMEASURED, judgeable, label, override, pending, refusal, rejudgeable, write
-from piloop.settings import StorageSettings
+from piloop.settings import EvaluationSettings, StorageSettings
 
 RECOVERED_REASON = 'recovered: what the implementer of run#{run} left unsaved, never declared ready; not measured'
 CUT_REASON = 'recovered: where run#{run} was when a daemon stop cut it, never declared ready; not measured'
@@ -213,6 +213,7 @@ class RunController:
         executor: ExecutorConfig,
         cas: Cas | None = None,
         reserve: int = StorageSettings().reserve,
+        evaluation: EvaluationSettings | None = None,
         network: Network | None = None,
         secrets: SecretsProvider | None = None,
     ) -> None:
@@ -221,6 +222,7 @@ class RunController:
         self._runs_dir = home / RUNS
         self._home = home
         self._units_dir = home / 'units'
+        self._evaluation = evaluation if evaluation is not None else EvaluationSettings()
         self.cas = cas if cas is not None else CAS.selected({}).open(home)
         self.sources = Sources(self.cas, home, db)
         """The artifacts of jobs: a campaign's repo of record, and its linked inputs in the CAS."""
@@ -942,7 +944,9 @@ class RunController:
                         place=eval_dir.relative_to(self._home).as_posix(),
                         command=cfg.evaluate,
                         timeout=cfg.evaluate_timeout,
-                        required=[m.name for m in cfg.metrics],
+                        required=[m.name for m in cfg.metrics if m.role is not MetricRole.WATCH],
+                        known=[m.name for m in cfg.metrics],
+                        max_evidence_bytes=self._evaluation.max_evidence_bytes,
                         bar=paired,
                         repeats=repeats,
                     )

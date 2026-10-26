@@ -71,6 +71,7 @@ from piloop.plugins.executor.contract import (
 )
 from piloop.plugins.runtime.contract import AgentExit, ExitStatus
 from piloop.plugins.vcs.contract import Transfer
+from piloop.proc import Channel
 from piloop.scoring import ledger
 from piloop.scoring.ledger import save_units
 from piloop.settings import TMP_DIR, UNITS_DIR
@@ -574,6 +575,8 @@ class CampaignResults:
         for i, sample in enumerate(report.samples):
             pair = pairs[i] if i < len(pairs) else None
             record(s, self._units_dir, job.run, job.candidate, evaluator_id, sample, pair=pair)
+        if any(sample.channel is Channel.METRIC_LINES for sample in (*report.samples, *report.bar_samples)):
+            ledger.note_metric_lines(s, evaluation.candidate.campaign_id, evaluator_id)
 
 
 def _open(s: Session, key: AgentKey) -> AgentSession:

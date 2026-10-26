@@ -125,13 +125,13 @@ def test_store_status_evict_and_verify(archived, out, monkeypatch: pytest.Monkey
         common, 'settings', Settings(home=tmp_path, uv_tool_dir=tmp_path / 'uv-tools', plugins={'cas': cached})
     )
     run_cli(['store', 'status'])
-    assert out().splitlines()[0].startswith('cas: cached; 11 blob(s), 11 local (4.'), (
+    assert out().splitlines()[0].startswith('cas: cached; 10 blob(s), 10 local (4.'), (
         'the archives, the baseline inputs and the logs of its evaluation'
     )
     run_cli(['store', 'evict'])
-    assert out().strip() == 'uploaded 11 blob(s), evicted 0 (0 bytes)'
+    assert out().strip() == 'uploaded 10 blob(s), evicted 0 (0 bytes)'
     run_cli(['store', 'status'])
-    assert out().splitlines()[0].endswith(f' kB), 11 on file://{tmp_path / "remote"}'), 'decimal units'
+    assert out().splitlines()[0].endswith(f' kB), 10 on file://{tmp_path / "remote"}'), 'decimal units'
     with db.session() as s:
         manifest = s.scalars(select(Archive.manifest).where(Archive.subject_kind.is_not(None))).one()
     assert manifest is not None

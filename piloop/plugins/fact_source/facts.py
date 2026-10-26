@@ -97,7 +97,7 @@ OPTIMIZATION: tuple[Fact[FactValue], ...] = (
 
 
 def reading(name: str) -> Fact[float]:
-    """The fact of a value that a source reads under ``name``, such as a ``METRIC spend=412.3`` line of ``command``."""
+    """The fact of a value that a source reads under ``name``, such as ``spend`` in a result of ``command``."""
     return Fact[float](
         name, 'The latest value that the source read. None before the first, and after a failed reading.'
     )

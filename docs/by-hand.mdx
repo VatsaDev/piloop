@@ -113,8 +113,8 @@ The second example, `piloop init --example titanic-tracks ~/piloop-titanic`, has
     </Warning>
   </Step>
   <Step title="Write the evaluate command">
-    Make `evaluate.py` measure your code, or set `evaluate` in `piloop.toml` to a command that you have. It prints one
-    `METRIC <name>=<value>` line for each metric. See [the evaluate command](/concepts/campaigns#the-evaluate-command).
+    Make `evaluate.py` measure your code, or set `evaluate` in `piloop.toml` to a command that you have. It writes one
+    JSON line with each metric to `$PILOOP_RESULT_FILE`. See [the evaluate command](/concepts/campaigns#the-evaluate-command).
   </Step>
   <Step title="Edit piloop.toml">
     Set `name`, `evaluate`, the `[[metrics]]` tables, `harnesses` and `[model]`. The template lists every key, and the

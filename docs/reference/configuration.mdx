@@ -20,9 +20,9 @@ section.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `name` | string | required | A short name for the campaign: letters, digits, `.`, `_` and `-`, not all digits. A campaign gets it when it is registered, unless the registration names another, and piloop names its git refs after it. |
-| `metrics` | list\[[Metric](#metric)\] | required | Every metric the evaluate command prints, each with its `role`. Each track has one `primary`, so a campaign with one track has exactly one. |
+| `metrics` | list\[[Metric](#metric)\] | required | Every metric that the evaluate command reports, each with its `role`. Each track has one `primary`, so a campaign with one track has exactly one. |
 | `tracks` | dict\[string, [TrackConfig](#trackconfig)\] | `{}` | `[tracks.<name>]`: the share and addendum of each track. Needed only with several primaries. |
-| `evaluate` | list\[string\] | required | The command (argv) that scores a commit. It runs in a clean worktree of the commit and must print `METRIC <name>=<value>` lines. |
+| `evaluate` | list\[string\] | required | The command (argv) that scores a commit. It runs in a clean worktree of the commit and writes one JSON line, `{"metrics": {"<name>": <value>}}`, to `$PILOOP_RESULT_FILE`. |
 | `runtime` | string | `"subprocess"` | Where the agents run: the name of a runtime, which starts, watches, steers and stops them. A package can add a runtime with a `piloop.runtimes` entry point. A role can override it (`[roles.<name>] runtime`). Built in: `subprocess`. |
 | `harnesses` | list\[string\] | `["pi"]` | The enabled harnesses. Runs use them in turn, unless an idea pins one. When unset, the harnesses that are on by default: `pi`. Built in: `claude`, `codex`, `pi`. |
 | `model` | dict\[string, string\] | required | The model id for each harness, for example `{pi = "anthropic/claude-opus-5-5", claude = "claude-opus-5-5", codex = "gpt-6.1-sol"}`. |
@@ -39,11 +39,11 @@ section.
 
 ## Metric
 
-One metric. The evaluate command prints it as a `METRIC name=value` line.
+One metric that the evaluate command reports, by its name in `metrics` of its result.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `name` | string | required | The name of the metric, as the evaluate command prints it. |
+| `name` | string | required | The name of the metric, as the evaluate command reports it. |
 | `direction` | `higher` \| `lower` | required | `higher` when a larger value is better, `lower` when a smaller value is better. |
 | `role` | `primary` \| `guardrail` \| `watch` | `"watch"` | How the metric affects the verdict. A `primary` metric must beat the bar with confidence for a `keep`, and each track has exactly one. A `guardrail` may get worse by at most its `margin`, or the candidate is at most `interesting`. It must never pass its `floor`, or the candidate is a `discard`. A `watch` metric is recorded and never affects the verdict. |
 | `track` | string \| null | `null` | Primary metrics only. The name of the track (objective) that this metric is the primary of. When unset, the track has the metric's name, so a campaign with one primary needs nothing here. With several primaries, each one names its own track, and each track needs a `[tracks.<name>]` table. |
@@ -414,6 +414,14 @@ stopped: <the condition>``.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `slow_write` | duration | `"PT0.001S"` | A write transaction that lasts this long or longer, waiting for the database's write lock and holding it, exports a `piloop.db.write` span. A faster one exports nothing: its span costs about 35 µs, a fifth of a small write. 0 exports every write. Seconds, or an ISO 8601 duration such as `PT0.001S`. |
+
+### `[evaluation]`
+
+`[evaluation]`: what the daemon allows the evaluate command of its campaigns.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `max_evidence_mb` | number | `10` | The evidence files that one run of the evaluate command may name in its result, in MB, all of them together. piloop keeps them with the evaluation's logs. A result with more is a crash. |
 
 ### `[plugins]`
 

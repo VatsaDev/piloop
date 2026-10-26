@@ -168,8 +168,13 @@ def spend_limit(toml: Path, raw: dict[str, object], removed_in: Version) -> None
     )
 
 
-SPEND_COMMAND = ('sh', '-c', 'out=$("$@") && printf "METRIC spend=%s\\n" "$out"', 'sh')
-"""What runs a ``[spend] command``, which prints one number, so that it prints ``METRIC spend=<number>``."""
+SPEND_COMMAND = (
+    'sh',
+    '-c',
+    'out=$("$@") && printf \'{"metrics": {"spend": %s}}\\n\' "$out" >> "$PILOOP_RESULT_FILE"',
+    'sh',
+)
+"""What runs a ``[spend] command``, which prints one number, so that it reports ``{"metrics": {"spend": <number>}}``."""
 
 
 @bridge('0.4.0', '[spend] is a command source of [[facts]]: delete the spend_table bridge and SPEND_COMMAND')
@@ -199,7 +204,7 @@ def spend_table(toml: Path, raw: dict[str, object], removed_in: Version) -> None
     warn(
         toml,
         'spend',
-        '[spend] is deprecated; write a [[facts]] source with provider = "command" whose command prints METRIC spend=',
+        '[spend] is deprecated; write a [[facts]] source with provider = "command" whose command reports spend',
         removed_in=removed_in,
     )
 

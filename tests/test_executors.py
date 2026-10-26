@@ -373,6 +373,8 @@ def test_a_place_is_a_relative_path_that_stays_inside_a_home(place: str) -> None
             command=['true'],
             timeout=1,
             required=[],
+            known=[],
+            max_evidence_bytes=0,
         )
 
 

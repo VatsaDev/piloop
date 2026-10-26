@@ -18,16 +18,18 @@ from sqlalchemy import ColumnElement, Select, func, literal, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from piloop import deprecated
 from piloop.actor import Actor, System
 from piloop.config import CampaignConfig, Metric, Track
 from piloop.db import requests
-from piloop.db.events import emit
+from piloop.db.events import emit, has, latest
 from piloop.db.models import (
     OPEN_RUNS,
     PROCESS,
     AgentSession,
     Campaign,
     Candidate,
+    Comment,
     Evaluator,
     Event,
     EventModel,
@@ -42,6 +44,7 @@ from piloop.ids import (
     CampaignId,
     CampaignStatus,
     CandidateId,
+    CommentKind,
     EvaluatorId,
     IdeaStatus,
     LinkKind,
@@ -388,6 +391,30 @@ def record(
         ):
             requests.answer(s, asked)
     return measurement
+
+
+@deprecated.until(
+    '0.4.0', 'METRIC lines on stdout: delete MetricLinesNoted and note_metric_lines, and retire evaluator.metric_lines'
+)
+class MetricLinesNoted(EventModel):
+    """The daemon told the human that an evaluator reports through ``METRIC`` lines, which 0.4.0 removes."""
+
+    kind: Literal['evaluator.metric_lines'] = 'evaluator.metric_lines'
+    evaluator: EvaluatorId
+
+
+@deprecated.until('0.4.0', 'METRIC lines on stdout: delete note_metric_lines and its call')
+def note_metric_lines(s: Session, campaign_id: CampaignId, evaluator_id: EvaluatorId) -> None:
+    """Post one inbox note for each evaluator that still reports through ``METRIC`` lines. The caller commits."""
+    on = TargetRef(TargetKind.CAMPAIGN, campaign_id)
+    if latest(s, MetricLinesNoted, Event.target == on, has(MetricLinesNoted, evaluator=evaluator_id)) is not None:
+        return
+    emit(s, MetricLinesNoted(evaluator=evaluator_id), on, System.DAEMON)
+    body = (
+        'The evaluate command prints METRIC lines, which piloop reads until 0.4.0. Write one JSON line to '
+        '$PILOOP_RESULT_FILE instead: https://piloop.autoresearch.inc/concepts/campaigns#the-evaluate-command'
+    )
+    s.add(Comment(target=on, author=System.DAEMON, kind=CommentKind.NOTE, priority=1, body=body))
 
 
 class RejudgeRequested(EventModel):

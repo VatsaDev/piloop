@@ -1,4 +1,4 @@
-"""Pin the public behaviour of piloop 0.1.0: the verdict's bootstrap and the evaluate command's output protocol.
+"""Pin the public behaviour of piloop: the verdict's bootstrap and the evaluate command's output protocol.
 
 Other tools and ports reproduce these values. Change a test here only together with a CHANGELOG entry.
 """
@@ -12,7 +12,15 @@ import pytest
 from piloop.plugins.metric import Direction
 from piloop.plugins.verdict_rule.bootstrap import RESAMPLES, SEED, Over, compare, lower_bound
 from piloop.plugins.verdict_rule.contract import Criterion
-from piloop.scoring.evaluate import UNITS_SUM_TOLERANCE, Failed, Measured, parse_metrics, read_units, run_evaluate
+from piloop.scoring.evaluate import (
+    RESULT,
+    UNITS_SUM_TOLERANCE,
+    Failed,
+    Measured,
+    parse_metrics,
+    read_units,
+    run_evaluate,
+)
 
 DIFFS = [0.137, -0.052, 0.311, 0.009, -0.274, 0.198, 0.066, -0.013, 0.245, 0.102, -0.087, 0.029]
 
@@ -70,10 +78,34 @@ def test_metric_lines_with_a_non_finite_value_or_an_empty_name_are_skipped() -> 
     )
 
 
+def test_a_result_is_one_json_line_of_finite_metrics_units_and_evidence() -> None:
+    line = (
+        '{"metrics": {"errors": 3, "seconds": 0.5}, "units": {"errors": {"r1": 2, "r2": 1}}, "evidence": {"e": "x.md"}}'
+    )
+    result = RESULT.validate_json(line)
+    assert (result.metrics, result.units, result.evidence) == (
+        {'errors': 3.0, 'seconds': 0.5},
+        {'errors': {'r1': 2.0, 'r2': 1.0}},
+        {'e': 'x.md'},
+    )
+    assert RESULT.validate_json('{"metrics": {}}').units == {}, 'units and evidence are optional'
+    for bad in ('NaN', 'Infinity', '"1"', 'true', 'null'):
+        with pytest.raises(ValueError, match='metrics.errors'):
+            RESULT.validate_json(f'{{"metrics": {{"errors": {bad}}}}}')
+    with pytest.raises(ValueError, match='Extra inputs are not permitted'):
+        RESULT.validate_json('{"metrics": {}, "cost": 1}')
+
+
 def test_a_failed_or_incomplete_evaluation_gives_an_error(tmp_path: Path) -> None:
     def evaluate(script: str) -> tuple[dict[str, float], str | None]:
         r = run_evaluate(
-            ['sh', '-c', script], cwd=tmp_path, log_dir=tmp_path, timeout=5, required={'errors', 'seconds'}
+            ['sh', '-c', script],
+            cwd=tmp_path,
+            log_dir=tmp_path,
+            timeout=5,
+            required={'errors', 'seconds'},
+            known={'errors', 'seconds'},
+            max_evidence_bytes=0,
         )
         match r:
             case Measured(metrics=metrics):
@@ -81,14 +113,20 @@ def test_a_failed_or_incomplete_evaluation_gives_an_error(tmp_path: Path) -> Non
             case Failed() as failed:
                 return failed.printed, failed.error
 
-    assert evaluate('echo METRIC errors=3; echo METRIC seconds=2') == ({'errors': 3.0, 'seconds': 2.0}, None)
-    assert evaluate('echo METRIC errors=3; echo boom >&2; exit 1') == ({'errors': 3.0}, 'evaluate exit 1: boom'), (
-        'a non-zero exit keeps its METRIC lines next to the error: a failed evaluation has a cost too'
+    def write(metrics: dict[str, float]) -> str:
+        return f"printf '%s\\n' '{json.dumps({'metrics': metrics})}' >> \"$PILOOP_RESULT_FILE\""
+
+    assert evaluate(write({'errors': 3, 'seconds': 2})) == ({'errors': 3.0, 'seconds': 2.0}, None)
+    assert evaluate(f'{write({"errors": 3})}; echo boom >&2; exit 1') == ({'errors': 3.0}, 'evaluate exit 1: boom'), (
+        'a non-zero exit keeps what it reported next to the error: a failed evaluation has a cost too'
     )
-    assert evaluate('echo METRIC errors=3') == ({'errors': 3.0}, 'evaluate printed no METRIC line for: seconds')
+    assert evaluate(write({'errors': 3})) == ({'errors': 3.0}, 'evaluate reported no value for: seconds')
+    assert evaluate('echo METRIC errors=3; echo METRIC seconds=2') == ({'errors': 3.0, 'seconds': 2.0}, None), (
+        'METRIC lines on stdout are read until 0.4.0'
+    )
 
 
-def test_a_units_file_maps_each_metric_to_finite_unit_values_that_sum_to_its_metric_line(tmp_path: Path) -> None:
+def test_a_units_file_maps_each_metric_to_finite_unit_values_that_sum_to_its_value(tmp_path: Path) -> None:
     path = tmp_path / 'units.json'
 
     def units(content: object, metrics: dict[str, float]) -> dict[str, dict[str, float]]:
@@ -99,9 +137,9 @@ def test_a_units_file_maps_each_metric_to_finite_unit_values_that_sum_to_its_met
     assert units({'errors': {'r1': 2, 'r2': 1.0004}}, {'errors': 3.0, 'seconds': 1.0}) == {
         'errors': {'r1': 2.0, 'r2': 1.0004}
     }, 'a relative difference up to 1e-3 is rounding; a metric without units is fine'
-    with pytest.raises(ValueError, match="units of 'errors' sum to 3.004, its METRIC line says 3"):
+    with pytest.raises(ValueError, match="units of 'errors' sum to 3.004, its value is 3"):
         units({'errors': {'r1': 2, 'r2': 1.004}}, {'errors': 3.0})
-    with pytest.raises(ValueError, match="units for 'seconds', which printed no METRIC line"):
+    with pytest.raises(ValueError, match="units for 'seconds', which has no value"):
         units({'seconds': {'r1': 1}}, {'errors': 3.0})
     with pytest.raises(ValueError, match="no units for 'errors'"):
         units({'errors': {}}, {'errors': 3.0})

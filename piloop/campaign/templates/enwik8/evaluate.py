@@ -1,4 +1,4 @@
-"""Score ``compressor.py`` on the first 10 MB of enwik8. Prints ``METRIC bytes=`` and ``METRIC seconds=``.
+"""Score ``compressor.py`` on the first 10 MB of enwik8, and report ``bytes`` and ``seconds`` as one JSON line.
 
 ``bytes`` is the compressed size plus the size of ``compressor.py``: as in the Hutter Prize, the decompressor counts.
 ``seconds`` is the CPU time (user + system) of compression plus decompression. Each step runs in its own Python
@@ -7,6 +7,8 @@ time, changes little when other jobs load the machine. If the round trip does no
 step fails, this script exits non-zero with the reason on stderr, and piloop records a crash.
 """
 
+import json
+import os
 import resource
 import subprocess
 import sys
@@ -53,9 +55,25 @@ def main() -> int:
             return fail('decompress(compress(data)) is not equal to data')
         compressed = (t / 'blob').stat().st_size
     usage = resource.getrusage(resource.RUSAGE_CHILDREN)
-    print(f'METRIC bytes={compressed + COMPRESSOR.stat().st_size}')
-    print(f'METRIC seconds={usage.ru_utime + usage.ru_stime:.2f}')
+    report(
+        {
+            'metrics': {
+                'bytes': compressed + COMPRESSOR.stat().st_size,
+                'seconds': round(usage.ru_utime + usage.ru_stime, 2),
+            }
+        }
+    )
     return 0
+
+
+def report(result: dict[str, object]) -> None:
+    """Append the result to ``PILOOP_RESULT_FILE`` when piloop runs this command, else print it."""
+    line = json.dumps(result)
+    if path := os.environ.get('PILOOP_RESULT_FILE'):
+        with open(path, 'a') as f:
+            f.write(line + '\n')
+    else:
+        print(line)
 
 
 def fail(reason: str) -> int:

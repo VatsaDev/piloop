@@ -17,7 +17,7 @@ from piloop.plugins.runtime.contract import Runtime, RuntimeConfig
 from piloop.plugins.runtime.subprocess import Subprocess, SubprocessRuntime
 
 from piloop.plugins.harness.contract import HARNESSES, Harness, SecretRef, UsageReader
-from piloop.settings import Settings, StorageSettings, TracingSettings
+from piloop.settings import Settings, StorageSettings, TracingSettings, EvaluationSettings
 from piloop.plugins.harness.contract import McpLaunch, McpArgs, McpError, McpRenderer
 from piloop.plugins.harness.kit.jsonl import JsonlSessions, Counts, Record, Tally, Said
 from piloop.plugins.harness.pi import Pi
@@ -129,7 +129,7 @@ from piloop.plugins.executor.kit.jobs import Control, Site, local_site, run_agen
 from piloop.plugins.executor.kit.jobs import run_evaluation
 from piloop.plugins.executor.kit.leases import Leases, Timing, Grant, Answer
 from piloop.plugins.executor.kit.leases import StaleLease
-from piloop.proc import kill_group
+from piloop.proc import Channel, kill_group
 from piloop.plugins.executor.workers import Workers, WorkersExecutor
 from piloop.otel import Tracer, Span, ConsoleProcessor
 from piloop.runtime.factory import RuntimeFactory

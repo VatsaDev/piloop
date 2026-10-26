@@ -138,6 +138,8 @@ def waiting(db: Database, campaign: Campaign, tmp_path: Path, n: int = 1, runner
                     command=['true'],
                     timeout=60,
                     required=['score'],
+                    known=['score'],
+                    max_evidence_bytes=0,
                 )
             )
         s.commit()

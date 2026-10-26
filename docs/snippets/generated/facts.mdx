@@ -16,7 +16,7 @@
 
 | Ratio | What it is |
 |---|---|
-| `reading(name: str) -> Fact[float]` | The fact of a value that a source reads under `name`, such as a `METRIC spend=412.3` line of `command`. |
+| `reading(name: str) -> Fact[float]` | The fact of a value that a source reads under `name`, such as `spend` in a result of `command`. |
 | `since_keep(name: str) -> Fact[float]` | How much the value of `reading(name)` grew since the latest keep: `<name>_since_keep`. |
 | `per_keep(facts: Facts, spend: str) -> float \| None` | The fact `spend` per keep. Reads `reading(spend)` and `KEEPS`. |
 | `per_evaluation(facts: Facts, cost: str) -> float \| None` | The sum of the evaluator's metric `cost` per evaluation. Reads `EVALUATIONS` and `METRIC_SUMS`. |

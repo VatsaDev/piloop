@@ -64,6 +64,21 @@ class StorageSettings(BaseModel):
         return int(self.min_free_gb * GB)
 
 
+class EvaluationSettings(BaseModel):
+    """``[evaluation]``: what the daemon allows the evaluate command of its campaigns."""
+
+    model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
+
+    max_evidence_mb: float = Field(default=10, ge=0)
+    """The evidence files that one run of the evaluate command may name in its result, in MB, all of them together.
+    piloop keeps them with the evaluation's logs. A result with more is a crash."""
+
+    @property
+    def max_evidence_bytes(self) -> int:
+        """``max_evidence_mb`` in bytes."""
+        return int(self.max_evidence_mb * 1024**2)
+
+
 class TracingSettings(BaseModel):
     """``[tracing]``: what this home measures for the spans that it exports (``OTEL_EXPORTER_OTLP_ENDPOINT``)."""
 
@@ -193,6 +208,9 @@ class Settings(BaseSettings):
 
     tracing: TracingSettings = TracingSettings()
     """``[tracing]`` in ``config.toml``: what this home measures for its exported spans."""
+
+    evaluation: EvaluationSettings = EvaluationSettings()
+    """``[evaluation]`` in ``config.toml``: what the daemon allows the evaluate command of its campaigns."""
 
     runtimes: dict[str, dict[str, JsonValue]] = {}
     """``[runtimes.<name>]`` in ``config.toml``: the settings of each runtime on this machine, by its name.

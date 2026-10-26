@@ -61,12 +61,12 @@ class MetricRole(StrEnum):
 
 
 class Metric(BaseModel):
-    """One metric. The evaluate command prints it as a ``METRIC name=value`` line."""
+    """One metric that the evaluate command reports, by its name in ``metrics`` of its result."""
 
     model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
 
     name: str
-    """The name of the metric, as the evaluate command prints it."""
+    """The name of the metric, as the evaluate command reports it."""
     direction: Direction
     """``higher`` when a larger value is better, ``lower`` when a smaller value is better."""
     role: MetricRole = MetricRole.WATCH
@@ -240,13 +240,13 @@ class CampaignConfig(BaseModel):
     """A short name for the campaign: letters, digits, ``.``, ``_`` and ``-``, not all digits. A campaign gets it when
     it is registered, unless the registration names another, and piloop names its git refs after it."""
     metrics: list[Metric] = Field(min_length=1)
-    """Every metric the evaluate command prints, each with its ``role``. Each track has one ``primary``, so a campaign
+    """Every metric that the evaluate command reports, each with its ``role``. Each track has one ``primary``, so a campaign
     with one track has exactly one."""
     tracks: dict[TrackName, TrackConfig] = {}
     """``[tracks.<name>]``: the share and addendum of each track. Needed only with several primaries."""
     evaluate: list[str] = Field(min_length=1)
-    """The command (argv) that scores a commit. It runs in a clean worktree of the commit and must print
-    ``METRIC <name>=<value>`` lines."""
+    """The command (argv) that scores a commit. It runs in a clean worktree of the commit and writes one JSON line,
+    ``{"metrics": {"<name>": <value>}}``, to ``$PILOOP_RESULT_FILE``."""
     runtime: RuntimeName = 'subprocess'
     """Where the agents run: the name of a runtime, which starts, watches, steers and stops them. A package can
     add a runtime with a ``piloop.runtimes`` entry point. A role can override it (``[roles.<name>] runtime``)."""

@@ -56,7 +56,7 @@ class Report(Params):
     model_config = ConfigDict(extra='forbid')
 
     metrics: dict[str, Annotated[float, Field(strict=True, allow_inf_nan=False)]]
-    """Each metric's value, as the evaluate command's ``METRIC`` lines would give it."""
+    """Each metric's value, as the evaluate command's result would give it."""
     seconds: Annotated[float, Field(ge=0, allow_inf_nan=False)] | None = None
     """How long the evaluation took."""
     error: str | None = None

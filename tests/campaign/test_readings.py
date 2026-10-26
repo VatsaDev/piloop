@@ -50,6 +50,16 @@ def limited(limit: float, while_held: str | None = None, **source: object) -> di
     return spending(**source) | {'plugins': {'stop_rule': rule}}
 
 
+def report(line: str) -> list[str]:
+    """A command that writes ``line`` to its result pipe."""
+    return ['sh', '-c', f"printf '%s\\n' '{line}' >> \"$PILOOP_RESULT_FILE\""]
+
+
+def billing(file: Path) -> list[str]:
+    """A command that reports what ``file`` holds, which ``bill`` sets."""
+    return ['sh', '-c', f'cat {file} >> "$PILOOP_RESULT_FILE"']
+
+
 def read(command: list[str], repo: Path, *names: str) -> dict[str, float]:
     return Command(command=command, metrics=list(names or ['spend'])).read(repo)
 
@@ -75,8 +85,17 @@ def test_a_hold_on_a_fact_needs_a_source_of_it_and_a_source_keeps_its_own_facts(
     ('command', 'error'),
     [
         (['sh', '-c', 'echo billing down >&2; exit 3'], 'exit 3: billing down'),
-        (['echo', '$12'], 'printed no METRIC line for: spend'),
-        (['echo', 'METRIC spend=nan'], 'printed no METRIC line for: spend'),
+        (['echo', '$12'], 'wrote no result to PILOOP_RESULT_FILE'),
+        (['echo', 'METRIC spend=nan'], 'wrote no result to PILOOP_RESULT_FILE'),
+        (report('{"metrics": {"spend": NaN}}'), 'not {"metrics": {"<name>": <number>}}'),
+        (report('{"metrics": {"spend": "12"}}'), 'not {"metrics": {"<name>": <number>}}'),
+        (report('{"metrics": {}}'), 'reported no value for: spend'),
+        (report('{"metrics": {"spend": 1, "other": 2}}'), 'reported other, which metrics does not name'),
+        (report('{"metrics": {"spend": 1}}\n{"metrics": {"spend": 2}}'), 'wrote 2 results'),
+        (
+            ['sh', '-c', 'echo METRIC spend=1; echo \'{"metrics": {"spend": 1}}\' >> "$PILOOP_RESULT_FILE"'],
+            'drop the METRIC lines',
+        ),
         (['/nonexistent/spend'], 'could not start: .*No such file'),
     ],
 )
@@ -91,7 +110,13 @@ def test_a_hung_command_times_out(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
         read(['sh', '-c', 'sleep 5; :'], tmp_path)  # The child process holds the pipe open.
 
 
-def test_the_command_runs_at_the_repo_root_and_prints_metric_lines_as_the_evaluator_does(tmp_path: Path) -> None:
+def test_the_command_runs_at_the_repo_root_and_reports_as_the_evaluator_does(tmp_path: Path) -> None:
+    (tmp_path / 'bill').write_text('{"metrics": {"spend": 412.30, "gpu_hours": 3}}\n')
+    command = ['sh', '-c', 'echo noise; cat bill >> "$PILOOP_RESULT_FILE"']
+    assert read(command, tmp_path, 'spend', 'gpu_hours') == {'spend': 412.3, 'gpu_hours': 3.0}
+
+
+def test_metric_lines_are_read_until_0_4_0(tmp_path: Path) -> None:
     (tmp_path / 'bill').write_text('noise\nMETRIC spend=412.30\nMETRIC gpu_hours=3\nMETRIC other=1\n')
     assert read(['cat', 'bill'], tmp_path, 'spend', 'gpu_hours') == {'spend': 412.3, 'gpu_hours': 3.0}, (
         'the names it reads, whatever else it prints'
@@ -149,7 +174,7 @@ def daemon_comments(db: Database) -> list[tuple[str, int | None, str]]:
 
 def bill(db: Database, campaign: Campaign, file: Path, spend: str) -> None:
     """Set the spend that the command prints from now on, and make the next reading due."""
-    file.write_text(f'METRIC spend={spend}\n')
+    file.write_text(f'{{"metrics": {{"spend": {spend}}}}}\n')
     with db.session() as s:
         readings = select(Event.id).where(has(FactRead), Event.target == TargetRef(TargetKind.CAMPAIGN, campaign.id))
         s.execute(update(Event).where(Event.id.in_(readings)).values(at=utcnow() - timedelta(hours=1)))
@@ -169,11 +194,11 @@ def test_notices_once_then_at_the_limit_nothing_starts_until_the_limit_is_raised
         Path(campaign.path),
         f'#!/bin/sh\nwhile [ -f {hold} ]; do sleep 0.05; done\necho line >> solve.txt\ngit commit -qam "add a line"\n',
     )
-    set_config(db, campaign, **limited(300, command=['cat', str(file)], notices={'spend': [100, 200]}))
+    set_config(db, campaign, **limited(300, command=billing(file), notices={'spend': [100, 200]}))
     first, second = add_ideas(db, campaign, 'first', 'second')
     scheduler = make_scheduler(db, runtime, tmp_path)
 
-    file.write_text('METRIC spend=150\n')
+    file.write_text('{"metrics": {"spend": 150}}\n')
     assert scheduler.run_all() == [1], 'below the limit: launches go on'
     assert daemon_comments(db) == [('note', 1, 'Notice: spend is 150, past the 100 notice.')], (
         'the first reading posts the notices it is already past'
@@ -245,7 +270,7 @@ def test_a_failing_source_holds_launches_and_escalates_once_for_each_series_of_f
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
     file = tmp_path / 'bill'
-    set_config(db, campaign, **limited(300, command=['cat', str(file)]))
+    set_config(db, campaign, **limited(300, command=billing(file)))
     add_ideas(db, campaign, 'idea')
     scheduler = make_scheduler(db, runtime, tmp_path)
 

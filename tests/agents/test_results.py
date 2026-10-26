@@ -10,12 +10,14 @@ from git import Repo
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from piloop.actor import System
 from piloop.agents.results import AgentSessionFinished, CampaignResults, Identified, WorkspaceConflict, learn
 from piloop.db.events import in_order
 from piloop.db.models import (
     AgentSession,
     AgentSessionState,
     Campaign,
+    Comment,
     Evaluation,
     Event,
     Idea,
@@ -46,6 +48,7 @@ from piloop.plugins.executor.contract import (
 from piloop.plugins.runtime.contract import AgentExit, ExitStatus
 from piloop.plugins.vcs.contract import Transfer
 from piloop.plugins.vcs.git import Git
+from piloop.proc import Channel
 from piloop.store.tree import put_tree
 from tests.agents.test_launcher import MINTED_HARNESS, agent_session, launch, request, use_harness
 from tests.conftest import HARNESS_PROMPT_TO_FILE, RESEARCH, WATCHDOG, ScriptRuntime, baseline, disk
@@ -72,12 +75,48 @@ def test_an_evaluation_that_left_the_queue_or_never_started_is_settled(
         command=['true'],
         timeout=60,
         required=['score'],
+        known=['score'],
+        max_evidence_bytes=0,
     )
     report = EvaluationReport(samples=[Sample(metrics={'score': 1.0}, seconds=1)])
     with pytest.raises(Settled, match='is not running'):
         results.finished(job, report)  # it waits: no executor started it
     with pytest.raises(Settled, match='left the queue'):
         results.lost(EvaluationKey(waiting + 1), 'gone')
+
+
+def test_an_evaluator_that_prints_metric_lines_gets_one_inbox_note(
+    db: Database, campaign: Campaign, tmp_path: Path
+) -> None:
+    results = CampaignResults(db, Tracer(None), tmp_path, disk(tmp_path), lambda: False)
+    base = baseline(db, campaign.id)
+    for channel in (Channel.RESULT, Channel.METRIC_LINES, Channel.METRIC_LINES):
+        with db.session() as s:
+            evaluation = Evaluation(
+                candidate_id=base.id, evaluator_id=s.get_one(Campaign, campaign.id).evaluator_id, started_at=utcnow()
+            )
+            s.add(evaluation)
+            s.commit()
+            evaluation_id = evaluation.id
+        job = EvaluationJob(
+            evaluation=evaluation_id,
+            candidate=base.id,
+            runner='process',
+            artifact=Source(vcs=Git(), repo=RepoId(campaign.id), revision=base.revision),
+            place='eval',
+            command=['true'],
+            timeout=60,
+            required=['score'],
+            known=['score'],
+            max_evidence_bytes=0,
+        )
+        results.finished(job, EvaluationReport(samples=[Sample(metrics={'score': 1.0}, seconds=1, channel=channel)]))
+    with db.session() as s:
+        notes = s.scalars(select(Comment.body).where(Comment.author == System.DAEMON)).all()
+    assert notes == [
+        'The evaluate command prints METRIC lines, which piloop reads until 0.4.0. Write one JSON line to '
+        '$PILOOP_RESULT_FILE instead: https://piloop.autoresearch.inc/concepts/campaigns#the-evaluate-command'
+    ], 'one note for the evaluator, at its first measurement through METRIC lines'
 
 
 def test_a_start_report_moves_a_starting_agent_to_running_and_leaves_an_ending_one_ending(
@@ -168,6 +207,8 @@ def test_two_results_for_one_job_in_plain_sessions_close_its_row_once_and_measur
         command=['true'],
         timeout=60,
         required=['score'],
+        known=['score'],
+        max_evidence_bytes=0,
     )
     reports: list[tuple[AgentJob | EvaluationJob, AgentReport | EvaluationReport]] = [
         (agent, AgentFinished(process=AgentExit(ExitStatus.EXITED, 200, 0))),
@@ -364,6 +405,8 @@ def test_a_report_naming_a_blob_the_cas_lacks_is_refused_until_it_is_there_then_
         command=['true'],
         timeout=60,
         required=['score'],
+        known=['score'],
+        max_evidence_bytes=0,
     )
     stdout = disk(tmp_path / 'worker').put(b'METRIC score=1\n')
     report = EvaluationReport(samples=[Sample(metrics={'score': 1.0}, seconds=1)], files={'eval.stdout': stdout})

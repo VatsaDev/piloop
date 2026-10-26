@@ -8,7 +8,7 @@ piloop gives no fact a meaning of its own, a cost or a spend among them.
 A list that is not set is every installed source that is on by default (``ON_BY_DEFAULT``): ``campaign`` and
 ``optimization``. A source may also read on its own: the daemon calls its ``read`` when it is ``due``, outside
 any transaction, and then its ``record``. ``kit.readings.Readings`` does that for a source of named values, and
-``command``, which runs a command that prints ``METRIC <name>=<value>`` lines as the evaluate command does, is one.
+``command``, which runs a command that reports its values as the evaluate command does, is one.
 """
 
 from abc import ABC, abstractmethod

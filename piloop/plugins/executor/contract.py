@@ -44,6 +44,7 @@ from piloop.plugins.network.contract import Network
 from piloop.plugins.runtime.contract import AgentExit, AgentStart
 from piloop.plugins.secrets.contract import SecretsProvider, values
 from piloop.plugins.vcs.contract import VCS, Repository, Transfer, Vcs
+from piloop.proc import Channel
 from piloop.runtime.factory import RuntimeFactory
 from piloop.usage import Usage
 
@@ -238,7 +239,11 @@ class EvaluationJob(BaseModel):
     command: list[str]
     timeout: float
     required: list[str]
-    """The metrics the evaluate command must print."""
+    """The metrics that the evaluate command must report: the primaries and the guardrails."""
+    known: list[str]
+    """Every metric that it may report: those of ``[[metrics]]``. A result with another is refused."""
+    max_evidence_bytes: int = Field(ge=0)
+    """The evidence files that one run may name, all together (``[evaluation] max_evidence_mb``)."""
     bar: Bar | None = None
     """The bar to run next to the candidate. None: the candidate alone."""
     repeats: int = Field(default=1, ge=1)
@@ -337,6 +342,8 @@ class Sample(BaseModel):
     seconds: float
     error: str | None = None
     units: dict[str, dict[str, float]] = Field(default_factory=dict)
+    channel: Channel = Channel.RESULT
+    """How the evaluate command reported it: a result, or ``METRIC`` lines until 0.4.0."""
 
 
 class EvaluationReport(BaseModel):
