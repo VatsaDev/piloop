@@ -9,14 +9,14 @@ import math
 from abc import abstractmethod
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Annotated, Literal, Self
+from typing import Annotated, ClassVar, Literal, Self
 
 from pydantic import Field, model_validator
 from sqlalchemy import ColumnElement, func, select
 from sqlalchemy.orm import Session
 
 from piloop.db.events import has, latest, payload_of
-from piloop.db.models import Campaign, Comment, Event, EventModel
+from piloop.db.models import Campaign, Comment, Event, EventModel, ReadBy
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.ids import CommentKind, TargetKind, TargetRef
 from piloop.plugins.fact_source.contract import FACT_SOURCES, FactReadError, FactSource
@@ -31,6 +31,7 @@ NEVER_READ = datetime.min.replace(tzinfo=UTC)
 class FactRead(EventModel):
     """One reading of a ``Readings`` source: each value by its name, or None for each when the reading failed."""
 
+    READ_BY: ClassVar[ReadBy] = ReadBy.READERS
     kind: Literal['fact.read'] = 'fact.read'
     values: dict[str, float | None]
     error: str | None = None

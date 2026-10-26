@@ -7,19 +7,20 @@ target and no ``RequestAnswered`` names it: a newer ask replaces an older one. `
 so.
 """
 
-from typing import Literal
+from typing import ClassVar, Literal
 
 from sqlalchemy import ColumnElement, and_, exists, func, select
 from sqlalchemy.orm import Session, aliased
 
 from piloop.actor import System
 from piloop.db.events import emit, has, payload_of
-from piloop.db.models import Event, EventModel
+from piloop.db.models import Event, EventModel, ReadBy
 
 
 class RequestAnswered(EventModel):
     """The daemon answered an ask: it did what the ask asked, or found that there is nothing to do. On the ask's target."""
 
+    READ_BY: ClassVar[ReadBy] = ReadBy.READERS
     kind: Literal['request.answered'] = 'request.answered'
     ask: int
     """The id of the event of the ask."""

@@ -12,13 +12,13 @@ from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import partial
-from typing import Literal
+from typing import ClassVar, Literal
 
 from piloop.actor import System
 from piloop.agents.results import AgentSessionFinished
-from piloop.daemon.loop import Consumer, Kinds, Turn
+from piloop.daemon.loop import Consumer, Kinds, Phase, Turn
 from piloop.db.events import SubjectSettled, emit
-from piloop.db.models import EventModel, utcnow
+from piloop.db.models import EventModel, ReadBy, utcnow
 from piloop.db.triggers.changelog import CampaignStatusChanged
 from piloop.ids import Ref, TargetKind, TargetRef
 from piloop.plugins.archive.contract import CONSUMER, ArchiveHost
@@ -31,6 +31,7 @@ from piloop.store.tree import Cancelled
 class DiskAnomaly(EventModel):
     """On a campaign: an archiving left files unstored because the store's disk was too full."""
 
+    READ_BY: ClassVar[ReadBy] = ReadBy.READERS
     kind: Literal['anomaly.disk'] = 'anomaly.disk'
     needed: int
     """The bytes that were left."""
@@ -88,7 +89,7 @@ class LocalArchiver:
 
     def contribution(self) -> Contribution:
         """Its consumer, which starts the next job."""
-        return Contribution(consumers=(Consumer(CONSUMER, WAKES, self._turn),))
+        return Contribution(consumers=(Consumer(CONSUMER, WAKES, self._turn, Phase.UPKEEP),))
 
     def _turn(self, turn: Turn) -> datetime | None:
         return self.run(turn.now)

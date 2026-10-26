@@ -11,7 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Literal, assert_never
+from typing import Annotated, ClassVar, Literal, assert_never
 
 from covalence import Cid
 from pydantic import Field, TypeAdapter, ValidationError
@@ -32,6 +32,7 @@ from piloop.db.models import (
     Event,
     EventModel,
     Idea,
+    ReadBy,
     Run,
     RunEnd,
     utcnow,
@@ -137,6 +138,7 @@ class WrapUp(EventModel):
     ``comment.undelivered``; the grace period starts anyway.
     """
 
+    READ_BY: ClassVar[ReadBy] = ReadBy.READERS
     kind: Literal['agent_session.wrap_up'] = 'agent_session.wrap_up'
     reason: str
     comment: CommentId | None = None
@@ -153,6 +155,7 @@ class AgentEnded(EventModel):
     implementer left its finding before.
     """
 
+    READ_BY: ClassVar[ReadBy] = ReadBy.READERS
     kind: Literal['agent_session.stop_ended'] = 'agent_session.stop_ended'
     reason: str
     end: RunEnd
@@ -161,6 +164,7 @@ class AgentEnded(EventModel):
 class WorkspaceConflict(EventModel):
     """What an agent wrote in its workspace that another agent wrote too, meanwhile: the first one's stays."""
 
+    READ_BY: ClassVar[ReadBy] = ReadBy.READERS
     kind: Literal['agent_session.workspace_conflict'] = 'agent_session.workspace_conflict'
     beside: dict[str, str] = Field(default_factory=dict)
     """Workspace path → where this agent's file went instead: beside it, named after the agent."""
@@ -177,6 +181,7 @@ class PromptOutcome(EventModel):
     ``comment.undelivered`` when it never did: the runtime refused it, or the agent ended before it read it.
     """
 
+    READ_BY: ClassVar[ReadBy] = ReadBy.READERS
     kind: Literal['comment.queued', 'comment.delivered', 'comment.undelivered']
     comment: CommentId
     error: str | None = None
@@ -262,6 +267,7 @@ type Ended = Annotated[Ran | NotStarted | Lost | DaemonStopped | HandedOver, Fie
 class JobEnded(EventModel):
     """How an agent's job ended, on its row: what waits for the agent reads it there (``Launcher.launch``)."""
 
+    READ_BY: ClassVar[ReadBy] = ReadBy.READERS
     kind: Literal['agent_session.job_ended'] = 'agent_session.job_ended'
     ended: Ended
 
@@ -282,6 +288,7 @@ class Proposer:
 class Identified(EventModel):
     """An agent's harness session is new to its row (``learn``), with what the agent does in the campaign."""
 
+    READ_BY: ClassVar[ReadBy] = ReadBy.READERS
     kind: Literal['agent_session.identified'] = 'agent_session.identified'
     session_id: str
     """The harness's own session id."""
@@ -317,6 +324,7 @@ class Unresumed(StrEnum):
 class SessionNotResumed(EventModel):
     """An agent of a role that resumes its sessions started a new session from its whole brief, and why."""
 
+    READ_BY: ClassVar[ReadBy] = ReadBy.READERS
     kind: Literal['agent_session.not_resumed'] = 'agent_session.not_resumed'
     reason: Unresumed
     detail: str
@@ -330,6 +338,7 @@ class SessionSaved(EventModel):
     of the one before.
     """
 
+    READ_BY: ClassVar[ReadBy] = ReadBy.READERS
     kind: Literal['agent_session.session_saved'] = 'agent_session.session_saved'
     session_file: BlobAddress
     """The snapshot: the row's ``session_file`` now."""

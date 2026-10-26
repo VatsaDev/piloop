@@ -677,3 +677,11 @@ def launched(home: Path, signature: str) -> dict[str, object]:
         s.commit()
     db.close()
     return {'actor': agent, 'agent_token': token}
+
+
+def trace(db: Database) -> list[str]:
+    """The feed as ``<kind> <target kind>`` lines, in order: what the daemon did, without ids, actors or times."""
+    with db.session() as s:
+        return [
+            f'{kind} {target}' for kind, target in s.execute(select(Event.kind, Event.target_kind).order_by(Event.id))
+        ]

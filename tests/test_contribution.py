@@ -17,7 +17,7 @@ from piloop.api.client import Client, Refused
 from piloop.api.contract import Access, Problem
 from piloop.cli.main import COMMANDS, add_commands
 from piloop.daemon.api import Handlers, daemon_state, openapi, with_api
-from piloop.daemon.loop import Consumer, Turn
+from piloop.daemon.loop import Consumer, Phase, Turn
 from piloop.daemon.main import DECLARED
 from piloop.daemon.run_controller import RunController
 from piloop.daemon.scheduler import Scheduler
@@ -57,7 +57,7 @@ def idle_wake() -> None:
 
 class Archiver:
     def contribution(self) -> Contribution:
-        return Contribution(consumers=(Consumer('archiver', frozenset(), idle),))
+        return Contribution(consumers=(Consumer('archiver', frozenset(), idle, Phase.UPKEEP),))
 
 
 def test_the_executor_s_upkeep_and_the_archiver_run_after_limits_and_before_the_scheduler_s_own(

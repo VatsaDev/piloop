@@ -19,7 +19,7 @@ from pydantic import Field, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from piloop.daemon.loop import Consumer, Turn
+from piloop.daemon.loop import Consumer, Phase, Turn
 from piloop.db.models import LIVE_LEASES, EventModel, Lease, LeaseKind, LeaseWorker, WorkerInstance, WorkerInstanceState
 from piloop.net.server import executor_router
 from piloop.otel import Tracer
@@ -156,7 +156,9 @@ class WorkersExecutor:
         """
         wakes = frozenset(t.model for t in scaling.WAKES)
         routes = lease_routes(self.leases, self._changed, self._cas, self._send.send, self._cli)
-        return Contribution(consumers=(Consumer('executor', wakes, self._upkeep),), router=executor_router(routes))
+        return Contribution(
+            consumers=(Consumer('executor', wakes, self._upkeep, Phase.UPKEEP),), router=executor_router(routes)
+        )
 
     def _upkeep(self, turn: Turn) -> datetime | None:
         """Expire the leases of a silent worker (``Leases.expire``), scale the provisioned pools, and return when next."""

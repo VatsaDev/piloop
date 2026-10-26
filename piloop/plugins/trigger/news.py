@@ -19,7 +19,7 @@ from piloop.api.views import CommentNews, News, NewsItem, StoppedNews
 from piloop.campaign import inbox
 from piloop.db import feed as db_feed
 from piloop.db.events import has, latest
-from piloop.db.models import OPEN, AgentSession, AgentSessionState, Comment, Event, EventModel
+from piloop.db.models import OPEN, AgentSession, AgentSessionState, Comment, Event, EventModel, ReadBy
 from piloop.ids import CommentKind, TargetKind
 from piloop.plugins.trigger.contract import Pass, Quiet, Steer, Trigger
 
@@ -30,6 +30,7 @@ URGENT: frozenset[str] = frozenset({CommentKind.MESSAGE, CommentKind.ESCALATION}
 class NewsTaken(EventModel):
     """A note to the role's agent takes the news of the events after ``after``, up to ``upto``."""
 
+    READ_BY: ClassVar[ReadBy] = ReadBy.READERS
     kind: Literal['agent_session.news_taken'] = 'agent_session.news_taken'
     after: int
     upto: int

@@ -360,6 +360,15 @@ def text_checks(table: str, *columns: str, nullable: tuple[str, ...] = ()) -> tu
     )
 
 
+class ReadBy(StrEnum):
+    """Who reads the events of a kind."""
+
+    CONSUMERS = 'consumers'
+    """A consumer of the daemon's loop wakes on it: it says that something changed that a consumer acts on."""
+    READERS = 'readers'
+    """Only readers read it: status, history, an agent's SQL. It records what was done, and wakes nothing."""
+
+
 class EventModel(BaseModel):
     """The payload of one kind of event, with its ``kind``: one model for each kind, or for a few that share a shape.
 
@@ -377,9 +386,15 @@ class EventModel(BaseModel):
     - A field that goes away, or a rename, is a migration that rewrites the rows, and a line in the upgrade guide.
 
     A kind that nothing writes any more is retired (``retire``), so that no model takes its name again.
+
+    A consumer of the daemon wakes on each kind, unless its model says that only readers read it (``READ_BY``).
     """
 
     model_config = ConfigDict(frozen=True, extra='forbid', serialize_by_alias=True, validate_by_name=True)
+
+    READ_BY: ClassVar[ReadBy] = ReadBy.CONSUMERS
+    """Who reads its events. A test fails on a kind that wakes no consumer and is not ``ReadBy.READERS``, and on one
+    that is and wakes one."""
 
     kind: str
 

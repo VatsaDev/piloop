@@ -24,7 +24,8 @@ class Contribution:
     """What one provider adds while the daemon runs."""
 
     consumers: tuple[Consumer, ...] = ()
-    """Jobs of the daemon's loop. A turn runs them after ``limits`` and before the scheduler's own."""
+    """Jobs of the daemon's loop. Each names its ``Phase``: within one, a turn runs them in the order of their
+    contributions."""
     router: APIRouter | None = None
     """Routes of the daemon's server, beside the API's. A route of a method and path that is taken is refused."""
 

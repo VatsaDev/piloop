@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from statistics import fmean
-from typing import Literal, assert_never
+from typing import ClassVar, Literal, assert_never
 
 from pydantic import BaseModel, Field, TypeAdapter
 from sqlalchemy import ColumnElement, Select, func, literal, select
@@ -37,6 +37,7 @@ from piloop.db.models import (
     IdeaLink,
     Measurement,
     Origin,
+    ReadBy,
     Run,
     latest_agent_session,
 )
@@ -471,6 +472,7 @@ def record(
 class MetricLinesNoted(EventModel):
     """The daemon told the human that an evaluator reports through ``METRIC`` lines, which 0.4.0 removes."""
 
+    READ_BY: ClassVar[ReadBy] = ReadBy.READERS
     kind: Literal['evaluator.metric_lines'] = 'evaluator.metric_lines'
     evaluator: EvaluatorId
 
@@ -499,6 +501,7 @@ class RejudgeRequested(EventModel):
 class RejudgeFailed(EventModel):
     """The daemon could not judge a candidate again. It answers the request."""
 
+    READ_BY: ClassVar[ReadBy] = ReadBy.READERS
     kind: Literal['candidate.rejudge_failed'] = 'candidate.rejudge_failed'
     error: str
 

@@ -91,7 +91,8 @@ refused.
 A provider that implements `contribution()` adds, while the daemon runs:
 
 - **Consumers**: jobs of the daemon's loop. A consumer runs in the next turn after a new event of a kind that it wakes
-  on, and when the time that it returned comes. It reads the tables, not a queue of its own.
+  on, and when the time that it returned comes. It reads the tables, not a queue of its own. Its `Phase` says when it
+  runs in a turn: `CONFIGURE`, `UPKEEP`, `IN_FLIGHT`, `OBSERVE` or `PLAN`, in that order.
 - **A router**: routes of the daemon's server, next to the API's. A [network](/plugins/infrastructure#networks) says
   who may call them.
 

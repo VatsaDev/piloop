@@ -35,7 +35,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import ClassVar, Literal
 
 from sqlalchemy import func, select
 
@@ -55,6 +55,7 @@ from piloop.db.models import (
     LeaseKind,
     LeaseState,
     LeaseWorker,
+    ReadBy,
     WorkerInstance,
     WorkerInstanceState,
     utcnow,
@@ -93,6 +94,7 @@ DAY = timedelta(hours=24)
 class InstanceRequested(EventModel):
     """On an instance: the pool needs it, and its row and credential exist. Its start comes next."""
 
+    READ_BY: ClassVar[ReadBy] = ReadBy.READERS
     kind: Literal['instance.requested'] = 'instance.requested'
     name: str
     pool: str
@@ -101,6 +103,7 @@ class InstanceRequested(EventModel):
 class InstanceRegistered(EventModel):
     """On an instance: its worker registered."""
 
+    READ_BY: ClassVar[ReadBy] = ReadBy.READERS
     kind: Literal['instance.registered'] = 'instance.registered'
     name: str
 
@@ -108,6 +111,7 @@ class InstanceRegistered(EventModel):
 class InstanceEnded(EventModel):
     """On an instance: it ended, its credential is revoked, and its provisioner was asked to stop it."""
 
+    READ_BY: ClassVar[ReadBy] = ReadBy.READERS
     kind: Literal['instance.ended'] = 'instance.ended'
     name: str
     end: InstanceEnd

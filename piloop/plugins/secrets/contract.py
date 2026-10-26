@@ -18,14 +18,14 @@ from abc import ABC, abstractmethod
 from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal
+from typing import ClassVar, Literal
 
 from pydantic import SecretStr
 from sqlalchemy.orm import Session
 
 from piloop.actor import ACTORS, Actor
 from piloop.db.events import emit, has, latest
-from piloop.db.models import AgentSession, Event, EventModel
+from piloop.db.models import AgentSession, Event, EventModel, ReadBy
 from piloop.db.session import Database
 from piloop.ids import HOME, AgentSessionId, CampaignId, TargetKind, TargetRef
 from piloop.mcp import EnvName
@@ -89,6 +89,7 @@ class HomeSecrets:
 class SecretSet(EventModel):
     """On the home or on a campaign, the secret's owner: a value of the secret ``name``, never the value itself."""
 
+    READ_BY: ClassVar[ReadBy] = ReadBy.READERS
     kind: Literal['secret.set'] = 'secret.set'
     name: EnvName
 
@@ -96,6 +97,7 @@ class SecretSet(EventModel):
 class SecretDeleted(EventModel):
     """On the home or on a campaign, the secret's owner: the secret ``name`` is gone."""
 
+    READ_BY: ClassVar[ReadBy] = ReadBy.READERS
     kind: Literal['secret.deleted'] = 'secret.deleted'
     name: EnvName
 

@@ -7,7 +7,7 @@ from piloop.plugins.host import MissingProvider, Provider, PythonSource, Contrac
 from piloop.plugins.host import Live
 from piloop.plugins.host import Entry, Named, Tables
 from piloop.plugins.contribution import Contribution, Contributes
-from piloop.daemon.loop import Consumer, Turn
+from piloop.daemon.loop import Consumer, Phase, Turn
 
 from piloop.plugins.runtime.contract import RUNTIMES
 from piloop.plugins.runtime.contract import AgentSpec, AgentStart, Handle

@@ -9,12 +9,12 @@ body.
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, ClassVar, Literal
 
 from pydantic import JsonValue
 
 from piloop.db.events import SubjectSettled
-from piloop.db.models import OPEN_RUNS, EventModel, Origin, Pause
+from piloop.db.models import OPEN_RUNS, EventModel, Origin, Pause, ReadBy
 from piloop.db.triggers.ddl import Event, Trigger
 from piloop.db.triggers.provenance import DAEMON_ACTOR, NOW, SESSION_ACTOR
 from piloop.ids import (
@@ -106,12 +106,14 @@ class CampaignStatusChanged(Changed[CampaignStatus]):
 class CampaignTypeChanged(Changed[str]):
     """A campaign's type changed."""
 
+    READ_BY: ClassVar[ReadBy] = ReadBy.READERS
     kind: Literal['campaign.type'] = 'campaign.type'
 
 
 class CampaignParentChanged(Changed[CampaignId]):
     """A campaign moved under another campaign, or to the top."""
 
+    READ_BY: ClassVar[ReadBy] = ReadBy.READERS
     kind: Literal['campaign.parent_id'] = 'campaign.parent_id'
 
 
@@ -125,6 +127,7 @@ class CampaignPausedChanged(Changed[Pause]):
 class CommentAcked(Changed[datetime]):
     """An inbox item was acknowledged. The actor of the event is who did it, whatever ``acked_by`` says."""
 
+    READ_BY: ClassVar[ReadBy] = ReadBy.READERS
     kind: Literal['comment.acked_at'] = 'comment.acked_at'
     acked_by: str | None
 
@@ -132,6 +135,7 @@ class CommentAcked(Changed[datetime]):
 class RunBriefChanged(Changed[BlobAddress]):
     """A brief was written or replaced: a steer. ``old`` and ``new`` are the briefs' addresses: the text is in the CAS."""
 
+    READ_BY: ClassVar[ReadBy] = ReadBy.READERS
     kind: Literal['run.brief_cid'] = 'run.brief_cid'
 
 
@@ -158,6 +162,7 @@ class IdeaDeleted(EventModel):
 class CommentDeleted(EventModel):
     """A comment was deleted."""
 
+    READ_BY: ClassVar[ReadBy] = ReadBy.READERS
     kind: Literal['comment.deleted'] = 'comment.deleted'
     target_kind: TargetKind
     target_id: int

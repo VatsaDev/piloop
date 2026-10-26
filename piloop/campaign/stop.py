@@ -7,7 +7,7 @@ answers (``piloop.db.requests``).
 
 from collections.abc import Collection
 from datetime import datetime, timedelta
-from typing import Literal, assert_never
+from typing import ClassVar, Literal, assert_never
 
 from sqlalchemy import ColumnElement, exists, func, select
 from sqlalchemy.orm import Session
@@ -29,6 +29,7 @@ from piloop.db.models import (
     EventModel,
     Idea,
     Measurement,
+    ReadBy,
     Run,
     campaign_runs,
     count,
@@ -121,6 +122,7 @@ class CampaignClosed(EventModel):
     the closing review sees the final head. Stop triggers with ``while_held = "skip"`` close it at the stop, with no sweep.
     """
 
+    READ_BY: ClassVar[ReadBy] = ReadBy.READERS
     kind: Literal['campaign.closed'] = 'campaign.closed'
 
 

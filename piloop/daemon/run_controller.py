@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
 from pathlib import Path
-from typing import Final, Literal, assert_never
+from typing import ClassVar, Final, Literal, assert_never
 
 from covalence import Cid
 from pydantic import ValidationError
@@ -60,6 +60,7 @@ from piloop.db.models import (
     Limit,
     Measurement,
     Origin,
+    ReadBy,
     Run,
     RunEnd,
     RunStatus,
@@ -154,6 +155,7 @@ class RecoveryRequeued(EventModel):
     two runs that leave the same tree share one candidate.
     """
 
+    READ_BY: ClassVar[ReadBy] = ReadBy.READERS
     kind: Literal['idea.recovery_requeued'] = 'idea.recovery_requeued'
     run: RunId
     candidate: CandidateId
@@ -162,6 +164,7 @@ class RecoveryRequeued(EventModel):
 class RunStarted(EventModel):
     """A run's implementer was launched, with its brief: the run is ``running``."""
 
+    READ_BY: ClassVar[ReadBy] = ReadBy.READERS
     kind: Literal['run.started'] = 'run.started'
     harness: str
     model: str
@@ -170,6 +173,7 @@ class RunStarted(EventModel):
 class RunRelaunched(EventModel):
     """A run's implementer failed to start, and the daemon launched another."""
 
+    READ_BY: ClassVar[ReadBy] = ReadBy.READERS
     kind: Literal['run.relaunched'] = 'run.relaunched'
     agent_session: AgentSessionId
     """The implementer that failed to start."""
@@ -179,6 +183,7 @@ class RunRelaunched(EventModel):
 class RunReceived(EventModel):
     """The run's versions came into the repo of record, oldest first: what ``resume`` scores after a stop."""
 
+    READ_BY: ClassVar[ReadBy] = ReadBy.READERS
     kind: Literal['run.received'] = 'run.received'
     revisions: list[Revision]
 

@@ -40,7 +40,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
-from typing import Annotated, Literal, assert_never
+from typing import Annotated, ClassVar, Literal, assert_never
 
 from covalence import Cid
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
@@ -67,6 +67,7 @@ from piloop.db.models import (
     LeaseState,
     LeaseWorker,
     NoLease,
+    ReadBy,
     utcnow,
 )
 from piloop.db.session import Database, read_transaction, write_transaction
@@ -111,6 +112,7 @@ PAGE = 100
 class StaleReport(EventModel):
     """On the job's row (the agent session, or the evaluated candidate): a report that the fence refused."""
 
+    READ_BY: ClassVar[ReadBy] = ReadBy.READERS
     kind: Literal['lease.stale_report'] = 'lease.stale_report'
     lease: int
     worker: str
@@ -147,6 +149,7 @@ class LeaseQueued(EventModel):
 class LeasePrompted(EventModel):
     """On the agent's row, a message for its worker (``PromptMessage``): a prompt to deliver."""
 
+    READ_BY: ClassVar[ReadBy] = ReadBy.READERS
     kind: Literal['lease.prompted'] = 'lease.prompted'
     lease: int
     worker: str
@@ -157,6 +160,7 @@ class LeasePrompted(EventModel):
 class LeaseRevoked(EventModel):
     """On the job's row, a message for its worker (``Revoke``): stop the job."""
 
+    READ_BY: ClassVar[ReadBy] = ReadBy.READERS
     kind: Literal['lease.revoked'] = 'lease.revoked'
     lease: int
     worker: str

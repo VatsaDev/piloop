@@ -6,7 +6,7 @@ it twice costs one more read (level-triggered, as Kubernetes controllers are). I
 time alone, a **due** that it computes from the rows each time, so a restart loses none. Nothing else is periodic.
 
 Each **turn** reads the events after the loop's cursor, runs each consumer that one of them routes to or whose due came,
-in the order of the consumers, then moves the cursor. Then the loop waits on the database (``Database.wait_until``):
+then moves the cursor. A turn runs its consumers by their ``Phase``, and in the order that they were given within one. Then the loop waits on the database (``Database.wait_until``):
 for a commit of this process, an event of another (the doorbell), a ``wake``, or the earliest due. The cursor lives in
 memory: a daemon that starts runs every consumer once, which covers what it missed.
 """
@@ -15,6 +15,7 @@ import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from enum import IntEnum
 from functools import partial
 
 from sqlalchemy import select
@@ -38,9 +39,24 @@ class Turn:
     absent: timedelta = timedelta(0)
 
 
+class Phase(IntEnum):
+    """When a consumer runs in a turn. A turn runs the phases in this order. No phase names a capability."""
+
+    CONFIGURE = 1
+    """Hand the providers that the daemon opened what changed in their settings, before anything uses them."""
+    UPKEEP = 2
+    """Work beside the agents: leases, archiving, evaluation jobs."""
+    IN_FLIGHT = 3
+    """Act on the agents that run: their comments, wrap-ups and ends."""
+    OBSERVE = 4
+    """Read state from outside the database into it."""
+    PLAN = 5
+    """Decide what to start from all of the above, and start it."""
+
+
 @dataclass(frozen=True)
 class Consumer:
-    """One job of the daemon: the event models that wake it, and the job."""
+    """One job of the daemon: the event models that wake it, the job, and when it runs in a turn."""
 
     name: str
     """Its name, unique in the daemon. ``Loop.wake`` runs it by this name."""
@@ -48,6 +64,13 @@ class Consumer:
     """The event models whose new events run it in the next turn."""
     run: Callable[[Turn], datetime | None]
     """Do the job from the tables, and return when it must run again for time alone, or None."""
+    phase: Phase
+    """When it runs in a turn: after the consumers of the phases before."""
+
+
+def in_turn_order(consumers: Sequence[Consumer]) -> tuple[Consumer, ...]:
+    """``consumers`` in the order that a turn runs them: by phase, and in the order given within one."""
+    return tuple(sorted(consumers, key=lambda c: c.phase))
 
 
 class Soonest:
@@ -68,12 +91,12 @@ class Loop:
 
     Args:
         db: The daemon's database.
-        consumers: In the order that a turn runs them.
+        consumers: Within a phase, in the order that a turn runs them (``in_turn_order``).
         now: The clock. A test passes its own.
     """
 
     def __init__(self, db: Database, consumers: Sequence[Consumer], now: Callable[[], datetime] = utcnow) -> None:
-        self._db, self._consumers, self._now = db, tuple(consumers), now
+        self._db, self._consumers, self._now = db, in_turn_order(consumers), now
         self._routes: dict[str, tuple[Consumer, ...]] = {}
         """The consumers of each event kind, found on its first event."""
         self._due: dict[str, datetime | None] = {}

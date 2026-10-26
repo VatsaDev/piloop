@@ -29,7 +29,7 @@ from enum import StrEnum
 from functools import partial
 from pathlib import Path
 from queue import SimpleQueue
-from typing import Literal, assert_never
+from typing import ClassVar, Literal, assert_never
 
 from pydantic import Field, ValidationError
 from sqlalchemy import Boolean, ColumnElement, Select, delete, exists, func, or_, select
@@ -44,13 +44,8 @@ from piloop.agents.results import (
     AgentSessionFinished,
     AgentSessionRunning,
     AgentSessionStarted,
-    Identified,
-    JobEnded,
     PromptOutcome,
-    SessionNotResumed,
-    SessionSaved,
     StartupAnomaly,
-    WorkspaceConflict,
     WrapUp,
     queue_prompt,
 )
@@ -83,15 +78,11 @@ from piloop.campaign.stop import (
     unclosed,
 )
 from piloop.config import CampaignConfig
-from piloop.daemon.loop import Consumer, Kinds, Loop, Soonest, Turn
+from piloop.daemon.loop import Consumer, Kinds, Loop, Phase, Soonest, Turn, in_turn_order
 from piloop.daemon.run_controller import (
     RUNS,
-    RecoveryRequeued,
     RunController,
     RunFinished,
-    RunReceived,
-    RunRelaunched,
-    RunStarted,
     branches,
     close_run,
     finding_of,
@@ -115,6 +106,7 @@ from piloop.db.models import (
     EventModel,
     Idea,
     Pause,
+    ReadBy,
     Run,
     RunEnd,
     RunStatus,
@@ -122,19 +114,15 @@ from piloop.db.models import (
     count,
     utcnow,
 )
-from piloop.db.requests import RequestAnswered, pending
+from piloop.db.requests import pending
 from piloop.db.session import Database
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.db.triggers.changelog import (
     AgentSessionRequested,
     CampaignConfigChanged,
-    CampaignParentChanged,
     CampaignPausedChanged,
     CampaignStatusChanged,
-    CampaignTypeChanged,
     CandidateDeleted,
-    CommentAcked,
-    CommentDeleted,
     Commented,
     EvaluationCancelled,
     IdeaBaseChanged,
@@ -147,7 +135,6 @@ from piloop.db.triggers.changelog import (
     LimitSet,
     LimitUnset,
     OriginChanged,
-    RunBriefChanged,
     VerdictChanged,
 )
 from piloop.ids import (
@@ -183,9 +170,7 @@ from piloop.scoring.ledger import (
     CandidateImported,
     CandidateJudged,
     MeasurementRecorded,
-    MetricLinesNoted,
     Rebased,
-    RejudgeFailed,
     RejudgeRequested,
     RemeasureRequested,
     checkout_candidate,
@@ -235,6 +220,7 @@ STARTUP_WINDOW = timedelta(minutes=10)
 class LaunchPaused(EventModel):
     """The startup breaker paused a campaign's launches."""
 
+    READ_BY: ClassVar[ReadBy] = ReadBy.READERS
     kind: Literal['launch.paused'] = 'launch.paused'
     comment: CommentId
     """The escalation."""
@@ -246,6 +232,7 @@ class LaunchPaused(EventModel):
 class LaunchResumed(EventModel):
     """A campaign's paused launches resumed. It ends the pause that ``LaunchPaused`` started."""
 
+    READ_BY: ClassVar[ReadBy] = ReadBy.READERS
     kind: Literal['launch.resumed'] = 'launch.resumed'
     comment: CommentId
     """The escalation of the pause."""
@@ -254,6 +241,7 @@ class LaunchResumed(EventModel):
 class RunQueued(EventModel):
     """The daemon queued a run of an idea."""
 
+    READ_BY: ClassVar[ReadBy] = ReadBy.READERS
     kind: Literal['run.queued'] = 'run.queued'
     idea: IdeaId
     attempt: int
@@ -270,6 +258,7 @@ class RunQueued(EventModel):
 class RunRerouted(EventModel):
     """The daemon moved a queued run to another harness of the rotation, because its own was at its cap."""
 
+    READ_BY: ClassVar[ReadBy] = ReadBy.READERS
     kind: Literal['run.rerouted'] = 'run.rerouted'
     from_: str = Field(alias='from')
     to: str
@@ -325,38 +314,6 @@ CAMPAIGN_STATE: Kinds = frozenset(
 """What the pass over the campaigns reads: their ideas, runs, candidates and agents, their status and config, and the
 slots, with the executor's ``capacity_events``. Every fact of the ``campaign`` and ``optimization`` sources changes with one of these, or with time (``hours_due``); a reading of a
 source that reads has its own due."""
-IGNORED: Kinds = frozenset(
-    {
-        PromptOutcome,
-        CommentAcked,
-        CommentDeleted,
-        Identified,
-        SessionSaved,
-        SessionNotResumed,
-        JobEnded,
-        AgentEnded,
-        WorkspaceConflict,
-        WrapUp,
-        CampaignTypeChanged,
-        CampaignParentChanged,
-        RunBriefChanged,
-        RunStarted,
-        RunReceived,
-        RunRelaunched,
-        RecoveryRequeued,
-        RejudgeFailed,
-        MetricLinesNoted,
-        LaunchPaused,
-        LaunchResumed,
-        RunQueued,
-        RunRerouted,
-        CampaignClosed,
-        RequestAnswered,
-    }
-)
-"""What wakes no job of the daemon: what it wrote itself in the pass that acts on it, what only a reader reads, and
-history. ``tests/daemon/test_loop.py`` fails on a kind of core that is neither routed nor here. A provider's own kinds
-wake nothing, unless its capability routes them (``Executor.capacity_events``)."""
 
 
 def campaign_kinds() -> Kinds:
@@ -608,21 +565,19 @@ class Scheduler:
     def consumers(self) -> tuple[Consumer, ...]:
         """The daemon's jobs, in the order that a turn of its loop runs them, with the events that wake each one.
 
-        ``limits`` comes first, so that every provider has the live limits, then the contributed consumers, then the
-        scheduler's others, which see what the contributed ones left.
+        Within a phase, the contributed consumers run before the scheduler's own.
         """
-        limits, *others = self._own()
-        return (limits, *self.contributions.consumers, *others)
+        return in_turn_order((*self.contributions.consumers, *self._own()))
 
     def _own(self) -> tuple[Consumer, ...]:
         capacity = self._controller.executor.capacity_events()
         return (
-            Consumer('limits', LIMITS, self._limits),
-            Consumer('evaluations', EVALUATIONS | capacity, self._evaluations),
-            Consumer('prompts', frozenset({Commented, AgentSessionRunning}), self._prompts),
-            Consumer('wind_down', WINDING, self._wind_down),
-            Consumer('facts', FACTS, self._read_facts),
-            Consumer('campaigns', campaign_kinds() | capacity, self._campaigns),
+            Consumer('limits', LIMITS, self._limits, Phase.CONFIGURE),
+            Consumer('evaluations', EVALUATIONS | capacity, self._evaluations, Phase.UPKEEP),
+            Consumer('prompts', frozenset({Commented, AgentSessionRunning}), self._prompts, Phase.IN_FLIGHT),
+            Consumer('wind_down', WINDING, self._wind_down, Phase.IN_FLIGHT),
+            Consumer('facts', FACTS, self._read_facts, Phase.OBSERVE),
+            Consumer('campaigns', campaign_kinds() | capacity, self._campaigns, Phase.PLAN),
         )
 
     def run_all(self, now: datetime | None = None) -> list[AgentSessionId]:

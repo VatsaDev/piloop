@@ -35,6 +35,7 @@ from tests.conftest import (
     disk,
     factory,
     register,
+    trace,
     wait_until,
     workers_of,
     write_toml,
@@ -87,6 +88,50 @@ def test_daemon_end_to_end(
         and '## This sweep: an incident' in brief
     )
     assert daemon.scheduler.run_all() == [], 'one sweep per failure'
+    assert trace(daemon.db) == snapshot(
+        [
+            'idea.created idea',
+            'lease_worker.joined home',
+            'idea.status idea',
+            'agent_session.requested agent_session',
+            'run.queued run',
+            'run.started run',
+            'agent_session.started agent_session',
+            'lease.queued agent_session',
+            'agent_session.running agent_session',
+            'agent_session.finished agent_session',
+            'agent_session.job_ended agent_session',
+            'run.received run',
+            'run.finished run',
+            'lease.queued candidate',
+            'measurement.recorded measurement',
+            'candidate.judged candidate',
+            'candidate.verdict candidate',
+            'subject.settled idea',
+            'idea.status idea',
+            'idea.created idea',
+            'idea.status idea',
+            'agent_session.requested agent_session',
+            'run.queued run',
+            'run.started run',
+            'agent_session.started agent_session',
+            'lease.queued agent_session',
+            'agent_session.running agent_session',
+            'agent_session.finished agent_session',
+            'agent_session.job_ended agent_session',
+            'run.received run',
+            'run.finished run',
+            'subject.settled idea',
+            'idea.status idea',
+            'agent_session.requested agent_session',
+            'anomaly.reported agent_session',
+            'agent_session.started agent_session',
+            'lease.queued agent_session',
+            'agent_session.running agent_session',
+            'agent_session.finished agent_session',
+            'agent_session.job_ended agent_session',
+        ]
+    )
     daemon.shutdown(timeout=5)
 
 
