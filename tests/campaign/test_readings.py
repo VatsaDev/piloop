@@ -217,6 +217,30 @@ def test_notices_once_then_at_the_limit_nothing_starts_until_the_limit_is_raised
     scheduler.wait()
 
 
+def test_a_source_that_a_sync_adds_is_read_on_the_next_turn_without_a_restart(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """The config change is an event that wakes the facts' consumer: no due of an old source has to come first."""
+    scheduler = make_scheduler(db, runtime, tmp_path)
+    scheduler.loop.start()
+    file = tmp_path / 'bill'
+    file.write_text('METRIC spend=412.3\n')
+    toml = Path(campaign.path) / 'piloop.toml'
+    toml.write_text(
+        toml.read_text()
+        + f'\n[[facts]]\nprovider = "campaign"\n\n[[facts]]\nprovider = "optimization"\n\n[[facts]]\nprovider = "command"\n'
+        f'command = ["cat", "{file}"]\nmetrics = ["spend"]\n\n[plugins.stop_rule]\nhold_at = {{ spend = 1000 }}\n'
+    )
+    with db.session() as s:
+        sync(s, s.get_one(Campaign, campaign.id))  # This is what `piloop init` does.
+        s.commit()
+    scheduler.loop.turn()
+    with db.session() as s:
+        events = in_order(s, FactRead, Event.target == TargetRef(TargetKind.CAMPAIGN, campaign.id))
+        assert [r.values for _, r in events] == [{'spend': 412.3}]
+    scheduler.wait()
+
+
 def test_a_failing_source_holds_launches_and_escalates_once_for_each_series_of_failures(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:

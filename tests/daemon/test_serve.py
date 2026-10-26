@@ -100,7 +100,12 @@ def test_sigterm_kills_implementers_and_exits(campaign_path: Path, tmp_path: Pat
     module that piloop imports. That is about half a second of CPU, and a loaded runner stretches it past 15 seconds.
     """
     cfg = Settings(home=tmp_path / 'home')
-    write_toml(campaign_path, '#!/bin/sh\nsleep 3600 &\necho $! > ../child.pid\nwait\n', implementer_timeout=3600)
+    # the rename makes the pid file whole when it appears: the test reads it as soon as it exists
+    write_toml(
+        campaign_path,
+        '#!/bin/sh\nsleep 3600 &\necho $! > ../child.tmp\nmv ../child.tmp ../child.pid\nwait\n',
+        implementer_timeout=3600,
+    )
     at_head(schema, cfg.home / 'piloop.db')
     db = Database(cfg.database_url, actor=cfg.actor)
     campaign = register(db, campaign_path)

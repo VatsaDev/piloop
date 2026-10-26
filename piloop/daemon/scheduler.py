@@ -284,6 +284,8 @@ EVALUATIONS: Kinds = frozenset({EvaluationCancelled, MeasurementRecorded, *LIMIT
 """What wakes the evaluation queue: a cancel to stop, a slot that an evaluation freed, or more slots."""
 WINDING: Kinds = frozenset({Commented, StopRequested, CancelRequested, CampaignStatusChanged, AgentSessionRunning})
 """What wakes the wind-down: a finding, a stop or a cancel, and an agent that runs, to tell it."""
+FACTS: Kinds = frozenset({CampaignAdded, CampaignConfigChanged, CampaignStatusChanged})
+"""What wakes the facts' reading: a campaign, its ``[[facts]]`` or its status may make a source due."""
 CAMPAIGN_STATE: Kinds = frozenset(
     {
         CampaignAdded,
@@ -614,7 +616,7 @@ class Scheduler:
             Consumer('evaluations', EVALUATIONS | capacity, self._evaluations),
             Consumer('prompts', frozenset({Commented, AgentSessionRunning}), self._prompts),
             Consumer('wind_down', WINDING, self._wind_down),
-            Consumer('facts', frozenset({CampaignStatusChanged}), self._read_facts),
+            Consumer('facts', FACTS, self._read_facts),
             Consumer('campaigns', campaign_kinds() | capacity, self._campaigns),
         )
 
