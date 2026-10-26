@@ -101,13 +101,14 @@ class FirstTransfers:
                 head = record.head().revision
                 blob = record.send(self._cas, [head], [])
                 assert blob is not None  # with nothing had, the head is sent
-            with self._db.session() as s:
+            # under the lock: a poll that the commit wakes reads after the build left, so it finds the row. One that
+            # found the build still there would wait for a wake that never comes, until its wait ends.
+            with self._lock, self._db.session() as s:
                 s.merge(FirstTransfer(campaign_id=repo, revision=head, blob=blob))
                 s.commit()
+                del self._builds[repo]
         except Exception as e:
             build.set_exception(e)
             self._db.notify()  # no commit wakes the polls
             return
-        with self._lock:
-            del self._builds[repo]
         build.set_result(None)

@@ -62,6 +62,8 @@ class Proxy:
         self.toxic: Toxic | None = None
         self.cuts = 0
         """How many answers ``CutResponse`` dropped."""
+        self.requests: list[bytes] = []
+        """The request line of each request that a client sent, as the proxy read them, whatever the toxic."""
         self._lock = threading.Lock()
         self._sockets: set[socket.socket] = set()
         self._listener = socket.create_server(('127.0.0.1', 0))
@@ -107,6 +109,8 @@ class Proxy:
         try:
             while chunk := src.recv(CHUNK):
                 if not answer:  # kept whatever the toxic: a request sent before ``CutResponse`` was set is one too
+                    if exchange.answered or not exchange.request:
+                        self.requests.append(chunk.partition(b'\r\n')[0])
                     exchange.request = chunk if exchange.answered else (exchange.request + chunk)[:CHUNK]
                 match self.toxic:
                     case Latency(seconds=seconds):

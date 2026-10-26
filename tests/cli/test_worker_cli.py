@@ -87,23 +87,45 @@ def test_a_worker_in_a_pool_that_the_server_lacks_exits_with_why(server: str, as
         run_cli(['worker', '--server', server, '--pool', 'cpu'])
 
 
+def stop_once_registered(db: Database, stop: Callable[[], None]) -> None:
+    """In a thread: ``stop`` once the worker registered and its own SIGTERM handler replaced this process's."""
+
+    def ready() -> bool:
+        with db.session() as s:
+            registered = s.get(LeaseWorker, 'gpu1') is not None
+        return registered and getattr(signal.getsignal(signal.SIGTERM), '__module__', None) == worker_cli.__name__
+
+    def run() -> None:
+        wait_until(ready)
+        stop()
+
+    threading.Thread(target=run, daemon=True).start()
+
+
 def test_a_worker_registers_with_its_tokens_name_and_stops_on_sigterm(
     server: str, as_worker: Callable[[], None], db: Database, tmp_path: Path
 ) -> None:
     as_worker()
     main = threading.main_thread().ident
     assert main is not None
-
-    def stop_once_registered() -> None:
-        def ready() -> bool:
-            with db.session() as s:
-                registered = s.get(LeaseWorker, 'gpu1') is not None
-            return registered and getattr(signal.getsignal(signal.SIGTERM), '__module__', None) == worker_cli.__name__
-
-        wait_until(ready)  # the worker's own handler, not whatever handler this process had before
-        # to the main thread, which runs the handler: a signal to the process may land on another thread
-        signal.pthread_kill(main, signal.SIGTERM)
-
-    threading.Thread(target=stop_once_registered, daemon=True).start()
+    # to the main thread, which runs the handler: a signal to the process may land on another thread
+    stop_once_registered(db, lambda: signal.pthread_kill(main, signal.SIGTERM))
     run_cli(['worker', '--server', server, '--pool', 'gpu'])
     assert (tmp_path / 'worker').is_dir(), 'its home, made for its spool and its free disk'
+
+
+def test_the_sigterm_handler_of_a_worker_stops_it(server: str, as_worker: Callable[[], None], db: Database) -> None:
+    """The handler, run here: coverage measures it every time.
+
+    A signal runs it on the main thread at its next bytecode, which can be one of coverage's callbacks, where nothing
+    that runs is measured.
+    """
+    as_worker()
+
+    def stop() -> None:
+        handler = signal.getsignal(signal.SIGTERM)
+        assert callable(handler)
+        handler(signal.SIGTERM, None)
+
+    stop_once_registered(db, stop)
+    run_cli(['worker', '--server', server, '--pool', 'gpu'])

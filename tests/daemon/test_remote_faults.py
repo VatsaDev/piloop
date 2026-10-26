@@ -11,7 +11,6 @@ import os
 import subprocess
 import sys
 import threading
-import time
 from collections.abc import Callable, Generator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -438,13 +437,14 @@ def test_a_prompt_reaches_a_remote_implementer_within_a_round_trip_and_its_relay
         note = queue_prompt(s, AgentSessionId(1), 'try lzma', 'human')
         s.commit()
     assert note is not None
-    sent = time.monotonic()
     core.executor.prompt(AgentKey(AgentSessionId(1)), Prompt(note, 'try lzma'))
+    asked = len(net.proxy.requests)  # it is in the feed: a poll that the proxy forwards from now on brings it
     wait_until(lambda: queued(db) == [note], timeout=10)
-    elapsed = time.monotonic() - sent
-    # a poll that is open or opens next brings it, and the worker's answer goes back: a few chunks each way, with no
-    # heartbeat or other timer between them
-    assert elapsed < 10 * LATENCY, f'{elapsed:.1f} s from the prompt to its answer'
+    requests = net.proxy.requests
+    # the poll that is open brings it, or the next one, and the worker answers before it polls again: no heartbeat or
+    # other timer between them. Counted in requests, not seconds, which a loaded host stretches.
+    polls = requests[asked : requests.index(QUEUED)].count(MESSAGES)
+    assert polls <= 1, f'{polls} polls from the prompt to its answer'
     net.proxy.toxic = None
     hold.unlink()
     running.join(30)
@@ -461,6 +461,8 @@ def test_a_prompt_reaches_a_remote_implementer_within_a_round_trip_and_its_relay
 
 LATENCY = 0.3
 """Seconds that the proxy holds each chunk, in each direction."""
+MESSAGES, QUEUED = (f'POST /v1/executor/{call} HTTP/1.1'.encode() for call in ('messages', 'queued'))
+"""The request lines of a worker's long-poll and of its answer to a prompt."""
 
 
 def queued(db: Database) -> list[CommentId]:
