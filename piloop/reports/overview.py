@@ -34,6 +34,7 @@ from piloop.db.models import (
 )
 from piloop.ids import CampaignStatus, EvaluatorId, IdeaStatus
 from piloop.plugins.cas.contract import Cas
+from piloop.plugins.harness.contract import UsageReader
 from piloop.plugins.role.contract import Files
 from piloop.runtime.factory import handle_for, runtime_for
 from piloop.scoring.ledger import (
@@ -46,7 +47,7 @@ from piloop.scoring.ledger import (
 from piloop.store import chunks
 from piloop.store.tree import Missing
 from piloop.text import NONE, cell, metric
-from piloop.usage import UsageReader, human
+from piloop.usage import human
 from piloop.usage.totals import campaign_tokens
 
 DETAIL_CHARS = 160
@@ -162,7 +163,7 @@ def agent_output(s: Session, w: AgentSession, lines: int, cas: Cas) -> list[str]
     transcript saved when the agent ended.
     """
     definition = harness_of(s, w)
-    reader = definition.usage.resolved if definition and definition.usage else None
+    reader = definition.sessions() if definition is not None else None
     said = (
         list(_said_in(_Snapshot(w.session_file, reader, cas), lines))
         if reader is not None and w.session_file is not None

@@ -249,6 +249,20 @@ lines keep no campaign. Each campaign's `piloop wake` prints them after its own 
 SELECT created_at, author, line FROM journal WHERE campaign_id IS NULL ORDER BY id;
 ```
 
+### Harnesses are providers
+
+Each harness is a provider of the `harness` capability: it renders the MCP servers of a role, and reads the tokens
+from its session files under its `home`. A package adds one with an entry point in `piloop.harnesses`.
+
+| Before 0.4.0 | Since 0.4.0 |
+|---|---|
+| `mcp` and `[harness.<name>.usage]` in the table of a built-in harness | Nothing: delete them. To move its session files, set `home`. |
+| `mcp = "claude"` or `usage.tally = "claude"` in a table with a new name | `provider = "claude"` |
+| `piloop agent messages --format claude-hook` | `piloop agent messages --harness claude` |
+
+The old keys and the old option still work until 0.4.0, with a warning. The upgrade rewrites the stored configs the
+same way. Upgrade `piloop worker` on every machine with the server: the server refuses a worker of the older protocol.
+
 ### Archivings of subjects
 
 An archiving is of a subject: `archives.subject_kind` and `archives.subject_id` replace `archives.idea_id`, and

@@ -228,10 +228,10 @@ def test_the_piloop_of_an_agent_elsewhere_prints_what_the_call_printed_and_exits
     with pytest.raises(SystemExit, match='relays the calls of an agent, and human is none'):
         main()
     execv = mocker.patch.object(door_module.os, 'execv', side_effect=SystemExit(0))
-    monkeypatch.setattr(sys, 'argv', ['piloop', 'agent', 'messages', '--format', 'claude-hook'])
+    monkeypatch.setattr(sys, 'argv', ['piloop', 'agent', 'messages', '--harness', 'claude'])
     with pytest.raises(SystemExit):
         main()
-    assert execv.call_args.args[1][-4:] == ['agent', 'messages', '--format', 'claude-hook'], 'run here, not relayed'
+    assert execv.call_args.args[1][-4:] == ['agent', 'messages', '--harness', 'claude'], 'run here, not relayed'
 
 
 def test_the_shim_of_a_worker_elsewhere_relays_a_call_and_reads_the_agents_queue_here(tmp_path: Path) -> None:

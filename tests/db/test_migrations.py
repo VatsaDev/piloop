@@ -52,6 +52,8 @@ from piloop.db.session import (
 )
 from piloop.db.triggers import PERSISTENT, campaigns, legacy
 from piloop.db.triggers.roles import known_role
+from piloop.plugins.harness.claude import Claude
+from piloop.plugins.harness.codex import CodexMcp
 from piloop.plugins.memory.contract import MEMORY
 from piloop.plugins.memory.local import LocalMemory
 from piloop.plugins.role.research import ResearchRole
@@ -938,8 +940,7 @@ def test_0011_makes_scout_sweeps_scout_rows_and_stored_configs_valid_and_downgra
         )
         assert role_of(p, ResearchRole).max_ideas == 2
         assert p.context == ['docs/analysis-*.md'], 'research context is the project context'
-        usage = p.harness['mine'].usage
-        assert usage is not None and usage.file == '{env:CLAUDE_CONFIG_DIR:~/.claude}/projects/{cwd}/{session_id}.jsonl'
+        assert isinstance(p.harness['mine'], Claude), "its usage read Claude's files: it is the claude harness"
         assert [TRIGGERS.name_of(t) for t in role_of(p, WatchdogRole).triggers] == [
             'run_failed',
             'dead_at_startup',
@@ -965,7 +966,7 @@ def test_0011_makes_scout_sweeps_scout_rows_and_stored_configs_valid_and_downgra
 def upgraded(config: dict[str, object]) -> object:
     """``config`` as revisions 0018 (``roles.implementer``), 0034 (no herdr), 0035 (no ``workdir``), 0036 (no Entire),
     0038 (a trigger's ``provider``), 0039 (the rules' limits), 0055 (the incident triggers), 0056 (``[[facts]]``),
-    0057 (an inherited ``mcp``) and 0061 (``plugins.memory``) store it, so that today's piloop reads it."""
+    0057 (an inherited ``mcp``), 0061 (``plugins.memory``) and 0063 (a harness's ``provider``) store it, so that today's piloop reads it."""
     roles = config.get('roles')
     if isinstance(roles, dict) and 'worker' in roles:
         roles['implementer'] = roles.pop('worker')
@@ -978,7 +979,8 @@ def upgraded(config: dict[str, object]) -> object:
     config = revisions.get_revision('0055').module.upgraded(config)
     config = revisions.get_revision('0056').module.upgraded(config)
     config = revisions.get_revision('0057').module.upgraded(config)
-    return revisions.get_revision('0061').module.upgraded(config)
+    config = revisions.get_revision('0061').module.upgraded(config)
+    return revisions.get_revision('0063').module.upgraded(config)
 
 
 def test_0012_leaves_the_cached_input_out_of_the_input_of_codex_rows_and_downgrades(tmp_path: Path) -> None:
@@ -1891,7 +1893,7 @@ def test_0057_a_built_in_harness_table_that_inherits_an_argv_with_mcp_inherits_i
         'mine': harness['mine'],
     }, 'codex inherits resume; claude sets both of its argvs; a harness that is no built-in inherits nothing'
     whole = bare_config('p').model_dump(mode='json') | {'harness': {'codex': loads(stored)['harness']['codex']}}
-    assert CampaignConfig.model_validate(whole).harness['codex'].mcp == 'codex'
+    assert isinstance(CampaignConfig.model_validate(whole).harness['codex'].mcp(), CodexMcp)
     command.downgrade(cfg, '0056')
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
         assert con.execute('SELECT config FROM campaigns').fetchall() == [(stored,)]
@@ -2663,3 +2665,44 @@ def test_memory_0002_gives_every_journal_line_the_only_campaign_of_the_home(tmp_
     command.upgrade(memory, '0002')
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
         assert con.execute('SELECT campaign_id FROM journal').fetchall() == [(1,)]
+
+
+def test_0063_names_the_provider_of_a_harness_table_in_place_of_its_renderer_and_tally_and_downgrades(
+    tmp_path: Path,
+) -> None:
+    """A built-in harness's table drops them; a table with a new name takes its tally's harness, else its renderer's."""
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0062')
+    usage = {'reader': 'jsonl', 'file': '{env:CLAUDE_CONFIG_DIR:~/.claude}/projects/{cwd}/x.jsonl', 'tally': 'claude'}
+    harness = {
+        'claude': {'executable': 'claude', 'headless': ['{prompt}'], 'mcp': 'claude', 'usage': usage},
+        'gateway': {'executable': 'gw', 'headless': ['{prompt}'], 'mcp': 'pi', 'usage': usage},
+        'served': {'executable': 'x', 'headless': ['{mcp}', '{prompt}'], 'mcp': 'codex', 'usage': None},
+        'script': {'executable': 'x', 'headless': ['{prompt}'], 'mcp': None},
+    }
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute("INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', ?)", (dumps({'harness': harness}),))
+        con.execute("INSERT INTO campaigns (name, path, config) VALUES ('q', '/q', '{}')")
+    stored = 'SELECT config FROM campaigns ORDER BY id'
+    command.upgrade(cfg, '0063')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        upgraded_ = [loads(c) for (c,) in con.execute(stored)]
+    assert upgraded_ == [
+        {
+            'harness': {
+                'claude': {'executable': 'claude', 'headless': ['{prompt}']},
+                'gateway': {'executable': 'gw', 'headless': ['{prompt}'], 'provider': 'claude'},
+                'served': {'executable': 'x', 'headless': ['{mcp}', '{prompt}'], 'provider': 'codex'},
+                'script': {'executable': 'x', 'headless': ['{prompt}']},
+            }
+        },
+        {},
+    ]
+    command.downgrade(cfg, '0062')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert [loads(c) for (c,) in con.execute(stored)][0]['harness']['gateway'] == {
+            'executable': 'gw',
+            'headless': ['{prompt}'],
+            'mcp': 'claude',
+        }, 'the provider is the renderer again: the older piloop reads no usage for it'

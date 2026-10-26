@@ -32,12 +32,11 @@ from piloop.daemon.serve import (
 )
 from piloop.db.models import AgentSession, AgentSessionState, Idea, Run, RunEnd, RunStatus
 from piloop.db.session import Database
-from piloop.harnesses import DEFAULT_HARNESSES, Harness
+from piloop.plugins.harness.contract import Custom, each_provider
 from piloop.plugins.runtime.contract import TAG_ENV
 from piloop.plugins.runtime.kit import tags
 from piloop.proc import child_env
 from piloop.settings import DEFAULT_HOME, Settings, env_names
-from piloop.usage import UsageSpec
 from piloop.version import code_digest
 from tests.conftest import at_head, hold_lock, register, wait_for_agent_session_handle, wait_until, write_toml
 from tests.db.test_migrations import alembic
@@ -295,7 +294,7 @@ def test_acquire_creates_a_private_home_and_overwrites_a_stale_file(tmp_path: Pa
     os.close(fd)
 
 
-BUILT_IN = list(DEFAULT_HARNESSES.values())
+BUILT_IN = list(each_provider().values())
 
 
 def clear_settings_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -375,14 +374,13 @@ def test_the_service_unit_carries_the_settings_of_the_shell_and_no_other_variabl
     assert not any(key in unit for key in dropped)
 
 
-def test_the_service_unit_carries_the_variables_that_the_usage_globs_of_the_harnesses_name(
+def test_the_service_unit_carries_the_variables_that_the_homes_of_the_harnesses_name(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     clear_settings_env(monkeypatch)
     for key in ('CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'MINE_HOME', 'NOT_NAMED'):
         monkeypatch.setenv(key, f'/somewhere/{key}')
-    usage = UsageSpec(file='{env:MINE_HOME:~/.mine}/{session_id}.jsonl', tally='pi')
-    mine = Harness(executable='mine', headless=['{prompt}', '{session_id}'], usage=usage)
+    mine = Custom(executable='mine', headless=['{prompt}'], home='{env:MINE_HOME:~/.mine}')
     assert carried_env([mine]) == ('OTEL_EXPORTER_OTLP_ENDPOINT', 'MINE_HOME')
     env = plistlib.loads(service_unit(Settings(home=tmp_path), [*BUILT_IN, mine], 'darwin').encode())
     assert list(env['EnvironmentVariables']) == ['PILOOP_HOME', 'PATH', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'MINE_HOME']

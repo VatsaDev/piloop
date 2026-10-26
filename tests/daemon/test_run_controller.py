@@ -64,7 +64,6 @@ from piloop.db.models import (
 )
 from piloop.db.session import Database
 from piloop.db.triggers.changelog import IdeaLinked, OriginChanged
-from piloop.harnesses import SESSION_ENV
 from piloop.ids import (
     IMPLEMENTER,
     CampaignId,
@@ -89,6 +88,8 @@ from piloop.plugins.executor.kit import jobs
 from piloop.plugins.executor.kit.jobs import INPUTS_CHANGED, INPUTS_REBUILT
 from piloop.plugins.executor.workers import Workers
 from piloop.plugins.executor.workers.worker import _Control
+from piloop.plugins.harness.contract import cleared_env
+from piloop.plugins.harness.kit.jsonl import dash_separators_wrapped
 from piloop.plugins.memory.local.tables import Lesson, LessonStatus
 from piloop.plugins.runtime.contract import AgentExit, Handle
 from piloop.plugins.vcs.contract import Part
@@ -116,7 +117,6 @@ from piloop.scoring.ledger import (
 from piloop.scoring.verdict import PENDING, label, pending
 from piloop.settings import Settings
 from piloop.store.tree import FICLONE
-from piloop.usage.jsonl import CWD_ENCODERS
 from tests.conftest import (
     HARNESS_APPEND,
     HARNESS_COMMITS_AND_LEAVES_DIRT,
@@ -143,7 +143,7 @@ from tests.conftest import (
     write_toml,
 )
 from tests.test_vcs import git_words
-from tests.usage.test_usage import PI_SPEC, SESSIONS
+from tests.usage.test_usage import READS_PI, SESSIONS
 
 
 def make_run(
@@ -1354,7 +1354,7 @@ def test_implementer_env_points_at_the_daemon_home(
     definition: ``[harness.claude]`` replaces the built-in one, and a custom harness can run the same CLI. This one is
     the ``script`` harness of the fixture, with a session variable of its own.
     """
-    cleared = {*SESSION_ENV, 'SCRIPT_SESSION'}
+    cleared = {*cleared_env(), 'SCRIPT_SESSION'}
     for name in cleared:
         monkeypatch.setenv(name, '1')
     write_toml(Path(campaign.path), '#!/bin/sh\nenv > env.txt\ngit add env.txt\ngit commit -qm env\n')
@@ -1481,17 +1481,11 @@ def test_an_implementer_that_spends_tokens_but_ends_at_once_with_nothing_did_not
     home = tmp_path / 'home'
     monkeypatch.setenv('HOME', str(home))
     run_id = make_run(db, campaign, max_runs=1)
-    folder = (
-        home
-        / '.pi'
-        / 'agent'
-        / 'sessions'
-        / CWD_ENCODERS['dash_separators_wrapped'](tmp_path / 'runs' / str(run_id) / 'worktree')
-    )
+    folder = home / '.pi' / 'agent' / 'sessions' / dash_separators_wrapped(tmp_path / 'runs' / str(run_id) / 'worktree')
     blocked = f'#!/bin/sh\nmkdir -p {folder}\ncp {SESSIONS / "pi.jsonl"} "{folder}/2026-09-09T05-48-14-300Z_$2.jsonl"\n'
     write_toml(Path(campaign.path), blocked)
     script = load_campaign_config(Path(campaign.path)).harness['script'].model_dump(mode='json')
-    counted = {'headless': ['--session-id', '{session_id}', '{prompt}'], 'usage': PI_SPEC}
+    counted = {'headless': ['--session-id', '{session_id}', '{prompt}'], **READS_PI}
     set_config(db, campaign, harness={'script': {**script, **counted}})
     execute(controller(db, runtime, tmp_path), db, run_id)
     with db.session() as s:
@@ -1601,7 +1595,7 @@ def test_a_fast_implementer_whose_tokens_are_unknown_is_no_startup_death_when_it
     body = HARNESS_APPEND if work == 'commit' else f'#!/bin/sh\n{me}\n{SQL_HINT} "{finding}"\n'
     write_toml(Path(campaign.path), body)
     script = load_campaign_config(Path(campaign.path)).harness['script'].model_dump(mode='json')
-    counted = {'headless': ['--session-id', '{session_id}', '{prompt}'], 'usage': PI_SPEC}
+    counted = {'headless': ['--session-id', '{session_id}', '{prompt}'], **READS_PI}
     set_config(db, campaign, harness={'script': {**script, **counted}})
     execute(controller(db, runtime, tmp_path), db, run_id)
     run = run_row(db, run_id)
@@ -1624,7 +1618,7 @@ def test_a_fast_implementer_that_left_uncommitted_work_started_and_its_work_is_r
     monkeypatch.setenv('HOME', str(tmp_path / 'home'))
     write_toml(Path(campaign.path), f'#!/bin/sh\n{edit}\n')
     script = load_campaign_config(Path(campaign.path)).harness['script'].model_dump(mode='json')
-    counted = {'headless': ['--session-id', '{session_id}', '{prompt}'], 'usage': PI_SPEC}
+    counted = {'headless': ['--session-id', '{session_id}', '{prompt}'], **READS_PI}
     set_config(db, campaign, harness={'script': {**script, **counted}})
     run_id = make_run(db, campaign, max_runs=1)
     execute(controller(db, runtime, tmp_path), db, run_id)

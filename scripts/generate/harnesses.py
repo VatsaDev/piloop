@@ -1,16 +1,18 @@
 """Generate ``docs/snippets/generated/harnesses.mdx``: the built-in harnesses."""
 
-from piloop.harnesses import DEFAULT_HARNESSES
+from piloop.plugins.harness.contract import HARNESSES
 from scripts.generate import SNIPPETS, header
+from scripts.generate.markdown import cell, lead
 
 PATH = SNIPPETS / 'harnesses.mdx'
 
 
 def generate() -> str:
-    """Return a table of the built-in harnesses: program, usage reader and MCP renderer."""
-    head = ['Harness', 'Executable', 'Usage reader', 'MCP renderer']
-    rows = ['| ' + ' | '.join(head) + ' |', '|' + '---|' * len(head)]
-    for name, h in DEFAULT_HARNESSES.items():
-        usage = f'`{h.usage.reader}` (tally `{h.usage.tally}`)' if h.usage else 'none'
-        rows.append(f'| `{name}` | `{h.executable}` | {usage} | `{h.mcp or "none"}` |')
-    return header('`DEFAULT_HARNESSES` in `piloop/harnesses.py`') + '\n' + '\n'.join(rows) + '\n'
+    """Return a table of the built-in harnesses: what each one runs, its program, and whether it is on by default."""
+    rows = ['| Harness | What it runs | Executable | By default |', '|---|---|---|---|']
+    for name, harness in HARNESSES.builtins().items():
+        default = 'yes' if harness.DEFAULT else 'no'
+        executable = harness.model_fields['executable'].default
+        rows.append(f'| `{name}` | {cell(lead(harness, harness.__name__))} | `{executable}` | {default} |')
+    source = 'the docstrings of the harnesses of the `piloop.harnesses` entry points in `pyproject.toml`, `piloop/plugins/harness/`'
+    return header(source) + '\n' + '\n'.join(rows) + '\n'

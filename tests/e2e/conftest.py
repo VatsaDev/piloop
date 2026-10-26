@@ -22,7 +22,7 @@ from typing import Protocol
 import pytest
 import tomli_w
 
-from piloop.harnesses import SESSION_ENV
+from piloop.plugins.harness.contract import cleared_env
 from piloop.plugins.network.https import TOKEN_ENV
 from piloop.settings import UNDER_TEST_ENV
 from tests.conftest import wait_until
@@ -41,7 +41,7 @@ def caller_env(home: Path) -> dict[str, str]:
     need to log in, but without ``DROPPED_ENV`` and without the session of a harness that runs the tests (a Claude
     Code's messaging socket would reach the agents), and with ``home`` as ``PILOOP_HOME``. ``HOME`` is the real one
     here, so without a ``PILOOP_HOME`` every piloop in it would refuse its default, the real install's home."""
-    kept = {k: v for k, v in CALLER_ENV.items() if not DROPPED_ENV.match(k) and k not in SESSION_ENV}
+    kept = {k: v for k, v in CALLER_ENV.items() if not DROPPED_ENV.match(k) and k not in cleared_env()}
     return kept | {UNDER_TEST_ENV: '1', 'PILOOP_HOME': str(home)}
 
 

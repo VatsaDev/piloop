@@ -24,9 +24,10 @@ from pathlib import Path, PurePosixPath
 from typing import Annotated, Literal, NewType, Protocol, Self, get_args
 
 from covalence import Cid
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 from sqlalchemy.orm import Session
 
+from piloop import deprecated
 from piloop.actor import Agent
 from piloop.api.contract import Revealed
 from piloop.db.models import AgentSession, EventModel
@@ -37,13 +38,14 @@ from piloop.net.tokens import mint_agent
 from piloop.otel import Tracer
 from piloop.plugins.cas.contract import BlobAddress, Cas
 from piloop.plugins.contribution import Contributes
+from piloop.plugins.harness.contract import HARNESSES, Harness
 from piloop.plugins.host import Capability, Choice, Parameters, Scope, Slot
 from piloop.plugins.network.contract import Network
 from piloop.plugins.runtime.contract import AgentExit, AgentStart
 from piloop.plugins.secrets.contract import SecretsProvider, values
 from piloop.plugins.vcs.contract import VCS, Repository, Transfer, Vcs
 from piloop.runtime.factory import RuntimeFactory
-from piloop.usage import Usage, UsageSpec
+from piloop.usage import Usage
 
 
 def _relative(place: str) -> str:
@@ -144,15 +146,14 @@ class AgentJob(BaseModel):
     spec: AgentStart | None
     """What the runtime starts, once the worker fills in its places. None for an agent that a previous daemon process
     left (``LeftJob``): it is re-attached, never started."""
-    mcp: str | None = None
-    """The renderer of the harness's MCP servers (``Harness.mcp``), or None for a harness that takes none."""
+    harness: Annotated[Harness, HARNESSES.entry] | None = None
+    """The agent's harness, which renders its MCP servers (``{mcp}``) and reads its session file on the worker. None
+    for a harness of no provider (``Custom``), which does neither."""
     servers: dict[str, McpServer] = Field(default_factory=dict)
     """The MCP servers of the agent's role, which name their variables, never their values."""
     secrets: dict[EnvName, EnvName] = Field(default_factory=dict)
     """The variables of the agent's environment that take a secret, with the secret's name: the harness's references
     (``Harness.secrets``), and each variable of the ``servers``, the secret of its own name."""
-    usage: UsageSpec | None = None
-    """How to read the session's tokens when it ends (``Harness.usage``)."""
     session_id: str | None = None
     """The session id the launcher made for the argv (``{session_id}``), or None when the runtime reports it."""
     capture: RunId | None = None
@@ -161,8 +162,20 @@ class AgentJob(BaseModel):
 
     @property
     def needs_session_id(self) -> bool:
-        """Whether the session id is needed when the agent ends, for ``usage``: the worker asks the runtime for it."""
-        return self.usage is not None
+        """Whether the session id is needed when the agent ends, for the usage: the worker asks the runtime for it."""
+        return self.harness is not None and self.harness.needs_session_id
+
+    @model_validator(mode='before')
+    @classmethod
+    def _harness(cls, data: object) -> object:
+        """A job that a 0.3 daemon queued names its MCP renderer and its usage tally, each the name of a harness."""
+        if not isinstance(data, dict) or 'harness' in data or not ({'mcp', 'usage'} & data.keys()):
+            return data
+        deprecated.until('0.4.0', 'a job of a 0.3 daemon names mcp and usage: delete AgentJob._harness')
+        usage = data.get('usage')
+        named = (usage.get('tally') if isinstance(usage, dict) else None) or data.get('mcp')
+        rest = {k: v for k, v in data.items() if k not in ('mcp', 'usage')}
+        return {**rest, 'harness': {'provider': named}} if named is not None else rest
 
 
 def job_secrets(s: Session, secrets: SecretsProvider, job: AgentJob) -> JobSecrets:

@@ -16,13 +16,13 @@ These are the settings of the daemon and the CLI. The table comes from piloop's 
 | Variable | Default | Meaning |
 |---|---|---|
 | `PILOOP_CAMPAIGN_<KEY>` | none | Overrides a key of `piloop.toml` when `piloop init` reads the file. `piloop init` stores the result, and the daemon uses it until the next `piloop init`. Set on `piloop serve`, it has no effect. Join nested keys with `__`, for example `PILOOP_CAMPAIGN_RUNTIME=subprocess`. `piloop doctor` reads it too. |
-| `CLAUDE_CONFIG_DIR` | `~/.claude` | Claude Code's configuration directory. `piloop install-skills` writes Claude Code's skills to its `skills/` directory, unless `PILOOP_CLAUDE_SKILLS_DIR` names another one. The usage glob of the `claude` harness reads it (`{env:CLAUDE_CONFIG_DIR:~/.claude}`). |
-| `CODEX_HOME` | `~/.codex` | Codex's home directory. The usage glob of the `codex` harness reads it (`{env:CODEX_HOME:~/.codex}`). |
-| `PI_CODING_AGENT_DIR` | `~/.pi/agent` | pi's agent directory. The usage glob of the `pi` harness reads it (`{env:PI_CODING_AGENT_DIR:~/.pi/agent}`). |
+| `CLAUDE_CONFIG_DIR` | `~/.claude` | Claude Code's configuration directory. `piloop install-skills` writes Claude Code's skills to its `skills/` directory, unless `PILOOP_CLAUDE_SKILLS_DIR` names another one. It is the `home` of the `claude` harness (`{env:CLAUDE_CONFIG_DIR:~/.claude}`), where piloop reads its session files. |
+| `CODEX_HOME` | `~/.codex` | Codex's home directory. It is the `home` of the `codex` harness (`{env:CODEX_HOME:~/.codex}`). |
+| `PI_CODING_AGENT_DIR` | `~/.pi/agent` | pi's agent directory. It is the `home` of the `pi` harness (`{env:PI_CODING_AGENT_DIR:~/.pi/agent}`). |
 | `PILOOP_HTTPS_TOKEN` | none | The token that `piloop token create` printed on the server. `piloop worker`, and the `http` CAS provider, send it. See [Workers on other machines](/guides/remote-workers). |
 | `PILOOP_SRC` | PyPI | For `install.sh` only: install piloop from this checkout or pip-style URL instead of from PyPI. |
 
-A usage glob of a harness can read any variable with `{env:NAME:default}`. `piloop service-unit` carries each one that
+The `home` of a harness can read any variable with `{env:NAME:default}`. `piloop service-unit` carries each one that
 the harnesses name.
 
 ## Variables that piloop sets

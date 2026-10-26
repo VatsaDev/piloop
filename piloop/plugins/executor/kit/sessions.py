@@ -12,8 +12,8 @@ from pathlib import Path
 from covalence import Cid
 
 from piloop.plugins.cas.contract import Cas
+from piloop.plugins.harness.contract import UsageReader
 from piloop.store.chunks import GROUP, Chunked, cuts
-from piloop.usage import UsageReader
 
 POLL_SECONDS = 1.0
 """How often the job code looks at a running agent's session file."""

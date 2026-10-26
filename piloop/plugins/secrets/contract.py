@@ -3,7 +3,7 @@
 A **secret** is a name and a value. Its name is an environment variable's (``EnvName``). It belongs to the home, for
 every campaign, or to one campaign, whose secret wins over the home's of the same name: a GitHub repository's secret
 wins over its organization's. Config names a secret, never its value: ``{ secret = "NAME" }`` in ``[harness.<name>]
-env`` (``piloop.harnesses.SecretRef``), and each variable of an ``[mcp.<name>]`` server, which is the name of a
+env`` (``piloop.plugins.harness.contract.SecretRef``), and each variable of an ``[mcp.<name>]`` server, which is the name of a
 secret. An agent's job
 names the secrets that it needs (``AgentJob.secrets``), and its worker gets their values when it starts the job. No
 listing, event, span or job holds a value.

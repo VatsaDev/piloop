@@ -14,7 +14,7 @@ import warnings
 from collections.abc import Iterable
 
 from piloop.api.client import answers
-from piloop.harnesses import Harness
+from piloop.plugins.harness.contract import Harness
 from piloop.plugins.network.contract import Address
 from piloop.proc import PILOOP_ARGV, child_env, kill_group
 from piloop.settings import DEFAULT_HOME, Settings, env_names
@@ -236,9 +236,9 @@ def _mtime_ns(cfg: Settings) -> int | None:
 
 
 def carried_env(harnesses: Iterable[Harness]) -> tuple[str, ...]:
-    """Return ``CARRIED_ENV`` and the variables that the usage globs of ``harnesses`` name (``{env:NAME:default}``)."""
-    globs = [h.usage.file for h in harnesses if h.usage is not None and h.usage.file is not None]
-    return tuple(dict.fromkeys([*CARRIED_ENV, *(name for glob in globs for name in env_names(glob))]))
+    """Return ``CARRIED_ENV`` and the variables that the homes of ``harnesses`` name (``{env:NAME:default}``)."""
+    homes = [h.home for h in harnesses if h.home is not None]
+    return tuple(dict.fromkeys([*CARRIED_ENV, *(name for home in homes for name in env_names(home))]))
 
 
 def service_unit(cfg: Settings, harnesses: Iterable[Harness], platform: str = sys.platform) -> str:

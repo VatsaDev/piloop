@@ -17,7 +17,7 @@ from piloop.daemon.serve import (
 )
 from piloop.db.models import Campaign
 from piloop.db.session import BackupFailed, OlderDaemon, SchemaMismatch, unmigratable
-from piloop.harnesses import DEFAULT_HARNESSES
+from piloop.plugins.harness.contract import each_provider
 from piloop.plugins.host import PluginError
 from piloop.plugins.network.contract import Address
 from piloop.proc import Inherited
@@ -132,10 +132,10 @@ def restarted(pid: int, timeout: float) -> int:
 def service_unit_cmd() -> None:
     """Print a systemd user unit (a launchd plist on macOS) that keeps `piloop serve` running.
 
-    It prints the unit only, and installs nothing. The unit carries the variables that the usage globs of the built-in
+    It prints the unit only, and installs nothing. The unit carries the variables that the homes of the installed
     harnesses and of the registered campaigns' harnesses name.
     """
-    harnesses = list(DEFAULT_HARNESSES.values())
+    harnesses = list(each_provider().values())
     with local.session() as s:
         for campaign in s.scalars(select(Campaign)):
             harnesses += campaign.config.harness.values()

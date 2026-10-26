@@ -107,9 +107,15 @@ fact_source = "piloop.plugins.fact_source.contract:FACT_SOURCES"
 campaign_type = "piloop.plugins.campaign_type.contract:CAMPAIGN_TYPES"
 memory = "piloop.plugins.memory.contract:MEMORY"
 archive = "piloop.plugins.archive.contract:ARCHIVES"
+harness = "piloop.plugins.harness.contract:HARNESSES"
 
 [project.entry-points."piloop.runtimes"]
 subprocess = "piloop.plugins.runtime.subprocess:Subprocess"
+
+[project.entry-points."piloop.harnesses"]
+pi = "piloop.plugins.harness.pi:Pi"
+claude = "piloop.plugins.harness.claude:Claude"
+codex = "piloop.plugins.harness.codex:Codex"
 
 [project.entry-points."piloop.cas"]
 disk = "piloop.plugins.cas.disk:Disk"

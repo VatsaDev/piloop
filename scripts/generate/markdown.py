@@ -7,33 +7,28 @@ registries, never the entry points of the installed packages, so the output is t
 import inspect
 import json
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel
 from pydantic.json_schema import GenerateJsonSchema, JsonSchemaValue
 from pydantic_core import SchemaSerializer, SchemaValidator, core_schema
 from pydantic_settings import BaseSettings
 
-from piloop.harnesses import DEFAULT_HARNESSES
-from piloop.mcp import RENDERERS
+from piloop.plugins.harness.contract import HARNESSES
 from piloop.plugins.runtime.contract import RUNTIMES
 from piloop.plugins.section.contract import SECTIONS
 from piloop.plugins.trigger.contract import TRIGGERS
-from piloop.usage import READERS
-from piloop.usage.jsonl import TALLIES
 
 BUILT_IN: dict[tuple[str, str], Iterable[str]] = {
     ('CampaignConfig', 'runtime'): RUNTIMES.builtins(),
     ('RoleConfig', 'runtime'): RUNTIMES.builtins(),
-    ('CampaignConfig', 'harnesses'): DEFAULT_HARNESSES,
+    ('CampaignConfig', 'harnesses'): HARNESSES.builtins(),
+    ('CampaignConfig', 'harness'): HARNESSES.builtins(),
     ('SweepRole', 'triggers'): TRIGGERS.builtins(),
     ('RoleConfig', 'sections'): SECTIONS.builtins(),
     ('StatusConfig', 'sections'): SECTIONS.builtins(),
-    ('Harness', 'mcp'): RENDERERS,
-    ('UsageSpec', 'reader'): READERS,
-    ('UsageSpec', 'tally'): TALLIES,
 }
 """The keys whose value names an entry of a registry, by model and key. Their description ends with the built-in names,
 so no docstring has to list them."""
@@ -123,8 +118,15 @@ class AsDumped(GenerateJsonSchema):
     """Each default of a field with a serializer of its own as the field dumps it: a ``CAP.entry`` with its ``provider``.
 
     pydantic encodes a default by its own type, which leaves the field's serializer out. A default that the field
-    validates (``validate_default``) is shown as it validates.
+    validates (``validate_default``) is shown as it validates, and one that a factory makes as the factory makes it.
     """
+
+    def get_default_value(self, schema: core_schema.WithDefaultSchema) -> object:
+        """The default, or the value that a factory without arguments makes: the harnesses that are on by default."""
+        factory = schema.get('default_factory')
+        if 'default' not in schema and factory is not None and not schema.get('default_factory_takes_data'):
+            return cast(Callable[[], object], factory)()
+        return super().get_default_value(schema)
 
     def default_schema(self, schema: core_schema.WithDefaultSchema) -> JsonSchemaValue:
         found = super().default_schema(schema)

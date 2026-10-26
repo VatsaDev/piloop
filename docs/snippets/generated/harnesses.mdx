@@ -1,7 +1,7 @@
-{/* WARNING: This file is auto-generated (uv run -m scripts.generate_all). Update `DEFAULT_HARNESSES` in `piloop/harnesses.py` if you want to change anything here. */}
+{/* WARNING: This file is auto-generated (uv run -m scripts.generate_all). Update the docstrings of the harnesses of the `piloop.harnesses` entry points in `pyproject.toml`, `piloop/plugins/harness/` if you want to change anything here. */}
 
-| Harness | Executable | Usage reader | MCP renderer |
+| Harness | What it runs | Executable | By default |
 |---|---|---|---|
-| `pi` | `pi` | `jsonl` (tally `pi`) | `pi` |
-| `claude` | `claude` | `jsonl` (tally `claude`) | `claude` |
-| `codex` | `codex` | `jsonl` (tally `codex`) | `codex` |
+| `claude` | `claude -p` with JSON output, the session id that piloop makes, and `--settings` of its own (`SETTINGS`). | `claude` | no |
+| `codex` | `codex exec --json`, which reports its session id (the thread id) on its first line. | `codex` | no |
+| `pi` | `pi` in JSON mode, with its extensions, skills and context files off, and the session id that piloop makes. | `pi` | yes |

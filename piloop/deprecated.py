@@ -23,7 +23,7 @@ import warnings
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol, assert_never
 
 from piloop.version import Version
 
@@ -376,6 +376,35 @@ def _popped(raw: dict[str, object], table: str, key: str) -> object:
     return value
 
 
+OLD_HARNESSES = ('pi', 'claude', 'codex')
+"""The built-in harnesses of 0.3, whose tables named their own renderer and tally."""
+
+
+@bridge('0.4.0', 'mcp and usage of a [harness.<name>] table are its provider: delete the harness_providers bridge')
+def harness_providers(toml: Path, raw: dict[str, object], removed_in: Version) -> None:
+    """``mcp`` and ``[harness.<name>.usage]`` are the harness's provider: it renders the servers and reads the usage.
+
+    A table named after a built-in harness drops them: the provider's own come from ``home``. A table with a new name
+    gets ``provider``: its usage's ``tally``, else its ``mcp``. A table that sets neither runs its argv and does
+    nothing else, as before.
+    """
+    tables = _table(raw, 'harness')
+    for name, table in tables.items() if tables is not None else ():
+        if not isinstance(table, dict) or not {'mcp', 'usage'} & table.keys():
+            continue
+        mcp, usage = table.pop('mcp', None), table.pop('usage', None)
+        tally = usage.get('tally') if isinstance(usage, dict) else None
+        if name in OLD_HARNESSES:
+            message = (
+                f'mcp and usage of [harness.{name}] are deprecated: the harness renders its servers and reads its'
+                ' usage itself, under its home'
+            )
+        else:
+            table['provider'] = named = tally or mcp
+            message = f'mcp and usage of [harness.{name}] are deprecated; write provider = "{named}"'
+        warn(toml, f'harness.{name}', message, removed_in=removed_in)
+
+
 @bridge(
     '0.4.0',
     '[storage.backend] and its eviction keys are [plugins.cas] cached: delete the storage_backend bridge',
@@ -544,24 +573,20 @@ def removed_worker() -> str:
     return f'[roles.worker] is removed in piloop 0.3.0: rename the table [roles.implementer] ({REMOVED_KEYS})'
 
 
-USAGE_PLACEHOLDERS = {
-    '{claude_config_dir}': '{env:CLAUDE_CONFIG_DIR:~/.claude}',
-    '{codex_home}': '{env:CODEX_HOME:~/.codex}',
-}
-"""The placeholders of a ``[harness.<name>.usage] file`` that 0.3.0 removed, with what to write instead."""
+type MessageFormat = Literal['lines', 'claude-hook']
+"""The ``--format`` of ``piloop agent messages`` in 0.3, which the hook of a running agent still passes."""
 
 
-@until('0.4.0', '{claude_config_dir} and {codex_home} of a 0.2 usage file: delete removed_placeholders and its call')
-def removed_placeholders(glob: str) -> str | None:
-    """Why a usage ``file`` with a placeholder that 0.3.0 removed does not load, else None.
-
-    Without this, the glob would match no session file, and no agent's tokens would be recorded.
-    """
-    if not (found := [old for old in USAGE_PLACEHOLDERS if old in glob]):
-        return None
-    for old in found:
-        glob = glob.replace(old, USAGE_PLACEHOLDERS[old])
-    return f'{" and ".join(found)}: removed in piloop 0.3.0; write {glob!r} ({REMOVED_KEYS})'
+@until('0.4.0', '--format of piloop agent messages is --harness: delete message_format, MessageFormat and the option')
+def message_format(form: MessageFormat) -> str | None:
+    """The harness whose messages ``--format`` printed: ``claude-hook`` is Claude's hook, ``lines`` is none."""
+    match form:
+        case 'lines':
+            return None
+        case 'claude-hook':
+            return 'claude'
+        case _:
+            assert_never(form)
 
 
 OLD_ENV_PREFIX = 'PILOOP_PROJECT_'

@@ -285,15 +285,20 @@ def _secrets_of(campaign: StoredCampaign, needed: list[str], held: list[SecretKe
 
 
 def _skills(cfg: Settings) -> list[Check]:
-    """Check that each harness on PATH finds the orchestrator skills, the same as the ones this piloop ships."""
-    found = skills.targets(cfg)
-    if not found:
-        return [Check('skills', f'none of {", ".join(skills.SKILL_DIRS)} is on PATH: nothing to check')]
+    """Check that each skills directory has the orchestrator skills, the same as the ones this piloop ships.
+
+    Out-of-date skills in a directory that no harness on PATH reads only warn.
+    """
     return [
-        Check(f'skills ({", ".join(harnesses)})', f'{target}: {"; ".join(drift)}', '`piloop install-skills`')
+        Check(
+            f'skills ({skills.readers(harnesses)})',
+            f'{target}: {"; ".join(drift)}',
+            '`piloop install-skills`',
+            Severity.FAIL if harnesses else Severity.WARN,
+        )
         if (drift := skills.drift(target))
-        else Check(f'skills ({", ".join(harnesses)})', f'current in {target}')
-        for target, harnesses in found.items()
+        else Check(f'skills ({skills.readers(harnesses)})', f'current in {target}')
+        for target, harnesses in skills.targets(cfg).items()
     ]
 
 

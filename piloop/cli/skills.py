@@ -2,30 +2,21 @@
 
 The repo's ``skills/`` directory is the only source. It is an Agent Skills package (agentskills.io). Each
 ``skills/<name>/SKILL.md`` drives piloop through its CLI only, so every harness with a shell reads the same text.
-``install`` copies the skills into the user skills directory of each harness on PATH. ``drift`` finds a copy that is
+``install`` copies the skills into the Agent Skills directory, which any harness that follows agentskills.io reads,
+and into the user skills directory of each harness on PATH (``Harness.skills_dir``). ``drift`` finds a copy that is
 missing or out of date, for ``piloop doctor``. The installed CLI copies its own skills, so the skills always describe
 the commands of that CLI.
 """
 
 import shutil
-from collections.abc import Callable
 from pathlib import Path
 
-from piloop.harnesses import CLAUDE_HOME
-from piloop.settings import Settings, expand_env
+from piloop.plugins.harness.contract import each_provider
+from piloop.settings import Settings
 
 PREFIX = 'piloop-'
 """Every skill that piloop ships is named ``piloop-*``. A directory with this prefix in a skills directory is piloop's.
 """
-SKILL_DIRS: dict[str, Callable[[Settings], Path]] = {
-    'claude': lambda s: s.claude_skills_dir or Path(expand_env(f'{CLAUDE_HOME}/skills')),
-    'codex': lambda s: s.agent_skills_dir,
-    'pi': lambda s: s.agent_skills_dir,
-    'gemini': lambda s: s.agent_skills_dir,
-    'cursor-agent': lambda s: s.agent_skills_dir,
-}
-"""Where the harness of each executable finds user skills. Codex, pi, Gemini CLI and Cursor read the Agent Skills
-directory ``~/.agents/skills``. Claude Code reads only its own directory (``Settings.claude_skills_dir``)."""
 
 
 def source(package: Path = Path(__file__).parent) -> Path:
@@ -43,12 +34,17 @@ def bundled() -> dict[str, Path]:
 
 
 def targets(s: Settings) -> dict[Path, list[str]]:
-    """Return the skills directory of each harness on PATH, with the harnesses that read it."""
-    found: dict[Path, list[str]] = {}
-    for harness, skill_dir in SKILL_DIRS.items():
-        if shutil.which(harness):
-            found.setdefault(skill_dir(s), []).append(harness)
+    """Return the Agent Skills directory and that of each harness on PATH, each with the harnesses on PATH that read it."""
+    found: dict[Path, list[str]] = {s.agent_skills_dir: []}
+    for name, harness in each_provider().items():
+        if shutil.which(harness.executable):
+            found.setdefault(harness.skills_dir(s), []).append(name)
     return found
+
+
+def readers(harnesses: list[str]) -> str:
+    """Who reads a skills directory, for a line of output: its harnesses on PATH, else the Agent Skills standard."""
+    return ', '.join(harnesses) or 'Agent Skills'
 
 
 def drift(target: Path) -> list[str]:

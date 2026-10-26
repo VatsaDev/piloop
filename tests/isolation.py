@@ -36,11 +36,11 @@ def isolate() -> None:
         }
     )
     # only now: importing piloop builds its settings from the environment
-    from piloop.harnesses import DEFAULT_HARNESSES, SESSION_ENV
+    from piloop.plugins.harness.contract import cleared_env, each_provider
     from piloop.settings import env_names
 
-    homes = {name for harness in DEFAULT_HARNESSES.values() for name in env_names(harness.home or '')}
-    for name in (SESSION_ENV | homes) & set(os.environ):  # a home falls back to its default under HOME
+    homes = {name for harness in each_provider().values() for name in env_names(harness.home or '')}
+    for name in (cleared_env() | homes) & set(os.environ):  # a home falls back to its default under HOME
         del os.environ[name]
 
 

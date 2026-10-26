@@ -7,13 +7,14 @@ from covalence import Value
 from pytest_mock import MockerFixture
 
 from piloop.plugins.executor.kit.sessions import FLUSH_SECONDS, QUIET_SECONDS, SessionFile
+from piloop.plugins.harness import pi
+from piloop.plugins.harness.kit.jsonl import JsonlSessions, no_cwd
 from piloop.store import chunks
 from piloop.store.chunks import read
-from piloop.usage import UsageSpec
 from tests.conftest import disk
 from tests.store.test_chunks import lines
 
-SPEC = UsageSpec(file='{home}/sessions/{session_id}.jsonl', tally='pi')
+SESSIONS = JsonlSessions('~/sessions/{session_id}.jsonl', no_cwd, pi.tally, pi.said)
 
 
 @pytest.fixture
@@ -24,7 +25,7 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def test_a_snapshot_is_due_once_the_file_grew_and_was_quiet_or_at_the_flush(home: Path) -> None:
-    file = SessionFile(SPEC.resolved, disk(home / 'home'), home / 'worktree')
+    file = SessionFile(SESSIONS, disk(home / 'home'), home / 'worktree')
     assert not file.due(0), 'no session id yet'
     file.session_id = 's1'
     assert not file.due(0), 'no file yet'
@@ -45,7 +46,7 @@ def test_a_snapshot_is_due_once_the_file_grew_and_was_quiet_or_at_the_flush(home
 
 def test_a_snapshot_stores_only_the_new_whole_lines_and_reads_back_whole(home: Path, mocker: MockerFixture) -> None:
     cas = disk(home / 'home')
-    file = SessionFile(SPEC.resolved, cas, home / 'worktree', 's1')
+    file = SessionFile(SESSIONS, cas, home / 'worktree', 's1')
     assert file.snapshot(0) is None, 'no file yet'
     path = home / 'sessions' / 's1.jsonl'
     data = lines(800)
@@ -67,7 +68,7 @@ def test_a_snapshot_stores_only_the_new_whole_lines_and_reads_back_whole(home: P
 def test_a_long_file_keeps_its_closed_chunks_in_groups(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr('piloop.plugins.executor.kit.sessions.GROUP', 4)
     cas = disk(home / 'home')
-    file = SessionFile(SPEC.resolved, cas, home / 'worktree', 's1')
+    file = SessionFile(SESSIONS, cas, home / 'worktree', 's1')
     data = lines(600, sizes=(4000,))
     (home / 'sessions' / 's1.jsonl').write_bytes(data)
     latest = file.snapshot(0)

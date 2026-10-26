@@ -19,10 +19,6 @@ import ExampleSqliteCas from '/snippets/generated/example-sqlite-cas.mdx';
 import Harnesses from '/snippets/generated/harnesses.mdx';
 import McpKeys from '/snippets/generated/mcp-keys.mdx';
 import EvaluateExamples from '/snippets/generated/evaluate-examples.mdx';
-import Readers from '/snippets/generated/readers.mdx';
-import Tallies from '/snippets/generated/tallies.mdx';
-import CwdEncoders from '/snippets/generated/cwd-encoders.mdx';
-import Renderers from '/snippets/generated/renderers.mdx';
 import Stop from '/snippets/generated/stop.mdx';
 import ContractCas from '/snippets/generated/contract-cas.mdx';
 import ContractExecutor from '/snippets/generated/contract-executor.mdx';
@@ -82,10 +78,9 @@ A plugin can also do two more things:
 | [Roles](#roles) | `[roles.<name>]` | configuration, or a plugin: `piloop.roles` |
 | [Triggers](#triggers) | `[roles.<name>] triggers` | a `sql` trigger, or a plugin: `piloop.triggers` |
 | [Sections](#sections) | `[status] sections`, `[roles.<name>] sections` | a plugin: `piloop.sections` |
-| [Harnesses](#harnesses) | `harnesses` | configuration: `[harness.<name>]` |
+| [Harnesses](#harnesses) | `harnesses`, `[harness.<name>]` | configuration, or a plugin: `piloop.harnesses` |
 | [MCP servers](#mcp-servers) | `[roles.<name>] mcp` | configuration: `[mcp.<name>]` |
 | [The evaluate command](#the-evaluate-command) | `evaluate` | your command |
-| [Usage readers and MCP renderers](#usage-readers-and-mcp-renderers) | `[harness.<name>]` | built-in ones only |
 | [Stop conditions](#stop-conditions) | `[plugins.stop_rule] provider` | a plugin: `piloop.stop_rules` |
 | [Fact sources](#fact-sources) | `[[facts]]` | a `command` source, or a plugin: `piloop.fact_sources` |
 | [Tables and migrations](#tables-and-migrations) | none: piloop migrates every installed one | a plugin: `piloop.schemas` |
@@ -529,8 +524,12 @@ block is one of four kinds: `Text`, `Lines`, `Figures` (named values, a number w
 ### Example
 
 ```toml
-harnesses = ["claude", "mycli"]
-model = { claude = "claude-opus-5-5", mycli = "my-model" }
+harnesses = ["claude", "gateway", "mycli"]
+model = { claude = "claude-opus-5-5", gateway = "claude-opus-5-5", mycli = "my-model" }
+
+[harness.gateway]
+provider = "claude"
+env = { ANTHROPIC_BASE_URL = "https://gw.example.com" }
 
 [harness.mycli]
 executable = "mycli"
@@ -539,14 +538,23 @@ headless = ["--model", "{model}", "{prompt}"]
 
 ### The contract
 
-A harness is a coding agent CLI, and a `[harness.<name>]` table says how to start it: the executable and the argv
-(`headless`), with placeholders such as `{model}` and `{prompt}`. To record its tokens and give it MCP servers, it
-names one of the [built-in readers and renderers](#usage-readers-and-mcp-renderers). The
-[configuration reference](/reference/configuration#harness) has every key and placeholder.
+A harness is a coding agent CLI. Its `[harness.<name>]` table says how to start it: the executable and the argv
+(`headless`), with placeholders such as `{model}` and `{prompt}`. The [configuration
+reference](/reference/configuration#harness) has every key and placeholder.
+
+A harness provider is a subclass of `Harness`, whose fields are those keys with its defaults. Its methods hold what
+piloop knows about the CLI: `mcp` writes a role's MCP servers in its flags, `usage` reads the tokens from its session
+files when an agent ends, `messages` is what its hook prints for a message, and `skills_dir` is where it reads user
+skills. Declare it with an entry point in `piloop.harnesses`.
+
+A table with a new name and `provider = "<harness>"` is that harness over its defaults, such as `gateway` above. A
+table with a new name and no `provider`, such as `mycli`, runs its argv and does nothing else: it takes no MCP
+servers, and records no tokens.
 
 ### Built in
 
-A campaign can override any key of a built-in harness.
+A campaign can override any key of a built-in harness. A campaign that does not set `harnesses` uses the ones on by
+default.
 
 <Harnesses />
 
@@ -604,21 +612,6 @@ Each campaign has its own. `piloop init` writes a stub `evaluate.py`, and `piloo
 example campaign with a working one:
 
 <EvaluateExamples />
-
-## Usage readers and MCP renderers
-
-A harness names them: `[harness.<name>.usage] reader` reads the tokens from the harness's session files when an agent
-ends, with its `tally` (the file format) and its `cwd` (how the harness names the agent's working directory), and
-`[harness.<name>] mcp` names the renderer that writes a role's MCP servers in the harness's flags. You cannot add
-one.
-
-<Readers />
-
-<Tallies />
-
-<CwdEncoders />
-
-<Renderers />
 
 ## Stop conditions
 

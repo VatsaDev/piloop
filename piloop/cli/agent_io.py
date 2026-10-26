@@ -4,10 +4,11 @@ from typing import Annotated
 
 import cyclopts
 
+from piloop import deprecated
 from piloop.cli import common, local
 from piloop.db.models import AgentSession
-from piloop.harnesses import MessageFormat, render_messages
 from piloop.ids import AgentSessionId
+from piloop.plugins.harness.contract import HARNESSES, Harness
 from piloop.plugins.runtime.contract import MESSAGES_ENV, take
 from piloop.reports.overview import agent_output
 
@@ -32,10 +33,11 @@ def attach(agent_session_id: Annotated[AgentSessionId, cyclopts.Parameter(help='
 
 
 def messages(
-    form: Annotated[
-        MessageFormat,
-        cyclopts.Parameter(name='--format', help='How to print them: the format that the hook of the harness reads.'),
-    ] = MessageFormat.LINES,
+    harness: Annotated[
+        str | None,
+        cyclopts.Parameter(name='--harness', help='The harness whose hook reads them: one message a line without it.'),
+    ] = None,
+    form: Annotated[deprecated.MessageFormat | None, cyclopts.Parameter(name='--format', show=False)] = None,
 ) -> None:
     """Take the messages that wait for this agent's turn, and print them.
 
@@ -44,5 +46,7 @@ def messages(
     """
     if common.settings.messages is None:
         raise SystemExit(f'{MESSAGES_ENV} is not set: the runtime of this agent keeps no message queue')
+    name = harness or (deprecated.message_format(form) if form is not None else None)
+    model = HARNESSES.model_of(name) if name is not None else Harness  # before the take: a wrong name loses nothing
     if taken := take(common.settings.messages):
-        common.console.out(render_messages(taken, form), highlight=False)
+        common.console.out(model.messages(taken), highlight=False)

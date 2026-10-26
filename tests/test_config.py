@@ -9,8 +9,8 @@ from inline_snapshot import snapshot
 
 from piloop.campaign.campaigns import check_takes
 from piloop.config import CampaignConfig, ConfigError, Metric, MetricRole, load_campaign_config
-from piloop.harnesses import DEFAULT_HARNESSES, Harness
 from piloop.ids import IMPLEMENTER, RoleName, TrackName
+from piloop.plugins.harness.contract import Harness, each_provider
 from piloop.plugins.metric import Direction
 from piloop.plugins.role.contract import Files, ImplementerRole
 from piloop.plugins.role.research import ResearchRole
@@ -35,7 +35,7 @@ def test_load_precedence(campaign_path: Path, monkeypatch: pytest.MonkeyPatch) -
     )
     assert [t.primary.name for t in cfg.all_tracks] == ['score'] and [m.name for m in cfg.metrics] == ['score', 'size']
     assert cfg.harness_for('script').headless == ['{prompt}']
-    assert cfg.harness_for('pi') is DEFAULT_HARNESSES['pi']
+    assert cfg.harness_for('pi') == each_provider()['pi']
     override = {'executable': 'x', 'headless': ['{prompt}']}
     assert load_campaign_config(campaign_path, harness={'script': override}).harness_for('script').executable == 'x'
 
@@ -71,7 +71,7 @@ def test_a_table_of_a_built_in_harness_changes_only_its_keys_and_env_takes_value
 ) -> None:
     env = {'ANTHROPIC_BASE_URL': 'https://gw.example.com', 'ANTHROPIC_API_KEY': {'secret': 'TEAM_KEY'}}
     claude = load_campaign_config(campaign_path, harness={'claude': {'env': env}}).harness_for('claude')
-    built_in = DEFAULT_HARNESSES['claude']
+    built_in = each_provider()['claude']
     assert claude.model_copy(update={'env': {}}) == built_in, 'the built-in keys that the table does not set'
     assert (claude.literals, claude.secrets) == (
         {'ANTHROPIC_BASE_URL': 'https://gw.example.com'},
@@ -103,21 +103,6 @@ def test_a_harness_key_that_only_herdr_read_says_where_to_read_why(campaign_path
                     'queue_key': 'Tab',
                 }
             },
-        )
-
-
-def test_a_usage_file_with_a_removed_placeholder_fails_with_the_one_to_write(campaign_path: Path) -> None:
-    old = '{claude_config_dir}/projects/{cwd}/{session_id}.jsonl'
-    usage = {'file': old, 'cwd': 'dash_non_alnum', 'tally': 'claude'}
-    with pytest.raises(
-        ConfigError,
-        match=re.escape(
-            "{claude_config_dir}: removed in piloop 0.3.0; write '{env:CLAUDE_CONFIG_DIR:~/.claude}/projects/{cwd}/"
-            "{session_id}.jsonl' (https://piloop.autoresearch.inc/guides/upgrading#removed-keys)"
-        ),
-    ):
-        load_campaign_config(
-            campaign_path, harness={'script': {'executable': 'x', 'headless': ['{prompt}'], 'usage': usage}}
         )
 
 
@@ -259,13 +244,13 @@ def test_metric_direction() -> None:
 
 
 def test_default_harnesses_have_prompt_placeholder() -> None:
-    assert {name: '{prompt}' in h.headless for name, h in DEFAULT_HARNESSES.items()} == snapshot(
+    assert {name: '{prompt}' in h.headless for name, h in each_provider().items()} == snapshot(
         {'pi': True, 'claude': True, 'codex': True}
     )
 
 
 def test_default_harnesses_need_their_session_id_and_say_where_it_comes_from() -> None:
-    found = {n: (h.needs_session_id, h.session_id_pattern) for n, h in DEFAULT_HARNESSES.items()}
+    found = {n: (h.needs_session_id, h.session_id_pattern) for n, h in each_provider().items()}
     assert found == snapshot(
         {
             'pi': (True, None),
@@ -274,14 +259,14 @@ def test_default_harnesses_need_their_session_id_and_say_where_it_comes_from() -
         }
     ), 'pi and claude are told their id; codex prints its own, which the subprocess runtime reads back'
     for name in ('pi', 'claude'):
-        h = DEFAULT_HARNESSES[name]
+        h = each_provider()[name]
         assert '--session-id {session_id}' in ' '.join(h.headless), name
-    assert '--session-dir' not in DEFAULT_HARNESSES['pi'].headless, "usage reads pi's own session store"
+    assert '--session-dir' not in each_provider()['pi'].headless, "usage reads pi's own session store"
     Harness(executable='x', headless=['{prompt}'])
     for resume in (['{prompt}'], ['--resume', '{session_id}']):
         with pytest.raises(ValueError, match=r'resume must include \{session_id\} and \{prompt\}'):
             Harness(executable='x', headless=['{prompt}'], resume=resume)
-    assert [' '.join(DEFAULT_HARNESSES[name].resume[:3]) for name in ('pi', 'claude', 'codex')] == [
+    assert [' '.join(each_provider()[name].resume[:3]) for name in ('pi', 'claude', 'codex')] == [
         '-p --mode json',
         '-p --output-format json',
         'exec resume --json',
@@ -295,7 +280,7 @@ def test_default_harnesses_take_the_roles_effort_in_every_argv() -> None:
         'codex': '-c model_reasoning_effort="{effort}"',
     }
     for name, flags in thinking.items():
-        h = DEFAULT_HARNESSES[name]
+        h = each_provider()[name]
         assert all(flags in ' '.join(argv) for argv in (h.headless, h.resume)), name
 
 
@@ -443,13 +428,13 @@ def test_default_harnesses_keep_agents_out_of_the_harness_memory() -> None:
     """A memory the harness keys by repo would carry one agent's notes into every later agent of the campaign."""
     off = {'claude': ['"autoMemoryEnabled":false'], 'codex': ['-c', 'features.memories=false']}
     for name, flags in off.items():
-        h = DEFAULT_HARNESSES[name]
+        h = each_provider()[name]
         assert ' '.join(flags) in ' '.join(h.headless) and ' '.join(flags) in ' '.join(h.resume), name
 
 
 def test_default_claude_moves_a_long_bash_command_to_the_background() -> None:
     """Claude agents get a 5-minute default and a 10-minute maximum for a foreground Bash command, whatever the user's."""
-    claude = DEFAULT_HARNESSES['claude']
+    claude = each_provider()['claude']
     for argv in (claude.headless, claude.resume):
         settings = json.loads(argv[argv.index('--settings') + 1])
         assert settings['env'] == {'BASH_DEFAULT_TIMEOUT_MS': '300000', 'BASH_MAX_TIMEOUT_MS': '600000'}
@@ -460,7 +445,7 @@ def test_default_claude_takes_the_queued_messages_after_each_tool_call(tmp_path:
 
     Without a message, the hook costs a file check: piloop starts only when the queue has one.
     """
-    claude = DEFAULT_HARNESSES['claude']
+    claude = each_provider()['claude']
     commands = set()
     for argv in (claude.headless, claude.resume):
         settings = json.loads(argv[argv.index('--settings') + 1])
@@ -485,7 +470,7 @@ def test_default_claude_takes_the_queued_messages_after_each_tool_call(tmp_path:
     assert (hook().returncode, hook().stdout) == (0, ''), 'no queue named'
     assert (hook(PILOOP_MESSAGES=str(queue)).returncode, hook(PILOOP_MESSAGES=str(queue)).stdout) == (0, '')
     queue.write_text('"x"\n')
-    assert hook(PILOOP_MESSAGES=str(queue)).stdout == 'took: agent messages --format claude-hook\n'
+    assert hook(PILOOP_MESSAGES=str(queue)).stdout == 'took: agent messages --harness claude\n'
 
 
 def test_a_table_with_a_new_name_defines_a_role_that_needs_a_prompt_file_and_triggers(campaign_path: Path) -> None:

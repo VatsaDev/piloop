@@ -175,7 +175,7 @@ renames a table, a column or a value, add the rename to `RENAMES` in that module
 `make docs` runs `uv run -m scripts.generate_all`, which writes these files from the code. Never edit them by hand:
 
 - `docs/reference/configuration.mdx`, from the models that `piloop.config.CampaignConfig` reaches (in
-  `piloop/config.py`, `piloop/harnesses.py`, `piloop/mcp/` and `piloop/usage/`), from `piloop/deprecated.py`, and from
+  `piloop/config.py`, `piloop/plugins/harness/`, `piloop/mcp/` and `piloop/usage/`), from `piloop/deprecated.py`, and from
   the header in `scripts/generate/configuration.py`.
 - `docs/reference/schema.mdx`, from `piloop/db/models.py`.
 - `docs/reference/openapi.json`, the API's OpenAPI document, from the FastAPI routes of `piloop/daemon/api.py`.
@@ -356,7 +356,7 @@ what that review said.
 The package has one subpackage for each concern. Imports only point down this list:
 
 1. `db/`: storage, the SQL gate for agents, the events feed. `store/`: trees in the CAS.
-2. `mcp/`, `usage/`, and `config.py` with `harnesses.py`: MCP servers, token usage, the campaign configuration.
+2. `mcp/`, `usage/`, and `config.py`: MCP servers, token usage, the campaign configuration.
    `net/`: the server of `piloop serve --listen` and its bearer tokens.
 3. `runtime/`: the runtime of an agent session. The runtimes themselves are plugins (`plugins/runtime/`).
 4. `scoring/`: the evaluate command, the ledger, the verdict.

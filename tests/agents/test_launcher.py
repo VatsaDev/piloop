@@ -40,9 +40,7 @@ from piloop.db.events import emit, in_order
 from piloop.db.models import AgentSession, AgentSessionState, Campaign, Comment, Event, Lease, LeaseKind
 from piloop.db.session import Database
 from piloop.db.triggers.changelog import AgentSessionRequested
-from piloop.harnesses import DEFAULT_HARNESSES
 from piloop.ids import IMPLEMENTER, AgentSessionId, CampaignId, RoleName, TargetKind, TargetRef
-from piloop.mcp import MCP
 from piloop.otel import Tracer
 from piloop.plugins.cas.contract import CAS
 from piloop.plugins.executor.contract import AgentJob, HarnessSession, RepoId, Source
@@ -51,6 +49,8 @@ from piloop.plugins.executor.kit.capacity import HostSample
 from piloop.plugins.executor.kit.leases import SERVE, Answer, LeaseQueued, Leases, LeaseWorkerJoined, read_job
 from piloop.plugins.executor.kit.sessions import SessionFile
 from piloop.plugins.executor.workers import Workers
+from piloop.plugins.harness.contract import MCP, each_provider
+from piloop.plugins.harness.kit.jsonl import dash_separators_wrapped
 from piloop.plugins.role.watchdog import WatchdogRole
 from piloop.plugins.runtime.contract import AgentExit, AgentSpec, ExitStatus
 from piloop.plugins.secrets.contract import SECRETS, set_secret
@@ -59,7 +59,6 @@ from piloop.plugins.vcs.git import Git
 from piloop.settings import Settings
 from piloop.store.chunks import read
 from piloop.usage import Usage
-from piloop.usage.jsonl import CWD_ENCODERS
 from tests.conftest import (
     HARNESS_FAILS,
     HARNESS_PROMPT_TO_FILE,
@@ -78,11 +77,11 @@ from tests.conftest import (
     write_toml,
 )
 from tests.test_vcs import ALLOWED_WORDS, git_words
-from tests.usage.test_usage import PI_SPEC, SESSIONS
+from tests.usage.test_usage import READS_PI, SESSIONS
 
-NO_USAGE_FILE = {'file': '/nonexistent/{session_id}.jsonl', 'tally': 'pi'}
-"""A usage spec whose file is never there: it only makes the harness need its session id."""
-MINTED_HARNESS = {'headless': ['--session-id', '{session_id}', '{prompt}'], 'usage': NO_USAGE_FILE}
+NO_USAGE_FILE = {'provider': 'pi', 'home': '/nonexistent', 'resume': []}
+"""A harness that reads usage from files that are never there: it only makes the harness need its session id."""
+MINTED_HARNESS = {'headless': ['--session-id', '{session_id}', '{prompt}'], **NO_USAGE_FILE}
 CODEX_ID = '01a09262-d574-7e10-9f75-23b0ce9c0a2f'
 CODEX_LIKE = f'#!/bin/sh\necho \'{{"type":"thread.started","thread_id":"{CODEX_ID}"}}\'\nsleep 0.3\necho more\n'
 """``codex exec --json``: the thread id is the first stdout line, then the run's events."""
@@ -158,7 +157,10 @@ def agent_session(db: Database, agent_session_id: AgentSessionId) -> AgentSessio
 def use_harness(db: Database, campaign: Campaign, body: str, **definition: object) -> None:
     """Point the test harness at ``body``; ``definition`` overrides keys of its ``[harness.script]`` table."""
     write_toml(Path(campaign.path), body)
-    script = {**load_campaign_config(Path(campaign.path)).harness['script'].model_dump(mode='json'), **definition}
+    script = {
+        **load_campaign_config(Path(campaign.path)).harness['script'].model_dump(mode='json', exclude_unset=True),
+        **definition,
+    }
     with db.session() as s:
         s.get_one(Campaign, campaign.id).config = load_campaign_config(Path(campaign.path), harness={'script': script})
         s.commit()
@@ -471,7 +473,7 @@ def test_an_agent_that_never_got_going_is_an_anomaly(
     mocker.stopall()
 
     monkeypatch.setenv('HOME', str(tmp_path / 'home'))
-    counted = {'headless': ['--session-id', '{session_id}', '{prompt}'], 'usage': PI_SPEC}
+    counted = {'headless': ['--session-id', '{session_id}', '{prompt}'], **READS_PI}
     use_harness(db, campaign, HARNESS_PROMPT_TO_FILE, **counted)
     idle_at_once = request(db, campaign)
     outcome = launch(db, runtime, tmp_path, idle_at_once)
@@ -493,7 +495,7 @@ def test_an_agent_told_to_wrap_up_that_stops_with_nothing_is_not_a_failed_start(
 ) -> None:
     """A cancel or a stop with the wrap-up prompt: the agent stopped because it was told to, not at startup."""
     monkeypatch.setenv('HOME', str(tmp_path / 'home'))
-    counted = {'headless': ['--session-id', '{session_id}', '{prompt}'], 'usage': PI_SPEC}
+    counted = {'headless': ['--session-id', '{session_id}', '{prompt}'], **READS_PI}
     use_harness(db, campaign, HARNESS_PROMPT_TO_FILE, **counted)
     told = request(db, campaign)
     with db.session() as s:
@@ -588,13 +590,13 @@ def test_a_harness_that_prints_its_session_id_has_it_read_back_by_the_runtime(
     tracer: Tracer,
     spans: InMemorySpanExporter,
 ) -> None:
-    codex = DEFAULT_HARNESSES['codex']
-    use_harness(db, campaign, CODEX_LIKE, usage=NO_USAGE_FILE, session_id_pattern=codex.session_id_pattern)
+    codex = each_provider()['codex']
+    use_harness(db, campaign, CODEX_LIKE, **NO_USAGE_FILE, session_id_pattern=codex.session_id_pattern)
     agent_session_id = request(db, campaign)
     launch(db, runtime, tmp_path, agent_session_id, tracer)
     assert agent_session(db, agent_session_id).session_id == CODEX_ID
     assert span_attributes(spans, 'piloop.job', agent_session_id)['session_id'] == CODEX_ID
-    use_harness(db, campaign, HARNESS_PROMPT_TO_FILE, usage=NO_USAGE_FILE, session_id_pattern=codex.session_id_pattern)
+    use_harness(db, campaign, HARNESS_PROMPT_TO_FILE, **NO_USAGE_FILE, session_id_pattern=codex.session_id_pattern)
     silent = request(db, campaign)
     launch(db, runtime, tmp_path, silent, tracer)
     assert agent_session(db, silent).session_id is None
@@ -616,8 +618,8 @@ def test_a_session_reported_late_is_asked_for_again_before_the_agent_is_released
 
     A failure of that last ask is recorded, and the agent is still released.
     """
-    codex = DEFAULT_HARNESSES['codex']
-    use_harness(db, campaign, CODEX_LIKE, usage=NO_USAGE_FILE, session_id_pattern=codex.session_id_pattern)
+    codex = each_provider()['codex']
+    use_harness(db, campaign, CODEX_LIKE, **NO_USAGE_FILE, session_id_pattern=codex.session_id_pattern)
     mocker.patch.object(runtime, 'session_id', side_effect=[None, CODEX_ID])
     late = request(db, campaign)
     launch(db, runtime, tmp_path, late, tracer)
@@ -637,8 +639,8 @@ def test_a_session_reported_late_goes_back_in_the_report_not_only_in_a_heartbeat
     campaign: Campaign, db: Database, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
 ) -> None:
     """The agent can end and report before the next heartbeat would carry the session id that the last ask found."""
-    codex = DEFAULT_HARNESSES['codex']
-    use_harness(db, campaign, CODEX_LIKE, usage=NO_USAGE_FILE, session_id_pattern=codex.session_id_pattern)
+    codex = each_provider()['codex']
+    use_harness(db, campaign, CODEX_LIKE, **NO_USAGE_FILE, session_id_pattern=codex.session_id_pattern)
     heartbeat = Leases.heartbeat
 
     def no_session_ids(
@@ -665,11 +667,11 @@ def test_the_agents_session_file_goes_into_the_cas_and_its_usage_is_summed_from_
 ) -> None:
     home = tmp_path / 'home'
     monkeypatch.setenv('HOME', str(home))
-    folder = home / '.pi' / 'agent' / 'sessions' / CWD_ENCODERS['dash_separators_wrapped'](Path(campaign.path))
+    folder = home / '.pi' / 'agent' / 'sessions' / dash_separators_wrapped(Path(campaign.path))
     writes_session = (
         f'#!/bin/sh\nmkdir -p {folder}\ncp {SESSIONS / "pi.jsonl"} "{folder}/2026-09-09T05-48-14-300Z_$2.jsonl"\n'
     )
-    minted = {'headless': ['--session-id', '{session_id}', '{prompt}'], 'usage': PI_SPEC}
+    minted = {'headless': ['--session-id', '{session_id}', '{prompt}'], **READS_PI}
     use_harness(db, campaign, writes_session, **minted)
     agent_session_id = request(db, campaign)
     launch(db, runtime, tmp_path, agent_session_id, tracer)
@@ -726,7 +728,7 @@ def test_a_running_agents_session_file_is_snapshotted_onto_its_row_and_the_last_
     monkeypatch.setenv('HOME', str(home))
     monkeypatch.setattr(jobs, 'POLL_SECONDS', 0.05)
     monkeypatch.setattr(sessions, 'QUIET_SECONDS', 0.1)
-    folder = home / '.pi' / 'agent' / 'sessions' / CWD_ENCODERS['dash_separators_wrapped'](Path(campaign.path))
+    folder = home / '.pi' / 'agent' / 'sessions' / dash_separators_wrapped(Path(campaign.path))
     whole = (SESSIONS / 'pi.jsonl').read_bytes()
     first = whole[: whole.index(b'\n') + 1]
     (tmp_path / 'started.jsonl').write_bytes(first + b'{"type":"mess')
@@ -736,7 +738,7 @@ def test_a_running_agents_session_file_is_snapshotted_onto_its_row_and_the_last_
         f'#!/bin/sh\nmkdir -p {folder}\ncp {tmp_path / "started.jsonl"} {session}\n'
         f'while [ -f {hold} ]; do sleep 0.05; done\ncp {SESSIONS / "pi.jsonl"} {session}\n'
     )
-    use_harness(db, campaign, writes_then_waits, headless=['--session-id', '{session_id}', '{prompt}'], usage=PI_SPEC)
+    use_harness(db, campaign, writes_then_waits, headless=['--session-id', '{session_id}', '{prompt}'], **READS_PI)
     agent = request(db, campaign)
     launching = threading.Thread(target=launch, args=(db, runtime, tmp_path, agent))
     launching.start()
@@ -768,8 +770,8 @@ def test_a_snapshot_that_fails_is_tried_again_and_a_late_session_id_is_asked_for
     mocker: MockerFixture,
 ) -> None:
     monkeypatch.setattr(jobs, 'POLL_SECONDS', 0.05)
-    codex = DEFAULT_HARNESSES['codex']
-    use_harness(db, campaign, CODEX_LIKE, usage=NO_USAGE_FILE, session_id_pattern=codex.session_id_pattern)
+    codex = each_provider()['codex']
+    use_harness(db, campaign, CODEX_LIKE, **NO_USAGE_FILE, session_id_pattern=codex.session_id_pattern)
     asked = mocker.patch.object(runtime, 'session_id', side_effect=[None, CODEX_ID])
     mocker.patch.object(SessionFile, 'due', return_value=True)
     mocker.patch.object(SessionFile, 'snapshot', side_effect=OSError('the file went'))
@@ -791,12 +793,12 @@ def test_a_killed_agents_usage_is_read_too(
     """The usage of an agent killed at its timeout is read too: it spent its whole budget."""
     home = tmp_path / 'home'
     monkeypatch.setenv('HOME', str(home))
-    folder = home / '.pi' / 'agent' / 'sessions' / CWD_ENCODERS['dash_separators_wrapped'](Path(campaign.path))
+    folder = home / '.pi' / 'agent' / 'sessions' / dash_separators_wrapped(Path(campaign.path))
     writes_then_hangs = (
         f'#!/bin/sh\nmkdir -p {folder}\ncp {SESSIONS / "pi.jsonl"} "{folder}/2026-09-09T05-48-14-300Z_$2.jsonl"\n'
         'sleep 30 &\necho $! > ../child.pid\nwait\n'
     )
-    use_harness(db, campaign, writes_then_hangs, headless=['--session-id', '{session_id}', '{prompt}'], usage=PI_SPEC)
+    use_harness(db, campaign, writes_then_hangs, headless=['--session-id', '{session_id}', '{prompt}'], **READS_PI)
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
         config = p.config.model_dump(mode='json')
@@ -836,7 +838,7 @@ def test_the_argv_gets_the_agents_cwd(campaign: Campaign, db: Database, runtime:
 def test_codex_trusts_the_agents_worktree_and_gives_its_tool_shells_the_agents_env() -> None:
     """The ``-c`` values parse the way Codex reads them: a dotted key split on every ``.``, and a TOML value."""
     cwd = '/home/me/.piloop/runs/7/worktree'
-    codex = DEFAULT_HARNESSES['codex']
+    codex = each_provider()['codex']
     for template in (codex.headless, codex.resume):
         args = [fill(a, cwd=cwd, model='m', prompt='p', session_id='s') for a in template]
         flags = [value.partition('=') for flag, value in zip(args, args[1:], strict=False) if flag == '-c']
@@ -888,7 +890,14 @@ RECORDS_ARGV_AND_ENV = '#!/bin/sh\nprintf "%s\\n" "$@" > ../argv.txt\nenv > ../e
 def test_the_mcp_element_expands_to_the_roles_servers_and_their_env_reaches_the_agent(
     campaign: Campaign, db: Database, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    use_harness(db, campaign, RECORDS_ARGV_AND_ENV, mcp='pi', headless=['--no-extensions', MCP, '{prompt}'])
+    use_harness(
+        db,
+        campaign,
+        RECORDS_ARGV_AND_ENV,
+        provider='pi',
+        headless=['--no-extensions', MCP, '{prompt}'],
+        session_id_pattern='(never)',
+    )
     give_watchdog_servers(db, campaign, {'probe': {'command': ['cat'], 'env': ['PROBE_KEY']}})
     monkeypatch.delenv('PROBE_KEY', raising=False)
     put_secret(db, None, 'PROBE_KEY', 'probe-value')
@@ -925,7 +934,14 @@ def test_an_agent_knows_when_its_timeout_ends(
 def test_a_secret_that_the_home_lacks_fails_the_launch_naming_it_and_until_0_5_comes_from_the_environment(
     campaign: Campaign, db: Database, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    use_harness(db, campaign, RECORDS_ARGV_AND_ENV, mcp='pi', headless=['--no-extensions', MCP, '{prompt}'])
+    use_harness(
+        db,
+        campaign,
+        RECORDS_ARGV_AND_ENV,
+        provider='pi',
+        headless=['--no-extensions', MCP, '{prompt}'],
+        session_id_pattern='(never)',
+    )
     give_watchdog_servers(db, campaign, {'probe': {'url': 'https://x', 'bearer_token_env': 'PROBE_TOKEN'}})
     monkeypatch.delenv('PROBE_TOKEN', raising=False)
     agent_session_id = request(db, campaign)
@@ -967,7 +983,7 @@ def test_a_harness_env_gives_values_and_secrets_and_a_campaigns_secret_wins_over
 def test_servers_that_cannot_be_rendered_fail_the_launch_on_the_row(
     campaign: Campaign, db: Database, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    use_harness(db, campaign, RECORDS_ARGV_AND_ENV, mcp='codex', headless=[MCP, '{prompt}'])
+    use_harness(db, campaign, RECORDS_ARGV_AND_ENV, provider='codex', headless=[MCP, '{prompt}'], resume=[])
     give_watchdog_servers(db, campaign, {'probe': {'command': ['cat']}})
     agent_session_id = request(db, campaign)
     launch(db, runtime, tmp_path, agent_session_id)
@@ -1026,9 +1042,8 @@ def research_argv(
         harness={
             harness: {
                 'executable': str(Path(campaign.path).parent / 'harness.sh'),
-                'headless': [a for a in DEFAULT_HARNESSES[harness].headless if a != MCP],
+                'headless': [a for a in each_provider()[harness].headless if a != MCP],
                 'resume': [],
-                'mcp': None,
             }
         },
         roles={'research': research},

@@ -1,4 +1,4 @@
-"""No module outside the leaves names an entry of a registry: a built-in harness, runtime, role, trigger or reader.
+"""No module outside the leaves names an entry of a registry: a built-in harness, runtime, role or trigger.
 
 And every capability of the plugin host states its tier, and the contract of a pure one is data in, data out.
 
@@ -9,58 +9,44 @@ gets the same treatment. Only the module that defines an entry, and the files li
 import ast
 from pathlib import Path
 
-from piloop.harnesses import DEFAULT_HARNESSES
-from piloop.mcp import RENDERERS
+from piloop.plugins.harness.contract import HARNESSES
 from piloop.plugins.host import Tier, data_errors, declared
 from piloop.plugins.role.contract import ROLES
 from piloop.plugins.runtime.contract import RUNTIMES
 from piloop.plugins.trigger.contract import TRIGGERS
-from piloop.usage import READERS
-from piloop.usage.jsonl import TALLIES
 
 PACKAGE = Path(__file__).parent.parent / 'piloop'
 NAMES = {
-    *DEFAULT_HARNESSES,
+    *HARNESSES.builtins(),
     *RUNTIMES.builtins(),
     *ROLES.builtins(),
     *TRIGGERS.builtins(),
-    *READERS,
-    *TALLIES,
-    *RENDERERS,
 }
 LEAVES: dict[str, frozenset[str] | None] = {
-    'harnesses.py': None,
+    'plugins/harness/*.py': None,
     'plugins/trigger/*.py': None,
     'db/models.py': None,
     'ids.py': None,
     'db/migrations/versions/*.py': None,
-    'mcp/claude.py': None,
-    'mcp/codex.py': None,
-    'mcp/pi.py': None,
-    'usage/__init__.py': frozenset({'jsonl'}),
-    'usage/jsonl.py': frozenset({'jsonl'}),
-    'usage/tallies/*.py': None,
-    'config.py': frozenset({'subprocess', 'pi'}),
+    'config.py': frozenset({'subprocess'}),
     'plugins/role/research.py': frozenset({'claude', 'codex', 'low_water', 'seed', 'stalled'}),
     'plugins/role/watchdog.py': frozenset({'run_failed', 'dead_at_startup', 'leaking_funnel', 'cron', 'stopped'}),
     'plugins/role/scout.py': frozenset({'cron'}),
     'deprecated.py': None,
-    'cli/skills.py': frozenset({'claude', 'codex', 'pi'}),
     'cli/idea.py': frozenset({'seed'}),
     'plugins/executor/kit/relay.py': frozenset({'seed', 'sql'}),
     'plugins/archive/local/archiver.py': frozenset({'research'}),
 }
 """The files that may name entries, and which ones (None: any). The reasons:
 
-- ``harnesses.py``, the triggers (``plugins/trigger/``), ``ids.py`` (the built-in roles), the MCP renderers and the
-  usage readers and tallies define the entries. The migrations are history.
+- The harnesses (``plugins/harness/``), the triggers (``plugins/trigger/``) and ``ids.py`` (the built-in roles) define
+  the entries. The migrations are history.
 - ``db/models.py``: the states ``seed`` and ``stopped``, which share a name with a trigger.
-- ``config.py``: the defaults of ``runtime`` and ``harnesses``.
+- ``config.py``: the default of ``runtime``.
 - ``plugins/role/research.py``: the default ``model`` of research.
 - ``plugins/role/``: the default ``triggers`` of the built-in roles, named by kind as in ``piloop.toml``: a class
   would load its provider, and with it the database, when the config models load.
 - ``deprecated.py``: the bridges rewrite the keys of earlier releases, which named built-in roles and triggers.
-- ``cli/skills.py``: the skill folder of each agent CLI, which is not the harness registry.
 - ``cli/idea.py`` and ``plugins/executor/kit/relay.py``: the commands ``piloop idea seed`` and ``piloop sql``.
 - ``plugins/archive/local/archiver.py``: ``research/`` is a folder of the shared workspace, not the role.
 """
@@ -114,6 +100,7 @@ HOST_CONTRACTS = {
     'vcs provider': 'runs the version control tool on checkouts, and moves versions through the CAS',
     'secrets provider': "stores values in the session of the operation that calls it, or in a platform's store",
     'fact source': 'gathers facts through a Session, and a source that reads does I/O at the repo root',
+    'harness provider': 'renders MCP servers by running its CLI, and reads its session files',
     'campaign type': 'owns tables of the database, which the daemon migrates',
     'memory provider': 'owns tables of the database, which the daemon migrates',
     'archive provider': 'owns tables of the database, which the daemon migrates',

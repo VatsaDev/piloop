@@ -1,17 +1,13 @@
-"""The ``jsonl`` reader: a JSONL session file, found by a glob and added up by a tally.
+"""A harness's JSONL session file: found by a glob under its home, and added up by its tally.
 
 Every built-in harness keeps its transcript this way: one JSON object per line, with token counts for each response.
 The harnesses differ only in where the file is, how its folder is named after the agent's cwd, and which records
-have the numbers. These are the reader's parameters (``UsageSpec.file``, ``cwd``, ``tally``). The encoders and
-tallies are registries, so this module names no harness.
-
-The same file holds what the agent wrote. ``said`` reads the last lines of the agent's text, from its snapshot in the
-CAS, for ``piloop status``, ``piloop watch`` and ``piloop attach``, through a second registry with the same format
-names.
+have the numbers and the agent's text. A provider passes these to ``JsonlSessions``.
 """
 
 import glob
 import json
+import os
 import re
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
@@ -19,7 +15,7 @@ from pathlib import Path
 from typing import Protocol
 
 from piloop.settings import expand_env
-from piloop.usage import Usage, UsageError, UsageSpec, reader
+from piloop.usage import Usage, UsageError
 
 type Record = dict[str, object]
 """One line of a session file, as ``json.loads`` gives it. The shapes inside are the harness's own."""
@@ -39,7 +35,7 @@ class Counts:
 class Tally(Protocol):
     """How the records of one file format add up: the records of a session file → (counts, turns).
 
-    Zero turns means that nothing was found. A tally module registers one with ``@tally('<name>')``.
+    Zero turns means that nothing was found.
     """
 
     def __call__(self, records: Iterable[Record]) -> tuple[Counts, int]:
@@ -54,54 +50,16 @@ text."""
 type CwdEncoder = Callable[[Path], str]
 """How a harness names the folder of an agent's cwd."""
 
-CWD_ENCODERS: dict[str, CwdEncoder] = {}
-"""The cwd encoders by name (``UsageSpec.cwd``)."""
-TALLIES: dict[str, Tally] = {}
-"""The tallies by name (``UsageSpec.tally``). The modules in ``piloop/usage/tallies/`` fill it."""
-SAID: dict[str, Said] = {}
-"""How to find the agent's text in each file format, by tally name. A format without an entry shows no text."""
 TAIL_BYTES = 1024 * 1024
 """How many bytes at the end of a session file ``said`` reads. Tool results fill most of a file, so the agent's last
 text can be far from the end."""
 
 
-def cwd_encoder[E: CwdEncoder](name: str) -> Callable[[E], E]:
-    """Register a cwd encoder under ``name``. The type checker rejects a function of the wrong shape."""
-
-    def register(fn: E) -> E:
-        CWD_ENCODERS[name] = fn
-        return fn
-
-    return register
-
-
-def tally[T: Tally](name: str) -> Callable[[T], T]:
-    """Register a tally under ``name``. The type checker rejects a function of the wrong shape."""
-
-    def register(fn: T) -> T:
-        TALLIES[name] = fn
-        return fn
-
-    return register
-
-
-def said[S: Said](name: str) -> Callable[[S], S]:
-    """Register how format ``name`` holds the agent's text. The type checker rejects a function of the wrong shape."""
-
-    def register(fn: S) -> S:
-        SAID[name] = fn
-        return fn
-
-    return register
-
-
-@cwd_encoder('none')
 def no_cwd(cwd: Path) -> str:
     """The folders are not named after the cwd: match any folder."""
     return '*'
 
 
-@cwd_encoder('dash_separators_wrapped')
 def dash_separators_wrapped(cwd: Path) -> str:
     r"""``/home/me/.piloop/runs/10/worktree`` → ``--home-me-.piloop-runs-10-worktree--``.
 
@@ -111,7 +69,6 @@ def dash_separators_wrapped(cwd: Path) -> str:
     return f'--{re.sub(r"[/\\:]", "-", str(cwd).lstrip("/\\"))}--'
 
 
-@cwd_encoder('dash_non_alnum')
 def dash_non_alnum(cwd: Path) -> str:
     """``/home/me/.piloop/runs/2/worktree`` → ``-home-me--piloop-runs-2-worktree``.
 
@@ -120,28 +77,19 @@ def dash_non_alnum(cwd: Path) -> str:
     return re.sub(r'[^a-zA-Z0-9]', '-', str(cwd))
 
 
-@reader('jsonl')
-class JsonlReader:
-    """Finds the session file by the spec's glob, parses its lines, and gives the records to the spec's tally.
-
-    The names in the spec are looked up once, here: ``encode_cwd`` and ``tally`` are the registered objects.
-    """
+@dataclass(frozen=True)
+class JsonlSessions:
+    """A harness's session files: found by ``file``, with the agent's cwd encoded by ``cwd``, added up by ``tally``."""
 
     file: str
-    encode_cwd: CwdEncoder
+    """A glob of the session file. piloop substitutes ``{env:NAME:default}`` (the environment variable ``NAME``, or
+    ``default`` when it is unset; a default may start with ``~``), ``{cwd}`` (the agent's cwd, encoded by ``cwd``) and
+    ``{session_id}``. When the glob matches nothing, piloop tries again with ``*`` for ``{cwd}``. This searches one
+    level of folders, not deeper, and the session id makes the match unique. When several files match, piloop takes
+    the newest one."""
+    cwd: CwdEncoder
     tally: Tally
-    words: Said | None
-
-    def __init__(self, spec: UsageSpec) -> None:
-        if spec.file is None:
-            raise ValueError('the jsonl usage reader needs `file`, the glob of the session file')
-        encode_cwd = CWD_ENCODERS.get(spec.cwd)
-        if encode_cwd is None:
-            raise ValueError(f'unknown usage cwd encoder {spec.cwd!r}; known: {sorted(CWD_ENCODERS)}')
-        if spec.tally not in TALLIES:
-            raise ValueError(f'unknown usage tally {spec.tally!r}; known: {sorted(TALLIES)}')
-        self.file, self.encode_cwd, self.tally = spec.file, encode_cwd, TALLIES[spec.tally]
-        self.words = SAID.get(spec.tally)
+    words: Said
 
     def read(self, session_id: str | None, cwd: Path | None, log_dir: Path | None) -> Usage:
         """Add up the session file. This reader does not use ``log_dir``.
@@ -172,8 +120,6 @@ class JsonlReader:
         Reads the newest record first, in the last ``TAIL_BYTES``, and stops when it has enough lines. Empty when there
         is no text.
         """
-        if self.words is None:
-            return []
         tail = session[-TAIL_BYTES:].decode(errors='replace').splitlines()
         kept: list[str] = []
         for line in reversed(tail[1:] if len(session) > TAIL_BYTES else tail):  # the cut goes through the first line
@@ -194,7 +140,7 @@ class JsonlReader:
         exists (a refill). The session id is a uuid, so the match is unique. When several files match (Codex date
         folders, a copied file), the newest one wins. When ``cwd`` is None, only the search with ``*`` runs.
         """
-        folders = [glob.escape(self.encode_cwd(cwd))] if cwd is not None else []
+        folders = [glob.escape(self.cwd(cwd))] if cwd is not None else []
         for folder in [*folders, '*']:
             matches = [Path(p) for p in glob.glob(self.pattern(session_id, folder))]
             if matches:
@@ -202,13 +148,9 @@ class JsonlReader:
         return None
 
     def pattern(self, session_id: str, folder: str = '*') -> str:
-        """The glob of the session file: ``file`` with its placeholders filled in."""
-        return (
-            expand_env(self.file)
-            .replace('{home}', str(Path.home()))
-            .replace('{cwd}', folder)
-            .replace('{session_id}', glob.escape(session_id))
-        )
+        """The glob of the session file: ``file`` with its placeholders filled in, and ``~`` as the user's home."""
+        expanded = os.path.expanduser(expand_env(self.file))
+        return expanded.replace('{cwd}', folder).replace('{session_id}', glob.escape(session_id))
 
 
 def records(path: Path) -> Iterator[Record]:

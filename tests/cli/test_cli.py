@@ -1204,7 +1204,7 @@ def test_attach_prints_the_last_lines_that_an_agent_wrote(campaign_path: Path, o
         run_cli(['attach', '4'])
 
 
-def test_agent_messages_takes_the_queue_in_the_format_that_the_hook_names(
+def test_agent_messages_takes_the_queue_as_the_hook_of_the_harness_reads_it(
     tmp_path: Path, out, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A Claude agent's ``PostToolUse`` hook runs it, so the messages reach the turn in progress."""
@@ -1216,13 +1216,26 @@ def test_agent_messages_takes_the_queue_in_the_format_that_the_hook_names(
     run_cli(['agent', 'messages'])
     assert out() == '[piloop] stop after this commit\nand say so\n'
     queue.write_text('"[piloop] stop after this commit"\n"and say so"\n')
-    run_cli(['agent', 'messages', '--format', 'claude-hook'])
-    assert json.loads(out()) == {
+    run_cli(['agent', 'messages', '--harness', 'claude'])
+    hook = {
         'hookSpecificOutput': {
             'hookEventName': 'PostToolUse',
             'additionalContext': '[piloop] stop after this commit\nand say so',
         }
     }
+    assert json.loads(out()) == hook
+    queue.write_text('"[piloop] stop after this commit"\n"and say so"\n')
+    run_cli(['agent', 'messages', '--format', 'claude-hook'])
+    assert json.loads(out()) == hook, 'the hook of an agent that 0.3 started'
+    queue.write_text('"one"\n')
+    run_cli(['agent', 'messages', '--format', 'lines'])
+    assert out() == 'one\n'
+    queue.write_text('"two"\n')
+    with pytest.raises(ValueError, match="unknown harness provider 'nope'"):
+        run_cli(['agent', 'messages', '--harness', 'nope'])
+    assert queue.read_text() == '"two"\n', 'a wrong name takes nothing'
+    run_cli(['agent', 'messages'])
+    out()
     assert not queue.exists()
     run_cli(['agent', 'messages'])
     assert out() == '', 'nothing to say: no output'
@@ -1521,15 +1534,12 @@ def test_service_unit_prints_a_systemd_unit_on_linux(tmp_path: Path, out) -> Non
 
 
 @pytest.mark.usefixtures('api')
-def test_the_service_unit_carries_what_the_usage_globs_of_a_campaigns_harnesses_name(
+def test_the_service_unit_carries_what_the_homes_of_a_campaigns_harnesses_name(
     campaign_path: Path, out, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     toml = campaign_path / 'piloop.toml'
-    usage = '[harness.script.usage]\nfile = "{env:SCRIPT_HOME:~/.script}/{session_id}.jsonl"\ntally = "pi"\n\n'
     toml.write_text(
-        toml.read_text()
-        .replace('[harness.script]', usage + '[harness.script]')
-        .replace('headless = ["{prompt}"]', 'headless = ["{prompt}", "{session_id}"]')
+        toml.read_text().replace('[harness.script]', '[harness.script]\nhome = "{env:SCRIPT_HOME:~/.script}"')
     )
     run_cli(['init', str(campaign_path)])
     monkeypatch.setenv('SCRIPT_HOME', '/somewhere/script')
@@ -1718,7 +1728,7 @@ def test_upgrade_reinstalls_migrates_and_restarts_the_daemon(
         cli_check(),
         f'ok    daemon: pid {pid} runs the installed {installed()}',
         f'ok    database: {common.settings.home}/piloop.db at schema {HEADS}, current',
-        'ok    plugins: 1 archive provider, 1 campaign type, 5 CAS providers, 1 executor, 3 fact sources, 1 memory provider, 2 networks, 1 provisioner, 4 roles, 1 runtime, 1 secrets provider, 21 sections, 1 stop rule, 9 triggers, 1 vcs provider, 1 verdict rule; all built in',
+        'ok    plugins: 1 archive provider, 1 campaign type, 5 CAS providers, 1 executor, 3 fact sources, 3 harness providers, 1 memory provider, 2 networks, 1 provisioner, 4 roles, 1 runtime, 1 secrets provider, 21 sections, 1 stop rule, 9 triggers, 1 vcs provider, 1 verdict rule; all built in',
         'ok    secrets: from `piloop secret set` (PILOOP_SECRETS_COMMAND unset)',
         f'ok    skills (pi): current in {common.settings.agent_skills_dir}',
         'ok    harnesses: on PATH: none configured',
@@ -1740,15 +1750,15 @@ def test_upgrade_of_a_checkout_install_without_a_daemon_creates_the_schema(fake_
     run_cli(['upgrade'])
     lines = out().splitlines()
     assert lines[0].endswith(f', installed by uv from {tmp_path}/src') and lines[3:] == [
-        'skills: none of claude, codex, pi, gemini, cursor-agent is on PATH, nothing installed',
+        f'skills: piloop-operate, piloop-review, piloop-setup → {common.settings.agent_skills_dir} (Agent Skills)',
         f'schema: core none → {HEAD}, {FIRST}',
         'daemon: not running, left stopped',
         cli_check(),
         'ok    daemon: not running',
         f'ok    database: {common.settings.home}/piloop.db at schema {HEADS}, current',
-        'ok    plugins: 1 archive provider, 1 campaign type, 5 CAS providers, 1 executor, 3 fact sources, 1 memory provider, 2 networks, 1 provisioner, 4 roles, 1 runtime, 1 secrets provider, 21 sections, 1 stop rule, 9 triggers, 1 vcs provider, 1 verdict rule; all built in',
+        'ok    plugins: 1 archive provider, 1 campaign type, 5 CAS providers, 1 executor, 3 fact sources, 3 harness providers, 1 memory provider, 2 networks, 1 provisioner, 4 roles, 1 runtime, 1 secrets provider, 21 sections, 1 stop rule, 9 triggers, 1 vcs provider, 1 verdict rule; all built in',
         'ok    secrets: from `piloop secret set` (PILOOP_SECRETS_COMMAND unset)',
-        'ok    skills: none of claude, codex, pi, gemini, cursor-agent is on PATH: nothing to check',
+        f'ok    skills (Agent Skills): current in {common.settings.agent_skills_dir}',
         'ok    harnesses: on PATH: none configured',
         git_check(),
     ]

@@ -1,24 +1,18 @@
 """MCP servers for agents: one definition in ``piloop.toml``, turned into each harness's own flags at launch.
 
 A server is data (``McpServer``). A role lists the servers it gets (``[roles.<kind>] mcp``). This module knows no
-harness. A harness definition names a *renderer* (``Harness.mcp``). The renderers of the built-in harnesses are
-separate modules (``claude``, ``codex``, ``pi``) that register themselves in ``RENDERERS``, as the usage tallies do.
-Each one expands the ``{mcp}`` element of its harness's argv, so a change for one harness does not touch the others.
+harness: each harness provider renders the servers in its own flags (``Harness.mcp``).
 
 API keys are never written down. A server names the environment variables that hold them, each the name of a secret
 (``piloop.plugins.secrets``). Each renderer writes those *names* in its harness's own expansion syntax, and the agent's
 job puts the secrets' values in the agent's environment. No value goes into a file, an argv or a log.
 """
 
-from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
-from pathlib import Path
+from collections.abc import Iterable
 from typing import Annotated, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
-MCP = '{mcp}'
-"""The argv element that a renderer expands into zero or more arguments."""
 AUTHORIZATION = 'authorization'
 
 type ServerName = Annotated[str, StringConstraints(pattern=r'^[A-Za-z0-9_-]+$')]
@@ -76,79 +70,6 @@ class McpServer(BaseModel):
         return {name: f'${{{name}}}' for name in self.env}
 
 
-class McpError(RuntimeError):
-    """The servers of a role cannot be given to this launch. The message says why and what to change."""
-
-
 def env_names(servers: Iterable[McpServer]) -> list[str]:
     """The environment variables that ``servers`` need, each once, in order."""
     return list(dict.fromkeys(name for s in servers for name in s.env_names))
-
-
-@dataclass(frozen=True)
-class Launch:
-    """What a renderer knows about the agent it renders for."""
-
-    servers: dict[str, McpServer]
-    """The servers of the role, by name. May be empty."""
-    executable: str
-    """The harness program. Codex's renderer runs it to ask which servers the user has."""
-    cwd: Path
-    log_dir: Path
-    """The agent's own directory, outside the worktree. A renderer may write a config file here."""
-    env: dict[str, str]
-    """The agent's environment."""
-    argv: list[str]
-    """The agent's arguments, with the placeholders filled in and ``{mcp}`` still in them. Codex's renderer reads the
-    config flags that the harness passes."""
-
-
-@dataclass(frozen=True)
-class Rendered:
-    """What ``{mcp}`` expands to, and the variables to add to the agent's environment."""
-
-    args: list[str]
-    env: dict[str, str] = field(default_factory=dict)
-
-
-type Render = Callable[[Launch], Rendered]
-"""Expands ``{mcp}`` for one launch. Raises ``McpError`` when the servers cannot be given to this agent."""
-type Refuses = Callable[[list[str]], str | None]
-"""Why an argv cannot take servers, or None when it can. Checked when a config loads, for roles with servers."""
-
-
-def accepts(_argv: list[str]) -> str | None:
-    """The default ``Refuses``: every argv with ``{mcp}`` in it can take servers."""
-    return None
-
-
-@dataclass(frozen=True)
-class Renderer:
-    """How one harness takes the servers of a role."""
-
-    render: Render
-    refuses: Refuses = accepts
-
-
-RENDERERS: dict[str, Renderer] = {}
-"""The renderers by name, as ``Harness.mcp`` names them. To support a new harness, add one module that registers
-its renderer."""
-
-
-def renderer(name: str, *, refuses: Refuses = accepts) -> Callable[[Render], Render]:
-    """Register a render function under ``name``. The decorator returns the function unchanged."""
-
-    def register(render: Render) -> Render:
-        RENDERERS[name] = Renderer(render, refuses)
-        return render
-
-    return register
-
-
-def expand(argv: list[str], rendered: Rendered) -> list[str]:
-    """``argv`` with its ``{mcp}`` element replaced by the rendered arguments."""
-    return [a for item in argv for a in (rendered.args if item == MCP else [item])]
-
-
-# The built-in renderers register themselves on import, so they are imported after the names they use exist.
-from piloop.mcp import claude, codex, pi  # noqa: E402, F401

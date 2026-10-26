@@ -103,22 +103,17 @@ def doctor_cmd() -> None:
 
 
 def install_skills() -> None:
-    """Install the orchestrator skills for every harness on PATH.
+    """Install the orchestrator skills into ~/.agents/skills, and for every harness on PATH.
 
-    Claude Code reads them from ~/.claude/skills (or $CLAUDE_CONFIG_DIR/skills). Codex, pi, Gemini CLI and Cursor read
-    them from ~/.agents/skills. PILOOP_CLAUDE_SKILLS_DIR and PILOOP_AGENT_SKILLS_DIR install them elsewhere, for a
+    Codex, pi, Gemini CLI, Cursor and every other harness that follows agentskills.io read them from ~/.agents/skills.
+    Claude Code reads them from ~/.claude/skills (or $CLAUDE_CONFIG_DIR/skills). PILOOP_CLAUDE_SKILLS_DIR and PILOOP_AGENT_SKILLS_DIR install them elsewhere, for a
     second install such as a build of main next to a release. It replaces piloop's own skills there and nothing else. A running harness loads them
     at its next session. The installer and `piloop upgrade` run this command.
     """
-    found = skills.targets(common.settings)
-    for target, harnesses in found.items():
+    for target, harnesses in skills.targets(common.settings).items():
         skills.install(target)
-        line = f'skills: {", ".join(skills.bundled())} → {target} ({", ".join(harnesses)})'
+        line = f'skills: {", ".join(skills.bundled())} → {target} ({skills.readers(harnesses)})'
         common.console.print(line, markup=False, highlight=False, soft_wrap=True)
-    if not found:
-        common.console.print(
-            f'skills: none of {", ".join(skills.SKILL_DIRS)} is on PATH, nothing installed', soft_wrap=True
-        )
 
 
 def _run(argv: list[str]) -> None:

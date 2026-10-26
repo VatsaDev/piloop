@@ -32,7 +32,7 @@ from pydantic import SecretStr
 from piloop import deprecated
 from piloop.config import BRIEF_FILE, TRANSCRIPT
 from piloop.ids import CommentId
-from piloop.mcp import RENDERERS, EnvName, Launch, expand
+from piloop.mcp import EnvName
 from piloop.otel import Span
 from piloop.plugins.cas.contract import Cas
 from piloop.plugins.executor.contract import (
@@ -52,6 +52,7 @@ from piloop.plugins.executor.kit.clones import Clones, Fetch, of_record, own_rep
 from piloop.plugins.executor.kit.relay import RELAY_ARGV
 from piloop.plugins.executor.kit.sessions import POLL_SECONDS, SessionFile
 from piloop.plugins.executor.kit.transfers import send_of_record
+from piloop.plugins.harness.contract import MCP, McpLaunch, expand
 from piloop.plugins.runtime.contract import AgentExit, AgentSpec, ExitStatus, Handle, Runtime, taken
 from piloop.plugins.vcs.contract import Repository
 from piloop.proc import AGENT_TOKEN_ENV, PILOOP_ARGV, child_env, kill_group
@@ -67,7 +68,7 @@ from piloop.scoring.evaluate import (
 )
 from piloop.settings import INPUTS_DIR
 from piloop.store.tree import Materialised, Seen, evict_unlinked, put_tree
-from piloop.usage import UsageError, read_usage
+from piloop.usage import UsageError
 
 TRANSCRIPT_LINES = 2000
 STOPPED = 'the worker stopped before the job started'
@@ -277,7 +278,8 @@ def watch_agent(
 
     None after a hand-over: the next daemon re-attaches, and the job and its worktree stay.
     """
-    file = None if job.usage is None else SessionFile(job.usage.resolved, site.cas, site.cwd(job), job.session_id)
+    reader = job.harness.usage() if job.harness is not None else None
+    file = None if reader is None else SessionFile(reader, site.cas, site.cwd(job), job.session_id)
     outcome, session_id = _watch(job, runtime, handle, max(job.timeout - elapsed, 0), control, site, file, span)
     if control.handing_over():
         return None
@@ -409,11 +411,11 @@ def _finish(
         except Exception as e:  # a file gone, a CAS that does not answer: the report names the snapshot before
             span.event(SESSION_UNSAVED, agent_session=job.agent_session, error=f'{type(e).__name__}: {e}')
         report.session_file = file.latest
-    if job.usage is not None:
+    if file is not None:
         try:
-            usage = read_usage(job.usage, session_id, cwd, log_dir)
+            usage = file.reader.read(session_id, cwd, log_dir)
             report.usage = usage
-            span.set(tokens=usage.total if usage is not None else None)
+            span.set(tokens=usage.total)
         except Exception as e:  # an unreadable file or a bug in a reader must not stop the report
             error = str(e) if isinstance(e, UsageError) else f'{type(e).__name__}: {e}'
             span.event('agent_session.usage_unknown', agent_session=job.agent_session, error=error)
@@ -579,11 +581,10 @@ def rendered(job: AgentJob, spec: AgentSpec, found: JobSecrets) -> AgentSpec:
         | spec.env
         | {AGENT_TOKEN_ENV: found.token.get_secret_value()}
     )
-    if job.mcp is None:
+    renderer = job.harness.mcp() if job.harness is not None else None
+    if renderer is None or MCP not in [*spec.args, *spec.resume_args]:
         return replace(spec, env=env)
-    mcp = RENDERERS[job.mcp].render(
-        Launch(job.servers, spec.executable, spec.cwd, spec.log_dir, child_env() | env, spec.args)
-    )
+    mcp = renderer.render(McpLaunch(job.servers, spec.executable, spec.cwd, spec.log_dir, child_env() | env, spec.args))
     return replace(spec, args=expand(spec.args, mcp), resume_args=expand(spec.resume_args, mcp), env=env | mcp.env)
 
 

@@ -46,7 +46,6 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database, migrate
-from piloop.harnesses import DEFAULT_HARNESSES
 from piloop.ids import CampaignId, RoleName
 from piloop.net.server import Server, app, local_listener, url
 from piloop.net.tokens import Tokens, mint_agent
@@ -57,6 +56,7 @@ from piloop.plugins.contribution import collect, installed
 from piloop.plugins.executor.kit.leases import Timing
 from piloop.plugins.executor.workers import Workers, WorkersExecutor
 from piloop.plugins.executor.workers.worker import Worker
+from piloop.plugins.harness.contract import each_provider
 from piloop.plugins.network.contract import NetworkConfig, NetworkHost
 from piloop.plugins.network.https import TOKEN_ENV, Https
 from piloop.plugins.role.contract import RoleConfig
@@ -240,7 +240,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 @pytest.fixture(autouse=True)
 def no_real_skill_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Every built-in harness has its home under tmp_path, so every piloop a test starts installs skills there."""
-    for name, harness in DEFAULT_HARNESSES.items():
+    for name, harness in each_provider().items():
         for variable in env_names(harness.home or ''):
             monkeypatch.setenv(variable, str(tmp_path / 'harnesses' / name))
     monkeypatch.setenv('PILOOP_AGENT_SKILLS_DIR', str(tmp_path / 'agents-skills'))

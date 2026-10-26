@@ -580,11 +580,7 @@ class Tables[P: Parameters]:
         for name in [*providers, *others]:
             table = value.get(name, {})
             try:
-                found[name] = (
-                    table
-                    if isinstance(table, self.capability.contract)
-                    else self._model(name, table).model_validate(table)
-                )
+                found[name] = self._validated(name, table)
             except ValidationError as e:
                 errors += [_at((name, *err['loc']), err) for err in e.errors()]
             except ValueError as e:
@@ -592,6 +588,10 @@ class Tables[P: Parameters]:
         if errors:
             raise ValidationError.from_exception_data(self.capability.name, errors)
         return found
+
+    def _validated(self, name: str, table: object) -> P:
+        """The table ``name`` as its class: its provider's, else the class that ``new`` gives it."""
+        return table if isinstance(table, self.capability.contract) else self._model(name, table).model_validate(table)
 
     def _model(self, name: str, table: object) -> type[P]:
         """The class of the table ``name``: its provider's, else the class that ``new`` gives it.
@@ -609,7 +609,11 @@ class Tables[P: Parameters]:
         return self.new(table)
 
     def dump(self, tables: Mapping[str, P], info: core_schema.SerializationInfo) -> dict[str, object]:
-        return {name: p.model_dump(mode=info.mode, exclude_unset=True) for name, p in tables.items()}
+        return {name: self._dumped(name, p, info.mode) for name, p in tables.items()}
+
+    def _dumped(self, name: str, table: P, mode: str) -> dict[str, object]:
+        """The table ``name`` as ``validate`` reads it back: the parameters that it set."""
+        return table.model_dump(mode=mode, exclude_unset=True)
 
 
 CORE_ERRORS = frozenset(get_args(ErrorType))

@@ -24,9 +24,9 @@ section.
 | `tracks` | dict\[string, [TrackConfig](#trackconfig)\] | `{}` | `[tracks.<name>]`: the share and addendum of each track. Needed only with several primaries. |
 | `evaluate` | list\[string\] | required | The command (argv) that scores a commit. It runs in a clean worktree of the commit and must print `METRIC <name>=<value>` lines. |
 | `runtime` | string | `"subprocess"` | Where the agents run: the name of a runtime, which starts, watches, steers and stops them. A package can add a runtime with a `piloop.runtimes` entry point. A role can override it (`[roles.<name>] runtime`). Built in: `subprocess`. |
-| `harnesses` | list\[string\] | `["pi"]` | The enabled harnesses. Runs use them in turn, unless an idea pins one. Built in: `claude`, `codex`, `pi`. |
+| `harnesses` | list\[string\] | `["pi"]` | The enabled harnesses. Runs use them in turn, unless an idea pins one. When unset, the harnesses that are on by default: `pi`. Built in: `claude`, `codex`, `pi`. |
 | `model` | dict\[string, string\] | required | The model id for each harness, for example `{pi = "anthropic/claude-opus-5-5", claude = "claude-opus-5-5", codex = "gpt-6.1-sol"}`. |
-| `harness` | dict\[string, [Harness](#harness)\] | `{}` | Harness definitions by name: overrides of the built-in harnesses, or new ones. |
+| `harness` | dict\[string, object\] | `{"claude": {}, "codex": {}, "pi": {}}` | `[harness.<name>]`: the table of each harness over its defaults: the built-in harnesses (`pi`, `claude`, `codex`), those that packages add, and new ones. A table with a new name and `provider = "<harness>"` is that harness over its defaults, with another name; without `provider`, it runs its argv and does nothing else. Built in: `claude`, `codex`, `pi`. |
 | `max_concurrent` | dict\[string, integer\] | `{}` | The maximum number of agents of one harness, across all roles of the campaign, that are started or queued to start. Example: `{claude = 2}` when the provider of its model limits the request rate. When it is the turn of a harness at its limit, the slot goes to the next harness of the rotation. An idea or request that pins that harness waits. When unset, only the limits of the roles apply. |
 | `evaluate_timeout` | number | `600` | The number of seconds before the evaluate command is stopped. The evaluation is then a crash. |
 | `roles` | dict\[string, object\] | `{}` | `[roles.<name>]`: the table of each role over its defaults: the built-in roles (implementer, watchdog, research, scout), the roles that packages add, and the roles that you define. |
@@ -73,17 +73,14 @@ Experimental: campaigns with more than one track.
 
 piloop substitutes these placeholders in the argument lists: `{model}`, `{effort}` (the role's `effort`),
 `{session_id}`, `{cwd}` (the agent's working directory), `{log_dir}` (the directory of the agent's brief and
-logs) and `{prompt}` (the first prompt, which names the file that holds the brief). An element that is exactly `{mcp}` expands to the role's MCP
-servers, in the form that `mcp` names. The built-in harnesses run without permission prompts: agents run
-in worktrees that the daemon owns and throws away, and a sandbox that cannot reach the repo's `.git` cannot
-commit. The built-in Claude harness passes `--settings` that move a foreground Bash command to the background
-after 5 minutes.
+logs) and `{prompt}` (the first prompt, which names the file that holds the brief). An element that is exactly
+`{mcp}` expands to the role's MCP servers, in the harness's own flags. The built-in harnesses run without
+permission prompts: agents run in worktrees that the daemon owns and throws away, and a sandbox that cannot reach
+the repo's `.git` cannot commit.
 
-When `headless` contains `{session_id}`, piloop creates the session id. Otherwise the runtime
-reports it, or reads it with `session_id_pattern`.
-When the agent ends, `usage` uses this id to find the session file and read the tokens the agent spent.
-
-A table named after a built-in harness changes the keys that it sets, and keeps the built-in's other keys.
+When `headless` contains `{session_id}`, piloop creates the session id. Otherwise the runtime reads it with
+`session_id_pattern`. When the agent ends, the harness finds its session file by this id and reads the tokens
+the agent spent. Without either, no tokens are recorded.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
@@ -91,26 +88,9 @@ A table named after a built-in harness changes the keys that it sets, and keeps 
 | `headless` | list\[string\] | required | The arguments for a run without a terminal. Must include `{prompt}`. |
 | `resume` | list\[string\] | `[]` | The arguments that continue the session of a run with a new prompt. When the agent's turn ends with messages queued for it (comments, `piloop prompt`), the runtime runs the harness again with these, `{prompt}` being the messages and `{session_id}` the session's id. Must include both. When empty, the agent takes no message while it runs. |
 | `session_id_pattern` | string \| null | `null` | A regex with one group that finds the session id in the first lines of the process's stdout. Use it in a harness that cannot take its id as an argument (`{session_id}`). For example, Codex `exec --json` prints `{"type":"thread.started","thread_id":"<uuid>"}` first. |
-| `usage` | [UsageSpec](#usagespec) \| null | `null` | `[harness.<name>.usage]`: how to read the tokens an agent spent, when it ends, into `agent_sessions.usage`. When unset, token usage is not recorded. |
-| `home` | string \| null | `null` | The directory where the agent keeps its config and sessions, as `{env:NAME:default}`. piloop's tests move it to a temporary directory through `NAME`. |
+| `home` | string \| null | `null` | The directory where the agent keeps its config and sessions: a path, which may start with `~` or name a variable as `{env:NAME:default}`. A harness that reads usage finds its session files under it, and the daemon's service unit carries `NAME`. |
 | `session_env` | list\[string\] | `[]` | The variables the agent sets for the processes of its session. piloop clears them for every agent, so an agent started from inside such a session is not its child. |
-| `mcp` | string \| null | `null` | The renderer that expands the `{mcp}` element of the argv into the role's `[mcp.<name>]` servers. Each renderer also keeps the user's own servers out, where its harness allows it. When unset, the harness takes no servers, and a role that lists servers cannot use it. Built in: `claude`, `codex`, `pi`. |
 | `env` | dict\[string, string \| [SecretRef](#secretref)\] | `{}` | Variables of the agent's environment: a value, or a secret, `{ secret = "NAME" }`. For example a model gateway, `{ ANTHROPIC_BASE_URL = "https://gw.example.com", ANTHROPIC_API_KEY = { secret = "ANTHROPIC_API_KEY" } }`. When unset, the agent uses the login of the machine that runs it. |
-
-## UsageSpec
-
-`[harness.<name>.usage]`: how to read the tokens that an agent of this harness spent, after it ended.
-
-`reader` names the code that reads them, and the other keys are its parameters. The built-in harnesses set
-their specs as data. A campaign can override any key, or give a custom harness a complete spec. piloop checks the
-names when the config loads.
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `reader` | string | `"jsonl"` | The reader to use. `jsonl` reads a JSONL session file, which the keys below describe. Built in: `jsonl`. |
-| `file` | string \| null | `null` | For `jsonl`: a glob of the session file. piloop substitutes `{home}`, `{env:NAME:default}` (the environment variable `NAME`, or `default` when it is unset; a default may start with `~`), `{cwd}` (the agent's cwd, encoded as `cwd` says) and `{session_id}`. Examples: `{home}/.pi/agent/sessions/{cwd}/*_{session_id}.jsonl`, `{env:CLAUDE_CONFIG_DIR:~/.claude}/projects/{cwd}/*.jsonl`. The service unit of the daemon (`piloop service-unit`) carries every variable that a placeholder names. When the glob matches nothing, piloop tries again with `*` for `{cwd}`. This searches one level of folders, not deeper, and the session id makes the match unique. When several files match, piloop takes the newest one. |
-| `cwd` | string | `"none"` | For `jsonl`: how the harness names the folder of the agent's cwd. `dash_separators_wrapped` turns `/home/me/repo` into `--home-me-repo--`. `dash_non_alnum` turns it into `-home-me-repo`. `none` means that the folders are not named after the cwd, and matches any folder (`*`). |
-| `tally` | string \| null | `null` | For `jsonl`: the file format, which says which records have token counts, how they add up, and which records hold the agent's own text. Built in: `claude`, `codex`, `pi`. |
 
 ## SecretRef
 
@@ -572,6 +552,7 @@ These keys still work. Each one shows a `PiloopDeprecationWarning` that names th
 - `[plugins.stop_rule] max_spend` is `hold_at = { spend = <value> }`. A value that `hold_at` sets too wins.
 - `[memory] wake_budget` and `[roles.<name>] wake_budget` are the `budget` of the role's `lessons` section. A role's own value wins over `[memory]`'s. A budget that differs from the role's old default sets the role's `sections` to its defaults with the lessons at that budget, or without them at 0. A role that sets `sections` keeps them. The watchdog's old default was 0: it now reads the lessons too.
 - `[memory] documents` is `documents` in `[plugins.memory]`, of the `local` provider. A value that `[plugins.memory]` sets too wins.
+- `mcp` and `[harness.<name>.usage]` are the harness's provider: it renders the servers and reads the usage. A table named after a built-in harness drops them: the provider's own come from `home`. A table with a new name gets `provider`: its usage's `tally`, else its `mcp`. A table that sets neither runs its argv and does nothing else, as before.
 - In `config.toml`, `[storage.backend]` is the `remote` of `[plugins.cas] provider = "cached"`. Its `kind` is the remote's `provider`. `evict_after_days` and `local_max_gb` of `[storage]` move with it. A `[plugins.cas]` table of the file wins: the old keys then go, with the warning, and change nothing.
 - In `config.toml`, `max_evaluations` is `evaluations` in `[plugins.executor.pools.serve]`. A value that `[plugins.executor.pools.serve]` sets too wins.
 - In `config.toml`, `tick_seconds` does nothing: the daemon wakes on events, not on a timer.

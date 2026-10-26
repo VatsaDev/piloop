@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from uuid import uuid4
 
-from piloop.harnesses import fill
+from piloop.plugins.harness.contract import fill
 from piloop.plugins.runtime.contract import (
     MESSAGES_ENV,
     QUEUE,

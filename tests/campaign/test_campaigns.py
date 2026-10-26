@@ -162,16 +162,15 @@ def test_the_campaign_template_names_every_key_of_the_config() -> None:
     template = (BLANK / 'piloop.toml').read_text()
     assert template.startswith('# piloop campaign config. This file lists every key.')
     assert unnamed_keys(template) == [], 'the template says that it lists every key; add the missing ones to it'
-    gaps = {'explore_every = 4': 'every = 4', 'plateau': 'p', 'bearer_token_env': 'x', ' tally;': ';'}
+    gaps = {'explore_every = 4': 'every = 4', 'plateau': 'p', 'bearer_token_env': 'x'}
     without = template
     for old, new in gaps.items():
         without = without.replace(old, new)
     assert unnamed_keys(without) == [
-        'harness.<name>.usage.tally',
         'mcp.<name>.bearer_token_env',
         'roles.implementer.explore_every',
         'plugins.stop_rule.plateau',
-    ], 'the check finds a key missing from a table, from a keys: comment, and from a nested table without a header'
+    ], 'the check finds a key missing from a table, and from a keys: comment'
 
 
 def test_init_commits_only_the_files_it_owns_never_another_agents_work(tmp_path: Path) -> None:

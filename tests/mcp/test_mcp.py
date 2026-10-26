@@ -1,4 +1,4 @@
-"""MCP servers: the definition, the variables it names, and each harness's renderer."""
+"""MCP servers: the definition, the variables it names, and how each built-in harness renders them."""
 
 import json
 import os
@@ -11,19 +11,13 @@ import pytest
 from pydantic import ValidationError
 
 from piloop.config import CampaignConfig
-from piloop.harnesses import DEFAULT_HARNESSES, Harness
 from piloop.ids import IMPLEMENTER
-from piloop.mcp import (
-    MCP,
-    RENDERERS,
-    Launch,
-    McpError,
-    McpServer,
-    Rendered,
-    codex,
-    env_names,
-    expand,
-)
+from piloop.mcp import McpServer, env_names
+from piloop.plugins.harness import codex
+from piloop.plugins.harness.claude import ClaudeMcp
+from piloop.plugins.harness.codex import CodexMcp
+from piloop.plugins.harness.contract import MCP, Custom, McpArgs, McpError, McpLaunch, each_provider, expand
+from piloop.plugins.harness.pi import PiMcp
 from tests.conftest import RESEARCH, write_script
 
 EXA = McpServer(url='https://mcp.exa.ai/mcp', headers_env={'x-api-key': 'EXA_API_KEY'})
@@ -33,8 +27,8 @@ XAI = McpServer(command=['python3', 'xai.py', 'grok'], env=['XAI_API_KEY', 'EXA_
 PLAIN = McpServer(command=['cat'])
 
 
-def launch(tmp_path: Path, servers: dict[str, McpServer], executable: str = 'codex') -> Launch:
-    return Launch(servers, executable, tmp_path, tmp_path, dict(os.environ), [MCP])
+def launch(tmp_path: Path, servers: dict[str, McpServer], executable: str = 'codex') -> McpLaunch:
+    return McpLaunch(servers, executable, tmp_path, tmp_path, dict(os.environ), [MCP])
 
 
 @pytest.mark.parametrize(
@@ -64,13 +58,13 @@ def test_the_variables_that_servers_need_are_named_each_once() -> None:
 
 def test_expand_replaces_only_the_whole_mcp_element() -> None:
     argv = ['-p', MCP, '--settings', 'x{mcp}y']
-    assert expand(argv, Rendered(['a', 'b'])) == ['-p', 'a', 'b', '--settings', 'x{mcp}y']
-    assert expand(argv, Rendered([])) == ['-p', '--settings', 'x{mcp}y']
+    assert expand(argv, McpArgs(['a', 'b'])) == ['-p', 'a', 'b', '--settings', 'x{mcp}y']
+    assert expand(argv, McpArgs([])) == ['-p', '--settings', 'x{mcp}y']
 
 
 def test_claude_is_strict_and_inlines_its_servers_with_variable_references(tmp_path: Path) -> None:
-    render = RENDERERS['claude'].render
-    assert render(launch(tmp_path, {})) == Rendered(['--strict-mcp-config']), "no servers: none of the user's either"
+    render = ClaudeMcp().render
+    assert render(launch(tmp_path, {})) == McpArgs(['--strict-mcp-config']), "no servers: none of the user's either"
     rendered = render(launch(tmp_path, {'exa': EXA, 'fc': FIRECRAWL, 'open': OPEN, 'xai': XAI, 'cat': PLAIN}))
     assert rendered.args[:2] == ['--strict-mcp-config', '--mcp-config'] and rendered.env == {}
     assert json.loads(rendered.args[2])['mcpServers'] == {
@@ -136,11 +130,11 @@ def calls(fake: Path) -> list[dict[str, object]]:
 HARNESS_ARGV = ['--model', 'm', '-c', 'campaigns={"/w"={trust_level="trusted"}}', '--sandbox', 'x', MCP, 'go -c']
 
 
-def codex_launch(tmp_path: Path, fake: Path, servers: dict[str, McpServer], **fake_env: str) -> Launch:
+def codex_launch(tmp_path: Path, fake: Path, servers: dict[str, McpServer], **fake_env: str) -> McpLaunch:
     env = dict(os.environ) | {f'FAKE_CODEX_{k.upper()}': v for k, v in fake_env.items()}
     cwd = tmp_path / 'worktree'
     cwd.mkdir(exist_ok=True)
-    return Launch(servers, str(fake), cwd, tmp_path, env, HARNESS_ARGV)
+    return McpLaunch(servers, str(fake), cwd, tmp_path, env, HARNESS_ARGV)
 
 
 def overrides(args: list[str]) -> dict[str, object]:
@@ -154,7 +148,7 @@ def overrides(args: list[str]) -> dict[str, object]:
 
 
 def test_codex_turns_off_every_server_codex_would_load_then_adds_the_roles(tmp_path: Path, fake_codex: Path) -> None:
-    render = RENDERERS['codex'].render
+    render = CodexMcp().render
     listed = json.dumps({'node_repl': True, 'computer-use': False})
     servers = {'exa': EXA, 'fc': FIRECRAWL, 'xai': XAI, 'open': OPEN}
     rendered = render(codex_launch(tmp_path, fake_codex, servers, listed=listed))
@@ -182,7 +176,7 @@ def test_codex_turns_off_every_server_codex_would_load_then_adds_the_roles(tmp_p
         },
         {'cwd': str(tmp_path / 'worktree'), 'args': [*harness, *rendered.args, 'mcp', 'list', '--json']},
     ], "listed in the agent's cwd under the harness's own config, then checked under the rendered flags"
-    assert render(codex_launch(tmp_path, fake_codex, {})) == Rendered(
+    assert render(codex_launch(tmp_path, fake_codex, {})) == McpArgs(
         [*codex.OWN, '-c', 'shell_environment_policy.exclude=[]']
     )
 
@@ -190,16 +184,14 @@ def test_codex_turns_off_every_server_codex_would_load_then_adds_the_roles(tmp_p
 def test_codex_keeps_a_plugins_servers_out_without_addressing_them(tmp_path: Path, fake_codex: Path) -> None:
     """``mcp_servers.<name>.enabled=false`` on a plugin's server stops Codex at startup: plugins are turned off whole."""
     listed = json.dumps({'usersrv': True})
-    rendered = RENDERERS['codex'].render(
-        codex_launch(tmp_path, fake_codex, {'exa': EXA}, listed=listed, plugins='linear')
-    )
+    rendered = CodexMcp().render(codex_launch(tmp_path, fake_codex, {'exa': EXA}, listed=listed, plugins='linear'))
     assert not [a for a in rendered.args if 'linear' in a]
     assert overrides(rendered.args)['features.plugins'] is False
     assert overrides(rendered.args)['mcp_servers.usersrv.enabled'] is False
 
 
 def test_codex_refuses_a_name_both_configs_use_and_a_list_it_cannot_read(tmp_path: Path, fake_codex: Path) -> None:
-    render = RENDERERS['codex'].render
+    render = CodexMcp().render
     with pytest.raises(McpError, match=r"Codex's own config defines MCP servers \['exa'\]"):
         render(codex_launch(tmp_path, fake_codex, {'exa': EXA}, listed='{"exa": true}'))
     with pytest.raises(McpError, match='Codex rejects its config: .* exit 1: oops'):
@@ -216,7 +208,7 @@ def test_codex_fails_the_launch_loudly_when_it_would_not_start_or_would_load_mor
     tmp_path: Path, fake_codex: Path
 ) -> None:
     """What Codex would die on at startup, or load beside the role's servers, fails the launch with Codex's words."""
-    render = RENDERERS['codex'].render
+    render = CodexMcp().render
     with pytest.raises(McpError, match=r'(?s)Codex rejects its config: .*invalid transport\n    in `mcp_servers.exa`'):
         render(codex_launch(tmp_path, fake_codex, {'exa': EXA}, rejects='mcp_servers.exa'))
     with pytest.raises(McpError, match=re.escape("Codex would load MCP servers ['exa', 'node_repl'] under piloop's")):
@@ -227,7 +219,7 @@ def test_codex_list_has_a_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     slow = write_script(tmp_path / 'slow-codex', '#!/bin/sh\nsleep 5\n')
     monkeypatch.setattr(codex, 'LIST_SECONDS', 0.2)
     with pytest.raises(McpError, match='TimeoutExpired'):
-        RENDERERS['codex'].render(launch(tmp_path, {}, str(slow)))
+        CodexMcp().render(launch(tmp_path, {}, str(slow)))
 
 
 def test_codex_toml_round_trips_what_a_server_holds() -> None:
@@ -238,11 +230,11 @@ def test_codex_toml_round_trips_what_a_server_holds() -> None:
 
 
 def test_pi_writes_the_servers_to_the_log_dir_and_loads_the_adapter_on_them_alone(tmp_path: Path) -> None:
-    pi = RENDERERS['pi']
-    assert pi.render(launch(tmp_path, {})) == Rendered([]), 'headless pi has no MCP at all without servers'
+    pi = PiMcp()
+    assert pi.render(launch(tmp_path, {})) == McpArgs([]), 'headless pi has no MCP at all without servers'
     rendered = pi.render(launch(tmp_path, {'exa': EXA, 'fc': FIRECRAWL, 'open': OPEN, 'xai': XAI, 'cat': PLAIN}))
     config = tmp_path / 'mcp.json'
-    assert rendered == Rendered(
+    assert rendered == McpArgs(
         ['-e', 'npm:pi-mcp-adapter@4.0.0', '--mcp-config', str(config)], {'PI_MCP_CONFIG_MODE': 'exclusive'}
     )
     assert json.loads(config.read_text())['mcpServers'] == {
@@ -259,12 +251,12 @@ def test_pi_writes_the_servers_to_the_log_dir_and_loads_the_adapter_on_them_alon
 
 
 def test_pi_refuses_an_argv_that_keeps_its_extensions_on() -> None:
-    refuses = RENDERERS['pi'].refuses
+    refuses = PiMcp().refuses
     assert refuses(['-p', '--no-extensions', MCP]) is None
     assert refuses(['-p', '-ne', MCP]) is None
     why = refuses(['--model', 'x', MCP])
     assert why is not None and 'only with its own extensions off' in why
-    assert RENDERERS['claude'].refuses(['anything']) is None, 'the default accepts every argv'
+    assert ClaudeMcp().refuses(['anything']) is None, 'the default accepts every argv'
 
 
 def config(**extra: object) -> dict[str, object]:
@@ -297,32 +289,28 @@ def test_every_harness_a_role_with_servers_may_run_must_carry_them() -> None:
     assert CampaignConfig.model_validate(custom).harnesses == ['claude', 'plain'], 'no role lists a server: any will do'
     with pytest.raises(
         ValidationError,
-        match=re.escape("harness 'plain': it takes no MCP servers in its headless argv"),
+        match=re.escape("harness 'plain': it takes no MCP servers"),
     ):
         CampaignConfig.model_validate(custom | {'roles': {'watchdog': {'mcp': ['exa']}}})
-    without = {'executable': 'x', 'headless': ['{prompt}'], 'mcp': 'claude'}
-    with pytest.raises(ValidationError, match="harness 'plain': it takes no MCP servers"):
+    without = {'provider': 'claude', 'executable': 'x', 'headless': ['--session-id', '{session_id}', '{prompt}']}
+    with pytest.raises(ValidationError, match="harness 'plain': its headless argv has no {mcp} element"):
         CampaignConfig.model_validate(custom | {'harness': {'plain': without}, 'roles': {'watchdog': {'mcp': ['exa']}}})
-    extended = {'executable': 'pi', 'headless': [MCP, '{prompt}'], 'mcp': 'pi'}
+    extended = {'provider': 'pi', 'headless': ['--session-id', '{session_id}', MCP, '{prompt}']}
     with pytest.raises(ValidationError, match=re.escape("harness 'plain': pi takes MCP servers only with")):
         CampaignConfig.model_validate(
             custom | {'harness': {'plain': extended}, 'roles': {'watchdog': {'mcp': ['exa']}}}
         )
 
 
-def test_a_harness_names_a_known_renderer_and_mcp_only_with_one() -> None:
-    with pytest.raises(
-        ValidationError, match=re.escape(f"unknown mcp renderer 'opencode'; known: {sorted(RENDERERS)}")
-    ):
-        Harness(executable='x', headless=['{prompt}'], mcp='opencode')
-    with pytest.raises(ValidationError, match=re.escape('{mcp} in the argv needs mcp set to a renderer')):
-        Harness(executable='x', headless=[MCP, '{prompt}'])
-    assert {name: (h.mcp, MCP in h.headless, MCP in h.resume) for name, h in DEFAULT_HARNESSES.items()} == {
-        'pi': ('pi', True, True),
-        'claude': ('claude', True, True),
-        'codex': ('codex', True, True),
+def test_only_a_harness_that_takes_servers_has_an_mcp_element() -> None:
+    with pytest.raises(ValidationError, match=re.escape('{mcp} in the argv of a harness that takes no MCP servers')):
+        Custom(executable='x', headless=[MCP, '{prompt}'])
+    assert {name: (MCP in h.headless, MCP in h.resume) for name, h in each_provider().items()} == {
+        'pi': (True, True),
+        'claude': (True, True),
+        'codex': (True, True),
     }
-    claude = DEFAULT_HARNESSES['claude'].headless
+    claude = each_provider()['claude'].headless
     assert claude[claude.index(MCP) + 1].startswith('--'), (
         "a flag follows claude's variadic --mcp-config, not the prompt"
     )

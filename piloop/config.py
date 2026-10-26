@@ -25,7 +25,6 @@ from pydantic import (
     Field,
     RootModel,
     ValidationError,
-    field_validator,
     model_validator,
 )
 from pydantic_settings import (
@@ -36,10 +35,10 @@ from pydantic_settings import (
 )
 
 from piloop import deprecated
-from piloop.harnesses import DEFAULT_HARNESSES, Harness
 from piloop.ids import IMPLEMENTER, ROLE_NAME, RoleName, TrackName
 from piloop.mcp import EnvName, McpServer, ServerName, env_names
 from piloop.plugins.fact_source.contract import FACT_SOURCES, FactSource, FactSourceEntry, sources
+from piloop.plugins.harness.contract import Harness, Harnesses, defaults
 from piloop.plugins.host import Plugins, PluginTables, Scope
 from piloop.plugins.metric import Direction
 from piloop.plugins.role.contract import ROLES, ImplementerRole, RoleConfig, SweepRole, new_role
@@ -250,13 +249,16 @@ class CampaignConfig(BaseModel):
     runtime: RuntimeName = 'subprocess'
     """Where the agents run: the name of a runtime, which starts, watches, steers and stops them. A package can
     add a runtime with a ``piloop.runtimes`` entry point. A role can override it (``[roles.<name>] runtime``)."""
-    harnesses: list[str] = Field(default=['pi'], min_length=1)
-    """The enabled harnesses. Runs use them in turn, unless an idea pins one."""
+    harnesses: list[str] = Field(default_factory=defaults, min_length=1)
+    """The enabled harnesses. Runs use them in turn, unless an idea pins one. When unset, the harnesses that are on by
+    default: ``pi``."""
     model: dict[str, str]
     """The model id for each harness, for example
     ``{pi = "anthropic/claude-opus-5-5", claude = "claude-opus-5-5", codex = "gpt-6.1-sol"}``."""
-    harness: dict[str, Harness] = {}
-    """Harness definitions by name: overrides of the built-in harnesses, or new ones."""
+    harness: Harnesses = Field(default={}, validate_default=True)
+    """``[harness.<name>]``: the table of each harness over its defaults: the built-in harnesses (``pi``, ``claude``,
+    ``codex``), those that packages add, and new ones. A table with a new name and ``provider = "<harness>"`` is that
+    harness over its defaults, with another name; without ``provider``, it runs its argv and does nothing else."""
     max_concurrent: dict[str, Annotated[int, Field(ge=1)]] = {}
     """The maximum number of agents of one harness, across all roles of the campaign, that are started or queued to
     start. Example: ``{claude = 2}`` when the provider of its model limits the request rate. When it is the turn of a
@@ -288,27 +290,14 @@ class CampaignConfig(BaseModel):
     parameters, the other keys of the table. A capability without a table, or a table without ``provider``,
     has its default provider."""
 
-    @field_validator('harness', mode='before')
-    @classmethod
-    def _over_built_ins(cls, tables: object) -> object:
-        """A table named after a built-in harness keeps the built-in's keys that it does not set."""
-        if not isinstance(tables, dict):
-            return tables
-        return {
-            name: built.model_dump(exclude_defaults=True) | table
-            if isinstance(table, dict) and (built := DEFAULT_HARNESSES.get(name)) is not None
-            else table
-            for name, table in tables.items()
-        }
-
     @model_validator(mode='after')
     def _check(self) -> Self:
         self._check_tracks()
         self._check_facts()
         self._check_stop_rule()
         self._check_harnesses(self.harnesses, self.model, 'campaign')
-        if unknown := [h for h in self.max_concurrent if h not in DEFAULT_HARNESSES and h not in self.harness]:
-            raise ValueError(f'max_concurrent: unknown harnesses {unknown}; built-ins are {sorted(DEFAULT_HARNESSES)}')
+        if unknown := [h for h in self.max_concurrent if h not in self.harness]:
+            raise ValueError(f'max_concurrent: unknown harnesses {unknown}; known: {sorted(self.harness)}')
         roles = self.roles.all()
         for name in roles:
             self._check_harnesses(self.role_harnesses(name), self.role_models(name), f'roles.{name}')
@@ -372,9 +361,9 @@ class CampaignConfig(BaseModel):
             raise ValueError(f'track shares sum to {total:g}, not 1')
 
     def _check_harnesses(self, harnesses: list[str], models: dict[str, str], where: str) -> None:
-        unknown = [h for h in harnesses if h not in DEFAULT_HARNESSES and h not in self.harness]
+        unknown = [h for h in harnesses if h not in self.harness]
         if unknown:
-            raise ValueError(f'{where}: unknown harnesses {unknown}; built-ins are {sorted(DEFAULT_HARNESSES)}')
+            raise ValueError(f'{where}: unknown harnesses {unknown}; known: {sorted(self.harness)}')
         missing = [h for h in harnesses if h not in models]
         if missing:
             raise ValueError(f'{where}: no model configured for harnesses {missing}')
@@ -488,8 +477,12 @@ class CampaignConfig(BaseModel):
         return hashlib.sha256(json.dumps(self.evaluator_definition, sort_keys=True).encode()).hexdigest()[:16]
 
     def harness_for(self, name: str) -> Harness:
-        """The harness definition in use: the campaign's override, or else the built-in one."""
-        return self.harness.get(name) or DEFAULT_HARNESSES[name]
+        """The harness called ``name``.
+
+        Raises:
+            KeyError: The campaign has no such harness.
+        """
+        return self.harness[name]
 
 
 class ConfigError(ValueError):

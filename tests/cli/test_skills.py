@@ -80,23 +80,25 @@ def test_a_wheel_ships_the_skills_inside_the_package(tmp_path: Path) -> None:
 def test_install_skills_copies_into_each_harness_dir_once_and_replaces_only_piloops_own(
     harness_home: Settings, tmp_path: Path
 ) -> None:
-    install.install_skills()
-    assert printed().strip() == 'skills: none of claude, codex, pi, gemini, cursor-agent is on PATH, nothing installed'
-    on_path('claude', 'codex', 'pi', 'gemini', 'cursor-agent')
     agents = harness_home.agent_skills_dir
     claude = Path(os.environ['CLAUDE_CONFIG_DIR']) / 'skills'
-    assert skills.drift(agents) == ['piloop-operate missing', 'piloop-review missing', 'piloop-setup missing']
+    install.install_skills()
+    assert printed().strip() == f'skills: piloop-operate, piloop-review, piloop-setup → {agents} (Agent Skills)', (
+        'every harness that follows agentskills.io reads them, on PATH or not'
+    )
+    on_path('claude', 'codex', 'pi')
     (agents / 'piloop-old').mkdir(parents=True)
     (agents / 'theirs').mkdir()
+    (agents / 'piloop-setup').rename(tmp_path / 'setup')
     (agents / 'piloop-setup').symlink_to(tmp_path / 'checkout')
     (claude / 'piloop-operate').mkdir(parents=True)
     (claude / 'piloop-operate' / 'SKILL.md').write_text('an older operate')
     assert skills.drift(claude) == ['piloop-operate out of date', 'piloop-review missing', 'piloop-setup missing']
-    assert skills.drift(agents)[-1] == 'piloop-old no longer shipped'
+    assert skills.drift(agents) == ['piloop-setup missing', 'piloop-old no longer shipped']
     install.install_skills()
     assert printed().splitlines() == [
+        f'skills: piloop-operate, piloop-review, piloop-setup → {agents} (codex, pi)',
         f'skills: piloop-operate, piloop-review, piloop-setup → {claude} (claude)',
-        f'skills: piloop-operate, piloop-review, piloop-setup → {agents} (codex, pi, gemini, cursor-agent)',
     ]
     assert skills.drift(claude) == skills.drift(agents) == []
     assert sorted(p.name for p in agents.iterdir()) == ['piloop-operate', 'piloop-review', 'piloop-setup', 'theirs']
@@ -111,4 +113,4 @@ def test_each_skills_directory_is_a_setting_so_a_second_install_keeps_its_skills
     assert skills.targets(Settings())[tmp_path / 'claude' / 'skills'] == ['claude']
     monkeypatch.setenv('PILOOP_CLAUDE_SKILLS_DIR', str(tmp_path / 'canary'))
     monkeypatch.setenv('PILOOP_AGENT_SKILLS_DIR', str(tmp_path / 'canary'))
-    assert skills.targets(Settings()) == {tmp_path / 'canary': ['claude', 'codex']}
+    assert skills.targets(Settings()) == {tmp_path / 'canary': ['claude', 'codex']}, 'one directory, read by both'

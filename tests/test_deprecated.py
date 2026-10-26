@@ -19,9 +19,13 @@ import pytest
 from piloop import deprecated
 from piloop.config import ConfigError, load_campaign_config
 from piloop.deprecated import PiloopDeprecationWarning
+from piloop.plugins.executor.contract import AgentJob
 from piloop.plugins.fact_source.campaign import CampaignFacts
 from piloop.plugins.fact_source.command import Command
 from piloop.plugins.fact_source.optimization import OptimizationFacts
+from piloop.plugins.harness.codex import Codex
+from piloop.plugins.harness.contract import each_provider
+from piloop.plugins.harness.pi import Pi
 from piloop.plugins.memory.contract import MEMORY
 from piloop.plugins.memory.local import LocalMemory
 from piloop.plugins.role.research import ResearchRole
@@ -165,6 +169,26 @@ def test_memory_documents_are_the_documents_of_plugins_memory_whose_own_value_wi
     with pytest.warns(PiloopDeprecationWarning, match=r'\[memory\] documents is deprecated'):
         cfg = load_campaign_config(campaign_path)
     assert MEMORY.selected(cfg.plugins) == LocalMemory(documents=['notes/*.md'])
+
+
+def test_the_mcp_and_usage_of_a_harness_table_are_its_provider(campaign_path: Path) -> None:
+    write_toml(campaign_path, HARNESS_APPEND)
+    toml = campaign_path / 'piloop.toml'
+    toml.write_text(
+        toml.read_text()
+        + '\n[harness.claude]\nmcp = "claude"\n[harness.claude.usage]\nfile = "{env:CLAUDE_CONFIG_DIR:~/.claude}/x"\n'
+        + '\n[harness.local]\nexecutable = "local"\nheadless = ["--id", "{session_id}", "{mcp}", "{prompt}"]\n'
+        + 'mcp = "codex"\n[harness.local.usage]\ntally = "pi"\n'
+    )
+    with pytest.warns(PiloopDeprecationWarning) as record:
+        cfg = load_campaign_config(campaign_path)
+    assert cfg.harness_for('claude') == each_provider()['claude'], 'a built-in table drops them'
+    assert isinstance(cfg.harness_for('local'), Pi), "a new name takes its tally's provider"
+    assert [str(w.message).partition(';')[0] for w in record] == [
+        'mcp and usage of [harness.claude] are deprecated: the harness renders its servers and reads its usage itself,'
+        ' under its home',
+        'mcp and usage of [harness.local] are deprecated',
+    ]
 
 
 def test_the_anomaly_trigger_is_the_two_incident_triggers_in_its_place(campaign_path: Path) -> None:
@@ -474,3 +498,19 @@ def test_the_variables_of_stop_and_confidence_set_the_rules_and_win_over_the_fil
     toml.write_text('plugins = 3\n' + toml.read_text().replace('[plugins.stop_rule]\nmax_runs = 7\n', ''))
     with pytest.warns(PiloopDeprecationWarning), pytest.raises(ConfigError, match='plugins'):
         load_campaign_config(campaign_path)
+
+
+def test_a_job_that_a_0_3_daemon_queued_names_its_harness_by_its_renderer_or_tally() -> None:
+    old = {
+        'agent_session': 1,
+        'runtime': 'subprocess',
+        'artifact': {'repo': 1, 'revision': 'c1', 'vcs': {'provider': 'git'}},
+        'place': 'w',
+        'timeout': 60,
+        'brief_cid': None,
+        'spec': None,
+    }
+    usage = {'reader': 'jsonl', 'file': 'x', 'tally': 'codex'}
+    assert isinstance(AgentJob.model_validate(old | {'mcp': 'claude', 'usage': usage}).harness, Codex)
+    assert isinstance(AgentJob.model_validate(old | {'mcp': 'pi', 'usage': None}).harness, Pi)
+    assert AgentJob.model_validate(old | {'mcp': None, 'usage': None}).harness is None, 'a harness of no provider'

@@ -68,8 +68,8 @@ So the agents see only the role's servers, never the servers in your own configu
 `piloop init` refuses a role that lists servers when a harness of its rotation cannot take them. Then leave that
 harness out of the role's rotation, for example `harnesses = ["claude", "codex"]` under `[roles.research]`.
 
-A [custom harness](/reference/configuration#harness) takes servers when its command has an `{mcp}` element and it sets
-`mcp` to one of the renderers: `claude`, `codex` or `pi`.
+A [harness of your own](/architecture/extension-points#harnesses) takes servers when its command has an `{mcp}`
+element and it names a provider that takes them, such as `provider = "claude"`.
 
 ## The X search server
 

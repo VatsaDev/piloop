@@ -29,10 +29,10 @@ from piloop.config import BRIEF_FILE
 from piloop.db.events import emit
 from piloop.db.models import LIVE, AgentSession, AgentSessionState, Campaign, utcnow
 from piloop.db.session import Database
-from piloop.harnesses import SESSION_ENV, SESSION_ID, fill, takes_session_id
 from piloop.ids import AgentSessionId, RunId, TargetKind, TargetRef
 from piloop.otel import Span, Tracer
 from piloop.plugins.executor.contract import AgentJob, AgentKey, Executor, ExecutorConfig, LeftJob, Source
+from piloop.plugins.harness.contract import SESSION_ID, cleared_env, fill, of_provider, takes_session_id
 from piloop.plugins.runtime.contract import AgentStart
 
 PROMPT = 'Your brief is in {path}. Read all of it, in parts if a read comes back cut short, then follow it.'
@@ -168,7 +168,7 @@ class Launcher:
             env = {
                 **definition.literals,
                 'PILOOP_ACTOR': Agent(role=kind, session=agent_session_id).signature,
-                **dict.fromkeys(SESSION_ENV | {*definition.session_env}, ''),
+                **dict.fromkeys(cleared_env() | {*definition.session_env}, ''),
             }
             # {cwd} and {log_dir} stay for the worker, which makes them (``AgentStart.at``)
             argv = [
@@ -194,10 +194,9 @@ class Launcher:
                 timeout=timeout,
                 brief_cid=brief,
                 spec=spec,
-                mcp=definition.mcp,
+                harness=of_provider(definition),
                 servers=cfg.role_servers(kind),
                 secrets=cfg.role_secrets(kind, harness),
-                usage=definition.usage,
                 session_id=session_id,
                 capture=capture,
             )
@@ -230,7 +229,7 @@ class Launcher:
             timeout=cfg.role(w.kind).timeout,
             brief_cid=None,
             spec=None,
-            usage=definition.usage if definition is not None else None,
+            harness=None if definition is None else of_provider(definition),
             session_id=w.session_id,
             capture=capture,
         )

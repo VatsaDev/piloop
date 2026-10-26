@@ -14,9 +14,9 @@ from sqlalchemy.orm import Session
 from piloop.actor import Actor, Agent
 from piloop.config import BRIEF_FILE, CampaignConfig, Track
 from piloop.db.models import AgentSession, Campaign
-from piloop.harnesses import Harness
 from piloop.ids import RoleName
 from piloop.plugins.cas.contract import Cas
+from piloop.plugins.harness.contract import Harness
 from piloop.plugins.role.contract import Files, SweepRole
 from piloop.plugins.vcs.contract import VCS, prompted
 

@@ -82,14 +82,18 @@ CONFIG_REWRITES = (
     'roles.*.sections',
     'status.*',
     'harness.*.mcp',
+    'harness.*.usage',
+    'harness.*.usage.*',
+    'harness.*.provider',
 )
 """The keys of the stored ``piloop.toml`` that a migration may change, as patterns: it deletes the harness keys that
 only herdr read (revision 0034), ``workdir`` (0035) and ``entire_agent`` (0036), renames a trigger's ``kind`` to
 ``provider`` (0038), moves ``[stop]``, ``[spend] limit`` and ``confidence`` into the rules' tables (0039), and turns
 ``wake_budget`` into the lessons entry of a role's ``sections`` and lists the overview's in ``[status]`` (0053),
 makes ``[spend]`` a source of ``[[facts]]``, and deletes it without a command (0056), drops a built-in harness's null
-``mcp`` whose table inherits an argv with ``{mcp}`` (0057), and moves ``[memory] documents`` into ``plugins.memory``
-(0061). The keys that a later ``piloop init`` stores again, such as each role's defaults, are not a migration's."""
+``mcp`` whose table inherits an argv with ``{mcp}`` (0057), moves ``[memory] documents`` into ``plugins.memory``
+(0061), and drops a harness table's ``mcp`` and ``usage``, which name its provider when the table has a name of its
+own (0063). The keys that a later ``piloop init`` stores again, such as each role's defaults, are not a migration's."""
 DROPPED = {
     'agent_sessions.checkpoint_id',
     'documents.commit_sha',

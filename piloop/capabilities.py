@@ -16,6 +16,14 @@ from piloop.plugins.runtime.contract import AgentExit, ExitStatus
 from piloop.plugins.runtime.contract import Runtime, RuntimeConfig
 from piloop.plugins.runtime.subprocess import Subprocess, SubprocessRuntime
 
+from piloop.plugins.harness.contract import HARNESSES, Harness, SecretRef, UsageReader
+from piloop.settings import Settings, StorageSettings, TracingSettings
+from piloop.plugins.harness.contract import McpLaunch, McpArgs, McpError, McpRenderer
+from piloop.plugins.harness.kit.jsonl import JsonlSessions, Counts, Record, Tally, Said
+from piloop.plugins.harness.pi import Pi
+from piloop.plugins.harness.claude import Claude
+from piloop.plugins.harness.codex import Codex
+
 from piloop.plugins.cas.contract import CAS, Cas, CasProvider, BlobAddress, Writer
 from piloop.plugins.cas.contract import Upkeep, TierUsage, Flushed, Integrity, integrity, UNBOUNDED
 from piloop.plugins.cas.contract import Held, Evictable, LocalCas, LocalProvider
@@ -124,7 +132,7 @@ from piloop.plugins.executor.workers import Workers, WorkersExecutor
 from piloop.otel import Tracer, Span, ConsoleProcessor
 from piloop.runtime.factory import RuntimeFactory
 from piloop.mcp import McpServer
-from piloop.usage import Usage, UsageSpec, UsageReader
+from piloop.usage import Usage, UsageError
 from piloop.net import Route
 from piloop.net.server import executor_router
 

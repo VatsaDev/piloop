@@ -19,7 +19,7 @@ from typing import Annotated, Protocol
 from pydantic import BeforeValidator
 
 from piloop import deprecated
-from piloop.harnesses import fill
+from piloop.plugins.harness.contract import fill
 from piloop.plugins.host import Capability, Parameters
 
 
