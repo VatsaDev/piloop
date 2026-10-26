@@ -19,7 +19,18 @@ from piloop.plugins.vcs.git import commands as git
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring import queue
 from piloop.scoring.ledger import measured, request_remeasure
-from tests.conftest import ScriptRuntime, bare_config, baseline, factory, serving, wait_until, workers_of, write_script
+from tests.conftest import (
+    SETTLE,
+    ScriptRuntime,
+    bare_config,
+    baseline,
+    factory,
+    run_all,
+    serving,
+    wait_until,
+    workers_of,
+    write_script,
+)
 from tests.daemon.test_run_controller import execute, make_run, set_config
 from tests.daemon.test_scheduler import add_ideas, make_scheduler
 
@@ -290,14 +301,14 @@ def test_evaluations_that_wait_for_a_slot_never_hold_back_an_agent_launch(
     waiting = [scheduler._pool.submit(release.wait, 30) for _ in range(64)]  # more than any default pool size
     add_ideas(db, campaign, 'one line')
     try:
-        assert len(scheduler.run_all()) == 1
+        assert len(run_all(scheduler)) == 1
         with db.session() as s:
             [run_id] = s.scalars(select(Run.id)).all()
         wait_until(lambda: run_status(db, run_id) is not RunStatus.QUEUED, 'the agent to start')
     finally:
         release.set()
     assert all(f.result(5) for f in waiting)
-    scheduler.wait()
+    scheduler.wait(SETTLE)
     scheduler.stop(timeout=5)
 
 

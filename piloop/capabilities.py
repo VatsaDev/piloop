@@ -6,7 +6,7 @@ from piloop.plugins.host import Capability, Tier, Parameters, Choice, Scope, Che
 from piloop.plugins.host import MissingProvider, Provider, PythonSource, ContractBroken
 from piloop.plugins.host import Live
 from piloop.plugins.host import Entry, Named, Tables
-from piloop.plugins.contribution import Contribution, Contributes
+from piloop.plugins.contribution import Contribution, Contributes, Lifecycle, Leaving
 from piloop.daemon.loop import Consumer, Phase, Turn
 
 from piloop.plugins.runtime.contract import RUNTIMES
@@ -106,7 +106,15 @@ from piloop.plugins.stop_rule.limits import Limits
 from piloop.db.models import EventModel, Base
 from piloop.db.schema import Schema
 
-from piloop.plugins.campaign_type.contract import CAMPAIGN_TYPES, CampaignType
+from piloop.plugins.campaign_type.contract import (
+    CAMPAIGN_TYPES,
+    CampaignType,
+    CannotLaunch,
+    Planner,
+    Steering,
+    Take,
+    TypeHost,
+)
 from piloop.plugins.campaign_type.optimization import Optimization
 
 from piloop.plugins.memory.contract import MEMORY, MemoryProvider, Synced

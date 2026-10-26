@@ -751,6 +751,7 @@ def typed(change: Changed) -> bool:
     a kind that nothing registers only gained its ``kind``.
     """
     importlib.import_module('piloop.daemon.scheduler')  # registers the events of every layer
+    importlib.import_module('piloop.plugins.campaign_type.optimization.planner')  # and of the optimization type
     before, after = str(change.before), str(change.after)
     match change.column:
         case 'kind':

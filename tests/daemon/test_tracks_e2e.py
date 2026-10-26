@@ -10,13 +10,13 @@ from git import Repo
 from sqlalchemy import select
 
 from piloop.daemon.main import Daemon
-from piloop.daemon.scheduler import RunQueued
 from piloop.db.events import in_order
 from piloop.db.models import Campaign, Candidate, Idea
+from piloop.plugins.campaign_type.optimization.planner import RunQueued
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring.ledger import Rebased, head
 from piloop.settings import Settings
-from tests.conftest import ScriptRuntime, factory, register, workers_of, write_script
+from tests.conftest import SETTLE, ScriptRuntime, factory, register, run_all, workers_of, write_script
 
 TOML = """
 name = "tracks"
@@ -96,13 +96,13 @@ def test_two_tracks_rebase_a_keep_that_lost_the_race_and_refuse_one_past_the_oth
         s.commit()
 
     daemon.scheduler.reap()
-    assert len(daemon.scheduler.run_all()) == 2, 'one slot per track'
+    assert len(run_all(daemon.scheduler)) == 2, 'one slot per track'
     deadline = time.monotonic() + 120  # four evaluations and a rebase; a macOS runner is slow
     while _verdicts(daemon) != [Outcome.KEEP, Outcome.KEEP]:
         assert time.monotonic() < deadline, 'the cost keep never landed'
         time.sleep(0.05)
     go.touch()
-    daemon.scheduler.wait()
+    daemon.scheduler.wait(SETTLE)
 
     with daemon.db.session() as s:
         rows = s.scalars(select(Candidate).order_by(Candidate.id)).all()
@@ -131,8 +131,8 @@ def test_two_tracks_rebase_a_keep_that_lost_the_race_and_refuse_one_past_the_oth
         s.add(Idea(campaign_id=campaign.id, track='accuracy', title='heavy accuracy', hypothesis='h', created_by='t'))
         s.commit()
 
-    assert len(daemon.scheduler.run_all()) == 1
-    daemon.scheduler.wait()
+    assert len(run_all(daemon.scheduler)) == 1
+    daemon.scheduler.wait(SETTLE)
     with daemon.db.session() as s:
         heavy = s.scalars(select(Candidate).order_by(Candidate.id.desc()).limit(1)).one()
         assert (heavy.summary, heavy.verdict, heavy.verdict_reason, heavy.parent_id) == (

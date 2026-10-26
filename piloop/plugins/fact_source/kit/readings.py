@@ -16,7 +16,7 @@ from sqlalchemy import ColumnElement, func, select
 from sqlalchemy.orm import Session
 
 from piloop.db.events import has, latest, payload_of
-from piloop.db.models import Campaign, Comment, Event, EventModel, ReadBy
+from piloop.db.models import Campaign, Comment, Event, EventModel
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.ids import CommentKind, TargetKind, TargetRef
 from piloop.plugins.fact_source.contract import FACT_SOURCES, FactReadError, FactSource
@@ -31,7 +31,6 @@ NEVER_READ = datetime.min.replace(tzinfo=UTC)
 class FactRead(EventModel):
     """One reading of a ``Readings`` source: each value by its name, or None for each when the reading failed."""
 
-    READ_BY: ClassVar[ReadBy] = ReadBy.READERS
     kind: Literal['fact.read'] = 'fact.read'
     values: dict[str, float | None]
     error: str | None = None
@@ -43,6 +42,9 @@ class Readings(FactSource):
     It supplies each name that it reads (``reading``), and how much its value grew since the latest keep
     (``since_keep``), from its ``fact.read`` events.
     """
+
+    CHANGES: ClassVar[frozenset[type[EventModel]]] = frozenset({FactRead})
+    """Each reading is a ``fact.read`` event."""
 
     interval: float = Field(default=300, gt=0)
     """The number of seconds between two readings."""

@@ -10,7 +10,6 @@ from sqlalchemy.orm import Session
 from piloop.agents.results import StartupAnomaly
 from piloop.campaign.anomaly import AnomalyReported
 from piloop.config import load_campaign_config
-from piloop.daemon.scheduler import RolePass
 from piloop.db.models import (
     AgentSessionState,
     Campaign,
@@ -26,6 +25,7 @@ from piloop.db.models import (
 )
 from piloop.db.session import Database
 from piloop.ids import TargetKind, TargetRef
+from piloop.plugins.campaign_type.consumers import RolePass
 from piloop.plugins.section.contract import SECTIONS, Rendering, markdown
 from piloop.plugins.section.reported import REPORTED_SHOWN
 from piloop.plugins.trigger.contract import Fire

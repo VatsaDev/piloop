@@ -18,10 +18,10 @@ from piloop.campaign import ops
 from piloop.campaign.stop import left
 from piloop.cli import common, main as cli
 from piloop.cli.plugins import selections
-from piloop.config import CampaignConfig, ConfigError, load_campaign_config
+from piloop.config import ConfigError, load_campaign_config
 from piloop.daemon.main import Daemon
 from piloop.daemon.run_controller import RunController
-from piloop.daemon.scheduler import Scheduler, awake_roles, quiet_phase
+from piloop.daemon.scheduler import Scheduler
 from piloop.db.events import in_order
 from piloop.db.models import (
     AgentSession,
@@ -41,6 +41,7 @@ from piloop.db.session import Database
 from piloop.ids import AgentSessionId, CampaignStatus, CommentKind, Ending, IdeaStatus, RoleName, TargetKind, TargetRef
 from piloop.otel import Tracer
 from piloop.plugins import host as plugins_module
+from piloop.plugins.campaign_type.consumers import awake_roles, quiet_phase
 from piloop.plugins.cas.contract import CAS
 from piloop.plugins.executor.workers import Workers
 from piloop.plugins.host import PluginError, compose
@@ -52,13 +53,16 @@ from piloop.settings import Settings
 from tests.conftest import (
     HARNESS_APPEND,
     RESEARCH,
+    SETTLE,
     WATCHDOG,
     ScriptRuntime,
+    campaigns_of,
     console_lines,
     example,
     package,
     piloop_entry_points,
     reconfigured,
+    run_all,
     serving,
     store_config,
     wait_until,
@@ -129,24 +133,24 @@ def test_a_role_that_piloop_toml_defines_runs_on_its_sql_trigger_with_its_prompt
     configure(db, campaign, harness, reviewer=reviewer)
     kinds: list[str] = []
     sched = scheduler(db, recording(runtime, kinds), tmp_path)
-    assert sched.run_all() == [], 'no decision yet: the query returns no row'
+    assert run_all(sched) == [], 'no decision yet: the query returns no row'
 
     decide(db, campaign, 'keep the cache')
-    assert sched.run_all() == [1]
+    assert run_all(sched) == [1]
     wait_for(db, AgentSessionId(1), AgentSessionState.RUNNING)
-    assert sched.run_all() == [], 'the decision is older than the running reviewer'
+    assert run_all(sched) == [], 'the decision is older than the running reviewer'
     decide(db, campaign, 'drop the cache')
-    assert sched.run_all() == [], 'max_concurrent = 1: the second reviewer waits'
-    assert sched.run_all() == [], 'one pending request is enough'
+    assert run_all(sched) == [], 'max_concurrent = 1: the second reviewer waits'
+    assert run_all(sched) == [], 'one pending request is enough'
     reason = f'sql: {REVIEW}'
     assert agent_sessions(db, 'reviewer') == [
         (1, AgentSessionState.RUNNING, reason),
         (2, AgentSessionState.REQUESTED, reason),
     ]
     release.touch()
-    sched.wait()
-    assert sched.run_all() == [2], 'the slot is free'
-    sched.wait()
+    sched.wait(SETTLE)
+    assert run_all(sched) == [2], 'the slot is free'
+    sched.wait(SETTLE)
     sched.stop(timeout=5)
 
     brief = (tmp_path / 'agent_sessions' / '1' / 'brief.md').read_text()
@@ -179,13 +183,13 @@ def test_a_role_adds_its_incident_prompt_to_an_incident_sweep_and_its_routine_pr
     configure(db, campaign, '#!/bin/sh\ntrue\n', triage=triage, watchdog={'triggers': []})
     sched = scheduler(db, recording(runtime, []), tmp_path)
     fail_a_run(db, campaign, 'broken')
-    assert sched.run_all() == [1]
-    sched.wait()
+    assert run_all(sched) == [1]
+    sched.wait(SETTLE)
     with db.session() as s:
         s.add(AgentSession(kind='triage', campaign_id=campaign.id, reason='by hand'))
         s.commit()
-    assert sched.run_all() == [2]
-    sched.wait()
+    assert run_all(sched) == [2]
+    sched.wait(SETTLE)
     sched.stop(timeout=5)
     incident, routine = ((tmp_path / 'agent_sessions' / str(w) / 'brief.md').read_text() for w in (1, 2))
     assert incident.startswith('# Triage\n\n## An incident\n\n# Demo') and '## Incidents to investigate' in incident
@@ -207,8 +211,8 @@ def test_a_role_that_defines_ideas_is_told_how_many_its_sweep_may_add(
     }
     configure(db, campaign, '#!/bin/sh\ntrue\n', ideator=ideator, research={'triggers': []}, watchdog={'triggers': []})
     sched = scheduler(db, recording(runtime, []), tmp_path)
-    assert sched.run_all() == [1], 'no runnable idea: the backlog is short'
-    sched.wait()
+    assert run_all(sched) == [1], 'no runnable idea: the backlog is short'
+    sched.wait(SETTLE)
     sched.stop(timeout=5)
     brief = (tmp_path / 'agent_sessions' / '1' / 'brief.md').read_text()
     assert '- New ideas of your own in this sweep: at most 2 (`max_ideas`).' in brief
@@ -246,7 +250,7 @@ def queue(db: Database, sched: Scheduler, campaign: Campaign) -> None:
     """Queue runs for the free slots, as a tick does, without launching their agents."""
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
-        sched._queue(s, p, CampaignConfig.model_validate(p.config), left(s, p, p.config))
+        campaigns_of(sched)._planner(p).queue(s, p, left(s, p, p.config))
         s.commit()
 
 
@@ -263,8 +267,8 @@ def test_a_role_that_does_runs_takes_its_ideas_with_its_own_prompt_and_its_commi
     (deep,) = add_ideas(db, campaign, 'deep', priority=1)
     (cheap,) = add_ideas(db, campaign, 'cheap', priority=3)
     sched = scheduler(db, recording(runtime, []), tmp_path)
-    assert sorted(sched.run_all()) == [1, 2]
-    sched.wait()
+    assert sorted(run_all(sched)) == [1, 2]
+    sched.wait(SETTLE)
     sched.stop(timeout=5)
     assert runs_by_role(db) == [(1, 'quick', cheap, 'quick'), (2, 'implementer', deep, 'implementer')]
     assert (tmp_path / 'runs' / '1' / 'brief.md').read_text().startswith('# Quick\nTry the idea')
@@ -301,7 +305,7 @@ def test_a_queued_run_of_a_role_that_piloop_toml_no_longer_has_fails_and_its_ide
     sched = scheduler(db, recording(runtime, []), tmp_path)
     queue(db, sched, campaign)
     configure(db, campaign, HARNESS_APPEND)
-    assert sched.run_all() == []
+    assert run_all(sched) == []
     with db.session() as s:
         run, agent_session, idea = s.get_one(Run, 1), s.get_one(AgentSession, 1), s.get_one(Idea, cheap)
         assert (run.status, run.end) == (RunStatus.FAILED, RunEnd.ROLE_REMOVED)
@@ -310,8 +314,8 @@ def test_a_queued_run_of_a_role_that_piloop_toml_no_longer_has_fails_and_its_ide
             'no [roles.quick] in piloop.toml',
         )
         assert idea.status is IdeaStatus.READY, 'the removed role was not an attempt at the idea'
-    assert sched.run_all() == [2]
-    sched.wait()
+    assert run_all(sched) == [2]
+    sched.wait(SETTLE)
     sched.stop(timeout=5)
     assert runs_by_role(db)[1:] == [(2, 'implementer', cheap, 'implementer')]
 
@@ -329,13 +333,13 @@ def test_a_built_in_role_takes_other_triggers(
     )
     sched = scheduler(db, recording(runtime, []), tmp_path)
     fail_a_run(db, campaign, 'broken')
-    assert sched.run_all() == [], 'no anomaly trigger, and the timer is not due'
+    assert run_all(sched) == [], 'no anomaly trigger, and the timer is not due'
     with db.session() as s:
         s.get_one(Campaign, campaign.id).created_at = utcnow().replace(year=2000)
         s.commit()
     decide(db, campaign, 'look again')
-    assert sched.run_all() == [1, 2]
-    sched.wait()
+    assert run_all(sched) == [1, 2]
+    sched.wait(SETTLE)
     sched.stop(timeout=5)
     assert agent_sessions(db, RESEARCH) == [(1, AgentSessionState.EXITED, f'sql: {REVIEW}')]
     assert agent_sessions(db, WATCHDOG) == [(2, AgentSessionState.EXITED, 'timer: 30s')], 'the roles in their order'
@@ -352,7 +356,7 @@ def test_a_request_for_a_role_that_piloop_toml_no_longer_has_is_refused(
         s.commit()
     configure(db, campaign, '#!/bin/sh\ntrue\n')
     sched = scheduler(db, recording(runtime, []), tmp_path)
-    assert sched.run_all() == []
+    assert run_all(sched) == []
     sched.stop(timeout=5)
     with db.session() as s:
         row = s.get_one(AgentSession, 1)
@@ -370,8 +374,8 @@ def test_a_note_on_a_sweep_that_has_not_started_is_in_its_brief_and_is_not_sent_
         s.add(Comment(target=on_it, author='human', kind=CommentKind.NOTE, body='look at run#4 first'))
         s.commit()
     sched = scheduler(db, recording(runtime, []), tmp_path)
-    assert sched.run_all() == [1]
-    sched.wait()
+    assert run_all(sched) == [1]
+    sched.wait(SETTLE)
     sched.stop(timeout=5)
     assert '\n# Notes\nlook at run#4 first\n' in (tmp_path / 'agent_sessions' / '1' / 'brief.md').read_text()
     with db.session() as s:
@@ -390,14 +394,14 @@ def test_a_hand_over_leaves_a_sweep_running_and_the_next_scheduler_re_attaches_t
         s.add(AgentSession(kind=WATCHDOG, campaign_id=campaign.id, reason='by hand'))
         s.commit()
     first = scheduler(db, recording(runtime, []), tmp_path)
-    assert first.run_all() == [1]
+    assert run_all(first) == [1]
     wait_until((tmp_path / 'agent.pid').exists)
     first.hand_over(timeout=5)
     second = scheduler(db, recording(ScriptRuntime(), []), tmp_path)
     second.reap()
     hold.unlink()
-    second.wait()
-    first.wait()
+    second.wait(SETTLE)
+    first.wait(SETTLE)
     with db.session() as s:
         sweep = s.get_one(AgentSession, 1)
     assert (sweep.state, sweep.error) == (AgentSessionState.EXITED, None), 'the next daemon watched it to its end'
@@ -471,8 +475,8 @@ def test_a_package_adds_a_role_and_triggers_through_entry_points(
         auditor={'triggers': [{'provider': 'broken'}, {'provider': 'every_pass'}]},
     )
     sched = scheduler(db, recording(runtime, []), tmp_path)
-    assert sched.run_all() == [1]
-    sched.wait()
+    assert run_all(sched) == [1]
+    sched.wait(SETTLE)
     sched.stop(timeout=5)
     assert agent_sessions(db, 'auditor') == [(1, AgentSessionState.EXITED, 'every pass for auditor')]
     brief = (tmp_path / 'agent_sessions' / '1' / 'brief.md').read_text()
@@ -492,8 +496,8 @@ def test_only_a_trigger_that_names_the_quiet_phase_fires_and_launches_while_its_
         s.add(AgentSession(kind=WATCHDOG, campaign_id=campaign.id, reason='by hand'))
         s.commit()
     sched = scheduler(db, recording(runtime, []), tmp_path)
-    [audit] = sched.run_all()
-    sched.wait()
+    [audit] = run_all(sched)
+    sched.wait(SETTLE)
     assert agent_sessions(db, 'auditor') == [(audit, AgentSessionState.EXITED, 'every pass for auditor (paused)')], (
         'every_pass sleeps through the pause, and awake fires alone'
     )
@@ -504,10 +508,10 @@ def test_only_a_trigger_that_names_the_quiet_phase_fires_and_launches_while_its_
         ops.resume(s, campaign.id)
         ops.stop(s, campaign.id, System.HUMAN, reason='done', ending=Ending.WRAP_UP)
         s.commit()
-    sched.run_all()
-    sched.wait()
-    sched.run_all()
-    sched.wait()
+    run_all(sched)
+    sched.wait(SETTLE)
+    run_all(sched)
+    sched.wait(SETTLE)
     sched.stop(timeout=5)
     reasons = [reason for _, _, reason in agent_sessions(db, 'auditor')]
     assert 'every pass for auditor (stopped)' in reasons, 'checked again once the campaign is closed'
@@ -629,8 +633,8 @@ def test_example_plugins_replace_the_built_in_runtime_and_cas_through_the_config
     daemon = Daemon(home)
     try:
         daemon.scheduler.reap()
-        assert daemon.scheduler.run_all() == [1]
-        daemon.scheduler.wait()
+        assert run_all(daemon.scheduler) == [1]
+        daemon.scheduler.wait(SETTLE)
     finally:
         daemon.shutdown(timeout=5)
     with db.session() as s:

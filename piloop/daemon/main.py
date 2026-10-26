@@ -30,6 +30,7 @@ from piloop.plugins import host as plugins
 from piloop.plugins.archive.contract import ARCHIVES, CONSUMER, ArchiveHost
 from piloop.plugins.archive.local.store import ManifestNotMigrated, migrate_manifests
 from piloop.plugins.cas import contract as cas
+from piloop.plugins.contribution import CONTRIBUTORS
 from piloop.plugins.executor.contract import EXECUTORS, JOB_KINDS
 from piloop.plugins.network import contract as network
 from piloop.plugins.secrets.contract import SECRETS, HomeSecrets
@@ -39,7 +40,7 @@ from piloop.settings import CONFIG_FILE, Settings, settings
 from piloop.text import iso
 from piloop.version import code_digest
 
-DECLARED = (JOB_KINDS, TARGET_KINDS)
+DECLARED = (JOB_KINDS, TARGET_KINDS, CONTRIBUTORS)
 """The slots of what packages add that the daemon reads, which it checks before it starts."""
 ACTOR = System.DAEMON
 """The actor that the daemon's connections record in ``updated_by``. The change-log triggers use this name."""

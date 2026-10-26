@@ -46,11 +46,7 @@ class Archiver(Contributes, Protocol):
     """An opened archive provider. Its work is its consumer (``CONSUMER``), and runs outside the daemon's loop."""
 
     def contribution(self) -> Contribution:
-        """Its consumer ``CONSUMER``."""
-        ...
-
-    def stop(self, timeout: float) -> None:
-        """Stop, and wait up to ``timeout`` seconds for the job in flight. The daemon's stop calls it."""
+        """Its consumer ``CONSUMER``, and its ``Lifecycle``: the daemon's stop waits for the job in flight."""
         ...
 
 

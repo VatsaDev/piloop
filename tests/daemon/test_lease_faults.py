@@ -58,12 +58,14 @@ from piloop.plugins.vcs.git import bundles as store_commits
 from piloop.proc import alive, started
 from piloop.settings import Settings
 from tests.conftest import (
+    SETTLE,
     WRITE_PID,
     ScriptRuntime,
     at_head,
     baseline,
     factory,
     register,
+    run_all,
     serving,
     timed,
     wait_until,
@@ -394,7 +396,7 @@ def test_a_daemon_killed_during_a_run_keeps_the_lease_and_the_next_daemon_finish
     scheduler = next_daemon(db, tmp_path)
     scheduler.reap()
     hold.unlink()
-    scheduler.wait()
+    scheduler.wait(SETTLE)
     run = run_row(db, run_id)
     assert (run.status, run.error) == (RunStatus.SUCCEEDED, None)
     with db.session() as s:
@@ -469,7 +471,7 @@ def test_an_agent_that_a_daemon_before_leases_started_is_adopted_and_its_work_sc
         add_ideas(db, campaign, 'one line')
     else:
         request_watchdog(db, campaign)
-    assert first.run_all() == [1]
+    assert run_all(first) == [1]
     wait_until((tmp_path / 'agent.pid').exists)
     first.hand_over(timeout=5)
     with db.session() as s:  # what a daemon before leases leaves
@@ -497,7 +499,7 @@ def test_an_agent_that_a_daemon_before_leases_started_is_adopted_and_its_work_sc
         [adopted] = s.scalars(select(Lease)).all()
         assert (adopted.agent_session_id, adopted.state, adopted.worker) == (1, LeaseState.RUNNING, SERVE)
     hold.unlink()
-    second.wait()
+    second.wait(SETTLE)
     with db.session() as s:
         assert s.get_one(AgentSession, 1).state is AgentSessionState.EXITED
         assert s.get_one(Lease, adopted.id).state is LeaseState.REPORTED

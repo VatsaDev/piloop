@@ -27,6 +27,7 @@ from piloop.settings import Settings
 from tests.conftest import (
     HARNESS_NOOP,
     RESEARCH,
+    SETTLE,
     WATCHDOG,
     WRITE_PID,
     ScriptRuntime,
@@ -35,6 +36,7 @@ from tests.conftest import (
     disk,
     factory,
     register,
+    run_all,
     trace,
     wait_until,
     workers_of,
@@ -57,22 +59,22 @@ def test_daemon_end_to_end(
         s.commit()
 
     daemon.scheduler.reap()
-    assert daemon.scheduler.run_all() == [1]
-    daemon.scheduler.wait()
+    assert run_all(daemon.scheduler) == [1]
+    daemon.scheduler.wait(SETTLE)
     with daemon.db.session() as s:
         run = s.get_one(Run, 1)
         assert (run.status, run.updated_by) == (RunStatus.SUCCEEDED, ACTOR.signature)
-    assert daemon.scheduler.run_all() == [], 'a successful run does not wake the watchdog'
+    assert run_all(daemon.scheduler) == [], 'a successful run does not wake the watchdog'
 
     write_toml(campaign_path, HARNESS_NOOP)
     with daemon.db.session() as s:
         s.get_one(Campaign, campaign.id).config = load_campaign_config(campaign_path)
         s.add(Idea(track='score', campaign_id=campaign.id, title='bad', hypothesis='bad', created_by='t', max_runs=1))
         s.commit()
-    assert daemon.scheduler.run_all() == [2]
-    daemon.scheduler.wait()
-    assert daemon.scheduler.run_all() == [3], 'the failure requests a watchdog sweep, launched on the same tick'
-    daemon.scheduler.wait()
+    assert run_all(daemon.scheduler) == [2]
+    daemon.scheduler.wait(SETTLE)
+    assert run_all(daemon.scheduler) == [3], 'the failure requests a watchdog sweep, launched on the same tick'
+    daemon.scheduler.wait(SETTLE)
     with daemon.db.session() as s:
         watchdog = s.get_one(AgentSession, 3)
         assert (watchdog.kind, watchdog.reason, watchdog.state, watchdog.harness) == (
@@ -87,7 +89,7 @@ def test_daemon_end_to_end(
         'Why this agent started (context, not a scope): run_failed: run#2 failed' in brief
         and '## This sweep: an incident' in brief
     )
-    assert daemon.scheduler.run_all() == [], 'one sweep per failure'
+    assert run_all(daemon.scheduler) == [], 'one sweep per failure'
     assert trace(daemon.db) == snapshot(
         [
             'idea.created idea',
@@ -350,7 +352,7 @@ def test_an_in_place_restart_leaves_the_agents_running_and_the_new_daemon_finish
     second = Daemon(cfg)
     second.scheduler.reap()
     hold.unlink()
-    second.scheduler.wait()
+    second.scheduler.wait(SETTLE)
     with second.db.session() as s:
         run = s.get_one(Run, 1)
         assert (run.status, run.error, s.get_one(AgentSession, 1).state) == (
@@ -365,7 +367,7 @@ def test_an_in_place_restart_leaves_the_agents_running_and_the_new_daemon_finish
     wait_until(lambda: not (cfg.home / 'runs' / '1' / 'worktree').exists())  # once the agent's result is in
     second.shutdown(timeout=5)
     # In a real restart the exec ends the old thread. Here it lives on, sees its agent end, and leaves the run alone.
-    first.scheduler.wait()
+    first.scheduler.wait(SETTLE)
 
 
 def test_serve_refuses_when_a_daemon_holds_the_pid_file(

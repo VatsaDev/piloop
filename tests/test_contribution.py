@@ -1,6 +1,7 @@
 """Contributions: what a provider that the daemon opened, or an installed package, adds to the kernel."""
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from concurrent.futures import Future
 from datetime import datetime
 from importlib.metadata import EntryPoint
 from pathlib import Path
@@ -10,6 +11,7 @@ import httpx2 as httpx
 import pytest
 from fastapi import APIRouter
 from pydantic import BaseModel
+from pytest_mock import MockerFixture
 from sqlalchemy.orm import Session
 
 from piloop.actor import Actor, System
@@ -21,7 +23,7 @@ from piloop.daemon.loop import Consumer, Phase, Turn
 from piloop.daemon.main import DECLARED
 from piloop.daemon.run_controller import RunController
 from piloop.daemon.scheduler import Scheduler
-from piloop.db.models import TARGET_KINDS, Campaign, Idea
+from piloop.db.models import TARGET_KINDS, Campaign, Idea, utcnow
 from piloop.db.session import Database
 from piloop.net import Route
 from piloop.net.server import app, executor_router
@@ -30,7 +32,7 @@ from piloop.otel import Tracer
 from piloop.plugins import contribution
 from piloop.plugins.archive.contract import ArchiveHost
 from piloop.plugins.archive.local import LocalArchive
-from piloop.plugins.contribution import Contribution, collect
+from piloop.plugins.contribution import CONTRIBUTORS, Contribution, DaemonHost, collect, contributions_of, machinery
 from piloop.plugins.executor.contract import JOB_KINDS, AgentFinished, AgentJob, JobKind
 from piloop.plugins.executor.workers import Workers
 from piloop.plugins.host import PluginError
@@ -40,7 +42,8 @@ from piloop.plugins.network.contract import NetworkHost
 from piloop.plugins.network.https import Https
 from piloop.plugins.secrets.contract import HomeSecrets
 from piloop.plugins.secrets.local import LocalSecrets
-from piloop.settings import Settings
+from piloop.runtime.factory import make_runtime
+from piloop.settings import AgentSettings, DaemonSettings, Settings
 from tests.conftest import disk, serving_api
 from tests.daemon.test_roles import forget_loaded, installed
 from tests.fixtures.route_plugin import Greeting
@@ -71,9 +74,38 @@ def test_the_executor_s_upkeep_and_the_archiver_run_after_limits_and_before_the_
 
 def test_a_consumer_name_that_the_daemon_or_another_contribution_has_is_refused() -> None:
     with pytest.raises(PluginError, match="Archiver contributes the consumer 'archiver', which the daemon has already"):
-        collect([Archiver()], ['archiver'])
+        collect(contributions_of([Archiver()]), ['archiver'])
     with pytest.raises(PluginError, match="Archiver contributes the consumer 'archiver', which Archiver has already"):
-        collect([Archiver(), Archiver()], [])
+        collect(contributions_of([Archiver(), Archiver()]), [])
+
+
+def test_the_machinery_of_a_capability_adds_no_routes(db: Database, tmp_path: Path, mocker: MockerFixture) -> None:
+    """The API's document lists the routes of providers without a daemon, so only a provider adds routes."""
+    controller = RunController(db, Tracer(None), tmp_path, executor=Workers())
+    host = DaemonHost(
+        db,
+        Tracer(None),
+        tmp_path,
+        controller,
+        make_runtime,
+        utcnow,
+        idle_name,
+        DaemonSettings(),
+        AgentSettings(),
+        {},
+        idle_thread,
+    )
+    mocker.patch.object(CONTRIBUTORS, 'loaded', return_value={'routed': lambda _: Contribution(router=APIRouter())})
+    with pytest.raises(PluginError, match='the machinery of routed adds routes: only a provider adds routes'):
+        machinery(host)
+
+
+def idle_name(_name: str) -> None:
+    return None
+
+
+def idle_thread(_body: Callable[[], None]) -> Future[None]:
+    raise AssertionError('the machinery starts no thread here')
 
 
 class Ask(BaseModel):

@@ -32,6 +32,7 @@ from piloop.daemon.scheduler import Scheduler
 from piloop.db.models import Campaign, utcnow
 from piloop.db.session import Database
 from piloop.otel import Tracer
+from piloop.plugins.campaign_type.consumers import Campaigns
 from piloop.plugins.executor.workers import Workers
 from piloop.plugins.section.contract import Rendering, rendered
 from piloop.plugins.stop_rule.contract import Hold
@@ -300,7 +301,7 @@ class HotPaths:
         stopping = load_campaign_config(
             BLANK, plugins={'stop_rule': {'target': 1.0, 'max_runs': 10**6, 'max_hours': 10**6, 'plateau': 10**6}}
         )
-        scheduler = self._scheduler
+        campaigns = next(each for each in self._scheduler.contributions.lifecycles if isinstance(each, Campaigns))
 
         def each(body: Callable[[Campaign, CampaignConfig], object]) -> Callable[[], object]:
             return lambda: [body(p, cfg) for p, cfg in rows]
@@ -308,9 +309,9 @@ class HotPaths:
         def pass_over(p: Campaign, cfg: CampaignConfig) -> None:
             answer = escalated(s, p, cfg, check(s, p, cfg))
             if not isinstance(answer, Hold):
-                scheduler._triggers(s, p, cfg, answer, None, utcnow())
+                campaigns._triggers(s, p, cfg, answer, None, utcnow())
             s.flush()
-            scheduler._take(s, p, cfg, utcnow())
+            campaigns._take(s, p, cfg, utcnow())
             s.rollback()
 
         return {

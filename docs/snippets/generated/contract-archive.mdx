@@ -5,5 +5,4 @@
 | `ArchiveConfig.open(host: ArchiveHost) -> Archiver` | Make the archiver. The daemon calls it once, when it starts. |
 | `ArchiveConfig.restore(s: Session, cas: Cas, home: Path, campaign: Campaign, target: TargetRef \| str \| None) -> Restored` | Write archived files back into `campaign`'s workspace: a subject's, a workspace-relative path's, or all. |
 | `ArchiveConfig.summary(s: Session) -> Summary` | What the archive holds and what waits for its archiving, for `piloop store status`. |
-| `Archiver.contribution() -> Contribution` | Its consumer `CONSUMER`. |
-| `Archiver.stop(timeout: float) -> None` | Stop, and wait up to `timeout` seconds for the job in flight. The daemon's stop calls it. |
+| `Archiver.contribution() -> Contribution` | Its consumer `CONSUMER`, and its `Lifecycle`: the daemon's stop waits for the job in flight. |

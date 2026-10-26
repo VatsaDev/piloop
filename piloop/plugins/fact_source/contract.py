@@ -23,7 +23,7 @@ from piloop.plugins.host import Capability, Parameters
 if TYPE_CHECKING:  # piloop.config imports this module, and the database imports piloop.config
     from sqlalchemy.orm import Session
 
-    from piloop.db.models import Campaign
+    from piloop.db.models import Campaign, EventModel
 
 
 class FactReadError(Exception):
@@ -35,6 +35,9 @@ class FactSource(Parameters, ABC):
 
     ON_BY_DEFAULT: ClassVar[bool] = False
     """Whether a campaign that does not list its ``[[facts]]`` has this source, with its defaults."""
+    CHANGES: ClassVar[frozenset[type[EventModel]]] = frozenset()
+    """The events that ``record`` writes, which wake the campaigns' pass: its stop rule reads the new values. A source
+    whose facts change only with the campaign's state (its ideas, runs, agents, status and config) names none."""
 
     @abstractmethod
     def supplies(self) -> tuple[Fact[FactValue], ...]:

@@ -20,7 +20,7 @@ from piloop.plugins.archive.local.tables import Archive
 from piloop.plugins.cas.disk import DiskCas
 from piloop.plugins.executor.workers import Workers
 from tests.archive.test_store import files
-from tests.conftest import ScriptRuntime, factory, serving, wait_until, write_toml
+from tests.conftest import SETTLE, ScriptRuntime, factory, run_all, serving, wait_until, write_toml
 from tests.daemon.test_scheduler import add_ideas
 
 HARNESS_LEAVES_AN_ARRAY = (
@@ -52,12 +52,12 @@ def test_the_tick_archives_an_idea_once_its_run_is_judged_and_leaves_its_files_f
     (idea,) = add_ideas(db, campaign, 'leaves an array')
     assert idea == 1
     workspace = workspace_dir(tmp_path, campaign.id)
-    assert scheduler.run_all() == [1]
-    scheduler.wait()
+    assert run_all(scheduler) == [1]
+    scheduler.wait(SETTLE)
     assert files(workspace) == {'idea1/x.npy': b'array\n'}
 
     def archived() -> bool:
-        scheduler.run_all()
+        run_all(scheduler)
         with db.session() as s:
             return s.scalars(select(Archive)).first() is not None
 
@@ -85,7 +85,7 @@ def test_a_stopping_scheduler_waits_for_the_archivers_job(
         return real(db, store, tmp_path, utcnow())
 
     monkeypatch.setattr(archiver_module, 'prune_older', slow)
-    scheduler.run_all()  # the first tick starts the upkeep
+    run_all(scheduler)  # the first tick starts the upkeep
     assert started.wait(10)
     scheduler.stop(timeout=10)
     assert finished.is_set(), 'stop returned only after the upkeep'

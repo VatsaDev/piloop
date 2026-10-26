@@ -19,7 +19,7 @@ from piloop.ids import CommentKind, IdeaStatus, TargetKind
 from piloop.otel import Tracer
 from piloop.plugins.executor.workers import Workers
 from piloop.settings import Settings
-from tests.conftest import RESEARCH, ScriptRuntime, factory, serving, serving_api
+from tests.conftest import RESEARCH, SETTLE, ScriptRuntime, factory, run_all, serving, serving_api
 from tests.daemon.test_triggers import add_ideas, configure, finish_a_run, last_reason, low_water, occupy
 
 PYTHON = shlex.quote(sys.executable)
@@ -46,10 +46,8 @@ def test_research_sweep_inserts_ideas_signed_with_its_implementer_id(
     scheduler = Scheduler(db, controller, Tracer(None), tmp_path, factory(runtime))
 
     with serving_api(Settings(home=tmp_path)):  # the sweep's `piloop idea add` asks the daemon
-        assert scheduler.run_all() == [1], (
-            'a free implementer slot, no idea for it: low water requests a research sweep'
-        )
-        scheduler.wait()
+        assert run_all(scheduler) == [1], 'a free implementer slot, no idea for it: low water requests a research sweep'
+        scheduler.wait(SETTLE)
     scheduler.stop(timeout=5)
 
     with db.session() as s:
@@ -157,9 +155,9 @@ def test_a_seed_sweep_develops_one_seed_and_rejects_the_other_however_full_the_b
     scheduler = Scheduler(db, controller, Tracer(None), tmp_path, factory(runtime))
 
     with serving_api(Settings(home=tmp_path)):  # the sweep's `piloop idea develop` asks the daemon
-        assert scheduler.run_all() == [1], 'the one slot is busy and the backlog is at its target, but two seeds wait'
+        assert run_all(scheduler) == [1], 'the one slot is busy and the backlog is at its target, but two seeds wait'
         assert last_reason(db) == '2 new seeds to develop; stalled, step 1'
-        scheduler.wait()
+        scheduler.wait(SETTLE)
     scheduler.stop(timeout=5)
 
     brief = (tmp_path / 'agent_sessions' / '1' / 'brief.md').read_text()
@@ -202,8 +200,8 @@ def test_with_several_tracks_research_reads_them_and_which_are_short_of_their_sh
         s.commit()
     controller = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     scheduler = Scheduler(db, controller, Tracer(None), tmp_path, factory(runtime))
-    assert scheduler.run_all() == [1]
-    scheduler.wait()
+    assert run_all(scheduler) == [1]
+    scheduler.wait(SETTLE)
     scheduler.stop(timeout=5)
     brief = (tmp_path / 'projects' / str(campaign.id) / 'workspace' / 'brief-seen.txt').read_text()
     assert '- Your cwd is a detached checkout of candidate#1, the head (score=1.0, size=5.0)' in brief

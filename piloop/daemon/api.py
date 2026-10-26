@@ -129,7 +129,7 @@ from piloop.net.server import App, asked, authorized, changed, served
 from piloop.net.tokens import Caller
 from piloop.plugins import limits as limits_module
 from piloop.plugins.cas.contract import Cas
-from piloop.plugins.contribution import collect, installed
+from piloop.plugins.contribution import collect, contributions_of, installed
 from piloop.plugins.limits import live_keys
 from piloop.plugins.memory.contract import MEMORY
 from piloop.plugins.secrets import contract as secrets
@@ -954,7 +954,7 @@ def openapi() -> dict[str, object]:
     It is what ``GET /v1/openapi.json`` answers, and ``docs/reference/openapi.json``.
     """
     described = FastAPI(title='piloop', version='1')
-    for routes in (*ROUTERS, *collect(installed(), ()).routers):
+    for routes in (*ROUTERS, *collect(contributions_of(installed()), ()).routers):
         described.include_router(routes)
     return described.openapi()
 

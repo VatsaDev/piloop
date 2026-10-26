@@ -30,7 +30,7 @@ from piloop.plugins.trigger.cron import CronTrigger
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.reports.history import history
 from piloop.settings import Settings
-from tests.conftest import RESEARCH, SCOUT, ScriptRuntime, role_of, serving_api, write_toml
+from tests.conftest import RESEARCH, SCOUT, SETTLE, ScriptRuntime, role_of, run_all, serving_api, write_toml
 from tests.daemon.test_triggers import add_ideas, agent_sessions, backdate, configure, occupy, scheduler
 from tests.reports.test_overview import overview
 
@@ -68,17 +68,17 @@ def test_a_scout_sweep_fires_on_its_interval_as_a_row_of_its_own_beside_research
     configure(db, campaign, research={'max_ideas': 0}, scout={'interval': 60})
     sched = scheduler(db, runtime, tmp_path)
     occupy(db, campaign)
-    assert sched.run_all() == [], 'registered a moment ago: not due'
+    assert run_all(sched) == [], 'registered a moment ago: not due'
     scout_due(db, campaign, 61)
     add_ideas(db, campaign, 1, by='watchdog#9', status=IdeaStatus.SEED)
-    assert sorted(sched.run_all()) == [1, 2], 'a seed sweep and a scout sweep, each in a slot of its own role'
+    assert sorted(run_all(sched)) == [1, 2], 'a seed sweep and a scout sweep, each in a slot of its own role'
     assert agent_sessions(db, RESEARCH)[0][2] == '1 new seeds to develop'
     assert agent_sessions(db, SCOUT)[0][2] == 'timer: 60s'
-    sched.wait()
-    assert sched.run_all() == [], 'the last scout started a moment ago'
+    sched.wait(SETTLE)
+    assert run_all(sched) == [], 'the last scout started a moment ago'
     backdate(db, AgentSessionId(2), 61)
-    assert sched.run_all() == [3]
-    sched.wait()
+    assert run_all(sched) == [3]
+    sched.wait(SETTLE)
     sched.stop(timeout=5)
 
 
@@ -90,8 +90,8 @@ def test_a_scout_sweep_reads_its_context_signs_as_a_scout_and_files_only_seeds_a
     scout_due(db, campaign, 61)
     sched = scheduler(db, runtime, tmp_path)
     with serving_api(Settings(home=tmp_path)):  # the sweep's `piloop idea add` asks the daemon
-        assert sched.run_all() == [1]
-        sched.wait()
+        assert run_all(sched) == [1]
+        sched.wait(SETTLE)
     sched.stop(timeout=5)
 
     workspace = tmp_path / 'projects' / str(campaign.id) / 'workspace'
@@ -238,8 +238,8 @@ def test_a_scout_requested_by_hand_while_its_timer_is_off_files_the_default_numb
         s.add(AgentSession(kind=SCOUT, campaign_id=campaign.id, reason='by hand'))
         s.commit()
     sched = scheduler(db, runtime, tmp_path)
-    assert sched.run_all() == [1]
-    sched.wait()
+    assert run_all(sched) == [1]
+    sched.wait(SETTLE)
     sched.stop(timeout=5)
     brief = (tmp_path / 'projects' / str(campaign.id) / 'workspace' / 'brief-seen.txt').read_text()
     assert f'- Seeds you may file: at most {ScoutRole().seeds};' in brief

@@ -95,7 +95,7 @@ from piloop.ids import (
 from piloop.net import tokens
 from piloop.net.server import OPENAPI, Server, app, local_listener
 from piloop.net.tokens import Tokens
-from piloop.plugins.contribution import collect, installed
+from piloop.plugins.contribution import collect, contributions_of, installed
 from piloop.plugins.memory.local.api import JournalBody, Journaled
 from piloop.plugins.memory.local.tables import Journal
 from piloop.plugins.network.contract import NetworkHost
@@ -219,7 +219,7 @@ def test_the_server_serves_the_openapi_document_of_its_routes(cfg: Settings, db:
     with serving_api(cfg), Client.on(cfg.socket_file, System.HUMAN) as client:
         assert client._http.get(OPENAPI).json() == openapi()
     paths = openapi()['paths']
-    routers = (*ROUTERS, *collect(installed(), ()).routers)
+    routers = (*ROUTERS, *collect(contributions_of(installed()), ()).routers)
     assert isinstance(paths, dict) and sorted(paths) == sorted(
         {r.path for routes in routers for r in routes.routes if isinstance(r, APIRoute)}
     )

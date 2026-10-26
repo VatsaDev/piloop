@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, ClassVar, Literal, Protocol, Self
 from pydantic import Field, model_validator
 
 from piloop import deprecated
+from piloop.ids import CommentKind
 from piloop.plugins.host import Capability, Parameters
 from piloop.plugins.runtime.contract import RuntimeName
 from piloop.plugins.section.contract import Section, SectionEntry, Surface, chosen
@@ -21,6 +22,11 @@ from piloop.plugins.trigger.contract import Pass, TriggerEntry
 
 if TYPE_CHECKING:  # piloop.db.models types campaigns.config with the roles: only the annotations name the rows
     from piloop.db.models import AgentSession
+
+
+PUSHED_KINDS = (CommentKind.NOTE, CommentKind.FINDING, CommentKind.DECISION)
+"""Comment kinds that are sent to a running implementer. Escalations are for the human, and messages for the
+orchestrator."""
 
 
 class Files(StrEnum):

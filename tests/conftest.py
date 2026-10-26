@@ -13,6 +13,7 @@ import tomllib
 import weakref
 from collections.abc import Callable, Generator, Iterator
 from contextlib import contextmanager
+from datetime import datetime
 from importlib.metadata import EntryPoint, entry_points
 from pathlib import Path
 from typing import Concatenate
@@ -32,6 +33,7 @@ from piloop.config import CampaignConfig, load_campaign_config
 from piloop.daemon.api import Handlers, daemon_state, with_api
 from piloop.daemon.main import ACTOR
 from piloop.daemon.run_controller import RunController
+from piloop.daemon.scheduler import Scheduler
 from piloop.db.events import in_order
 from piloop.db.models import (
     AgentSession,
@@ -46,13 +48,14 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database, migrate
-from piloop.ids import CampaignId, RoleName
+from piloop.ids import AgentSessionId, CampaignId, RoleName
 from piloop.net.server import Server, app, local_listener, url
 from piloop.net.tokens import Tokens, mint_agent
 from piloop.otel import Tracer
 from piloop.plugins.archive.local import store as archive_module
+from piloop.plugins.campaign_type.consumers import Campaigns
 from piloop.plugins.cas.contract import CAS, Cas
-from piloop.plugins.contribution import collect, installed
+from piloop.plugins.contribution import collect, contributions_of, installed
 from piloop.plugins.executor.kit.leases import Timing
 from piloop.plugins.executor.workers import Workers, WorkersExecutor
 from piloop.plugins.executor.workers.worker import Worker
@@ -615,7 +618,7 @@ def serving_api(
     listener = network.listener()
     listeners = [local_listener(cfg.socket_file), *([] if listener is None else [listener])]
     api = Handlers(db, cfg, daemon_state(iso(utcnow()), None if listener is None else url(listener)), disk(cfg.home))
-    routers = collect(installed(), ()).routers
+    routers = collect(contributions_of(installed()), ()).routers
     servers = [Server(with_api(app(tokens, network, routers), api), each) for each in listeners]
     for server in servers:
         server.start()
@@ -685,3 +688,24 @@ def trace(db: Database) -> list[str]:
         return [
             f'{kind} {target}' for kind, target in s.execute(select(Event.kind, Event.target_kind).order_by(Event.id))
         ]
+
+
+SETTLE = 120.0
+"""How long a test waits for the daemon's threads in flight (``Scheduler.wait``): generous for a loaded host, since the
+wait returns as soon as nothing is in flight."""
+
+
+def campaigns_of(scheduler: Scheduler) -> Campaigns:
+    """The campaigns' pass of ``scheduler``: the campaign type capability's machinery."""
+    return next(each for each in scheduler.contributions.lifecycles if isinstance(each, Campaigns))
+
+
+def run_all(scheduler: Scheduler, now: datetime | None = None) -> list[AgentSessionId]:
+    """Run every consumer once, as the loop does when it starts, and return what the campaigns' pass launched."""
+    scheduler.run_all(now)
+    return campaigns_of(scheduler).launched
+
+
+def active(scheduler: Scheduler) -> list[AgentSessionId]:
+    """The agents whose threads run now."""
+    return sorted(AgentSessionId(int(name.partition('#')[2])) for name in campaigns_of(scheduler).in_flight())

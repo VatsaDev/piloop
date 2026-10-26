@@ -255,6 +255,7 @@ def registered() -> None:
     """Load every module that registers events: the daemon imports each layer, and opens the archive provider."""
     importlib.import_module('piloop.daemon.scheduler')
     importlib.import_module('piloop.plugins.archive.local')
+    importlib.import_module('piloop.plugins.campaign_type.optimization.planner')
 
 
 def release(tmp_path: Path, revision: str, setup: tuple[str, ...], rows: list[Row]) -> list[tuple[Event, str]]:

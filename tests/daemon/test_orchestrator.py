@@ -23,7 +23,7 @@ from piloop.plugins.trigger.news import NewsTaken, Urgency, urgency
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring.ledger import CandidateJudged
 from tests.agents.test_resume import HARNESS, SESSION
-from tests.conftest import ScriptRuntime, wait_until, write_toml
+from tests.conftest import SETTLE, ScriptRuntime, run_all, wait_until, write_toml
 from tests.daemon.test_roles import configure, recording, scheduler
 from tests.daemon.test_triggers import agent_sessions
 
@@ -81,8 +81,8 @@ def brief(tmp_path: Path, agent: AgentSessionId) -> str:
 
 def wake(db: Database, runtime: ScriptRuntime, tmp_path: Path) -> list[AgentSessionId]:
     sched = scheduler(db, recording(runtime, []), tmp_path)
-    launched = [a for a in sched.run_all() if kind(db, a) == ORCHESTRATOR]
-    sched.wait()
+    launched = [a for a in run_all(sched) if kind(db, a) == ORCHESTRATOR]
+    sched.wait(SETTLE)
     sched.stop(timeout=5)
     return launched
 

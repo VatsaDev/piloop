@@ -3,11 +3,13 @@
 | Member | What it is |
 |---|---|
 | `FactSource.ON_BY_DEFAULT: ClassVar[bool]` | Whether a campaign that does not list its `[[facts]]` has this source, with its defaults. |
+| `FactSource.CHANGES: ClassVar[frozenset[type[EventModel]]]` | The events that `record` writes, which wake the campaigns' pass: its stop rule reads the new values. A source whose facts change only with the campaign's state (its ideas, runs, agents, status and config) names none. |
 | `FactSource.supplies() -> tuple[Fact[FactValue], ...]` | The facts that it supplies. Two sources of a campaign never supply the same one. |
 | `FactSource.gather(s: Session, campaign: Campaign, wanted: frozenset[Fact[FactValue]], now: datetime) -> dict[Fact[FactValue], FactValue]` | The values of the facts in `wanted` that it supplies, as of `now`. It reads with `s`, never writes. |
 | `FactSource.due(s: Session, campaign: Campaign) -> datetime \| None` | When the daemon calls `read` next: a time at or before now reads now. |
 | `FactSource.read(repo: Path) -> dict[str, float]` | Read values by name, at the campaign's repo root. The daemon calls it outside any transaction, when it is due. |
 | `FactSource.record(s: Session, campaign: Campaign, values: dict[str, float] \| FactReadError) -> None` | Record what `read` returned or raised. The caller commits. By default, nothing. |
+| `Readings.CHANGES: ClassVar[frozenset[type[EventModel]]]` | Each reading is a `fact.read` event. |
 | `Readings.interval: float` | The number of seconds between two readings. |
 | `Readings.notices: dict[str, list[float]]` | Values by the name that it reads. When a value passes one, the daemon posts one note to the inbox, at priority 1. |
 | `Readings.names() -> tuple[str, ...]` | The names of the values that it reads. |

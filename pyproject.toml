@@ -109,6 +109,15 @@ memory = "piloop.plugins.memory.contract:MEMORY"
 archive = "piloop.plugins.archive.contract:ARCHIVES"
 harness = "piloop.plugins.harness.contract:HARNESSES"
 
+# What runs in the daemon for a capability, or for a provider that needs the daemon, by its name
+# (piloop.plugins.contribution.CONTRIBUTORS).
+[project.entry-points."piloop.contributors"]
+executor = "piloop.plugins.executor.consumers:contribution"
+fact_source = "piloop.plugins.fact_source.consumers:contribution"
+optimization = "piloop.plugins.campaign_type.optimization.consumers:contribution"
+role = "piloop.plugins.role.consumers:contribution"
+campaign_type = "piloop.plugins.campaign_type.consumers:contribution"
+
 [project.entry-points."piloop.runtimes"]
 subprocess = "piloop.plugins.runtime.subprocess:Subprocess"
 

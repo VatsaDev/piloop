@@ -29,7 +29,7 @@ from piloop.plugins.fact_source.kit.readings import FactRead, Readings
 from piloop.plugins.stop_rule.contract import STOP_RULES, Hold
 from piloop.reports.overview import progress
 from tests.campaign.test_stop import add_run
-from tests.conftest import WATCHDOG, ScriptRuntime, write_toml
+from tests.conftest import SETTLE, WATCHDOG, ScriptRuntime, run_all, write_toml
 from tests.daemon.test_roles import PLUGIN, installed
 from tests.daemon.test_scheduler import add_ideas, make_scheduler, request_watchdog, set_config, stop_campaign
 
@@ -199,25 +199,25 @@ def test_notices_once_then_at_the_limit_nothing_starts_until_the_limit_is_raised
     scheduler = make_scheduler(db, runtime, tmp_path)
 
     file.write_text('{"metrics": {"spend": 150}}\n')
-    assert scheduler.run_all() == [1], 'below the limit: launches go on'
+    assert run_all(scheduler) == [1], 'below the limit: launches go on'
     assert daemon_comments(db) == [('note', 1, 'Notice: spend is 150, past the 100 notice.')], (
         'the first reading posts the notices it is already past'
     )
-    assert scheduler.run_all() == [] and len(daemon_comments(db)) == 1, 'the interval is not up: no new reading'
+    assert run_all(scheduler) == [] and len(daemon_comments(db)) == 1, 'the interval is not up: no new reading'
 
     bill(db, campaign, file, '160')
-    assert scheduler.run_all() == [], 'below the limit, but the first run still holds the one slot'
+    assert run_all(scheduler) == [], 'below the limit, but the first run still holds the one slot'
     assert len(daemon_comments(db)) == 1, 'each notice once'
 
     bill(db, campaign, file, '1012')
     request_watchdog(db, campaign)
-    assert scheduler.run_all() == [], 'at the limit nothing launches, not even a row inserted by hand'
+    assert run_all(scheduler) == [], 'at the limit nothing launches, not even a row inserted by hand'
     assert daemon_comments(db)[1:] == [
         ('note', 1, 'Notice: spend is 1012, past the 200 notice.'),
         ('escalation', 0, f'Stop rule limits: spend reached its hold_at of 300: {HELD}'),
     ]
     hold.unlink()
-    scheduler.wait()
+    scheduler.wait(SETTLE)
     with db.session() as s:
         assert [(r.idea_id, r.status) for r in s.scalars(select(Run))] == [(first, RunStatus.SUCCEEDED)], (
             'what ran finished and was scored; nothing else was queued'
@@ -228,7 +228,7 @@ def test_notices_once_then_at_the_limit_nothing_starts_until_the_limit_is_raised
             ' · spend 1012/300 · no limit stops it: open-ended (launches held: spend at its limit)'
         )
     bill(db, campaign, file, '1013')
-    assert scheduler.run_all() == [] and len(daemon_comments(db)) == 3, 'one escalation for each limit'
+    assert run_all(scheduler) == [] and len(daemon_comments(db)) == 3, 'one escalation for each limit'
 
     (Path(campaign.path) / 'piloop.toml').write_text(
         (Path(campaign.path) / 'piloop.toml').read_text()
@@ -238,8 +238,8 @@ def test_notices_once_then_at_the_limit_nothing_starts_until_the_limit_is_raised
     with db.session() as s:
         sync(s, s.get_one(Campaign, campaign.id))  # This is what `piloop init` does.
         s.commit()
-    assert len(scheduler.run_all()) == 2, 'the limit raised: the watchdog and the next run launch'
-    scheduler.wait()
+    assert len(run_all(scheduler)) == 2, 'the limit raised: the watchdog and the next run launch'
+    scheduler.wait(SETTLE)
 
 
 def test_a_source_that_a_sync_adds_is_read_on_the_next_turn_without_a_restart(
@@ -263,7 +263,7 @@ def test_a_source_that_a_sync_adds_is_read_on_the_next_turn_without_a_restart(
     with db.session() as s:
         events = in_order(s, FactRead, Event.target == TargetRef(TargetKind.CAMPAIGN, campaign.id))
         assert [r.values for _, r in events] == [{'spend': 412.3}]
-    scheduler.wait()
+    scheduler.wait(SETTLE)
 
 
 def test_a_failing_source_holds_launches_and_escalates_once_for_each_series_of_failures(
@@ -274,12 +274,12 @@ def test_a_failing_source_holds_launches_and_escalates_once_for_each_series_of_f
     add_ideas(db, campaign, 'idea')
     scheduler = make_scheduler(db, runtime, tmp_path)
 
-    assert scheduler.run_all() == [], 'no bill yet: the spend is unknown, not 0'
+    assert run_all(scheduler) == [], 'no bill yet: the spend is unknown, not 0'
     [(kind, priority, body)] = daemon_comments(db)
     assert (kind, priority) == ('escalation', 0)
     assert body.startswith('Fact source command (spend): the reading failed (exit 1: cat: ')
     bill(db, campaign, file, 'oops')
-    assert scheduler.run_all() == [] and len(daemon_comments(db)) == 1, 'the same series: no second escalation'
+    assert run_all(scheduler) == [] and len(daemon_comments(db)) == 1, 'the same series: no second escalation'
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
         assert progress(s, p, CampaignConfig.model_validate(p.config), p.created_at).endswith(
@@ -287,10 +287,10 @@ def test_a_failing_source_holds_launches_and_escalates_once_for_each_series_of_f
         )
 
     bill(db, campaign, file, '12')
-    assert scheduler.run_all() == [1], 'a reading again: launches resume'
-    scheduler.wait()
+    assert run_all(scheduler) == [1], 'a reading again: launches resume'
+    scheduler.wait(SETTLE)
     bill(db, campaign, file, 'oops')
-    scheduler.run_all()
+    run_all(scheduler)
     assert len(daemon_comments(db)) == 2, 'a new series, a new escalation'
 
 

@@ -17,7 +17,7 @@ from piloop.ids import CampaignId, IdeaStatus, TargetKind
 from piloop.plugins.vcs.git import GitRepository
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring.ledger import RejudgeFailed, head, import_reference, rejudges, request_remeasure
-from tests.conftest import HARNESS_WORSE, Gate, ScriptRuntime, write_script
+from tests.conftest import HARNESS_WORSE, SETTLE, Gate, ScriptRuntime, run_all, write_script
 from tests.daemon.test_run_controller import candidates, controller, execute, keep_elsewhere, make_run
 from tests.daemon.test_scheduler import add_ideas, make_scheduler, measured_by, request_watchdog, statuses
 
@@ -35,7 +35,7 @@ def test_a_paused_campaign_launches_nothing_requests_nothing_and_escalates_nothi
     add_ideas(db, campaign, 'more lines')
     watchdog = request_watchdog(db, campaign)
     pause(db, evals=False)
-    assert sched.run_all() == [] and sched.run_all() == []
+    assert run_all(sched) == [] and run_all(sched) == []
     assert statuses(db) == [IdeaStatus.READY], 'no run is queued'
     with db.session() as s:
         agent_sessions = s.scalars(select(AgentSession)).all()
@@ -45,7 +45,7 @@ def test_a_paused_campaign_launches_nothing_requests_nothing_and_escalates_nothi
         assert s.scalars(select(Comment)).all() == [], 'a pause raises no escalation'
         ops.resume(s, CampaignId(1))
         s.commit()
-    launched = sched.run_all()
+    launched = run_all(sched)
     assert watchdog in launched and len(launched) == 2, 'the request and the run of the idea'
     assert statuses(db) == [IdeaStatus.SCHEDULED]
     sched.stop(timeout=10)
@@ -67,12 +67,12 @@ def test_a_pause_still_measures_what_the_evaluator_needs_unless_it_holds_the_eva
         s.commit()
     sched = make_scheduler(db, runtime, tmp_path)
     pause(db, evals=True)
-    sched.run_all()
-    sched.wait()
+    run_all(sched)
+    sched.wait(SETTLE)
     assert measured_by(db, reference) == [], 'held'
     pause(db, evals=False)
-    sched.run_all()
-    sched.wait()
+    run_all(sched)
+    sched.wait(SETTLE)
     assert measured_by(db, reference) == [(1, 3.0, None)], 'a pause of the launches only still measures'
     sched.stop(timeout=5)
 
@@ -99,11 +99,11 @@ def test_the_daemon_judges_a_discard_again_with_a_measurement_by_hand(
     sched = make_scheduler(db, runtime, tmp_path)
     gate, asked = Gate(), mocker.spy(RunController, 'rejudge')
     monkeypatch.setattr(sched._controller, 'rejudge', gate.wrap(sched._controller.rejudge))
-    sched.run_all()
+    run_all(sched)
     assert gate.entered.wait(10)
-    sched.run_all()
+    run_all(sched)
     gate.release.set()
-    sched.wait()
+    sched.wait(SETTLE)
     assert asked.call_count == 1, 'one judgement at a time in the campaign slot'
     with db.session() as s:
         c = s.get_one(Candidate, worse.id)
@@ -137,8 +137,8 @@ def test_the_daemon_judges_a_skipped_commit_with_a_measurement_by_hand(
         s.commit()
     assert added.rejudged and 'judges it' in added.effect
     sched = make_scheduler(db, runtime, tmp_path)
-    sched.run_all()
-    sched.wait()
+    run_all(sched)
+    sched.wait(SETTLE)
     with db.session() as s:
         judged = s.get_one(Candidate, scaffold_id)
         assert (judged.origin, judged.verdict) == (Origin.RUN, Outcome.KEEP), (
@@ -160,8 +160,8 @@ def test_a_skipped_commit_is_measured_on_request_and_judged(
         s.commit()
         scaffold_id = scaffold.id
     sched = make_scheduler(db, runtime, tmp_path)
-    sched.run_all()
-    sched.wait()
+    run_all(sched)
+    sched.wait(SETTLE)
     with db.session() as s:
         again = s.get_one(Candidate, scaffold_id)
         assert (again.origin, again.verdict, len(again.measurements)) == (Origin.RUN, Outcome.KEEP, 1), (
@@ -187,8 +187,8 @@ def test_the_daemon_judges_the_merge_onto_the_head_of_a_hand_keep_off_the_head(
     assert done.rebased is not None and done.rebased.rebased is not None
     merged = done.rebased.rebased
     sched = make_scheduler(db, runtime, tmp_path)
-    sched.run_all()
-    sched.wait()
+    run_all(sched)
+    sched.wait(SETTLE)
     with db.session() as s:
         c = s.get_one(Candidate, merged)
         assert (c.verdict, c.verdict_by, len(c.measurements)) == (Outcome.DISCARD, System.DAEMON, 1), (

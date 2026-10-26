@@ -27,7 +27,7 @@ from piloop.otel import Tracer
 from piloop.plugins.archive.contract import ArchiveHost
 from piloop.plugins.archive.local import LocalArchive
 from piloop.plugins.executor.workers import Workers
-from tests.conftest import ScriptRuntime, at_head, disk, factory, register, trace
+from tests.conftest import ScriptRuntime, at_head, disk, factory, register, run_all, trace
 
 
 @dataclass
@@ -160,7 +160,7 @@ def test_each_kind_wakes_the_consumers_that_it_woke_before(consumers: tuple[Cons
             'comment.undelivered': [],
             'evaluation.cancelled': ['evaluations'],
             'evaluator.metric_lines': [],
-            'fact.read': [],
+            'fact.read': ['campaigns'],
             'idea.base_candidate_id': ['campaigns'],
             'idea.created': ['campaigns'],
             'idea.deleted': ['campaigns'],
@@ -343,7 +343,7 @@ def test_routing_by_kind_decides_what_a_pass_on_every_change_decides(
     ran: list[str] = []
     loop = Loop(db, [replace(c, run=recorded(c, ran)) for c in routed.scheduler.consumers()], clock)
     loop.start()
-    every.scheduler.run_all()
+    run_all(every.scheduler)
     writers = [Database(str(h.db.engine.url), actor=System.HUMAN) for h in (routed, every)]
     turns: list[list[str]] = []
     try:
@@ -356,7 +356,7 @@ def test_routing_by_kind_decides_what_a_pass_on_every_change_decides(
             while loop.turn():
                 pass
             turns.append(list(ran))
-            every.scheduler.run_all()
+            run_all(every.scheduler)
             assert state(routed.db) == state(every.db), write
     finally:
         for writer in writers:

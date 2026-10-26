@@ -28,6 +28,7 @@ from piloop.plugins.cas.cached import CachedCas
 from piloop.plugins.cas.contract import Cas
 from piloop.plugins.cas.disk import DiskCas
 from piloop.plugins.cas.kit.objects import ObjectsCas
+from piloop.plugins.contribution import Leaving
 from piloop.settings import GB
 from tests.archive.test_store import add_idea, add_run, big_idea, files, ref, write
 from tests.conftest import events
@@ -83,7 +84,7 @@ def test_the_policy_takes_the_reserve_from_the_host_and_defaults_the_rest(
     policy = archiver._policy
     assert (policy.reserve, policy.prune_after, policy.retry) == (2 * GB, timedelta(days=7), timedelta(minutes=10))
     assert policy.live == {'NOTES.md', 'research'}
-    archiver.stop(0)
+    archiver.stop(Leaving.STOP, 0)
 
 
 def test_the_archiver_runs_one_job_at_a_time_and_pauses_after_a_failure(
@@ -366,7 +367,7 @@ def test_a_stopping_daemon_ends_the_upkeep_between_steps(
         s.add(Archive(campaign_id=campaign.id, created_at=utcnow() - timedelta(days=30)))
         s.commit()
     archiver = opened(db, store, home, tracer)
-    archiver.stop(0)  # the daemon stops while the upkeep runs
+    archiver.stop(Leaving.STOP, 0)  # the daemon stops while the upkeep runs
     archiver._upkeep()
     assert spans_named(spans, 'piloop.store.upkeep')[0]['stopped'] is True and evicted == []
     with db.session() as s:

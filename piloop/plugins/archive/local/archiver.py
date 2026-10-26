@@ -24,7 +24,7 @@ from piloop.ids import Ref, TargetKind, TargetRef
 from piloop.plugins.archive.contract import CONSUMER, ArchiveHost
 from piloop.plugins.archive.local.store import Job, archive, due, make_room, prune_older
 from piloop.plugins.cas.contract import Upkeep
-from piloop.plugins.contribution import Contribution
+from piloop.plugins.contribution import Contribution, Leaving
 from piloop.store.tree import Cancelled
 
 
@@ -88,14 +88,21 @@ class LocalArchiver:
         self._upkept_at = -math.inf
 
     def contribution(self) -> Contribution:
-        """Its consumer, which starts the next job."""
-        return Contribution(consumers=(Consumer(CONSUMER, WAKES, self._turn, Phase.UPKEEP),))
+        """Its consumer, which starts the next job, and its lifecycle."""
+        return Contribution(consumers=(Consumer(CONSUMER, WAKES, self._turn, Phase.UPKEEP),), lifecycle=self)
 
     def _turn(self, turn: Turn) -> datetime | None:
         return self.run(turn.now)
 
-    def stop(self, timeout: float) -> None:
-        """Start nothing more, and wait up to ``timeout`` seconds for the job in flight."""
+    def start(self) -> None:
+        """Nothing: what a previous daemon left is due again, and its consumer starts it."""
+
+    def in_flight(self) -> dict[str, Future[None]]:
+        """Nothing that a stop waits for beside its own wait (``stop``)."""
+        return {}
+
+    def stop(self, leaving: Leaving, timeout: float) -> None:
+        """Start nothing more, and wait up to ``timeout`` seconds for the job in flight, however the daemon leaves."""
         self._stop.set()
         wait(self._running(), timeout=timeout)
         self._pool.shutdown(wait=False, cancel_futures=True)

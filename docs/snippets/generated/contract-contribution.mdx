@@ -4,7 +4,8 @@
 |---|---|
 | `Contributes.contribution() -> Contribution` | What it adds to core. The daemon asks once, after it opened the provider. |
 | `Contribution.consumers: tuple[Consumer, ...]` | Jobs of the daemon's loop. Each names its `Phase`: within one, a turn runs them in the order of their contributions. |
-| `Contribution.router: APIRouter \| None` | Routes of the daemon's server, beside the API's. A route of a method and path that is taken is refused. |
+| `Contribution.router: APIRouter \| None` | Routes of the daemon's server, beside the API's. A route of a method and path that is taken is refused. Only a provider adds routes: the API's document lists them without a daemon. |
+| `Contribution.lifecycle: Lifecycle \| None` | What it does when the daemon starts and stops. |
 | `Consumer.name: str` | Its name, unique in the daemon. `Loop.wake` runs it by this name. |
 | `Consumer.wakes_on: Kinds` | The event models whose new events run it in the next turn. |
 | `Consumer.run: Callable[[Turn], datetime \| None]` | Do the job from the tables, and return when it must run again for time alone, or None. |
