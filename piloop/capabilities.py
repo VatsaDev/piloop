@@ -93,6 +93,19 @@ from piloop.plugins.stop_rule.contract import Go, GO, Hold, Stop, Escalate
 from piloop.plugins.stop_rule.limits import Limits
 
 from piloop.db.models import EventModel, Base
+from piloop.db.schema import Schema
+
+from piloop.plugins.campaign_type.contract import CAMPAIGN_TYPES, CampaignType
+from piloop.plugins.campaign_type.optimization import Optimization
+
+from piloop.plugins.memory.contract import MEMORY, MemoryProvider, Synced
+from piloop.plugins.memory.local import LocalMemory
+
+from piloop.plugins.archive.contract import ARCHIVES, ArchiveConfig, ArchiveHost, Archiver
+from piloop.plugins.archive.contract import Restored, Summary, CampaignArchived
+from piloop.ids import TargetKind, TargetRef
+from piloop.store.tree import Materialised, Copy
+from piloop.plugins.archive.local import LocalArchive
 from piloop.plugins.executor.contract import EXECUTORS, Executor, ExecutorConfig, Host
 from piloop.plugins.executor.contract import Results, Settled
 from piloop.plugins.executor.contract import AgentJob, EvaluationJob, LeftJob

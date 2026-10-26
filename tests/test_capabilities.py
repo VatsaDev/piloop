@@ -34,7 +34,8 @@ from piloop.plugins.runtime.contract import NotSteerable
 
 HELPERS: set[object] = {
     capabilities.EventModel,  # what a provider's events subclass, as an executor's capacity_events
-    capabilities.Base,  # what a package's tables subclass (piloop.tables)
+    capabilities.Base,  # what a package's tables subclass (piloop.schemas)
+    capabilities.Schema,  # what a package declares its tables in (piloop.schemas)
     capabilities.MissingProvider,
     capabilities.Live,
     NotSteerable,

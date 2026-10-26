@@ -22,6 +22,8 @@ from piloop.deprecated import PiloopDeprecationWarning
 from piloop.plugins.fact_source.campaign import CampaignFacts
 from piloop.plugins.fact_source.command import Command
 from piloop.plugins.fact_source.optimization import OptimizationFacts
+from piloop.plugins.memory.contract import MEMORY
+from piloop.plugins.memory.local import LocalMemory
 from piloop.plugins.role.research import ResearchRole
 from piloop.plugins.role.watchdog import WatchdogRole
 from piloop.plugins.section.lessons import Lessons
@@ -144,6 +146,25 @@ def test_wake_budget_is_the_budget_of_the_lessons_section_of_each_role(campaign_
     assert lessons == {'implementer': 200, 'watchdog': 400, 'research': None, 'scout': 200}, (
         "[memory]'s budget for every role but the watchdog, whose old default was its own; 0 leaves them out"
     )
+
+
+def test_memory_documents_are_the_documents_of_plugins_memory_whose_own_value_wins(campaign_path: Path) -> None:
+    write_toml(campaign_path, HARNESS_APPEND)
+    toml = campaign_path / 'piloop.toml'
+    text = toml.read_text()
+    toml.write_text(text + '\n[memory]\ndocuments = ["docs/*.md"]\nwake_budget = 400\n')
+    with pytest.warns(PiloopDeprecationWarning) as record:
+        cfg = load_campaign_config(campaign_path)
+    assert MEMORY.selected(cfg.plugins) == LocalMemory(documents=['docs/*.md']), 'the [memory] table goes with its keys'
+    line = toml.read_text().splitlines().index('[memory]') + 2
+    assert [(str(w.message).partition(';')[0], w.lineno) for w in record] == [
+        ('wake_budget is deprecated', line + 1),
+        ('[memory] documents is deprecated', line),
+    ]
+    toml.write_text(text + '\n[plugins.memory]\ndocuments = ["notes/*.md"]\n\n[memory]\ndocuments = ["docs/*.md"]\n')
+    with pytest.warns(PiloopDeprecationWarning, match=r'\[memory\] documents is deprecated'):
+        cfg = load_campaign_config(campaign_path)
+    assert MEMORY.selected(cfg.plugins) == LocalMemory(documents=['notes/*.md'])
 
 
 def test_the_anomaly_trigger_is_the_two_incident_triggers_in_its_place(campaign_path: Path) -> None:

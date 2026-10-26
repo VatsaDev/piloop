@@ -1,12 +1,24 @@
 """Add to the events feed, and find events in it. Every state change that piloop makes goes through ``emit``."""
 
+from typing import Literal
+
 from pydantic_core import to_jsonable_python
 from sqlalchemy import ColumnElement, and_, func, select
 from sqlalchemy.orm import Session
 
 from piloop.actor import Actor
 from piloop.db.models import Event, EventModel
-from piloop.ids import TargetRef
+from piloop.ids import CampaignId, TargetRef
+
+
+class SubjectSettled(EventModel):
+    """On a subject (``idea#12``): its work is over.
+
+    So the top-level workspace entries named after it (``idea12``, ``idea12-…``) are final.
+    """
+
+    kind: Literal['subject.settled'] = 'subject.settled'
+    campaign: CampaignId
 
 
 def emit(s: Session, event: EventModel, target: TargetRef, actor: Actor) -> Event:

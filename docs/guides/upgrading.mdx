@@ -203,6 +203,18 @@ A stop rule reads `StopCase.facts` by typed key (`case.facts.get(KEEPS)`, `case.
 of `Progress`. It shows its own progress line (`describe`), escalates itself (`Escalate(reason, then=...)`), and says
 what a stop while it holds does (`while_held`). A hold no longer posts an escalation of piloop's own.
 
+### Memory documents
+
+`[memory] documents` is `documents` in [`[plugins.memory]`](/concepts/research-memory#documents); the old key works
+until 0.4.0, with a warning.
+
+### Archivings of subjects
+
+An archiving is of a subject: `archives.subject_kind` and `archives.subject_id` replace `archives.idea_id`, and
+`anomaly.disk` events name it in `subject` (`"idea#12"`) in place of `idea`. The migration rewrites both. A query of
+`archives.idea_id` reads `subject_id WHERE subject_kind = 'idea'`. `piloop store status` counts settled subjects in
+place of done ideas.
+
 ## Upgrading to 0.3.0
 
 ### First, piloop 0.2.1

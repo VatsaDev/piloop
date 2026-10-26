@@ -13,7 +13,8 @@ from typing import Annotated, Literal
 
 from pydantic import JsonValue
 
-from piloop.db.models import EventModel, Origin, Pause
+from piloop.db.events import SubjectSettled
+from piloop.db.models import OPEN_RUNS, EventModel, Origin, Pause
 from piloop.db.triggers.ddl import Event, Trigger
 from piloop.db.triggers.provenance import DAEMON_ACTOR, NOW, SESSION_ACTOR
 from piloop.ids import (
@@ -378,6 +379,49 @@ def inserted(
     )
 
 
+OPEN = f'({", ".join(repr(s.value) for s in OPEN_RUNS)})'
+"""``OPEN_RUNS``, as a SQL list."""
+DONE = f"'{IdeaStatus.DONE}'"
+
+
+def _no_open_run(idea: str, besides: str | None = None) -> str:
+    """Whether the idea ``idea`` (SQL) has no open run, besides the run ``besides`` (SQL)."""
+    other = '' if besides is None else f' AND id != {besides}'
+    return f'NOT EXISTS (SELECT 1 FROM runs WHERE idea_id = {idea}{other} AND status IN {OPEN})'
+
+
+SETTLED = (
+    Trigger(
+        'ideas_settled_event',
+        'ideas',
+        'AFTER UPDATE',
+        of=('status',),
+        when=f'OLD.status IS NOT {DONE} AND NEW.status = {DONE} AND {_no_open_run("NEW.id")}',
+        body=event_insert(
+            SESSION_ACTOR, "'idea'", 'NEW.id', payload(SubjectSettled, 'NEW', campaign='NEW.campaign_id')
+        ),
+        temp=True,
+    ),
+    Trigger(
+        'runs_settled_event',
+        'runs',
+        'AFTER UPDATE',
+        of=('status',),
+        when=f'OLD.status IN {OPEN} AND NEW.status NOT IN {OPEN}'
+        f' AND (SELECT status FROM ideas WHERE id = NEW.idea_id) = {DONE}'
+        f' AND {_no_open_run("NEW.idea_id", "NEW.id")}',
+        body=event_insert(
+            SESSION_ACTOR,
+            "'idea'",
+            'NEW.idea_id',
+            payload(SubjectSettled, 'NEW', campaign='(SELECT campaign_id FROM ideas WHERE id = NEW.idea_id)'),
+        ),
+        temp=True,
+    ),
+)
+"""``subject.settled`` on an idea that is newly done with no run open: it becomes ``done`` with none open, or its last
+open run ends while it is ``done``."""
+
 OUTBOX = (
     inserted(AgentSessionRequested, 'agent_sessions', ("'agent_session'", 'NEW.id'), when="NEW.state = 'requested'"),
     inserted(IdeaCreated, 'ideas', ("'idea'", 'NEW.id'), actor='NEW.created_by'),
@@ -416,6 +460,7 @@ OUTBOX = (
         body=event_insert(SESSION_ACTOR, *HOME_TARGET, payload(LimitUnset, 'OLD')),
         temp=True,
     ),
+    *SETTLED,
 )
 """The writes that the daemon reacts to and that no decision above logs, so that it wakes on the event."""
 
@@ -435,7 +480,7 @@ CHANGES = (
     changed(CampaignPausedChanged),
     changed(CommentAcked),
 )
-"""The decisions that are logged. To log another column, add its ``Changed`` model here and run ``make docs``."""
+"""The decisions that are logged. To log another column, add its ``Changed`` model here."""
 TOMBSTONES = (tombstone(IdeaDeleted), tombstone(CommentDeleted), tombstone(CandidateDeleted))
 """The deletes that are logged, with the key columns, so the feed can still say what was there."""
 COMMENTS = (comment_event(),)

@@ -619,7 +619,7 @@
     "/v1/campaigns": {
       "post": {
         "summary": "Register Campaign",
-        "description": "Register a campaign: a checkout where it is, or a repository that the daemon clones under its home first.\n\nIt adds the campaign with its head version as the baseline candidate, and syncs the ``[memory]`` documents. The\ndaemon then measures the baseline: its ``measurement.recorded`` event comes after the answer's cursor, and a\nbaseline that fails pauses the campaign. A clone that does not register is deleted.",
+        "description": "Register a campaign: a checkout where it is, or a repository that the daemon clones under its home first.\n\nIt adds the campaign with its head version as the baseline candidate, and syncs its documents into its memory. The\ndaemon then measures the baseline: its ``measurement.recorded`` event comes after the answer's cursor, and a\nbaseline that fails pauses the campaign. A clone that does not register is deleted.",
         "operationId": "register_campaign",
         "requestBody": {
           "content": {
@@ -686,7 +686,7 @@
     "/v1/campaigns/{campaign}/sync": {
       "post": {
         "summary": "Sync Campaign",
-        "description": "Read the campaign's ``piloop.toml`` again, and sync its ``[memory]`` documents.\n\nA changed evaluate command, metric set or link makes a new evaluator. A stopped campaign whose stop conditions\nchanged is active again.",
+        "description": "Read the campaign's ``piloop.toml`` again, and sync its documents into its memory.\n\nA changed evaluate command, metric set or link makes a new evaluator. A stopped campaign whose stop conditions\nchanged is active again.",
         "operationId": "sync_campaign",
         "parameters": [
           {
@@ -1805,65 +1805,6 @@
               }
             },
             "description": "Conflict"
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/journal": {
-      "post": {
-        "summary": "Journal",
-        "description": "Append a line to the orchestrator's journal, signed by the caller's actor. ``piloop wake`` prints it.",
-        "operationId": "journal",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/JournalBody"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Journaled"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Not Found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDetail"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Conflict",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDetail"
-                }
-              }
-            }
           },
           "422": {
             "description": "Validation Error",
@@ -3110,6 +3051,65 @@
               }
             },
             "description": "Conflict"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/journal": {
+      "post": {
+        "summary": "Journal",
+        "description": "Append a line to the orchestrator's journal, signed by the caller's actor. ``piloop wake`` prints it.",
+        "operationId": "journal",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JournalBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Journaled"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
           },
           "422": {
             "description": "Validation Error",
@@ -6280,7 +6280,7 @@
           "skipped"
         ],
         "title": "Synced",
-        "description": "What one sync of the ``[memory]`` documents did: the files that it added, those already in, those it skipped."
+        "description": "What one sync of the campaign's documents did: the files that it added, those already in, those it skipped."
       },
       "Table": {
         "properties": {

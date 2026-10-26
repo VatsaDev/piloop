@@ -3,7 +3,7 @@
 from sqlalchemy import Column, Enum
 from sqlalchemy.dialects import sqlite
 
-from piloop.db.models import Base
+from piloop.db.schema import tables as owned
 from piloop.db.triggers.fts import FTS_COLUMNS
 from scripts.generate import SNIPPETS, header
 
@@ -19,7 +19,7 @@ def _column_type(column: Column[object]) -> str:
 def generate() -> str:
     """Return a Mermaid entity-relationship diagram of every table, with its columns, and one line per foreign key."""
     lines = ['```mermaid', 'erDiagram']
-    tables = list(Base.metadata.tables.values())
+    tables = owned()
     for table in tables:
         lines.append(f'    {table.name} {{')
         for column in table.columns:

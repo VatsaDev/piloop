@@ -10,14 +10,18 @@ import pytest
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from inline_snapshot import snapshot
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 
+from piloop.actor import System
+from piloop.daemon.main import ACTOR
 from piloop.db import sql, triggers
-from piloop.db.models import Base
-from piloop.db.session import migrate
+from piloop.db.events import SubjectSettled, in_order
+from piloop.db.models import Campaign, Idea, Run, RunStatus
+from piloop.db.schema import schemas, tables
+from piloop.db.session import Database, migrate
 from piloop.db.triggers import PERSISTENT, TEMP, Trigger, changelog, provenance
 from piloop.ids import TargetKind
-from tests.conftest import disk
+from tests.conftest import disk, end_of
 
 
 def trigger_names(con: sqlite3.Connection, schema: str = 'main') -> list[str]:
@@ -25,12 +29,12 @@ def trigger_names(con: sqlite3.Connection, schema: str = 'main') -> list[str]:
     return [n for (n,) in con.execute(f"SELECT name FROM {master} WHERE type = 'trigger' ORDER BY name")]
 
 
-def test_the_generated_file_is_the_package_rendered() -> None:
-    """``make docs`` writes the TEMP triggers that every connection installs; the tuples in the package are the source."""
-    assert triggers.temp_sql() == sql.ACTOR_TRIGGERS, 'stale piloop/db/actor_triggers.sql: run `make docs`'
-    assert all(t.temp and t.sql() in sql.ACTOR_TRIGGERS for t in TEMP)
+def test_piloop_s_schemas_share_its_triggers_by_table_and_every_connection_creates_the_temp_ones() -> None:
+    declared = [t for schema in schemas().values() for t in schema.triggers]
+    assert sorted(t.name for t in declared) == sorted(t.name for t in (*PERSISTENT, *TEMP)), 'each on one schema'
+    assert all(t.temp and t.sql() in sql.declared().actor_sql for t in TEMP)
     assert all(not t.temp and 'CREATE TEMP' not in t.sql() for t in PERSISTENT)
-    assert 'CREATE TRIGGER' not in sql.ACTOR_TRIGGERS
+    assert 'CREATE TRIGGER' not in sql.declared().actor_sql
 
 
 def test_every_trigger_is_one_statement_named_table_what_and_references_real_columns(tmp_path: Path) -> None:
@@ -49,7 +53,7 @@ def test_every_trigger_is_one_statement_named_table_what_and_references_real_col
     assert len({t.name for t in (*PERSISTENT, *TEMP)}) == len(PERSISTENT) + len(TEMP), 'names are unique'
     for t in (*PERSISTENT, *TEMP):
         assert t.name.startswith(f'{t.table}_'), t.name
-        columns = Base.metadata.tables[t.table].columns
+        columns = {table.name: table for table in tables()}[t.table].columns
         referenced = set(re.findall(r'\b(?:NEW|OLD)\.(\w+)', f'{t.when or ""} {t.body}'))
         assert referenced <= set(columns.keys()) and set(t.of) <= set(columns.keys()), t.name
     assert [t.name for t in PERSISTENT] == snapshot(
@@ -113,6 +117,8 @@ def test_every_trigger_is_one_statement_named_table_what_and_references_real_col
             'limits_set_event',
             'limits_updated_event',
             'limits_unset_event',
+            'ideas_settled_event',
+            'runs_settled_event',
             'comments_no_late_finding',
             'events_checked',
             'events_next_id',
@@ -148,6 +154,8 @@ def test_the_change_log_is_the_event_kinds_the_feed_documents() -> None:
             "'limit.set'",
             "'limit.set'",
             "'limit.unset'",
+            "'subject.settled'",
+            "'subject.settled'",
             "'comment.' || NEW.kind",
         ]
     )
@@ -160,9 +168,7 @@ def test_the_change_log_is_the_event_kinds_the_feed_documents() -> None:
     )
 
 
-def test_recreate_is_a_filter_over_persistent_that_honours_requires(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_recreate_is_a_filter_over_persistent_that_honours_requires(tmp_path: Path) -> None:
     """After a batch rebuild dropped a table's triggers, ``recreate`` puts back exactly its PERSISTENT ones.
 
     A trigger that ``requires`` a table (an FTS sync trigger) is skipped while that table does not exist.
@@ -179,8 +185,7 @@ def test_recreate_is_a_filter_over_persistent_that_honours_requires(
         names = [n for (n,) in conn.exec_driver_sql("SELECT name FROM sqlite_master WHERE type = 'trigger'")]
         assert sorted(names) == sorted(t.name for t in PERSISTENT)
         probe = Trigger('events_probe', 'events', 'AFTER INSERT', body='SELECT 1', requires='events_fts')
-        monkeypatch.setattr(triggers, 'PERSISTENT', (probe, replace(probe, name='events_probe2', requires='events')))
-        triggers.recreate(op, 'events')
+        triggers.recreate(op, 'events', (probe, replace(probe, name='events_probe2', requires='events')))
         names = [n for (n,) in conn.exec_driver_sql("SELECT name FROM sqlite_master WHERE name LIKE 'events_probe%'")]
         assert names == ['events_probe2'], 'the index does not exist yet: only the trigger without a requirement'
     engine.dispose()
@@ -205,3 +210,70 @@ BEGIN
 END;""")
     with pytest.raises(ValueError, match='t_bad: OF a needs AFTER UPDATE, not AFTER INSERT'):
         Trigger('t_bad', 't', 'AFTER INSERT', of=('a',), body='SELECT 1')
+
+
+def settled(db: Database) -> list[tuple[str, int, int]]:
+    """Each ``subject.settled`` event: who, on which idea, of which campaign."""
+    with db.session() as s:
+        return [(e.actor, e.target_id, p.campaign) for e, p in in_order(s, SubjectSettled)]
+
+
+def test_an_idea_settles_when_it_is_newly_done_with_no_run_open_whoever_writes_it(
+    db: Database, campaign: Campaign
+) -> None:
+    sql = Database(str(db.engine.url), actor=System.HUMAN)
+
+    def raw(statement: str) -> None:
+        with sql.engine.begin() as conn:
+            conn.execute(text(statement))
+
+    with db.session() as s:
+        quiet, rerun, done = (
+            Idea(campaign_id=campaign.id, track='score', title=t, hypothesis='h', created_by='t')
+            for t in ('quiet', 'rerun', 'done')
+        )
+        s.add_all([quiet, rerun, done])
+        s.flush()
+        runs = [Run(idea_id=rerun.id, attempt=n, base_candidate_id=1, harness='h', model='m') for n in (1, 2)]
+        s.add_all(runs)
+        s.commit()
+        ids, first, second = (quiet.id, rerun.id, done.id), runs[0].id, runs[1].id
+    try:
+        raw(f"UPDATE ideas SET status = 'done' WHERE id = {ids[0]}")
+        raw(f"UPDATE ideas SET status = 'done' WHERE id = {ids[0]}")
+        assert settled(db) == [(System.HUMAN, ids[0], campaign.id)], 'a raw UPDATE settles it, once'
+        raw(f"UPDATE ideas SET status = 'done' WHERE id = {ids[1]}")
+        raw(f"UPDATE runs SET status = 'failed', \"end\" = 'failed' WHERE id = {first}")
+        assert len(settled(db)) == 1, 'done, but a run is still open'
+        with db.session() as s:
+            run = s.get_one(Run, second)
+            run.status, run.end = RunStatus.SUCCEEDED, end_of(RunStatus.SUCCEEDED)
+            s.commit()
+        assert settled(db)[1:] == [(ACTOR, ids[1], campaign.id)], 'its last open run ended'
+        raw(f"UPDATE ideas SET status = 'ready' WHERE id = {ids[0]}")
+        raw(f"UPDATE ideas SET status = 'parked' WHERE id = {ids[2]}")
+        assert len(settled(db)) == 2, 'an idea that leaves done, or ends another way, does not settle'
+        raw(f"UPDATE ideas SET status = 'done' WHERE id = {ids[0]}")
+        assert settled(db)[2:] == [(System.HUMAN, ids[0], campaign.id)], 'done again: it settles again'
+    finally:
+        sql.close()
+    assert [t.sql() for t in changelog.SETTLED] == snapshot(
+        [
+            """\
+CREATE TEMP TRIGGER ideas_settled_event AFTER UPDATE OF status ON ideas
+WHEN OLD.status IS NOT 'done' AND NEW.status = 'done' AND NOT EXISTS (SELECT 1 FROM runs WHERE idea_id = NEW.id AND status IN ('queued', 'running'))
+BEGIN
+  INSERT INTO events (at, actor, target_kind, target_id, payload)
+  VALUES (strftime('%Y-%m-%d %H:%M:%f', 'now'), (SELECT actor FROM temp.session_actor), 'idea', NEW.id, json_object('kind', 'subject.settled', 'campaign', NEW.campaign_id));
+END;\
+""",
+            """\
+CREATE TEMP TRIGGER runs_settled_event AFTER UPDATE OF status ON runs
+WHEN OLD.status IN ('queued', 'running') AND NEW.status NOT IN ('queued', 'running') AND (SELECT status FROM ideas WHERE id = NEW.idea_id) = 'done' AND NOT EXISTS (SELECT 1 FROM runs WHERE idea_id = NEW.idea_id AND id != NEW.id AND status IN ('queued', 'running'))
+BEGIN
+  INSERT INTO events (at, actor, target_kind, target_id, payload)
+  VALUES (strftime('%Y-%m-%d %H:%M:%f', 'now'), (SELECT actor FROM temp.session_actor), 'idea', NEW.idea_id, json_object('kind', 'subject.settled', 'campaign', (SELECT campaign_id FROM ideas WHERE id = NEW.idea_id)));
+END;\
+""",
+        ]
+    )

@@ -5,8 +5,14 @@ Migrations are append-only. Every schema change is a new revision
 schema, and only ``piloop serve`` (when it starts) and ``piloop migrate`` (which ``piloop upgrade`` runs) call it. Every
 other command refuses a database at another revision (``schema_mismatch``) and changes nothing.
 
-Revision ids are bare numbers, so a branch's ``0006`` and ``main``'s share one. Each migration also records, in
-``PRAGMA user_version``, a fingerprint of the revision file names up to the one it stamps (``fingerprints``), and
+Core and each plugin with tables (``piloop.db.schema``) have their own chain of revisions and their own version
+table, Alembic's recipe for several environments in one database: core's is ``alembic_version``, a plugin's
+``alembic_version_<name>`` (``memory/local``: ``alembic_version_memory__local``). ``migrate`` runs core's chain first,
+then each installed plugin's, in one transaction. A plugin that is not installed keeps its tables and its version
+table, and nothing reads them.
+
+Revision ids are bare numbers, so a branch's ``0006`` and ``main``'s share one. So each migration also records, in
+``migrations``, a fingerprint of the chain's revision file names up to the one it stamps (``fingerprints``), and
 ``unmigratable`` refuses a database whose stamp or fingerprint is not in this build's history (``foreign``). 0 marks a
 database that a build before fingerprints migrated: only its stamp is checked.
 """
@@ -31,24 +37,42 @@ from alembic import command, context
 from alembic.config import Config as AlembicConfig
 from alembic.script import ScriptDirectory
 from sqlalchemy import Connection, Engine, create_engine, event, make_url
+from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import ExceptionContext
 from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.pool import ConnectionPoolEntry, PoolProxiedConnection
+from sqlalchemy.pool import ConnectionPoolEntry, NullPool, PoolProxiedConnection
 
 from piloop import deprecated
 from piloop.actor import Actor, Agent
-from piloop.db.models import utcnow
-from piloop.db.sql import CONNECTION_PRAGMAS, install_actor, install_functions, lock_holder, optimize, sign
+from piloop.db.models import Migration, utcnow
+from piloop.db.schema import CORE, SCHEMAS, schemas
+from piloop.db.sql import (
+    CONNECTION_PRAGMAS,
+    MIGRATION_TABLE,
+    install_actor,
+    install_functions,
+    lock_holder,
+    optimize,
+    sign,
+)
 from piloop.plugins.cas.contract import Cas
+from piloop.plugins.host import BUILT_IN
 from piloop.version import Version, installed
 
 MIGRATIONS = Path(__file__).parent / 'migrations'
 CAS_ATTRIBUTE = 'cas'
 """The key of the home's CAS in the Alembic config's ``attributes``, for ``migration_cas``."""
+SCHEMA_ATTRIBUTE = 'schema'
+"""The key of the schema whose chain runs, by name, in the Alembic config's ``attributes``. ``env.py`` reads it."""
+CONNECTION_ATTRIBUTE = 'connection'
+"""The key of the connection, in its transaction, that every chain runs on (``migrate``)."""
 BACKUP_INFIX = '.bak-'
 BACKUP_TIME = '%Y%m%dT%H%M%SZ'
 MigrationRevision = NewType('MigrationRevision', str)
-"""An Alembic revision id of ``MIGRATIONS``, such as ``0001``."""
+"""An Alembic revision id of a chain, core's or a plugin's, such as ``0001``."""
+type Stamps = dict[str, str]
+"""A revision of core and of each plugin, by name: of a database (``stamps``), or the newest that this piloop has
+(``heads``)."""
 
 
 @dataclass(frozen=True)
@@ -141,16 +165,18 @@ class BackupFailed(RuntimeError):
 
 
 def migrate(engine: Engine, *, cas: Cas, backups: int, daemon: int | None) -> Path | None:
-    """Migrate the database to the latest Alembic revision. Create it if it does not exist.
+    """Migrate the database to the newest revision of each chain. Create it if it does not exist.
 
-    This is the only function that changes the schema. ``cas`` is the home's CAS, for a revision that moves data into
-    it or out of it (``migration_cas``). ``daemon`` is the pid that holds the daemon's lock
-    (``piloop.daemon.serve.running_pid``), whoever started it: a shell, systemd or launchd. When it is another process
-    and the database is behind this piloop, that daemon runs an older piloop (a daemon migrates when it starts), and
-    the new schema would break it, so this refuses. An in-place restart holds the lock itself, and migrates.
+    This is the only function that changes the schema. It runs core's chain first, then each installed plugin's, in
+    the order of ``schemas``, all in one transaction: an upgrade that fails or is killed changes nothing. ``cas`` is
+    the home's CAS, for a revision that moves data into it or out of it (``migration_cas``). ``daemon`` is the pid that
+    holds the daemon's lock (``piloop.daemon.serve.running_pid``), whoever started it: a shell, systemd or launchd. When
+    it is another process and the database is behind this piloop, that daemon runs an older piloop (a daemon migrates
+    when it starts), and the new schema would break it, so this refuses. An in-place restart holds the lock itself,
+    and migrates.
 
     Before it applies a revision to a database that has one, it writes a consistent copy of the database next to it,
-    ``<database>.bak-<revision>-<UTC time>`` (``VACUUM INTO``), then removes the oldest copies beyond the newest
+    ``<database>.bak-<core revision>-<UTC time>`` (``VACUUM INTO``), then removes the oldest copies beyond the newest
     ``backups``. ``backups=0`` writes none. A copy that fails stops the migration: nothing is applied.
 
     Returns:
@@ -164,26 +190,78 @@ def migrate(engine: Engine, *, cas: Cas, backups: int, daemon: int | None) -> Pa
     """
     path = Path(engine.url.database or '')
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    cfg = AlembicConfig()
-    cfg.set_main_option('script_location', str(MIGRATIONS))
-    cfg.set_main_option('sqlalchemy.url', engine.url.render_as_string(hide_password=False))
-    cfg.attributes[CAS_ATTRIBUTE] = cas
     copy = None
     with _migration_lock(path):
         if (refused := unmigratable(path)) is not None:
             raise refused
-        at = behind(path)
-        if at is not None and daemon not in {None, os.getpid()}:
+        late = behind(path)
+        if late and daemon not in {None, os.getpid()}:
             raise OlderDaemon(
-                f'the daemon (pid {daemon}) runs an older piloop: the database is at schema revision {at}, and'
-                f' this {installed()} would migrate it to {head()} under the daemon. Run `piloop upgrade`, which'
-                ' restarts the daemon on the new code, or `piloop restart` once its piloop is this one, or stop it'
-                ' with `piloop stop`.'
+                f'the daemon (pid {daemon}) runs an older piloop: the database is at schema {described(late)}, and'
+                f' this {installed()} would migrate it to {described(heads())} under the daemon. Run `piloop upgrade`,'
+                ' which restarts the daemon on the new code, or `piloop restart` once its piloop is this one, or stop'
+                ' it with `piloop stop`.'
             )
-        if backups and at not in {None, 'none'}:
+        if not late:
+            return None
+        if backups and (at := revision(path)) is not None:
             copy = _backup(path, at, backups)
-        command.upgrade(cfg, 'head')
+        _upgrade(engine.url.render_as_string(hide_password=False), cas)
     return copy
+
+
+def _upgrade(url: str, cas: Cas) -> None:
+    """Run each chain to its head on one connection, in one transaction, and record each one's fingerprint.
+
+    pysqlite commits before each DDL statement by itself, so the driver's own transaction handling is turned off and
+    the transaction is begun by hand.
+    """
+    engine = create_engine(url, poolclass=NullPool)
+    event.listen(engine, 'connect', lambda dbapi, _: setattr(dbapi, 'isolation_level', None))
+    event.listen(engine, 'begin', lambda connection: connection.exec_driver_sql('BEGIN'))
+    packages = {name: source.package or source.entry_point for name, source in SCHEMAS.sources().items()}
+    try:
+        with engine.connect() as connection, connection.begin():
+            for name in schemas():
+                cfg = alembic_config(url, name, cas)
+                cfg.attributes[CONNECTION_ATTRIBUTE] = connection
+                command.upgrade(cfg, 'head')
+                _record(connection, name, packages.get(name, BUILT_IN))
+    finally:
+        engine.dispose()
+
+
+def alembic_config(url: str, name: str, cas: Cas) -> AlembicConfig:
+    """The Alembic config of the chain of the schema ``name`` on the database at ``url``, with the home's ``cas``."""
+    cfg = AlembicConfig()
+    cfg.set_main_option('script_location', str(MIGRATIONS))
+    cfg.set_main_option('path_separator', 'os')
+    cfg.set_main_option('version_locations', str(schemas()[name].versions))
+    cfg.set_main_option('sqlalchemy.url', url)
+    cfg.attributes[CAS_ATTRIBUTE] = cas
+    cfg.attributes[SCHEMA_ATTRIBUTE] = name
+    return cfg
+
+
+def version_table(name: str) -> str:
+    """The version table of the schema ``name``: ``alembic_version`` for core, else ``alembic_version_<name>``.
+
+    ``/`` in a name is ``__`` in the table's: a schema name has no ``__``.
+    """
+    return MIGRATION_TABLE if name == CORE else f'{MIGRATION_TABLE}_{name.replace("/", "__")}'
+
+
+def _named(table: str) -> str:
+    """The schema whose version table is ``table``."""
+    return CORE if table == MIGRATION_TABLE else table.removeprefix(f'{MIGRATION_TABLE}_').replace('__', '/')
+
+
+def scripts() -> dict[str, ScriptDirectory]:
+    """The revisions that this piloop has of each chain, by schema name, in the order of ``schemas``."""
+    return {
+        name: ScriptDirectory(str(MIGRATIONS), version_locations=[str(schema.versions)])
+        for name, schema in schemas().items()
+    }
 
 
 def migration_cas() -> Cas:
@@ -195,14 +273,15 @@ def migration_cas() -> Cas:
 def unmigratable(database: Path) -> SchemaMismatch | None:
     """Return why ``migrate`` would refuse ``database``, read read-only, else None.
 
-    Another piloop build migrated it (``foreign``), or it is older than the floor, the newest of ``RELEASES``
-    (``SchemaTooOld``). A database that does not exist, or that was never migrated, can be.
+    Another piloop build migrated an installed chain (``foreign``), or core's is older than the floor,
+    the newest of ``RELEASES`` (``SchemaTooOld``). A database that does not exist, or that was never migrated, can be.
     """
-    stamp, chain = revision(database), revisions()
-    if stamp is None:
+    found, chain = stamps(database), revisions()
+    if (stamp := found.get(CORE)) is None:
         return None
-    if (refused := foreign(database, stamp)) is not None:
-        return refused
+    for name in schemas():
+        if name in found and (refused := foreign(database, name, found[name])) is not None:
+            return refused
     at = MigrationRevision(stamp)
     position, floor = chain.index, RELEASES[-1]
     if position(at) < position(HERDR_REMOVED) and (refused := on_herdr(database)) is not None:
@@ -259,7 +338,7 @@ def on_herdr(database: Path) -> SchemaMismatch | None:
 
 
 def revisions() -> list[MigrationRevision]:
-    """Every schema revision that this piloop knows, oldest first."""
+    """Every revision of core's chain that this piloop knows, oldest first."""
     return [MigrationRevision(r.revision) for r in reversed(list(ScriptDirectory(str(MIGRATIONS)).walk_revisions()))]
 
 
@@ -274,10 +353,9 @@ def schema_mismatch(database: Path, daemon: int | None, actor: Actor) -> SchemaM
         return SchemaMismatch(f'{database} does not exist', '`piloop init <repo>` creates it with the first campaign')
     if (refused := unmigratable(database)) is not None:
         return refused
-    at = revision(database)
-    if at == head():
+    if not (late := behind(database)):
         return None
-    found = f'{database} is at schema revision {at or "none"}, and this {installed()} knows {head()}'
+    found = f'{database} is at schema {described(late)}, and this {installed()} knows {described(heads())}'
     match actor.launched:
         case Agent():
             fix = 'the daemon is being upgraded; retry in a minute'
@@ -292,15 +370,34 @@ def schema_mismatch(database: Path, daemon: int | None, actor: Actor) -> SchemaM
 
 
 def revision(database: Path) -> str | None:
-    """The Alembic revision of ``database``, read read-only. None when it does not exist or was never migrated."""
+    """The revision of core's chain in ``database``, read read-only. None when it was never migrated."""
+    return stamps(database).get(CORE)
+
+
+def stamps(database: Path) -> Stamps:
+    """The revision of core and of each plugin that migrated ``database``, installed or not. Empty when none did.
+
+    It reads the database read-only.
+    """
     if not database.is_file():
-        return None
+        return {}
     with closing(sqlite3.connect(f'file:{database}?mode=ro', uri=True)) as con:
-        try:
-            row = con.execute('SELECT version_num FROM alembic_version').fetchone()
-        except sqlite3.OperationalError:  # never migrated, so there is no alembic_version table
-            return None
-    return row[0] if row else None
+        tables = con.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND (name = ? OR name GLOB ?) ORDER BY name",
+            (MIGRATION_TABLE, f'{MIGRATION_TABLE}_*'),
+        ).fetchall()
+        rows = {table: con.execute(f'SELECT version_num FROM "{table}"').fetchone() for (table,) in tables}
+    return {_named(table): row[0] for table, row in rows.items() if row is not None}
+
+
+def described(found: Stamps) -> str:
+    """``found`` for a person: each revision after its schema's name, ``core 0060, memory/local 0001``.
+
+    ``none`` alone for a database that was never migrated.
+    """
+    if found.get(CORE) == 'none':
+        return 'none'
+    return ', '.join(f'{name} {at}' for name, at in found.items())
 
 
 def backups(database: Path) -> list[Path]:
@@ -345,18 +442,18 @@ def _backup(database: Path, at: str, keep: int) -> Path:
     return copy
 
 
-def head() -> str | None:
-    """The newest schema revision that this piloop knows."""
-    return ScriptDirectory(str(MIGRATIONS)).get_current_head()
+def heads() -> Stamps:
+    """The newest revision of each installed chain that this piloop knows, by schema name, in ``schemas`` order."""
+    return {name: head for name, script in scripts().items() if (head := script.get_current_head()) is not None}
 
 
-def behind(database: Path) -> str | None:
-    """Return the revision of a database that this piloop would migrate, or None when it is at head.
+def behind(database: Path) -> Stamps:
+    """The revision of each installed chain that this piloop would migrate (``none``: never migrated). Empty at head.
 
-    A database that was never migrated is at revision ``none``. Check ``unmigratable`` first.
+    Check ``unmigratable`` first.
     """
-    at = revision(database)
-    return None if at == head() else at or 'none'
+    found = stamps(database)
+    return {name: found.get(name, 'none') for name, head in heads().items() if found.get(name) != head}
 
 
 def fingerprints(script: ScriptDirectory) -> dict[str, int]:
@@ -371,28 +468,50 @@ def fingerprints(script: ScriptDirectory) -> dict[str, int]:
     return found
 
 
-def record(connection: Connection, script: ScriptDirectory) -> None:
-    """Set ``PRAGMA user_version`` to the fingerprint of the database's revision, if it is not already. ``env.py``."""
-    at = connection.exec_driver_sql('SELECT version_num FROM alembic_version').scalar()
-    mark = fingerprints(script)[at] if at is not None else 0
-    if connection.exec_driver_sql('PRAGMA user_version').scalar() != mark:
-        connection.exec_driver_sql(f'PRAGMA user_version = {mark:d}')
+def _record(connection: Connection, name: str, package: str) -> None:
+    """Record the ``package`` of the schema ``name`` and the fingerprint of its revision in ``migrations``."""
+    at = connection.exec_driver_sql(f'SELECT version_num FROM {version_table(name)}').scalar_one()
+    mark = fingerprints(scripts()[name])[at]
+    statement = insert(Migration).values(name=name, package=package, fingerprint=mark)
+    connection.execute(
+        statement.on_conflict_do_update(index_elements=[Migration.name], set_=dict(package=package, fingerprint=mark))
+    )
 
 
-def foreign(database: Path, at: str) -> SchemaAhead | None:
-    """Return the refusal of ``database``, stamped ``at``, if another piloop build migrated it. Reads it read-only."""
-    with closing(sqlite3.connect(f'file:{database}?mode=ro', uri=True)) as con:
-        (mark,) = con.execute('PRAGMA user_version').fetchone()
-    known = fingerprints(ScriptDirectory(str(MIGRATIONS)))
-    if at in known and mark in {0, known[at]}:
+def foreign(database: Path, name: str, at: str) -> SchemaAhead | None:
+    """Return the refusal of ``database`` if another piloop build migrated the chain of ``name`` to ``at``. Read-only."""
+    known = fingerprints(scripts()[name])
+    if at in known and _fingerprint(database, name) in {0, known[at]}:
         return None
-    why = f', which knows up to {head()}' if at not in known else f': this build has a different {at} or one before it'
+    head = heads().get(name)
+    why = f', which knows up to {head}' if at not in known else f': this build has a different {at} or one before it'
     return SchemaAhead(
-        f'{database} was migrated by a different piloop build (revision {at} is not in the history of this'
+        f'{database} was migrated by a different piloop build ({name} revision {at} is not in the history of this'
         f' {installed()}{why})',
         'install the piloop that migrated it (`piloop upgrade` for a newer release), or set PILOOP_HOME to another'
         ' directory',
     )
+
+
+def _fingerprint(database: Path, name: str) -> int:
+    """The fingerprint that the last migration of the chain of ``name`` recorded in ``database``. 0 when none did."""
+    with closing(sqlite3.connect(f'file:{database}?mode=ro', uri=True)) as con:
+        try:
+            row = con.execute('SELECT fingerprint FROM migrations WHERE name = ?', (name,)).fetchone()
+        except sqlite3.OperationalError:  # before 0060, which adds migrations
+            row = None
+        if row is not None:
+            return row[0]
+        return _user_version(con) if name == CORE else 0
+
+
+@deprecated.until(
+    '0.5.0', 'a home before revision 0060 has the fingerprint in PRAGMA user_version: delete _user_version'
+)
+def _user_version(con: sqlite3.Connection) -> int:
+    """Core's fingerprint as a database before ``migrations`` kept it."""
+    (mark,) = con.execute('PRAGMA user_version').fetchone()
+    return mark
 
 
 @contextmanager

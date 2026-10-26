@@ -4,7 +4,8 @@ from enum import StrEnum
 
 from sqlalchemy import Enum
 
-from piloop.db.models import AgentSessionState, Base, Origin, RunEnd, RunStatus
+from piloop.db.models import AgentSessionState, Origin, RunEnd, RunStatus
+from piloop.db.schema import tables
 from piloop.ids import Cause, IdeaStatus
 from piloop.plugins.verdict_rule.contract import Outcome
 from scripts.generate import SNIPPETS, header
@@ -19,7 +20,7 @@ def generate() -> str:
     for enum in STATE_ENUMS:
         columns = [
             f'`{table.name}.{column.name}`'
-            for table in Base.metadata.tables.values()
+            for table in tables()
             for column in table.columns
             if isinstance(column.type, Enum) and column.type.enum_class is enum
         ]

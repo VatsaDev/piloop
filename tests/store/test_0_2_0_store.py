@@ -13,10 +13,11 @@ from pathlib import Path
 
 import pytest
 
-from piloop.campaign.archive import ManifestNotMigrated, migrate_manifests, restore
 from piloop.campaign.campaigns import workspace_dir
-from piloop.db.models import Archive, Campaign
+from piloop.db.models import Campaign
 from piloop.db.session import Database
+from piloop.plugins.archive.local.store import ManifestNotMigrated, migrate_manifests, restore
+from piloop.plugins.archive.local.tables import Archive
 from piloop.plugins.cas.cached import REMOTE, CachedCas
 from piloop.plugins.cas.contract import Integrity, integrity
 from piloop.plugins.cas.disk import BOUND, BoundElsewhere, Disk, DiskCas

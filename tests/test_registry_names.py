@@ -48,7 +48,7 @@ LEAVES: dict[str, frozenset[str] | None] = {
     'cli/skills.py': frozenset({'claude', 'codex', 'pi'}),
     'cli/idea.py': frozenset({'seed'}),
     'plugins/executor/kit/relay.py': frozenset({'seed', 'sql'}),
-    'daemon/archiver.py': frozenset({'research'}),
+    'plugins/archive/local/archiver.py': frozenset({'research'}),
 }
 """The files that may name entries, and which ones (None: any). The reasons:
 
@@ -62,7 +62,7 @@ LEAVES: dict[str, frozenset[str] | None] = {
 - ``deprecated.py``: the bridges rewrite the keys of earlier releases, which named built-in roles and triggers.
 - ``cli/skills.py``: the skill folder of each agent CLI, which is not the harness registry.
 - ``cli/idea.py`` and ``plugins/executor/kit/relay.py``: the commands ``piloop idea seed`` and ``piloop sql``.
-- ``daemon/archiver.py``: ``research/`` is a folder of the shared workspace, not the role.
+- ``plugins/archive/local/archiver.py``: ``research/`` is a folder of the shared workspace, not the role.
 """
 
 
@@ -114,6 +114,9 @@ HOST_CONTRACTS = {
     'vcs provider': 'runs the version control tool on checkouts, and moves versions through the CAS',
     'secrets provider': "stores values in the session of the operation that calls it, or in a platform's store",
     'fact source': 'gathers facts through a Session, and a source that reads does I/O at the repo root',
+    'campaign type': 'owns tables of the database, which the daemon migrates',
+    'memory provider': 'owns tables of the database, which the daemon migrates',
+    'archive provider': 'owns tables of the database, which the daemon migrates',
 }
 """The capabilities whose contract passes live objects of the host, and why. Every other one is pure."""
 

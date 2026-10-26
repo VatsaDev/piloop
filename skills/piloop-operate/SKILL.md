@@ -422,7 +422,7 @@ session that worked a past idea.
   The newest for each campaign and family is the current one, and `piloop wake` lists them. You may write one too: a
   row of `lessons` with the family, the status (`dead`, `promising` or `untested`), the best effect and its metric
   (both NULL when none was measured), and a body that says why, citing ids.
-- Documents: the reports and logs that `[memory] documents` in `piloop.toml` names, copied in on `piloop init` and
+- Documents: the reports and logs that `[plugins.memory] documents` in `piloop.toml` names, copied in on `piloop init` and
   when the campaign stops. Search them with `documents_fts MATCH '<words>'`. Point the globs at reports, never at
   anything derived from validation or test data.
 - Briefs of implementers, research and the scout show the current lessons of the repo: the `lessons` section of

@@ -20,7 +20,9 @@ from sqlalchemy import select
 from piloop.actor import System
 from piloop.db.models import EVENT, Event, EventModel, UnknownEvent
 from piloop.db.requests import RequestAnswered
-from piloop.db.session import Database
+from piloop.db.schema import CORE
+from piloop.db.session import Database, alembic_config, heads
+from tests.conftest import disk
 from tests.db.test_migrations import alembic
 
 type Row = tuple[str, str, int, str, dict[str, object]]
@@ -250,12 +252,14 @@ V030_DEV: list[Row] = [
 
 @pytest.fixture(autouse=True)
 def registered() -> None:
-    """Load every module that registers events: the daemon imports each layer."""
+    """Load every module that registers events: the daemon imports each layer, and opens the archive provider."""
     importlib.import_module('piloop.daemon.scheduler')
+    importlib.import_module('piloop.plugins.archive.local')
 
 
 def release(tmp_path: Path, revision: str, setup: tuple[str, ...], rows: list[Row]) -> list[tuple[Event, str]]:
-    """Write ``rows`` at ``revision`` as that release did, migrate to the head, and load every event with its JSON."""
+    """Write ``rows`` at ``revision`` as that release did, migrate every chain to its head, and load every event with
+    its JSON."""
     path = tmp_path / 'piloop.db'
     cfg = alembic(path)
     command.upgrade(cfg, revision)
@@ -267,6 +271,8 @@ def release(tmp_path: Path, revision: str, setup: tuple[str, ...], rows: list[Ro
             [(*row[:4], json.dumps(row[4])) for row in rows],
         )
     command.upgrade(cfg, 'head')
+    for name in [n for n in heads() if n != CORE]:  # a plugin's revision may rewrite the events of its kinds
+        command.upgrade(alembic_config(f'sqlite:///{path}', name, disk(tmp_path)), 'head')
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
         stored = dict(con.execute('SELECT id, payload FROM events'))
     db = Database(f'sqlite:///{path}', actor=System.DAEMON)
@@ -428,7 +434,7 @@ def test_the_shapes_of_0_2_0_are_rewritten_to_the_models(tmp_path: Path) -> None
             ('CancelRequested', '{"ending":"now","kind":"agent_session.cancel_requested"}'),
             (
                 'DiskAnomaly',
-                '{"needed":12000,"free":100,"reserve":1000,"idea":null,"retry_seconds":600.0,"kind":"anomaly.disk"}',
+                '{"needed":12000,"free":100,"reserve":1000,"retry_seconds":600.0,"kind":"anomaly.disk","subject":null}',
             ),
             ('RunRelaunched', '{"agent_session":4,"launches":2,"kind":"run.relaunched"}'),
             ('RejudgeFailed', '{"error":"GitError: gone","kind":"candidate.rejudge_failed"}'),

@@ -8,9 +8,10 @@ from sqlalchemy import event
 from sqlalchemy.orm import Session
 
 from piloop.config import load_campaign_config
-from piloop.db.models import Campaign, Comment, Journal, Lesson, LessonStatus
+from piloop.db.models import Campaign, Comment
 from piloop.db.session import Database
 from piloop.ids import CampaignStatus, CommentKind, TargetKind, TargetRef
+from piloop.plugins.memory.local.tables import Journal, Lesson, LessonStatus
 from piloop.plugins.section.contract import Rendering, markdown
 from piloop.plugins.section.lessons import Lessons
 from piloop.reports.wake import (

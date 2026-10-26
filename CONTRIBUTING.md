@@ -168,7 +168,6 @@ renames a table, a column or a value, add the rename to `RENAMES` in that module
   `piloop/config.py`, `piloop/harnesses.py`, `piloop/mcp/` and `piloop/usage/`), from `piloop/deprecated.py`, and from
   the header in `scripts/generate/configuration.py`.
 - `docs/reference/schema.mdx`, from `piloop/db/models.py`.
-- `piloop/db/actor_triggers.sql`, from `piloop/db/triggers/`.
 - `docs/reference/openapi.json`, the API's OpenAPI document, from the FastAPI routes of `piloop/daemon/api.py`.
 - `docs/snippets/generated/`: the generated parts of other pages. These are the diagram of the tables, the values of
   the state enums and the graph of the imports, and the tables of the built-in runtimes, triggers, harnesses,
@@ -241,11 +240,14 @@ know.
 
 ## Change the database schema
 
-1. Change the models in `piloop/db/models.py`.
-2. Create a new Alembic revision:
+1. Change the models: core's in `piloop/db/models.py`, or a plugin's in the `tables.py` of a provider that declares
+   a schema (`piloop.schemas` in `pyproject.toml`).
+2. Create a new Alembic revision in that chain. `alembic.ini` has one section for each schema, and `[alembic]` is
+   core's:
 
    ```bash
-   uv run alembic revision --autogenerate -m "add the foo column to ideas"
+   uv run alembic revision --autogenerate -m "add the foo column to campaigns"
+   uv run alembic --name optimization revision --autogenerate -m "add the foo column to ideas"
    ```
 
 3. Read the generated revision and fix what autogenerate missed.

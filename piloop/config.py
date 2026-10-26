@@ -16,7 +16,7 @@ import tomllib
 from dataclasses import dataclass
 from enum import StrEnum
 from operator import attrgetter
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Annotated, Any, Self, cast
 
 from pydantic import (
@@ -172,27 +172,6 @@ RESERVED_NAMES = frozenset({'run', 'orchestrator', 'human', 'daemon'})
 """Names that already sign writes: a run, and the actors that are not roles."""
 
 
-class Memory(BaseModel):
-    """``[memory]``: what past campaigns leave for the next ones. See the research memory page."""
-
-    model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
-
-    documents: list[str] = []
-    """Repo-relative globs of text documents, for example ``["docs/evidence/**/*.md"]``: campaign reports, orchestrator
-    logs, design notes. ``piloop init`` and the stop of the campaign copy them into the ``documents`` table, where
-    every agent of every campaign can search them. Never name a document that is derived from validation or test
-    data."""
-
-    @field_validator('documents')
-    @classmethod
-    def _inside_the_repo(cls, globs: list[str]) -> list[str]:
-        for pattern in globs:
-            path = PurePosixPath(pattern)
-            if not path.parts or path.is_absolute() or '..' in path.parts:
-                raise ValueError(f'{pattern!r} is not a glob inside the repo: name files relative to its root, no ..')
-        return globs
-
-
 class StatusConfig(BaseModel):
     """``[status]``: what ``piloop status``, the API and a UI show of the campaign."""
 
@@ -298,8 +277,6 @@ class CampaignConfig(BaseModel):
     outline, newest first, so that every sweep that reads the pack reads them before it proposes work."""
     mcp: dict[ServerName, McpServer] = {}
     """``[mcp.<name>]``: the MCP servers that a role can list in ``[roles.<name>] mcp``."""
-    memory: Memory = Memory()
-    """``[memory]``: documents for every agent to search."""
     status: StatusConfig = StatusConfig()
     """``[status]``: the sections that ``piloop status``, the API and a UI show."""
     facts: list[FactSourceEntry] | None = None

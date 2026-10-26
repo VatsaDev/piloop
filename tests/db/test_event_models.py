@@ -97,6 +97,8 @@ def test_every_trigger_writes_an_event_that_loads_as_the_model_that_renders_it(
             "UPDATE candidates SET origin = 'run', verdict = 'interesting', verdict_by = 'human' WHERE id = 2",
             "INSERT INTO runs (idea_id, attempt, base_candidate_id, harness, model) VALUES (1, 1, 1, 'pi', 'm')",
             "UPDATE runs SET brief_cid = 'bafkr4idjif4mbxlvnejqvi73n325nycsdssgrqrgzlxeijc4onmshlzc7e' WHERE id = 1",
+            "UPDATE ideas SET status = 'done' WHERE id = 1",
+            "UPDATE runs SET status = 'failed', \"end\" = 'failed' WHERE id = 1",
             "INSERT INTO campaigns (name, path, config) VALUES ('other', '/other', '{}')",
             "UPDATE campaigns SET status = 'stopped', stopped_reason = 'enough', type = 'research' WHERE id = 2",
             "UPDATE campaigns SET parent_id = 1, paused = 'all', paused_reason = 'night' WHERE id = 2",

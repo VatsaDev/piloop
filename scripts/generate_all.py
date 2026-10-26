@@ -9,7 +9,6 @@ import argparse
 
 from scripts.generate import (
     Mode,
-    actor_triggers,
     capabilities,
     cas_providers,
     configuration,
@@ -45,7 +44,6 @@ from scripts.generate import (
 GENERATORS = (
     configuration,
     schema,
-    actor_triggers,
     data_model,
     states,
     imports,

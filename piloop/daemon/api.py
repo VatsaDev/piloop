@@ -34,7 +34,6 @@ from piloop.api.contract import (
     EventsQuery,
     IdeaBody,
     InboxQuery,
-    JournalBody,
     LaunchBody,
     LimitBody,
     Located,
@@ -68,7 +67,6 @@ from piloop.api.views import (
     IdeaAnswer,
     Inbox,
     InvalidConfig,
-    Journaled,
     LiveKeys,
     Messaged,
     News,
@@ -104,23 +102,11 @@ from piloop.campaign.campaigns import (
     workspace_dir,
 )
 from piloop.campaign.ideas import Definition, idea_view
-from piloop.campaign.memory import sync_documents
 from piloop.campaign.stop import CANCELLABLE, request_cancel
 from piloop.config import ConfigError
 from piloop.db import feed as db_feed
 from piloop.db.events import has, latest
-from piloop.db.models import (
-    OPEN_RUNS,
-    AgentSession,
-    Campaign,
-    Candidate,
-    Comment,
-    Event,
-    Idea,
-    Journal,
-    Run,
-    utcnow,
-)
+from piloop.db.models import OPEN_RUNS, AgentSession, Campaign, Candidate, Comment, Event, Idea, Run, utcnow
 from piloop.db.session import Database
 from piloop.ids import (
     AgentSessionId,
@@ -140,7 +126,9 @@ from piloop.net.server import OWNER, App, asked, authorized, changed
 from piloop.net.tokens import Caller
 from piloop.plugins import limits as limits_module
 from piloop.plugins.cas.contract import Cas
+from piloop.plugins.contribution import collect, installed
 from piloop.plugins.limits import live_keys
+from piloop.plugins.memory.contract import MEMORY
 from piloop.plugins.secrets import contract as secrets
 from piloop.plugins.section.contract import Rendering, rendered
 from piloop.plugins.vcs.contract import VCS, CloneFailed
@@ -435,12 +423,12 @@ def thread(s: Reading, comment: CommentId) -> Thread:
 def register_campaign(api: Api, s: Writing, me: Acting, body: Registration) -> Registered:
     """Register a campaign: a checkout where it is, or a repository that the daemon clones under its home first.
 
-    It adds the campaign with its head version as the baseline candidate, and syncs the ``[memory]`` documents. The
+    It adds the campaign with its head version as the baseline candidate, and syncs its documents into its memory. The
     daemon then measures the baseline: its ``measurement.recorded`` event comes after the answer's cursor, and a
     baseline that fails pauses the campaign. A clone that does not register is deleted.
     """
     campaign, baseline = _registered(api, s, me, body)
-    documents = sync_documents(s, campaign, campaign.config, me)
+    documents = MEMORY.selected(campaign.config.plugins).sync(s, campaign, me)
     s.flush()
     cursor = db_feed.newest(s)  # read in the write: no event of the baseline's measurement can come before it
     view = feed.status_view(s, [campaign], me)[0]
@@ -476,14 +464,14 @@ def _credential(api: Handlers, secret: EnvName | None) -> SecretStr | None:
 
 @router.post('/campaigns/{campaign}/sync', operation_id='sync_campaign', dependencies=[Depends(actor_access)])
 def sync_campaign(s: Writing, me: Acting, campaign: Addressed) -> CampaignSynced:
-    """Read the campaign's ``piloop.toml`` again, and sync its ``[memory]`` documents.
+    """Read the campaign's ``piloop.toml`` again, and sync its documents into its memory.
 
     A changed evaluate command, metric set or link makes a new evaluator. A stopped campaign whose stop conditions
     changed is active again.
     """
     was = campaign.status
     sync(s, campaign)
-    documents = sync_documents(s, campaign, campaign.config, me)
+    documents = MEMORY.selected(campaign.config.plugins).sync(s, campaign, me)
     s.commit()
     with db_feed.snapshot(s) as cursor:
         return CampaignSynced(
@@ -906,16 +894,6 @@ def cancel_run(s: Writing, me: Acting, run: AddressedRun, body: CancelBody) -> R
         return RunAnswer(cursor=cursor, run=run.id)
 
 
-@router.post('/journal', operation_id='journal', dependencies=[Depends(actor_access)])
-def journal(s: Writing, me: Acting, body: JournalBody) -> Journaled:
-    """Append a line to the orchestrator's journal, signed by the caller's actor. ``piloop wake`` prints it."""
-    entry = Journal(author=me.signature, line=body.line)
-    s.add(entry)
-    s.commit()
-    with db_feed.snapshot(s) as cursor:
-        return Journaled(cursor=cursor, journal=entry.id)
-
-
 @router.post('/inbox/ack', operation_id='ack', dependencies=[Depends(actor_access)])
 def ack(s: Writing, me: Acting, body: AckBody) -> Acked:
     """Acknowledge inbox items, to say that the caller has seen them. Nothing waits for an acknowledgement."""
@@ -992,9 +970,12 @@ def daemon_state(started: str, listen: str | None) -> DaemonState:
 
 
 def openapi() -> dict[str, object]:
-    """The OpenAPI document of ``ROUTERS``: what ``GET /v1/openapi.json`` answers, and ``docs/reference/openapi.json``."""
+    """The OpenAPI document of ``ROUTERS`` and of the installed contributions' routers (``installed``).
+
+    It is what ``GET /v1/openapi.json`` answers, and ``docs/reference/openapi.json``.
+    """
     described = FastAPI(title='piloop', version='1')
-    for routes in ROUTERS:
+    for routes in (*ROUTERS, *collect(installed(), ()).routers):
         described.include_router(routes)
     return described.openapi()
 

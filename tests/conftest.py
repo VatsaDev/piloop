@@ -26,7 +26,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from piloop.actor import System
-from piloop.campaign import archive as archive_module
 from piloop.campaign.campaigns import CampaignAdded
 from piloop.config import CampaignConfig, load_campaign_config
 from piloop.daemon.api import Handlers, daemon_state, with_api
@@ -51,7 +50,9 @@ from piloop.ids import CampaignId, RoleName
 from piloop.net.server import Server, app, local_listener, url
 from piloop.net.tokens import Tokens
 from piloop.otel import Tracer
+from piloop.plugins.archive.local import store as archive_module
 from piloop.plugins.cas.contract import CAS, Cas
+from piloop.plugins.contribution import collect, installed
 from piloop.plugins.executor.kit.leases import Timing
 from piloop.plugins.executor.workers import Workers, WorkersExecutor
 from piloop.plugins.executor.workers.worker import Worker
@@ -599,7 +600,8 @@ def serving_api(
     listener = network.listener()
     listeners = [local_listener(cfg.socket_file), *([] if listener is None else [listener])]
     api = Handlers(db, cfg, daemon_state(iso(utcnow()), None if listener is None else url(listener)), disk(cfg.home))
-    servers = [Server(with_api(app(tokens, network, ()), api), each) for each in listeners]
+    routers = collect(installed(), ()).routers
+    servers = [Server(with_api(app(tokens, network, routers), api), each) for each in listeners]
     for server in servers:
         server.start()
     try:

@@ -1,29 +1,30 @@
-"""The daemon's archiver: at most one archiving or upkeep at a time, on the daemon's pool, never blocking the loop.
+"""The archiver of ``local``: at most one archiving or upkeep at a time, on its own thread, never blocking the loop.
 
-What is due, and how it is stored, pruned and restored, is ``piloop.campaign.archive``. This module decides when, by
-an ``ArchivePolicy`` that the daemon builds from ``[storage]`` and that tests build as they need.
+What is due, and how it is stored, pruned and restored, is ``store``. This module decides when, by an
+``ArchivePolicy`` that ``LocalArchive.open`` builds from the host and that tests build as they need.
 """
 
 import math
 import threading
 import time
 from collections.abc import Callable
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import partial
-from pathlib import Path
-from typing import Literal, NamedTuple
+from typing import Literal
 
 from piloop.actor import System
-from piloop.campaign.archive import Job, archive, due, make_room, prune_older
-from piloop.db.events import emit
+from piloop.agents.results import AgentSessionFinished
+from piloop.daemon.loop import Consumer, Kinds, Turn
+from piloop.db.events import SubjectSettled, emit
 from piloop.db.models import EventModel, utcnow
-from piloop.db.session import Database
-from piloop.ids import IdeaId, TargetKind, TargetRef
-from piloop.otel import Tracer
-from piloop.plugins.cas.contract import Cas, Upkeep
-from piloop.settings import StorageSettings
+from piloop.db.triggers.changelog import CampaignStatusChanged
+from piloop.ids import Ref, TargetKind, TargetRef
+from piloop.plugins.archive.contract import CONSUMER, ArchiveHost
+from piloop.plugins.archive.local.store import Job, archive, due, make_room, prune_older
+from piloop.plugins.cas.contract import Upkeep
+from piloop.plugins.contribution import Contribution
 from piloop.store.tree import Cancelled
 
 
@@ -35,9 +36,14 @@ class DiskAnomaly(EventModel):
     """The bytes that were left."""
     free: int
     reserve: int
-    idea: IdeaId | None
+    subject: Ref | None
+    """The subject whose entries were left; None for what a stopped campaign left."""
     retry_seconds: float
     """When the archiver tries again."""
+
+
+WAKES: Kinds = frozenset({SubjectSettled, CampaignStatusChanged, AgentSessionFinished})
+"""What makes a workspace due for its archiving: a subject that settles, a campaign that stops, a sweep that ends."""
 
 
 SKIPPED_EVENT = 'archive.skipped'
@@ -63,50 +69,43 @@ class ArchivePolicy:
     """Top-level workspace entries never archived: the small knowledge files that agents and research sweeps read
     (``NOTES.md``, the loss tables in ``research/``) stay where they are; only bulk data goes to the CAS."""
 
-    @classmethod
-    def of(cls, storage: StorageSettings) -> ArchivePolicy:
-        """The policy that ``[storage]`` sets, with the defaults for the rest."""
-        return cls(reserve=storage.reserve)
 
-
-class Archiving(NamedTuple):
-    """What the daemon archives into, and when. The scheduler builds its ``Archiver`` from it."""
-
-    cas: Cas
-    policy: ArchivePolicy
-
-
-class Archiver:
-    """Runs the upkeep when it is time, else the next due archiving, one at a time.
+class LocalArchiver:
+    """Runs the upkeep when it is time, else the next due archiving, one at a time, on its own thread.
 
     A failed job, or one that the disk was too full for, makes it wait ``policy.retry``. A job that the disk was too
     full for also writes an ``anomaly.disk`` event on its campaign, so at most one per wait.
     """
 
-    def __init__(
-        self,
-        db: Database,
-        cas: Cas,
-        home: Path,
-        policy: ArchivePolicy,
-        tracer: Tracer,
-        pool: ThreadPoolExecutor,
-        stop: threading.Event,
-        ended: Callable[[Future[None]], object],
-    ) -> None:
-        """``ended``: called when a job ends, so that the daemon runs ``run`` again."""
-        self._db, self._cas, self._home, self._policy, self._tracer = db, cas, home, policy, tracer
-        self._pool, self._stop, self._ended = pool, stop, ended
+    def __init__(self, host: ArchiveHost, policy: ArchivePolicy) -> None:
+        self._db, self._cas, self._home, self._tracer, self._wake = host.db, host.cas, host.home, host.tracer, host.wake
+        self._policy = policy
+        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='archiver')
+        self._stop = threading.Event()
         self._job: Future[None] | None = None
         self._paused_until = -math.inf
         self._upkept_at = -math.inf
+
+    def contribution(self) -> Contribution:
+        """Its consumer, which starts the next job."""
+        return Contribution(consumers=(Consumer(CONSUMER, WAKES, self._turn),))
+
+    def _turn(self, turn: Turn) -> datetime | None:
+        return self.run(turn.now)
+
+    def stop(self, timeout: float) -> None:
+        """Start nothing more, and wait up to ``timeout`` seconds for the job in flight."""
+        self._stop.set()
+        wait(self._running(), timeout=timeout)
+        self._pool.shutdown(wait=False, cancel_futures=True)
 
     def run(self, now: datetime) -> datetime | None:
         """Start the upkeep when it is time, else the next due archiving. Nothing while a job runs or after a failure.
 
         The upkeep goes first: it is what frees room (pruning, eviction) for a job that the disk was too full for, so a
         job that stays due must not keep it waiting. Returns when to run again: the end of a pause, or the next upkeep.
-        A job that ends calls ``ended``, and an idea or a campaign that ends makes an archiving due.
+        A job that ends wakes the consumer (``ArchiveHost.wake``), and a subject that settles or a campaign that ends
+        makes an archiving due.
         """
         if self._stop.is_set() or (self._job is not None and not self._job.done()):
             return None
@@ -128,15 +127,18 @@ class Archiver:
         self._job = self._pool.submit(body)
         self._job.add_done_callback(self._ended)
 
-    def running(self) -> list[Future[None]]:
-        """The job in flight, if any: a stopping daemon waits for it before it lets another daemon start."""
+    def _ended(self, _job: Future[None]) -> None:
+        self._wake()
+
+    def _running(self) -> list[Future[None]]:
         return [self._job] if self._job is not None and not self._job.done() else []
 
     def _pause(self) -> None:
         self._paused_until = time.monotonic() + self._policy.retry.total_seconds()
 
     def _archive(self, job: Job) -> None:
-        with self._tracer.span('piloop.archive', campaign=job.campaign_id, idea=job.idea_id) as span:
+        subject = None if job.subject is None else str(job.subject)
+        with self._tracer.span('piloop.archive', campaign=job.campaign_id, subject=subject) as span:
             done = self._guarded(
                 span.error,
                 lambda: archive(
@@ -171,7 +173,7 @@ class Archiver:
                 needed=done.short.needed,
                 free=done.short.free,
                 reserve=done.short.reserve,
-                idea=job.idea_id,
+                subject=job.subject,
                 retry_seconds=self._policy.retry.total_seconds(),
             )
             span.event(short.kind, **short.model_dump(exclude={'kind'}))

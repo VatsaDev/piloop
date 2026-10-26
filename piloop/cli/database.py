@@ -12,10 +12,11 @@ from rich.table import Table
 from rich.text import Text
 
 from piloop.agents.roles import PROCEDURES, PROMPTS
-from piloop.campaign.archive import ManifestNotMigrated, migrate_manifests
 from piloop.cli import common, local
 from piloop.db import sql
-from piloop.db.session import Database, backups, revision
+from piloop.db.schema import CORE
+from piloop.db.session import Database, Stamps, backups, described, stamps
+from piloop.plugins.archive.local.store import ManifestNotMigrated, migrate_manifests
 from piloop.plugins.vcs.contract import VCS, prompted
 
 ORCHESTRATOR_PROCEDURES = 'sql_orchestrator.md'
@@ -95,9 +96,9 @@ def migrate_cmd() -> None:
     common.refuse_agent('migrate')
     db = Database(common.settings.database_url, actor=common.settings.actor)
     try:
-        old = revision(common.settings.home / 'piloop.db')
+        old = stamps(common.settings.home / 'piloop.db')
         backup = local.migrate(db)
-        _print_schema(old, revision(common.settings.home / 'piloop.db'), backup)
+        _print_schema(old, stamps(common.settings.home / 'piloop.db'), backup)
         try:
             manifests = migrate_manifests(db, local.cas())
         except ManifestNotMigrated as e:
@@ -108,17 +109,23 @@ def migrate_cmd() -> None:
         common.console.print(f'manifests: {manifests} stored again in the new format')
 
 
-def _print_schema(old: str | None, new: str | None, backup: Path | None) -> None:
+def _print_schema(old: Stamps, new: Stamps, backup: Path | None) -> None:
+    """What ``migrate`` changed: each chain's revision before and after, and the backup of core's."""
     if old == new:
         newest = backups(common.settings.home / 'piloop.db')
         common.console.print(
-            f'schema: {new}, current' + (f'; the newest backup: {newest[-1]}' if newest else ''),
+            f'schema: {described(new)}, current' + (f'; the newest backup: {newest[-1]}' if newest else ''),
             markup=False,
             highlight=False,
             soft_wrap=True,
         )
-    elif old is None:
-        common.console.print(f'schema: none → {new}')
-    else:
-        done = f'backup of {old}: {backup}' if backup is not None else 'no backup (migration_backups = 0)'
-        common.console.print(f'schema: {old} → {new}; {done}', markup=False, highlight=False, soft_wrap=True)
+        return
+    moved = ', '.join(f'{name} {old.get(name, "none")} → {at}' for name, at in new.items() if old.get(name) != at)
+    match old.get(CORE):
+        case None:
+            done = ''
+        case core if backup is not None:
+            done = f'; backup of core {core}: {backup}'
+        case _:
+            done = '; no backup (migration_backups = 0)'
+    common.console.print(f'schema: {moved}{done}', markup=False, highlight=False, soft_wrap=True)

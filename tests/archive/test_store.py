@@ -1,3 +1,4 @@
+import ast
 import os
 import shutil
 import time
@@ -6,29 +7,42 @@ from pathlib import Path
 
 import pytest
 from covalence import Cid
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 
-from piloop.campaign import archive as archive_module
-from piloop.campaign.archive import (
+from piloop.campaign.campaigns import workspace_dir
+from piloop.db.models import AgentSession, AgentSessionState, Campaign, Idea, Run, RunStatus, utcnow
+from piloop.db.session import Database
+from piloop.db.triggers import changelog
+from piloop.ids import (
+    IMPLEMENTER,
+    AgentSessionId,
+    CampaignId,
+    CampaignStatus,
+    IdeaId,
+    IdeaStatus,
+    RoleName,
+    TargetKind,
+    TargetRef,
+)
+from piloop.plugins.archive import contract as archive_contract
+from piloop.plugins.archive.contract import CampaignArchived, Summary
+from piloop.plugins.archive.local import store as archive_module
+from piloop.plugins.archive.local.store import (
     Archived,
-    Backlog,
     Job,
     NotArchived,
     Pruned,
     Short,
     archive,
-    backlog,
     due,
     make_room,
     owners,
     prune,
     prune_older,
     restore,
+    summary,
 )
-from piloop.campaign.campaigns import workspace_dir
-from piloop.db.models import AgentSession, AgentSessionState, Archive, Campaign, Idea, Run, RunStatus, utcnow
-from piloop.db.session import Database
-from piloop.ids import IMPLEMENTER, AgentSessionId, CampaignId, CampaignStatus, IdeaId, IdeaStatus, RoleName
+from piloop.plugins.archive.local.tables import Archive
 from piloop.plugins.cas.disk import DiskCas
 from piloop.plugins.cas.kit.objects import ObjectsCas, key
 from piloop.settings import INPUTS_DIR
@@ -42,7 +56,12 @@ REAL_FREE = tree_module.free
 """Captured before ``conftest.plenty_of_disk`` replaces it for every test."""
 
 
+def ref(idea_id: int) -> TargetRef:
+    return TargetRef(TargetKind.IDEA, idea_id)
+
+
 def add_idea(db: Database, campaign_id: CampaignId, title: str, status: IdeaStatus = IdeaStatus.DONE) -> IdeaId:
+    """An idea inserted at ``status``: an insert settles nothing, its first run that ends does."""
     with db.session() as s:
         idea = Idea(campaign_id=campaign_id, track='score', title=title, hypothesis='h', created_by='t', status=status)
         s.add(idea)
@@ -53,25 +72,21 @@ def add_idea(db: Database, campaign_id: CampaignId, title: str, status: IdeaStat
 def add_run(
     db: Database, idea_id: IdeaId, status: RunStatus = RunStatus.SUCCEEDED, kind: RoleName = IMPLEMENTER
 ) -> AgentSessionId:
-    """A run of ``idea_id`` and the implementer that ran it; the implementer's id."""
+    """A run of ``idea_id`` and the implementer that ran it; the implementer's id.
+
+    The run is queued, then ends at ``status`` as a run does: that settles a done idea.
+    """
     with db.session() as s:
-        idea = s.get_one(Idea, idea_id)
-        finished = utcnow() if status not in (RunStatus.QUEUED, RunStatus.RUNNING) else None
-        run = Run(
-            idea_id=idea_id,
-            attempt=len(idea.runs) + 1,
-            base_candidate_id=1,
-            harness='script',
-            model='m',
-            status=status,
-            end=end_of(status),
-            finished_at=finished,
-        )
+        owner = s.get_one(Idea, idea_id)
+        run = Run(idea_id=idea_id, attempt=len(owner.runs) + 1, base_candidate_id=1, harness='script', model='m')
         s.add(run)
+        s.flush()
+        finished = utcnow() if status not in (RunStatus.QUEUED, RunStatus.RUNNING) else None
+        run.status, run.end, run.finished_at = status, end_of(status), finished
         s.flush()
         state = AgentSessionState.EXITED if finished is not None else AgentSessionState.RUNNING
         agent_session = AgentSession(
-            kind=kind, campaign_id=idea.campaign_id, run_id=run.id, state=state, ended_at=finished, harness='script'
+            kind=kind, campaign_id=owner.campaign_id, run_id=run.id, state=state, ended_at=finished, harness='script'
         )
         s.add(agent_session)
         s.commit()
@@ -98,10 +113,19 @@ def store(home: Path) -> ObjectsCas:
     return DiskCas(home / 'store')
 
 
-def test_an_entry_belongs_to_an_idea_by_its_name(db: Database, campaign: Campaign) -> None:
+def settle(db: Database, idea_id: IdeaId) -> None:
+    """Set a ready idea ``done`` with no run open, as ``piloop sql`` can: that settles it."""
+    with db.session() as s:
+        s.execute(text('UPDATE ideas SET status = :done WHERE id = :id'), {'done': IdeaStatus.DONE, 'id': idea_id})
+        s.commit()
+
+
+def test_an_entry_belongs_to_a_settled_subject_of_the_campaign_by_its_name(db: Database, campaign: Campaign) -> None:
     idea = add_idea(db, campaign.id, 'one')
-    other = add_idea(db, campaign.id, 'two')
+    other = add_idea(db, campaign.id, 'two', IdeaStatus.READY)
+    unsettled = add_idea(db, campaign.id, 'three')
     agent_session = add_run(db, idea)
+    settle(db, other)
     with db.session() as s:
         alien = Campaign(name='alien', path='/alien', config=bare_config('alien'))
         s.add(alien)
@@ -110,26 +134,32 @@ def test_an_entry_belongs_to_an_idea_by_its_name(db: Database, campaign: Campaig
         s.add(stranger)
         s.commit()
         stranger_id = stranger.id
+    settle(db, stranger_id)
     names = [
         f'idea{idea}',
         f'idea{idea}-canary.log',
         f'idea{other}',
         f'idea{idea}0',
+        f'idea{unsettled}',
         f'w{agent_session}',
         f'implementer-{agent_session}',
+        f'agent_session{agent_session}',
         f'idea{stranger_id}',
         'research-31',
         'NOTES.md',
     ]
     with db.session() as s:
         assert owners(s, campaign.id, names) == {
-            f'idea{idea}': idea,
-            f'idea{idea}-canary.log': idea,
-            f'idea{other}': other,
-        }, 'idea<id>0 is another idea, an idea of another campaign is not this one, an implementer name is no idea'
+            f'idea{idea}': ref(idea),
+            f'idea{idea}-canary.log': ref(idea),
+            f'idea{other}': ref(other),
+        }, (
+            'idea<id>0 is another idea, a subject that did not settle or settled in another campaign is none of its'
+            ' own, an implementer name is no subject'
+        )
 
 
-def test_an_idea_is_due_once_done_and_again_after_a_new_run(db: Database, campaign: Campaign) -> None:
+def test_an_idea_is_due_once_settled_and_again_after_a_new_run(db: Database, campaign: Campaign) -> None:
     with db.session() as s:
         assert due(s) is None
     first = add_idea(db, campaign.id, 'first')
@@ -138,14 +168,30 @@ def test_an_idea_is_due_once_done_and_again_after_a_new_run(db: Database, campai
     add_run(db, running, RunStatus.RUNNING)
     add_idea(db, campaign.id, 'ready', IdeaStatus.READY)
     with db.session() as s:
-        assert due(s) == Job(campaign.id, first), 'an open run holds an idea back, whatever its status'
-        s.add(Archive(campaign_id=campaign.id, idea_id=first))
+        assert due(s) == Job(campaign.id, ref(first)), 'an open run holds an idea back, whatever its status'
+        s.add(Archive(campaign_id=campaign.id, subject=ref(first)))
         s.commit()
         assert due(s) is None
     time.sleep(0.01)
     add_run(db, first)
     with db.session() as s:
-        assert due(s) == Job(campaign.id, first), 'its new run finished after the archiving'
+        assert due(s) == Job(campaign.id, ref(first)), 'its new run settled it after the archiving'
+
+
+def test_a_done_idea_without_its_event_is_left_to_the_campaign_s_archiving(
+    db: Database, campaign: Campaign, home: Path, store: ObjectsCas
+) -> None:
+    """Archive reads the feed, never the ideas: a done idea that did not settle is not due, and the stop takes it."""
+    idea = add_idea(db, campaign.id, 'inserted done')
+    write(workspace_dir(home, campaign.id) / f'idea{idea}' / 'x.npy')
+    with db.session() as s:
+        assert due(s) is None
+        s.get_one(Campaign, campaign.id).status = CampaignStatus.STOPPED
+        s.commit()
+        assert due(s) == Job(campaign.id, None)
+    assert archive_job(db, store, home, Job(campaign.id, ref(idea))).rows[0].files == 0, 'none of its own'
+    [row] = archive_job(db, store, home, Job(campaign.id, None)).rows
+    assert (row.subject, row.files) == (None, 1)
 
 
 def test_a_stopped_campaign_is_due_once_its_ideas_are_and_nothing_of_it_runs(db: Database, campaign: Campaign) -> None:
@@ -155,18 +201,24 @@ def test_a_stopped_campaign_is_due_once_its_ideas_are_and_nothing_of_it_runs(db:
         s.get_one(Campaign, campaign.id).status = CampaignStatus.STOPPED
         s.add(AgentSession(kind=WATCHDOG, campaign_id=campaign.id, reason='campaign stopped'))
         s.commit()
-        assert due(s) == Job(campaign.id, idea), 'its done ideas first'
-        assert backlog(s) == Backlog(ideas=1, campaigns=0), 'the closing watchdog is still requested'
-        s.add(Archive(campaign_id=campaign.id, idea_id=idea))
+        assert due(s) == Job(campaign.id, ref(idea)), 'its settled ideas first'
+        assert summary(s) == Summary((), subjects_due=1, campaigns_due=0, latest=None), (
+            'the closing watchdog is still requested'
+        )
+        s.add(Archive(campaign_id=campaign.id, subject=ref(idea)))
         s.commit()
         assert due(s) is None, 'the closing watchdog is still requested'
         for w in s.scalars(select(AgentSession).where(AgentSession.id != agent_session)):
             w.state, w.ended_at = AgentSessionState.EXITED, utcnow()
         s.commit()
-        assert due(s) == Job(campaign.id, None) and backlog(s) == Backlog(ideas=0, campaigns=1)
-        s.add(Archive(campaign_id=campaign.id))
+        assert due(s) == Job(campaign.id, None)
+        assert (summary(s).subjects_due, summary(s).campaigns_due) == (0, 1)
+        s.add(Archive(campaign_id=campaign.id, files=2, bytes=10))
         s.commit()
         assert due(s) is None
+        done = summary(s)
+        assert done.campaigns == (CampaignArchived(campaign.name, archivings=2, files=2, bytes=10),)
+        assert done.latest is not None
     time.sleep(0.01)
     with db.session() as s:
         s.add(AgentSession(kind=WATCHDOG, campaign_id=campaign.id, state=AgentSessionState.EXITED, ended_at=utcnow()))
@@ -196,8 +248,8 @@ def test_an_archiving_stores_and_keeps_the_files_a_prune_removes_them_and_restor
     before = files(workspace)
     live = {k: v for k, v in before.items() if k.startswith(('NOTES.md', 'research/'))}
 
-    [row] = archive_job(db, store, home, Job(campaign.id, idea)).rows
-    assert (row.idea_id, row.files, row.bytes, row.pruned_at) == (idea, 4, 2 * 5000 + 3, None)
+    [row] = archive_job(db, store, home, Job(campaign.id, ref(idea))).rows
+    assert (row.subject, row.files, row.bytes, row.pruned_at) == (ref(idea), 4, 2 * 5000 + 3, None)
     assert row.manifest is not None and not store.missing(list(Manifest.get(store, row.manifest).blobs))
     assert files(workspace) == before, 'storing removes nothing'
     write(workspace / f'idea{idea}-fresh.log', 'rewritten since\n')
@@ -214,12 +266,12 @@ def test_an_archiving_stores_and_keeps_the_files_a_prune_removes_them_and_restor
     write(workspace / f'idea{idea}-fresh.log', 'ok\n')
 
     [rest] = archive_job(db, store, home, Job(campaign.id, None)).rows
-    assert (rest.idea_id, rest.files) == (None, 3)
+    assert (rest.subject, rest.files) == (None, 3)
     prune(db, store, home, rest.id)
     assert files(workspace) == live, 'NOTES.md and research/ are never archived'
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
-        got = restore(s, store, home, p, idea)
+        got = restore(s, store, home, p, ref(idea))
         assert (got.archives, got.done.written) == (2, 4), 'its own files, from every archiving'
         assert files(workspace) == live | {k: v for k, v in before.items() if k.startswith(f'idea{idea}')}
         assert os.readlink(workspace / f'idea{idea}' / 'latest') == 'copy.npy'
@@ -227,13 +279,13 @@ def test_an_archiving_stores_and_keeps_the_files_a_prune_removes_them_and_restor
         assert restore(s, store, home, p, 'boost465/run.bin').done.same == 1
         assert restore(s, store, home, p, None).done.written == 1
         assert files(workspace) == before
-        assert restore(s, store, home, p, 999).done.written == 0
+        assert restore(s, store, home, p, ref(999)).done.written == 0
 
 
 def test_nothing_to_archive_is_recorded_too(db: Database, campaign: Campaign, home: Path, store: ObjectsCas) -> None:
     idea = add_idea(db, campaign.id, 'empty')
     add_run(db, idea)
-    [row] = archive_job(db, store, home, Job(campaign.id, idea)).rows
+    [row] = archive_job(db, store, home, Job(campaign.id, ref(idea))).rows
     assert (row.manifest, row.files, row.bytes) == (None, 0, 0)
     assert prune(db, store, home, row.id) == Removed(0)
     with db.session() as s:
@@ -249,7 +301,7 @@ def test_no_row_when_the_store_does_not_hold_every_blob(
     path = write(workspace_dir(home, campaign.id) / f'idea{idea}' / 'x.npy')
     monkeypatch.setattr(ObjectsCas, 'missing', lambda self, cids: [LOST])
     with pytest.raises(NotArchived, match=f'the store lacks 1 blobs of manifest .*, e.g. {LOST}'):
-        archive_job(db, store, home, Job(campaign.id, idea))
+        archive_job(db, store, home, Job(campaign.id, ref(idea)))
     assert path.exists()
     with db.session() as s:
         assert s.scalars(select(Archive)).all() == []
@@ -260,7 +312,7 @@ def archived_idea(db: Database, campaign: Campaign, home: Path, store: ObjectsCa
     idea = add_idea(db, campaign.id, title)
     add_run(db, idea)
     write(workspace_dir(home, campaign.id) / f'idea{idea}' / 'x.npy', os.urandom(1000))
-    [row] = archive_job(db, store, home, Job(campaign.id, idea)).rows
+    [row] = archive_job(db, store, home, Job(campaign.id, ref(idea))).rows
     return idea, row.id
 
 
@@ -344,14 +396,16 @@ def test_a_workspace_larger_than_the_room_above_the_reserve_is_stored_in_batches
         return real_put(store, root, found)
 
     monkeypatch.setattr(archive_module, 'put_walk', counting)
-    done = archive_job(db, store, home, Job(campaign.id, idea), reserve=1000)
+    done = archive_job(db, store, home, Job(campaign.id, ref(idea)), reserve=1000)
     assert done.short is None
     assert [(r.files, r.bytes) for r in done.rows] == [(3, 8000), (1, 4000)], 'two files fit, then the third'
     assert on_disk == [3, 1], 'the first batch is pruned to make room for the second'
     with db.session() as s:
         assert [a.pruned_at is not None for a in s.scalars(select(Archive).order_by(Archive.id))] == [True, False]
         assert due(s) is None
-        assert restore(s, store, home, s.get_one(Campaign, campaign.id), idea).done.written == 3, 'two arrays, the link'
+        assert restore(s, store, home, s.get_one(Campaign, campaign.id), ref(idea)).done.written == 3, (
+            'two arrays, the link'
+        )
     assert files(workspace) == before
 
 
@@ -360,15 +414,15 @@ def test_what_does_not_fit_with_nothing_left_to_prune_is_short_and_stays_for_the
 ) -> None:
     idea, before = big_idea(db, campaign, home)
     monkeypatch.setattr(archive_module, 'free', lambda _: disk(home, 12_000 + 1100))
-    done = archive_job(db, store, home, Job(campaign.id, idea), reserve=1000)
+    done = archive_job(db, store, home, Job(campaign.id, ref(idea)), reserve=1000)
     assert done == Archived([], Short(needed=12_000, free=1100, reserve=1000))
     assert files(workspace_dir(home, campaign.id)) == before
     with db.session() as s:
-        assert due(s) == Job(campaign.id, idea), 'no batch stored: still due'
+        assert due(s) == Job(campaign.id, ref(idea)), 'no batch stored: still due'
         s.get_one(Campaign, campaign.id).status = CampaignStatus.STOPPED
         s.commit()
     monkeypatch.setattr(archive_module, 'free', lambda _: 1 << 40)
-    assert [r.files for r in archive_job(db, store, home, Job(campaign.id, idea), reserve=1000).rows] == [4]
+    assert [r.files for r in archive_job(db, store, home, Job(campaign.id, ref(idea)), reserve=1000).rows] == [4]
 
 
 def test_a_job_cut_after_some_batches_stays_due_and_its_next_run_stores_the_rest(
@@ -386,17 +440,17 @@ def test_a_job_cut_after_some_batches_stays_due_and_its_next_run_stores_the_rest
         return stored
 
     monkeypatch.setattr(archive_module, 'put_walk', filling)
-    done = archive_job(db, store, home, Job(campaign.id, idea), reserve=1000)
+    done = archive_job(db, store, home, Job(campaign.id, ref(idea)), reserve=1000)
     assert [(r.files, r.complete) for r in done.rows] == [(3, False)] and done.short is not None
     with db.session() as s:
-        assert due(s) == Job(campaign.id, idea), 'one incomplete batch: the job is still due'
+        assert due(s) == Job(campaign.id, ref(idea)), 'one incomplete batch: the job is still due'
     taken.clear()
     monkeypatch.setattr(archive_module, 'put_walk', real_put)
-    rest = archive_job(db, store, home, Job(campaign.id, idea), reserve=1000).rows
+    rest = archive_job(db, store, home, Job(campaign.id, ref(idea)), reserve=1000).rows
     assert [r.complete for r in rest] == [True]
     with db.session() as s:
         assert due(s) is None
-        restore(s, store, home, s.get_one(Campaign, campaign.id), idea)
+        restore(s, store, home, s.get_one(Campaign, campaign.id), ref(idea))
     assert files(workspace_dir(home, campaign.id)) == before
 
 
@@ -410,7 +464,7 @@ def test_an_idea_deleted_since_its_archiving_is_still_restored_by_its_id(
         s.execute(delete(Run).where(Run.idea_id == idea))
         s.execute(delete(Idea).where(Idea.id == idea))
         s.commit()
-        assert restore(s, store, home, s.get_one(Campaign, campaign.id), idea).done.written == 1
+        assert restore(s, store, home, s.get_one(Campaign, campaign.id), ref(idea)).done.written == 1
 
 
 def test_a_newer_archiving_displaces_an_older_file_or_directory_at_the_same_path(
@@ -464,7 +518,7 @@ def test_content_the_store_holds_already_is_archived_even_when_nothing_else_fits
     for path in workspace.rglob('*.npy'):
         store.put_file(path)  # an earlier archiving stored the same content
     monkeypatch.setattr(archive_module, 'free', lambda _: 1000)
-    done = archive_job(db, store, home, Job(campaign.id, idea), reserve=1000)
+    done = archive_job(db, store, home, Job(campaign.id, ref(idea)), reserve=1000)
     assert done.short is None and [(r.files, r.complete) for r in done.rows] == [(4, True)], 'three arrays, one link'
 
 
@@ -492,7 +546,7 @@ def test_a_file_that_cannot_be_read_when_nothing_fits_is_reported_with_why(
     locked.chmod(0)
     monkeypatch.setattr(archive_module, 'free', lambda _: 1000)
     try:
-        done = archive_job(db, store, home, Job(campaign.id, idea), reserve=1000)
+        done = archive_job(db, store, home, Job(campaign.id, ref(idea)), reserve=1000)
     finally:
         locked.chmod(0o644)
     rel = str(locked.relative_to(workspace_dir(home, campaign.id)))
@@ -512,3 +566,25 @@ def test_free_space_is_measured_where_the_home_is_or_will_be(tmp_path: Path, mon
     (tmp_path / 'not' / 'yet').mkdir(parents=True)
     REAL_FREE(tmp_path / 'not' / 'yet')
     assert asked == [tmp_path, tmp_path / 'not' / 'yet']
+
+
+OPTIMIZATION = frozenset({'ideas', 'runs', 'Idea', 'Run', 'OPEN_RUNS'})
+"""What archive must never import: it learns that a part of a workspace is final from the feed alone."""
+
+
+def imported(path: Path) -> list[str]:
+    """What the module at ``path`` imports of ``OPTIMIZATION``: modules named so, or names."""
+    found: list[str] = []
+    for node in ast.walk(ast.parse(path.read_text())):
+        match node:
+            case ast.ImportFrom(module=str(module), names=names):
+                found += [f'{module}.{a.name}' for a in names if {module.rsplit('.')[-1], a.name} & OPTIMIZATION]
+            case ast.Import(names=names):
+                found += [a.name for a in names if a.name.rsplit('.')[-1] in OPTIMIZATION]
+    return found
+
+
+def test_archive_imports_nothing_of_ideas_or_runs() -> None:
+    package = Path(archive_contract.__file__).parent
+    assert {str(p.relative_to(package)): imported(p) for p in package.rglob('*.py') if imported(p)} == {}
+    assert imported(Path(changelog.__file__)) == ['piloop.db.models.OPEN_RUNS'], 'the check finds such an import'

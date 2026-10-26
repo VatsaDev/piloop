@@ -21,8 +21,10 @@ from piloop.db.session import Database
 from piloop.db.triggers.changelog import IdeaCreated, LimitSet
 from piloop.ids import TargetKind, TargetRef
 from piloop.otel import Tracer
+from piloop.plugins.archive.contract import ArchiveHost
+from piloop.plugins.archive.local import LocalArchive
 from piloop.plugins.executor.workers import Workers
-from tests.conftest import ScriptRuntime, at_head, factory, register
+from tests.conftest import ScriptRuntime, at_head, disk, factory, register
 
 
 @dataclass
@@ -66,6 +68,10 @@ def clock() -> Clock:
     return Clock()
 
 
+def nothing() -> None:
+    """The archiver's wake: the test only reads the consumers."""
+
+
 def test_every_kind_of_core_wakes_a_consumer_of_the_scheduler_or_is_ignored_on_purpose(
     db: Database, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
@@ -73,7 +79,8 @@ def test_every_kind_of_core_wakes_a_consumer_of_the_scheduler_or_is_ignored_on_p
     provider's kinds wake what its capability says: the workers executor's capacity events wake the launches."""
     tracer = Tracer(None)
     controller = RunController(db, tracer, tmp_path, factory(runtime), executor=Workers())
-    consumers = Scheduler(db, controller, tracer, tmp_path, factory(runtime)).consumers()
+    archiver = LocalArchive().open(ArchiveHost(db, disk(tmp_path), tmp_path, 0, tracer, nothing))
+    consumers = Scheduler(db, controller, tracer, tmp_path, factory(runtime), archiver=archiver).consumers()
     ignored = {kind for model in IGNORED for kind in model.kinds()}
     core = {k: m for k, m in EventModel.registered().items() if re.match(r'piloop\.(?!plugins\.)', m.__module__)}
     routed = routes(consumers, core)

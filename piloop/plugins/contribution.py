@@ -1,20 +1,22 @@
-"""What a provider that the daemon opened adds to the kernel beside its capability's contract: its ``Contribution``.
+"""What a provider that the daemon opened adds to core beside its capability's contract: its ``Contribution``.
 
 The daemon asks each provider that it opened once (``collect``), in the order that it opened them, and hands the result
-to its loop and its server. What a package adds before anything opens, it declares in a ``Slot``
-(``piloop.plugins.host``).
+to its loop and its server. The daemon opens no provider that a campaign chooses: each installed one adds its
+contribution once, built with its defaults (``installed``). What a package adds before anything opens, it declares in a
+``Slot`` (``piloop.plugins.host``).
 
 Inspiration: Backstage's backend plugins, which register their routers and scheduled tasks with the core services.
 """
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from fastapi import APIRouter
+from pydantic import ValidationError
 
 from piloop.daemon.loop import Consumer
-from piloop.plugins.host import PluginError
+from piloop.plugins.host import PluginError, Scope, declared
 
 
 @dataclass(frozen=True)
@@ -27,11 +29,12 @@ class Contribution:
     """Routes of the daemon's server, beside the API's. A route of a method and path that is taken is refused."""
 
 
+@runtime_checkable
 class Contributes(Protocol):
-    """A provider that adds to the kernel: the executor."""
+    """A provider that adds to core."""
 
     def contribution(self) -> Contribution:
-        """What it adds to the kernel. The daemon asks once, after it opened the provider."""
+        """What it adds to core. The daemon asks once, after it opened the provider."""
         ...
 
 
@@ -41,6 +44,32 @@ class Contributions:
 
     consumers: tuple[Consumer, ...] = ()
     routers: tuple[APIRouter, ...] = ()
+
+
+def installed() -> tuple[Contributes, ...]:
+    """Each installed provider that ``Contributes`` of a capability that a campaign chooses, or that no table chooses.
+
+    Each is built with its defaults, in registry order: by capability, then by provider.
+
+    Raises:
+        PluginError: A provider that contributes cannot be built with its defaults. The message names it.
+    """
+    found: list[Contributes] = []
+    for capability in declared():
+        if capability.choice is not None and capability.choice.scope is not Scope.CAMPAIGN:
+            continue
+        for name, provider in capability.providers().items():
+            if not issubclass(provider.model, Contributes):
+                continue
+            try:
+                built = provider.model()
+            except ValidationError as e:
+                errors = '; '.join(f'{".".join(map(str, err["loc"]))}: {err["msg"]}' for err in e.errors())
+                raise PluginError(
+                    f'the {capability.noun} {name!r} contributes, and cannot be built with its defaults: {errors}'
+                ) from e
+            found.append(built)
+    return tuple(found)
 
 
 def collect(contributors: Sequence[Contributes], taken: Sequence[str]) -> Contributions:

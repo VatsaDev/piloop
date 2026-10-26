@@ -23,12 +23,12 @@ from piloop.ids import (
     EvaluatorId,
     IdeaId,
     IdeaStatus,
-    JournalId,
     KeyOrigin,
     RoleName,
     RunId,
     TrackName,
 )
+from piloop.plugins.memory.contract import Synced
 from piloop.text import CELL_CHARS, NONE, age, block, cell, metric
 
 PROTOCOL = 1
@@ -540,20 +540,6 @@ class CampaignAnswer(View):
     campaign: CampaignEntry
 
 
-class Synced(View):
-    """What one sync of the ``[memory]`` documents did: the files that it added, those already in, those it skipped."""
-
-    added: list[str]
-    unchanged: list[str]
-    skipped: dict[str, str]
-    """Repo-relative path → why the sync did not read it (not UTF-8 text, unreadable, outside the repo)."""
-
-    def line(self) -> str:
-        """One line for the console or a span event."""
-        skipped = ''.join(f'; skipped {path}: {why}' for path, why in self.skipped.items())
-        return f'documents: {len(self.added)} added, {len(self.unchanged)} unchanged{skipped}'
-
-
 class Registered(CampaignAnswer):
     """A campaign that registering added, read at ``cursor``, with its baseline candidate, which the daemon measures."""
 
@@ -704,13 +690,6 @@ class Prompted(View):
     cursor: int
     comment: CommentId
     delivery: Delivery
-
-
-class Journaled(View):
-    """A line appended to the orchestrator's journal, read at ``cursor``."""
-
-    cursor: int
-    journal: JournalId
 
 
 class AckOutcome(StrEnum):

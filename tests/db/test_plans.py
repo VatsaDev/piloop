@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from piloop.actor import System
-from piloop.db.models import Base
+from piloop.db.schema import tables
 from piloop.db.session import Database
 from scripts.db_volume import (
     HOT_INDEXES,
@@ -94,7 +94,7 @@ def test_the_check_fails_without_the_hot_indexes(populated: tuple[Path, list[Sta
 
 
 def test_the_models_declare_what_the_script_drops() -> None:
-    declared = {i.name for t in Base.metadata.tables.values() for i in t.indexes}
+    declared = {i.name for t in tables() for i in t.indexes}
     assert set(HOT_INDEXES) <= declared
 
 

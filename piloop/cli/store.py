@@ -7,13 +7,14 @@ import cyclopts
 from rich import box
 from rich.filesize import decimal
 from rich.table import Table
-from sqlalchemy import func, select
+from sqlalchemy import select
 
-from piloop.campaign import archive
 from piloop.campaign.campaigns import workspace_dir
 from piloop.cli import common, local
 from piloop.cli.common import CampaignRef
-from piloop.db.models import Archive, Campaign
+from piloop.ids import REF_PATTERN, TargetKind, TargetRef
+from piloop.plugins.archive.contract import ARCHIVES
+from piloop.plugins.archive.local.tables import Archive
 from piloop.plugins.cas.contract import CAS, Integrity, Upkeep, integrity
 from piloop.store.tree import Manifest
 
@@ -22,31 +23,39 @@ app = cyclopts.App(
 )
 
 
+def _target(given: str | None) -> TargetRef | str | None:
+    """What ``piloop restore`` writes back: a subject (``idea#12``, or ``12`` for ``idea#12``), else a path, else all."""
+    spelled = f'{TargetKind.IDEA}#{given}' if given is not None and given.isdigit() else given
+    ref = REF_PATTERN.fullmatch(spelled or '')
+    return TargetRef(TargetKind(ref['kind']), int(ref['id'])) if ref and ref['kind'] in TargetKind else given
+
+
 def restore(
     ref: CampaignRef,
     target: Annotated[
         str | None,
         cyclopts.Parameter(
-            help='An idea (`12` or `idea#12`): its files; else a workspace-relative path: it or everything under it.'
-            ' Left out: every archived file.'
+            help='A subject (`idea#12`, or `12` for an idea): its files; else a workspace-relative path: it or'
+            ' everything under it. Left out: every archived file.'
         ),
     ] = None,
     /,
 ) -> None:
     """Write archived files back into the campaign's shared workspace: agents that start after get them in `./workspace/`.
 
-    The daemon archives a done idea's workspace files, and what is left when a campaign stops, into the artifact store
-    and removes the local copies. This brings them back from the local store or its remote. A file that is already
-    there with other content is kept, never overwritten.
+    The daemon archives a settled subject's workspace files, such as a done idea's, and what is left when a campaign
+    stops, into the artifact store and removes the local copies. This brings them back from the local store or its
+    remote. A file that is already there with other content is kept, never overwritten.
     """
-    idea = target.removeprefix('idea#') if target is not None else None
-    parsed: int | str | None = int(idea) if idea is not None and idea.isdigit() else target
+    parsed = _target(target)
     with local.session() as s:
         campaign = local.campaign(s, ref)
-        restored = archive.restore(s, local.cas(), common.settings.home, campaign, parsed)
+        restored = ARCHIVES.selected(common.settings.providers).restore(
+            s, local.cas(), common.settings.home, campaign, parsed
+        )
     done = restored.done
     if done.written + done.same + len(done.kept) == 0:
-        what = f'idea#{parsed}' if isinstance(parsed, int) else parsed or 'anything'
+        what = parsed or 'anything'
         raise SystemExit(f'nothing archived matches {what} in {restored.archives} archive(s) of {campaign.name}')
     workspace = workspace_dir(common.settings.home, campaign.id)
     common.console.print(
@@ -78,20 +87,14 @@ def store_status() -> None:
     common.console.print(line, markup=False, highlight=False, soft_wrap=True)
     table = Table('campaign', 'archives', 'files', 'archived', box=box.SIMPLE_HEAD)
     with local.session() as s:
-        rows = s.execute(
-            select(Campaign.name, func.count(Archive.id), func.sum(Archive.files), func.sum(Archive.bytes))
-            .join(Archive, Archive.campaign_id == Campaign.id)
-            .group_by(Campaign.id)
-            .order_by(Campaign.id)
-        ).all()
-        owed = archive.backlog(s)
-        latest = s.scalar(select(func.max(Archive.created_at)))
-    for name, count, files, size in rows:
-        table.add_row(name, str(count), str(files), decimal(size))
+        summary = ARCHIVES.selected(common.settings.providers).summary(s)
+    for each in summary.campaigns:
+        table.add_row(each.name, str(each.archivings), str(each.files), decimal(each.bytes))
     common.console.print(table)
+    latest = summary.latest
     since = f'; latest archiving {latest:%Y-%m-%d %H:%M} UTC' if latest is not None else ''
     common.console.print(
-        f'to archive: {owed.ideas} done idea(s), {owed.campaigns} stopped campaign(s){since}'
+        f'to archive: {summary.subjects_due} settled subject(s), {summary.campaigns_due} stopped campaign(s){since}'
         ' (the daemon works through them in the background, one at a time)',
         markup=False,
     )

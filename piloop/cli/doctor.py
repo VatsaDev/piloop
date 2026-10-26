@@ -28,7 +28,7 @@ from piloop.config import CampaignConfig, ConfigError, explain, load_campaign_co
 from piloop.daemon.main import preflight, unbound_failures
 from piloop.daemon.serve import SECRETS_COMMAND_ENV, SecretsError, running_pid, secrets
 from piloop.db.models import utcnow
-from piloop.db.session import head, schema_mismatch
+from piloop.db.session import described, heads, schema_mismatch, stamps
 from piloop.ids import CampaignId, CampaignStatus
 from piloop.plugins.host import Check, PluginError, Severity, declared
 from piloop.plugins.secrets.contract import SECRETS, SecretKey
@@ -158,7 +158,21 @@ def _database(path: Path, daemon: int | None, actor: Actor) -> Check:
     """Report the schema as the commands that refuse it do (``schema_mismatch``). It never migrates."""
     if (e := schema_mismatch(path, daemon, actor)) is not None:
         return Check('database', e.found, e.fix)
-    return Check('database', f'{path} at schema {head()}, current')
+    gone = [name for name in stamps(path) if name not in heads()]
+    left = ''.join(
+        f'; warning: the plugin {name} ({package}) is not installed: its tables stay'
+        for name, package in _packages(path, gone)
+    )
+    return Check('database', f'{path} at schema {described(heads())}, current{left}')
+
+
+def _packages(path: Path, names: list[str]) -> list[tuple[str, str]]:
+    """Each of the schemas ``names`` with the package that declared it, as ``migrations`` recorded it."""
+    if not names:
+        return []
+    with closing(sqlite3.connect(f'file:{path}?mode=ro', uri=True)) as con:
+        found = dict(con.execute('SELECT name, package FROM migrations').fetchall())
+    return [(name, found.get(name, 'an unknown package')) for name in names]
 
 
 def _campaign(campaign: StoredCampaign) -> Check:

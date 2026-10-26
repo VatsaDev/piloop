@@ -55,8 +55,6 @@ from piloop.db.models import (
     Event,
     Idea,
     IdeaLink,
-    Lesson,
-    LessonStatus,
     Measurement,
     Origin,
     Run,
@@ -91,6 +89,7 @@ from piloop.plugins.executor.kit import jobs
 from piloop.plugins.executor.kit.jobs import INPUTS_CHANGED, INPUTS_REBUILT
 from piloop.plugins.executor.workers import Workers
 from piloop.plugins.executor.workers.worker import _Control
+from piloop.plugins.memory.local.tables import Lesson, LessonStatus
 from piloop.plugins.runtime.contract import AgentExit, Handle
 from piloop.plugins.vcs.contract import Part
 from piloop.plugins.vcs.git import UNCOMMITTED, Git, GitRepository, commands as git
@@ -333,6 +332,7 @@ def test_successful_run_scores_the_commit(
             'measurement.recorded',
             'candidate.judged',
             'candidate.verdict',
+            'subject.settled',
             'idea.status',
         ]
     ), 'the run closes when its implementer ends; the idea settles once the commit is judged'

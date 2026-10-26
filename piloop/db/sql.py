@@ -16,7 +16,7 @@ writes them. To repair a damaged index, run ``INSERT INTO ideas_fts (ideas_fts) 
 connection without these limits.
 
 Every connection, here and in the daemon's engine, has an actor. ``install_actor`` creates the TEMP objects of
-``piloop/db/actor_triggers.sql`` before the authorizer is turned on, because after that ``SQLITE_CREATE_TEMP_TRIGGER``
+the TEMP triggers of core and every plugin (``declared``) before the authorizer is turned on, because after that ``SQLITE_CREATE_TEMP_TRIGGER``
 is denied. From then on, every UPDATE sets ``updated_by``, and the tracked changes, deletes and comments go into
 ``events``. The authorizer lets only those trigger bodies insert into ``events``, so every event has the shape of its
 model (``piloop.db.models.EventModel``).
@@ -36,13 +36,12 @@ from functools import cache
 from pathlib import Path
 
 from covalence import Cid
-from sqlalchemy import MetaData
 from sqlalchemy.dialects import sqlite
 from sqlalchemy.schema import CreateIndex, CreateTable
 
 from piloop.actor import Actor
-from piloop.db.models import Base
-from piloop.db.triggers import EVENT_TRIGGER_NAMES
+from piloop.db.schema import schemas, tables
+from piloop.db.triggers import temp_sql
 from piloop.db.triggers.fts import FTS_COLUMNS, FTS_TABLES, FTS_TRIGGER_NAMES, fts_table
 from piloop.db.triggers.immutable import APPEND_ONLY, IMMUTABLE, UNDELETABLE
 from piloop.proc import command_line
@@ -89,10 +88,10 @@ TOKENS_TABLE = 'tokens'
 """An agent that could write a token could call the server as a worker."""
 SECRETS_TABLE = 'secrets'
 """An agent writes its campaign's secrets through ``piloop secret``, which checks that the campaign is its own."""
-PROTECTED_TABLES = {MIGRATION_TABLE, ACTOR_TABLE, TOKENS_TABLE, SECRETS_TABLE}
+MIGRATIONS_TABLE = 'migrations'
+PROTECTED_TABLES = {MIGRATION_TABLE, ACTOR_TABLE, TOKENS_TABLE, SECRETS_TABLE, MIGRATIONS_TABLE}
 HIDDEN_COLUMNS = frozenset({(SECRETS_TABLE, 'value')})
 """Columns that read as NULL: an agent gets a secret's value in its environment only."""
-ACTOR_TRIGGERS = (Path(__file__).parent / 'actor_triggers.sql').read_text()
 WRITES = {sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE}
 BUSY_TIMEOUT_MS = 5000
 CONNECTION_PRAGMAS = (
@@ -139,13 +138,13 @@ def _authorize(action: int, arg1: str | None, arg2: str | None, _db: str | None,
         return sqlite3.SQLITE_DENY
     if action == sqlite3.SQLITE_PRAGMA:
         return sqlite3.SQLITE_OK if arg1 in READ_ONLY_PRAGMAS else sqlite3.SQLITE_DENY
-    if action in WRITES and arg1 in PROTECTED_TABLES:
+    if action in WRITES and (arg1 in PROTECTED_TABLES or (arg1 or '').startswith(f'{MIGRATION_TABLE}_')):
         return sqlite3.SQLITE_DENY
     if action == sqlite3.SQLITE_READ and (arg1, arg2) in HIDDEN_COLUMNS:
         return sqlite3.SQLITE_IGNORE
     if action in WRITES and arg1 in FTS_TABLES and source not in FTS_TRIGGER_NAMES:
         return sqlite3.SQLITE_DENY
-    if action == sqlite3.SQLITE_INSERT and arg1 in APPEND_ONLY and source not in EVENT_TRIGGER_NAMES:
+    if action == sqlite3.SQLITE_INSERT and arg1 in APPEND_ONLY and source not in declared().events:
         return sqlite3.SQLITE_DENY
     if action == sqlite3.SQLITE_UPDATE and (arg1, arg2) in DAEMON_COLUMNS:
         return sqlite3.SQLITE_DENY
@@ -178,13 +177,30 @@ def install_functions(con: sqlite3.Connection) -> None:
     con.create_function('blake3', 1, _blake3, deterministic=True)
 
 
+@dataclass(frozen=True)
+class Declared:
+    """What every connection needs of the triggers of core and the plugins."""
+
+    actor_sql: str
+    """The actor table and every schema's TEMP triggers, which ``install_actor`` runs."""
+    events: frozenset[str]
+    """The triggers that write events: the only statements of ``piloop sql`` that the authorizer lets insert into them."""
+
+
+@cache
+def declared() -> Declared:
+    """The triggers of every schema (``piloop.db.schema.schemas``), read once per process."""
+    triggers = [t for schema in schemas().values() for t in schema.triggers]
+    return Declared(temp_sql(triggers), frozenset(t.name for t in triggers if t.body.startswith('INSERT INTO events')))
+
+
 def install_actor(con: sqlite3.Connection, actor: Actor) -> None:
     """Make every UPDATE through ``con`` record ``actor`` in ``updated_by``, and log tracked changes in ``events``.
 
     It creates a TEMP table and TEMP triggers, for this connection only. An agent's connection also records its agent
     session, so that a finding after its end is refused (``piloop.db.triggers.ended``).
     """
-    con.executescript(ACTOR_TRIGGERS)
+    con.executescript(declared().actor_sql)
     sign(con, actor)
 
 
@@ -331,17 +347,19 @@ def run(con: sqlite3.Connection, sql: str, limit: int = ROW_LIMIT) -> Result:
     return Result(columns, rows[:limit], cur.rowcount if not columns else 0, cur.lastrowid or 0, truncated)
 
 
-def schema_ddl(metadata: MetaData = Base.metadata) -> str:
+def schema_ddl(name: str | None = None) -> str:
     """The schema as SQLite DDL: the tables with their indexes, and the FTS indexes that agents query. No triggers.
 
-    For briefs and docs. The indexes are part of the contract: they tell an agent which filters are fast.
+    Every schema's tables, or those of the schema ``name`` alone. For briefs and docs. The indexes are part of the contract: they tell an
+    agent which filters are fast.
     """
+    names = None if name is None else {table.__tablename__ for table in schemas()[name].tables}
     statements = []
-    for t in metadata.sorted_tables:
+    for t in (t for t in tables() if names is None or t.name in names):
         statements.append(str(CreateTable(t).compile(dialect=sqlite.dialect())).strip() + ';')
         for index in sorted(t.indexes, key=lambda i: i.name or ''):
             statements.append(str(CreateIndex(index).compile(dialect=sqlite.dialect())).strip() + ';')
-    statements += [fts_table(t) for t in FTS_COLUMNS]
+    statements += [fts_table(t) for t in FTS_COLUMNS if names is None or t in names]
     return '\n'.join(line.rstrip() for statement in statements for line in statement.splitlines())
 
 

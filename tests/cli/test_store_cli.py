@@ -8,15 +8,16 @@ from rich.console import Console
 from sqlalchemy import select
 
 from piloop.campaign import campaigns as campaign_module
-from piloop.campaign.archive import Job, archive, prune
 from piloop.campaign.campaigns import workspace_dir
 from piloop.cli import common, local
-from piloop.db.models import Archive, Campaign
+from piloop.db.models import Campaign
 from piloop.db.session import Database
 from piloop.ids import CampaignId, IdeaStatus
+from piloop.plugins.archive.local.store import Job, archive, prune
+from piloop.plugins.archive.local.tables import Archive
 from piloop.plugins.cas.kit.objects import key
 from piloop.settings import Settings
-from tests.campaign.test_archive import add_idea, add_run, files, write
+from tests.archive.test_store import add_idea, add_run, files, ref, write
 from tests.cli.test_cli import run_cli
 from tests.conftest import at_head, bare_config
 from tests.store.test_0_2_0_store import FIXTURE, MANIFEST
@@ -54,7 +55,7 @@ def archived(campaign_path: Path, out) -> tuple[Database, int, dict[str, bytes]]
     write(workspace / 'scratch.md', '# Notes\n')
     before = files(workspace)
     store, home = local.cas(), common.settings.home
-    for job in (Job(CampaignId(1), idea), Job(CampaignId(1), None)):
+    for job in (Job(CampaignId(1), ref(idea)), Job(CampaignId(1), None)):
         for row in archive(db, store, home, job, live=(), reserve=0).rows:
             prune(db, store, home, row.id)
     assert not list(workspace.iterdir())
@@ -80,6 +81,10 @@ def test_restore_writes_an_idea_a_path_or_everything_back(archived, out) -> None
         run_cli(['restore', 'demo', '99'])
     with pytest.raises(SystemExit, match='nothing archived matches nope/'):
         run_cli(['restore', 'demo', 'nope/'])
+    with pytest.raises(SystemExit, match='nothing archived matches run#1 in'):
+        run_cli(['restore', 'demo', 'run#1'])
+    with pytest.raises(SystemExit, match='nothing archived matches notes#1 in'):
+        run_cli(['restore', 'demo', 'notes#1'])  # no such kind: a path
     db.close()
 
 
@@ -108,7 +113,7 @@ def test_store_status_evict_and_verify(archived, out, monkeypatch: pytest.Monkey
     lines = out().splitlines()
     assert lines[0] == 'cas: disk'
     assert lines[4].split() == ['demo', '2', '3', '3.1', 'kB']
-    assert lines[-1].startswith('to archive: 0 done idea(s), 0 stopped campaign(s); latest archiving 20')
+    assert lines[-1].startswith('to archive: 0 settled subject(s), 0 stopped campaign(s); latest archiving 20')
     with pytest.raises(SystemExit, match='the CAS keeps no local copies to evict'):
         run_cli(['store', 'evict'])
     run_cli(['store', 'verify'])
@@ -128,7 +133,7 @@ def test_store_status_evict_and_verify(archived, out, monkeypatch: pytest.Monkey
     run_cli(['store', 'status'])
     assert out().splitlines()[0].endswith(f' kB), 11 on file://{tmp_path / "remote"}'), 'decimal units'
     with db.session() as s:
-        manifest = s.scalars(select(Archive.manifest).where(Archive.idea_id.is_not(None))).one()
+        manifest = s.scalars(select(Archive.manifest).where(Archive.subject_kind.is_not(None))).one()
     assert manifest is not None
     (tmp_path / 'store' / key(manifest)).write_bytes(b'rot')
     with pytest.raises(SystemExit):
@@ -148,7 +153,8 @@ def test_status_with_a_ready_idea_shows_nothing_archived(campaign_path: Path, ou
     assert lines[0] == 'cas: disk'
     assert (
         lines[-1]
-        == 'to archive: 0 done idea(s), 0 stopped campaign(s) (the daemon works through them in the background, one at a time)'
+        == 'to archive: 0 settled subject(s), 0 stopped campaign(s) (the daemon works through them in the background,'
+        ' one at a time)'
     )
     db.close()
 

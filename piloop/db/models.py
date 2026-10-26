@@ -44,7 +44,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, composite, mapped_c
 from sqlalchemy.orm.attributes import set_committed_value
 from sqlalchemy.types import TypeDecorator
 
-from piloop.api.contract import JOURNAL_LINE_BYTES, Access
+from piloop.api.contract import Access
 from piloop.config import CampaignConfig
 from piloop.ids import (
     IMPLEMENTER,
@@ -58,7 +58,6 @@ from piloop.ids import (
     EvaluatorId,
     IdeaId,
     IdeaStatus,
-    JournalId,
     LinkKind,
     MeasurementId,
     Revision,
@@ -209,14 +208,6 @@ JUDGED: Final = frozenset({Origin.BASELINE, Origin.RUN})
 """The origins of the candidates that get a verdict. ``verdict IS NULL`` on one of them means that it is pending."""
 
 
-class LessonStatus(StrEnum):
-    """What a lesson concludes about its mechanism family."""
-
-    DEAD = 'dead'
-    PROMISING = 'promising'
-    UNTESTED = 'untested'
-
-
 class AgentSessionState(StrEnum):
     """The process state of an agent, kept by the daemon. ``requested`` is a request to launch, not a process.
 
@@ -311,7 +302,7 @@ LIVE_LEASES = (LeaseState.ACQUIRED, LeaseState.RUNNING)
 OPEN_LEASES = (LeaseState.QUEUED, *LIVE_LEASES)
 
 
-def _values[E: StrEnum](enum: type[E]) -> Enum:
+def by_value[E: StrEnum](enum: type[E]) -> Enum:
     """Store enum values, not member names, with a CHECK constraint, so that raw SQL cannot write other values."""
     return Enum(
         enum, values_callable=lambda e: [m.value for m in e], native_enum=False, length=16, create_constraint=True
@@ -481,7 +472,6 @@ class Base(DeclarativeBase):
         EvaluatorId: Integer,
         AgentSessionId: Integer,
         CommentId: Integer,
-        JournalId: Integer,
         RoleName: String,
         TrackName: String,
         Revision: String,
@@ -491,39 +481,25 @@ class Base(DeclarativeBase):
         CampaignConfig: PydanticJSON(TypeAdapter(CampaignConfig)),
         EventModel: PydanticJSON(EVENT),
         list[str]: JSON,
-        CampaignStatus: _values(CampaignStatus),
-        Pause: _values(Pause),
-        IdeaStatus: _values(IdeaStatus),
-        LinkKind: _values(LinkKind),
-        RunStatus: _values(RunStatus),
-        RunEnd: _values(RunEnd),
-        Outcome: _values(Outcome),
-        Origin: _values(Origin),
-        Cause: _values(Cause),
-        TargetKind: _values(TargetKind),
-        CommentKind: _values(CommentKind),
-        LessonStatus: _values(LessonStatus),
-        AgentSessionState: _values(AgentSessionState),
-        LeaseKind: _values(LeaseKind),
-        LeaseState: _values(LeaseState),
-        Access: _values(Access),
-        NoLease: _values(NoLease),
-        WorkerInstanceState: _values(WorkerInstanceState),
-        InstanceEnd: _values(InstanceEnd),
+        CampaignStatus: by_value(CampaignStatus),
+        Pause: by_value(Pause),
+        IdeaStatus: by_value(IdeaStatus),
+        LinkKind: by_value(LinkKind),
+        RunStatus: by_value(RunStatus),
+        RunEnd: by_value(RunEnd),
+        Outcome: by_value(Outcome),
+        Origin: by_value(Origin),
+        Cause: by_value(Cause),
+        TargetKind: by_value(TargetKind),
+        CommentKind: by_value(CommentKind),
+        AgentSessionState: by_value(AgentSessionState),
+        LeaseKind: by_value(LeaseKind),
+        LeaseState: by_value(LeaseState),
+        Access: by_value(Access),
+        NoLease: by_value(NoLease),
+        WorkerInstanceState: by_value(WorkerInstanceState),
+        InstanceEnd: by_value(InstanceEnd),
     }
-
-
-def _misnamed(name: str, table: type[Base]) -> str | None:
-    return (
-        None
-        if table.__tablename__ == name
-        else f'it names the table {table.__tablename__!r}: the names must be the same'
-    )
-
-
-TABLES: Slot[type[Base]] = Slot('tables', TypeAdapter(type[Base]), 'table', _misnamed)
-"""The tables that packages add, by name: classes of ``Base``. The daemon checks them when it starts, and piloop's
-migrations create only piloop's own."""
 
 
 def _pointed_at_already(name: str, _rows: type[Base]) -> str | None:
@@ -548,7 +524,7 @@ class Tracked:
     """Set by a persistent trigger on every UPDATE, so an UPDATE in raw SQL sets it too."""
     updated_by: Mapped[str | None] = mapped_column(server_onupdate=FetchedValue(), sort_order=1)
     """The actor of the connection that made the last UPDATE (``human``, ``daemon``, ``<kind>#<agent session id>``). A TEMP
-    trigger of each connection sets it (``piloop/db/actor_triggers.sql``, which also logs decisions in ``events``).
+    trigger of each connection sets it (``piloop.db.sql.install_actor``, which also logs decisions in ``events``).
     NULL until the first UPDATE of the row."""
 
 
@@ -1006,6 +982,21 @@ class Token(Base):
     created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=NOW)
 
 
+class Migration(Base):
+    """Core or a plugin that migrated this database: one row each (``piloop.db.schema``). Only ``migrate`` writes it.
+
+    ``fingerprint`` is that of its revisions up to the one in its version table (``fingerprints``).
+    """
+
+    __tablename__ = 'migrations'
+
+    name: Mapped[str] = mapped_column(primary_key=True)
+    """``core``, or a plugin's schema name, such as ``memory/local``."""
+    package: Mapped[str]
+    """The distribution that declared the schema: what to install again when it is missing."""
+    fingerprint: Mapped[int]
+
+
 class LeaseWorker(Base):
     """A worker that takes leases (``piloop.plugins.executor.kit.leases``): its pool, and what it last sent.
 
@@ -1192,128 +1183,6 @@ class Technique(Base):
     created_by: Mapped[str]
     """Who filed it: the scout (``scout#<agent session id>``) or someone else."""
     created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=NOW)
-
-
-class Lesson(Base):
-    """The standing conclusion about one mechanism family (``ideas.family``) of a campaign, for the next campaigns.
-
-    The closing watchdog writes one for each family that a campaign tried, and the orchestrator may write more. The
-    newest lesson for a (campaign, family) is the current one: a new conclusion is a new row, and rows are never
-    updated. Briefs open with the current lessons of the repo (``piloop.reports.wake``).
-    """
-
-    __tablename__ = 'lessons'
-    __table_args__ = (
-        Index('ix_lessons_campaign_family', 'campaign_id', 'family'),
-        CheckConstraint('(effect IS NULL) = (metric IS NULL)', name='lessons.effect and lessons.metric go together'),
-        CheckConstraint("typeof(effect) IN ('integer', 'real', 'null')", name='lessons.effect must be a number'),
-        *text_checks('lessons', 'family', 'body', 'created_by', nullable=('metric',)),
-    )
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    campaign_id: Mapped[CampaignId] = mapped_column(ForeignKey('campaigns.id', ondelete='CASCADE'))
-    family: Mapped[str]
-    """The mechanism family, as ``ideas.family`` names it. Case and spacing do not matter when lessons are matched."""
-    status: Mapped[LessonStatus]
-    effect: Mapped[float | None]
-    """The best effect that the campaign measured in the family, in the units of ``metric``, with the sign it had: a
-    gain can be a lower time. NULL when none was measured."""
-    metric: Mapped[str | None]
-    """The metric of ``effect``, as the campaign names it. NULL when no effect was measured."""
-    body: Mapped[str]
-    """Why: what was tried, the evaluator that measured the effect, why it stopped. It cites idea and candidate ids."""
-    created_by: Mapped[str]
-    """Who wrote it: the closing watchdog (``watchdog#<agent session id>``), the orchestrator or a human."""
-    created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=NOW)
-
-
-class Document(Tracked, Base):
-    """A text document of a campaign, for agents to search: a campaign report, an orchestrator log, a design note.
-
-    ``piloop init`` and the stop of a campaign copy in the repo files that ``[memory] documents`` names. Agents may
-    insert more with raw SQL: ``hash`` is ``blake3(body)``, a function that every piloop connection has. Each version
-    is a row. One path may have several versions, and the newest has the highest ``id``. The same text at the same
-    path is one row, however often it is synced. ``documents_fts`` indexes the title and the body. Never a document
-    derived from validation or test data: nothing that agents can search may show the scored data.
-    """
-
-    __tablename__ = 'documents'
-    __table_args__ = (
-        UniqueConstraint('campaign_id', 'path', 'hash'),
-        CheckConstraint(
-            "length(hash) = 64 AND hash NOT GLOB '*[^0-9a-f]*'", name='documents.hash is the blake3 hex digest of body'
-        ),
-        *text_checks('documents', 'path', 'title', 'body', 'created_by'),
-    )
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    campaign_id: Mapped[CampaignId] = mapped_column(ForeignKey('campaigns.id', ondelete='CASCADE'))
-    path: Mapped[str]
-    """Where it is: repo-relative for a synced file, or else wherever its writer keeps it."""
-    hash: Mapped[str]
-    """BLAKE3 of the UTF-8 bytes of the body, in lowercase hex. It makes a sync of unchanged text do nothing."""
-    title: Mapped[str]
-    """Its first heading, or else the file name."""
-    body: Mapped[str]
-    created_by: Mapped[str]
-    """Who inserted it: the actor of ``piloop init``, or the daemon, for a synced file. Else the agent's signature."""
-    created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=NOW)
-
-
-class Journal(Base):
-    """The orchestrator's journal: one line for each decision, plan or result, so a new session can pick up the work.
-
-    A coordinating session can lose its context (a crash, a full window). ``piloop wake`` prints the latest lines
-    first, next to the lessons, the inbox and the heads. ``piloop journal "<line>"`` appends a line, signed with the
-    actor. Rows are never updated or deleted.
-    """
-
-    __tablename__ = 'journal'
-    __table_args__ = (
-        CheckConstraint(
-            f"typeof(line) IN ('text') AND length(CAST(line AS BLOB)) BETWEEN 1 AND {JOURNAL_LINE_BYTES}",
-            name=f'journal.line is text of 1 to {JOURNAL_LINE_BYTES} bytes',
-        ),
-        *text_checks('journal', 'author'),
-    )
-
-    id: Mapped[JournalId] = mapped_column(primary_key=True)
-    author: Mapped[str]
-    """Who wrote it, for example ``orchestrator``."""
-    line: Mapped[str]
-    created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=NOW)
-
-
-class Archive(Base):
-    """A part of a campaign's shared workspace the daemon moved into the artifact store (``piloop.campaign.archive``).
-
-    One row per archiving: a done idea's subtree (``idea_id`` set) once its last run is judged, and whatever is left
-    when the campaign stops (``idea_id`` NULL). ``manifest`` names the stored tree, once its every blob is in the
-    store. The local copies stay until the daemon prunes them, by age or when the disk is short (``pruned_at``).
-    ``piloop restore`` writes pruned files back. Written by the daemon only.
-    """
-
-    __tablename__ = 'archives'
-    __table_args__ = (Index('ix_archives_campaign_idea', 'campaign_id', 'idea_id'),)
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    campaign_id: Mapped[CampaignId] = mapped_column(ForeignKey('campaigns.id', ondelete='CASCADE'))
-    idea_id: Mapped[IdeaId | None]
-    """The done idea whose subtree this is; NULL for what a stopped campaign left. Plain integer: the archive outlives
-    a deleted idea."""
-    manifest: Mapped[Cid | None] = mapped_column(CidText)
-    """The CID of the stored manifest (path → blob, size, mode) in the artifact store; NULL when there was nothing
-    to archive."""
-    files: Mapped[int] = mapped_column(default=0, server_default=text('0'))
-    """Files and symlinks archived."""
-    bytes: Mapped[int] = mapped_column(default=0, server_default=text('0'))
-    """Their total size, uncompressed."""
-    created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=NOW)
-    pruned_at: Mapped[datetime | None]
-    """When the daemon removed the workspace copies that still held what was stored. NULL while they may be there."""
-    complete: Mapped[bool] = mapped_column(server_default=text('1'))
-    """Whether this row ends its job: the last batch of a job that stored everything. A job that stopped short (no
-    room, a failure, a stop of the daemon) has only incomplete rows, so it stays due."""
 
 
 class AgentSession(Tracked, Base):

@@ -10,27 +10,26 @@ from importlib.metadata import distribution
 from pathlib import Path
 
 import pytest
-from alembic import command
-from alembic.script import ScriptDirectory
 from pydantic import SecretStr
 from pytest_mock import MockerFixture
+from sqlalchemy import create_engine
 
 from piloop.actor import System
 from piloop.cli import doctor, skills, upgrade
 from piloop.cli.doctor import checks, report
 from piloop.config import CampaignConfig
 from piloop.db.models import Campaign
-from piloop.db.session import Database
+from piloop.db.schema import CORE
+from piloop.db.session import Database, described, heads, migrate
 from piloop.ids import CampaignStatus
 from piloop.plugins.host import Check, Severity
 from piloop.plugins.secrets.contract import SECRETS, set_secret
 from piloop.settings import Settings
 from piloop.version import Version, code_digest, installed
 from tests.cli.test_cli import git_check
-from tests.conftest import hold_lock, reconfigured, store_config
-from tests.db.test_migrations import alembic
+from tests.conftest import disk, hold_lock, reconfigured, store_config
 
-HEAD = ScriptDirectory.from_config(alembic(Path('unused.db'))).get_current_head()
+HEADS = described(heads())
 
 
 @pytest.fixture
@@ -70,8 +69,8 @@ def test_a_healthy_install_passes_every_check(
     assert lines == [
         f'ok    cli: {installed()}; not checked for a newer one: installed from file:///src/piloop: update that checkout',
         'ok    daemon: not running',
-        f'ok    database: {tmp_path}/piloop.db at schema {HEAD}, current',
-        'ok    plugins: 5 CAS providers, 1 executor, 3 fact sources, 2 networks, 1 provisioner, 4 roles, 1 runtime, 1 secrets provider, 21 sections, 1 stop rule, 9 triggers, 1 vcs provider, 1 verdict rule; all built in',
+        f'ok    database: {tmp_path}/piloop.db at schema {HEADS}, current',
+        'ok    plugins: 1 archive provider, 1 campaign type, 5 CAS providers, 1 executor, 3 fact sources, 1 memory provider, 2 networks, 1 provisioner, 4 roles, 1 runtime, 1 secrets provider, 21 sections, 1 stop rule, 9 triggers, 1 vcs provider, 1 verdict rule; all built in',
         'ok    secrets: from `piloop secret set` (PILOOP_SECRETS_COMMAND unset)',
         f'ok    campaign demo: {campaign.path}/piloop.toml loads',
         f'ok    skills (pi): current in {cfg.agent_skills_dir}',
@@ -133,7 +132,7 @@ def test_a_database_missing_unmigrated_behind_or_ahead_says_which_command_brings
         'database', f'{path} does not exist', '`piloop init <repo>` creates it with the first campaign'
     )
     path.touch()
-    behind = f'{path} is at schema revision none, and this {installed()} knows {HEAD}'
+    behind = f'{path} is at schema none, and this {installed()} knows {HEADS}'
     assert by_name(cfg)['database'] == Check('database', behind, 'run `piloop migrate`, which backs it up first')
     for daemon in hold_lock(cfg.pid_file):
         assert by_name(cfg)['database'] == Check(
@@ -142,8 +141,8 @@ def test_a_database_missing_unmigrated_behind_or_ahead_says_which_command_brings
             f'the daemon (pid {daemon.pid}) runs an older piloop. `piloop restart` restarts it on this piloop, which'
             ' migrates it',
         ), 'piloop migrate refuses under the daemon of an older piloop'
-    command.upgrade(alembic(path), 'head')
-    assert by_name(cfg)['database'] == Check('database', f'{path} at schema {HEAD}, current')
+    migrate(create_engine(f'sqlite:///{path}'), cas=disk(cfg.home), backups=0, daemon=None)
+    assert by_name(cfg)['database'] == Check('database', f'{path} at schema {HEADS}, current')
     with closing(sqlite3.connect(path)) as con:
         con.execute("UPDATE alembic_version SET version_num = '9999_from_the_future'")
         con.commit()
@@ -151,8 +150,8 @@ def test_a_database_missing_unmigrated_behind_or_ahead_says_which_command_brings
     ahead = by_name(cfg)['database']
     assert ahead == Check(
         'database',
-        f'{path} was migrated by a different piloop build (revision 9999_from_the_future is not in the history of'
-        f' this {installed()}, which knows up to {HEAD})',
+        f'{path} was migrated by a different piloop build (core revision 9999_from_the_future is not in the history of'
+        f' this {installed()}, which knows up to {heads()[CORE]})',
         'install the piloop that migrated it (`piloop upgrade` for a newer release), or set PILOOP_HOME to another'
         ' directory',
     )

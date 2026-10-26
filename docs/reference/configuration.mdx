@@ -33,7 +33,6 @@ section.
 | `link` | list\[string\] | `[]` | Repo-relative paths, ignored by git, that piloop puts into every worktree read-only, for example data or virtual environments. Each job gets them as they are when it is made. |
 | `context` | list\[string\] | `[]` | Repo-relative files or globs (for example `docs/error-analysis-*.md`) that hold the campaign's analysis: error analyses, comparisons with a reference, evaluation reports. The research pack lists each one with its outline, newest first, so that every sweep that reads the pack reads them before it proposes work. |
 | `mcp` | dict\[string, [McpServer](#mcpserver)\] | `{}` | `[mcp.<name>]`: the MCP servers that a role can list in `[roles.<name>] mcp`. |
-| `memory` | [Memory](#memory) | `{}` | `[memory]`: documents for every agent to search. |
 | `status` | [StatusConfig](#statusconfig) | `{}` | `[status]`: the sections that `piloop status`, the API and a UI show. |
 | `facts` | list\[object\] \| null | `null` | `[[facts]]`: where the campaign's facts come from, which its stop rule and its sections read: a list of `{ provider = "<source>", ... }` entries. When unset, every installed source that is on by default: `campaign`, the hours and tokens of any campaign, and `optimization`, its research. A list that adds a source lists those too, to keep their facts. |
 | `plugins` | dict\[string, object\] | `{}` | `[plugins.<capability>]`: the provider of each capability of the campaign, by its name (`provider`), and its parameters, the other keys of the table. A capability without a table, or a table without `provider`, has its default provider. |
@@ -165,14 +164,6 @@ the header or the server's environment.
 | `bearer_token_env` | string \| null | `null` | HTTP only. The environment variable whose value is sent as `Authorization: Bearer <value>`. |
 | `command` | list\[string\] \| null | `null` | The command (argv) of a stdio server, for example `["python3", "/path/to/server.py"]`. |
 | `env` | list\[string\] | `[]` | stdio only. The environment variables that the server reads, for example `["XAI_API_KEY"]`. |
-
-## Memory
-
-`[memory]`: what past campaigns leave for the next ones. See the research memory page.
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `documents` | list\[string\] | `[]` | Repo-relative globs of text documents, for example `["docs/evidence/**/*.md"]`: campaign reports, orchestrator logs, design notes. `piloop init` and the stop of the campaign copy them into the `documents` table, where every agent of every campaign can search them. Never name a document that is derived from validation or test data. |
 
 ## StatusConfig
 
@@ -411,6 +402,12 @@ stopped: <the condition>``.
 
 `[plugins.<capability>]` selects the provider of a capability of the home: `provider`, the name of its entry point (the default without it), and the provider's own keys, which the daemon checks before it starts.
 
+#### `[plugins.archive]`
+
+Selects the archive provider.
+
+With `provider = "local"`, the table has no other key.
+
 #### `[plugins.cas]`
 
 Selects the CAS provider.
@@ -565,6 +562,7 @@ These keys still work. Each one shows a `PiloopDeprecationWarning` that names th
 - The `anomaly` trigger is two triggers: `run_failed` and `dead_at_startup`, in its place in the list.
 - `[plugins.stop_rule] max_spend` is `hold_at = { spend = <value> }`. A value that `hold_at` sets too wins.
 - `[memory] wake_budget` and `[roles.<name>] wake_budget` are the `budget` of the role's `lessons` section. A role's own value wins over `[memory]`'s. A budget that differs from the role's old default sets the role's `sections` to its defaults with the lessons at that budget, or without them at 0. A role that sets `sections` keeps them. The watchdog's old default was 0: it now reads the lessons too.
+- `[memory] documents` is `documents` in `[plugins.memory]`, of the `local` provider. A value that `[plugins.memory]` sets too wins.
 - In `config.toml`, `[storage.backend]` is the `remote` of `[plugins.cas] provider = "cached"`. Its `kind` is the remote's `provider`. `evict_after_days` and `local_max_gb` of `[storage]` move with it. A `[plugins.cas]` table of the file wins: the old keys then go, with the warning, and change nothing.
 - In `config.toml`, `max_evaluations` is `evaluations` in `[plugins.executor.pools.serve]`. A value that `[plugins.executor.pools.serve]` sets too wins.
 - In `config.toml`, `tick_seconds` does nothing: the daemon wakes on events, not on a timer.

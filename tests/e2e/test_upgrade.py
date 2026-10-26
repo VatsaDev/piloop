@@ -73,6 +73,8 @@ CONFIG_REWRITES = (
     'plugins.stop_rule.*',
     'plugins.verdict_rule.*',
     'memory.wake_budget',
+    'memory.documents',
+    'plugins.memory.*',
     'roles.*.wake_budget',
     'roles.*.sections',
     'status.*',
@@ -81,8 +83,9 @@ CONFIG_REWRITES = (
 """The keys of the stored ``piloop.toml`` that a migration may change, as patterns: it deletes the harness keys that
 only herdr read (revision 0034), ``workdir`` (0035) and ``entire_agent`` (0036), renames a trigger's ``kind`` to
 ``provider`` (0038), moves ``[stop]``, ``[spend] limit`` and ``confidence`` into the rules' tables (0039), and turns
-``wake_budget`` into the lessons entry of a role's ``sections`` and lists the overview's in ``[status]`` (0053), and
-drops a built-in harness's null ``mcp`` whose table inherits an argv with ``{mcp}`` (0057)."""
+``wake_budget`` into the lessons entry of a role's ``sections`` and lists the overview's in ``[status]`` (0053),
+drops a built-in harness's null ``mcp`` whose table inherits an argv with ``{mcp}`` (0057), and moves ``[memory]
+documents`` into ``plugins.memory`` (0061)."""
 DROPPED = {'agent_sessions.checkpoint_id', 'documents.commit_sha'}
 """The columns that this checkout dropped, as the upgrading guide lists them."""
 CURRENT_EVALUATOR = 'current evaluator'

@@ -1,16 +1,18 @@
 """Archiving the shared workspace into the CAS, and restoring it: the campaign side of ``piloop.store.tree``.
 
 Agents write to ``<PILOOP_HOME>/projects/<id>/workspace`` and nothing used to delete it: on one machine it grew to
-hundreds of gigabytes in millions of files, most of them copies. What the store owes (``due``):
+hundreds of gigabytes in millions of files, most of them copies. What the store owes (``due``), from the event feed and
+core's tables alone:
 
-- an idea is done (its last run judged): every top-level entry named ``idea<id>…`` goes into the store;
+- a subject settled (``subject.settled``, for example a done idea): every top-level entry named after it goes into the
+  store;
 - a campaign stopped and nothing of it runs any more: everything left in its workspace goes.
 
 ``archive`` stores a job's files, stores their manifest, checks that the store holds every blob, and records an
 ``archives`` row. It removes nothing: the local copies stay, so an agent or a human that still reads them finds them.
 ``prune`` removes them later, file by file where the file still holds what was stored: by age, or under disk pressure
-(``make_room``). ``restore`` writes an idea's files, a path or everything back. The daemon decides when
-(``piloop.daemon.archiver``).
+(``make_room``). ``restore`` writes a subject's files, a path or everything back. The archiver decides when
+(``archiver``).
 """
 
 import re
@@ -25,16 +27,18 @@ from sqlalchemy.orm import Session
 
 from piloop import deprecated
 from piloop.campaign.campaigns import workspace_dir
-from piloop.db.models import ENDED, OPEN_RUNS, AgentSession, Archive, Campaign, Idea, Run, count, utcnow
+from piloop.db.events import SubjectSettled, has
+from piloop.db.models import ENDED, AgentSession, Campaign, Event, count, utcnow
 from piloop.db.session import Database
-from piloop.ids import CampaignId, CampaignStatus, IdeaId, IdeaStatus
+from piloop.ids import CampaignId, CampaignStatus, TargetKind, TargetRef
+from piloop.plugins.archive.contract import CampaignArchived, Restored, Summary
+from piloop.plugins.archive.local.tables import Archive
 from piloop.plugins.cas.contract import Cas, Integrity, integrity
 from piloop.settings import INPUTS_DIR
 from piloop.store.tree import (
     DRISL,
     Entry,
     Manifest,
-    Materialised,
     Missing,
     Removed,
     Walk,
@@ -47,8 +51,9 @@ from piloop.store.tree import (
     walk,
 )
 
-IDEA_NAME = re.compile(r'idea(\d+)(?!\d)')
-"""A top-level workspace entry of an idea: ``idea12/``, ``idea12-canary.log``. Implementers are told to use it."""
+SUBJECT_NAME = re.compile(r'(?P<kind>[a-z_]+)(?P<id>\d+)(?!\d)')
+"""A top-level workspace entry of a subject, ``<kind><id>`` not followed by a digit: ``idea12/``,
+``idea12-canary.log``. Implementers are told to name their entries so."""
 
 
 class NotArchived(RuntimeError):
@@ -59,45 +64,64 @@ class ManifestNotMigrated(RuntimeError):
     """The store could not give an archive's JSON manifest back, so its row still names it. The message says which."""
 
 
-def idea_of(name: str) -> IdeaId | None:
-    """The idea id that a top-level workspace entry is named after, or None."""
-    m = IDEA_NAME.match(name)
-    return IdeaId(int(m[1])) if m else None
+def subject_of(name: str) -> TargetRef | None:
+    """The subject that a top-level workspace entry is named after, or None."""
+    m = SUBJECT_NAME.match(name)
+    return TargetRef(TargetKind(m['kind']), int(m['id'])) if m and m['kind'] in TargetKind else None
 
 
-def owners(s: Session, campaign_id: CampaignId, names: Iterable[str]) -> dict[str, IdeaId]:
-    """The idea of ``campaign_id`` that each of ``names`` (top-level workspace entries) belongs to; the rest are left out.
+def owners(s: Session, campaign_id: CampaignId, names: Iterable[str]) -> dict[str, TargetRef]:
+    """The subject of ``campaign_id`` that each of ``names`` (top-level workspace entries) belongs to; the rest are left out.
 
-    A name of an idea that is not in the campaign belongs to none, so the campaign's stop takes it.
+    A name whose subject did not settle in the campaign belongs to none, so the campaign's own archiving takes it.
     """
-    ideas = {name: idea for name in names if (idea := idea_of(name)) is not None}
-    known = set(s.scalars(select(Idea.id).where(Idea.campaign_id == campaign_id, Idea.id.in_(set(ideas.values())))))
-    return {name: idea for name, idea in ideas.items() if idea in known}
+    subjects = {name: subject for name in names if (subject := subject_of(name)) is not None}
+    settled = s.execute(
+        select(Event.target_kind, Event.target_id).where(has(SubjectSettled, campaign=campaign_id)).distinct()
+    )
+    known = {TargetRef(kind, target_id) for kind, target_id in settled}
+    return {name: subject for name, subject in subjects.items() if subject in known}
 
 
 @dataclass(frozen=True)
 class Job:
-    """One archiving: a done idea's entries, or (``idea_id`` None) what a stopped campaign left."""
+    """One archiving: a settled subject's entries, or (``subject`` None) what a stopped campaign left."""
 
     campaign_id: CampaignId
-    idea_id: IdeaId | None
+    subject: TargetRef | None
 
 
-def _due_ideas() -> Select[CampaignId, IdeaId]:
-    """``(campaign, idea)`` of every idea due, oldest first.
+def _due_subjects() -> Select[CampaignId, TargetKind, int]:
+    """``(campaign, subject kind, subject id)`` of every subject due, oldest settled first.
 
-    Due: ``done``, no run of it open, and its latest run finished after its latest complete archiving (a re-run idea is
-    archived again, and a job that stopped short is done again).
+    Due: its latest ``subject.settled`` is newer than its latest complete archiving (a re-run idea is archived again,
+    and a job that stopped short is done again).
     """
-    open_run = exists().where(Run.idea_id == Idea.id, Run.status.in_(OPEN_RUNS))
-    last_run = select(func.max(Run.finished_at)).where(Run.idea_id == Idea.id).scalar_subquery()
+    campaign = func.json_extract(Event.payload, '$.campaign')
+    settled = (
+        select(
+            campaign.label('campaign_id'),
+            Event.target_kind,
+            Event.target_id,
+            func.max(Event.at).label('at'),
+            func.max(Event.id).label('last'),
+        )
+        .where(has(SubjectSettled))
+        .group_by(Event.target_kind, Event.target_id, campaign)
+        .subquery()
+    )
     archived = (
-        select(func.max(Archive.created_at)).where(Archive.idea_id == Idea.id, Archive.complete).scalar_subquery()
+        select(func.max(Archive.created_at))
+        .where(
+            Archive.subject_kind == settled.c.target_kind, Archive.subject_id == settled.c.target_id, Archive.complete
+        )
+        .scalar_subquery()
     )
     return (
-        select(Idea.campaign_id, Idea.id)
-        .where(Idea.status == IdeaStatus.DONE, ~open_run, archived.is_(None) | (last_run > archived))
-        .order_by(Idea.id)
+        select(settled.c.campaign_id, settled.c.target_kind, settled.c.target_id)
+        .join(Campaign, Campaign.id == settled.c.campaign_id)  # an event outlives its campaign, an archiving does not
+        .where(archived.is_(None) | (settled.c.at > archived))
+        .order_by(settled.c.last)
     )
 
 
@@ -111,7 +135,7 @@ def _due_campaigns() -> Select[CampaignId]:
     last_end = select(func.max(AgentSession.ended_at)).where(AgentSession.campaign_id == Campaign.id).scalar_subquery()
     swept = (
         select(func.max(Archive.created_at))
-        .where(Archive.campaign_id == Campaign.id, Archive.idea_id.is_(None), Archive.complete)
+        .where(Archive.campaign_id == Campaign.id, Archive.subject_kind.is_(None), Archive.complete)
         .scalar_subquery()
     )
     return (
@@ -122,29 +146,32 @@ def _due_campaigns() -> Select[CampaignId]:
 
 
 def due(s: Session) -> Job | None:
-    """The next archiving the store owes, oldest first; a campaign's own waits until its every done idea is archived.
+    """The next archiving the store owes, oldest first; a campaign's own waits until its every settled subject's is.
 
     Computed from the database alone, so a daemon that stops in the middle of a backlog picks it up where it was: the
     job it cut is done again, and what it had stored is found by hash and not stored twice.
     """
-    idea = s.execute(_due_ideas().limit(1)).first()
-    if idea is not None:
-        return Job(idea.campaign_id, idea.id)
+    subject = s.execute(_due_subjects().limit(1)).first()
+    if subject is not None:
+        return Job(CampaignId(subject.campaign_id), TargetRef(subject.target_kind, subject.target_id))
     campaign = s.scalar(_due_campaigns().limit(1))
     return None if campaign is None else Job(campaign, None)
 
 
-@dataclass(frozen=True)
-class Backlog:
-    """What the store still owes, for ``piloop store status``."""
-
-    ideas: int
-    campaigns: int
-
-
-def backlog(s: Session) -> Backlog:
-    """How many ideas and campaigns are due."""
-    return Backlog(count(s, _due_ideas()), count(s, _due_campaigns()))
+def summary(s: Session) -> Summary:
+    """What the archive holds of each campaign that has an archiving, what is due, and the latest archiving's time."""
+    rows = s.execute(
+        select(Campaign.name, func.count(Archive.id), func.sum(Archive.files), func.sum(Archive.bytes))
+        .join(Archive, Archive.campaign_id == Campaign.id)
+        .group_by(Campaign.id)
+        .order_by(Campaign.id)
+    ).all()
+    return Summary(
+        campaigns=tuple(CampaignArchived(*row) for row in rows),
+        subjects_due=count(s, _due_subjects()),
+        campaigns_due=count(s, _due_campaigns()),
+        latest=s.scalar(select(func.max(Archive.created_at))),
+    )
 
 
 def _unpruned() -> Select[Archive]:
@@ -266,9 +293,9 @@ def archive(
     """
     workspace = workspace_dir(home, job.campaign_id)
     names = [entry.name for entry in workspace.iterdir() if entry.name not in live] if workspace.is_dir() else []
-    if job.idea_id is not None:
+    if job.subject is not None:
         with db.session() as s:
-            names = [name for name, idea in owners(s, job.campaign_id, names).items() if idea == job.idea_id]
+            names = [name for name, subject in owners(s, job.campaign_id, names).items() if subject == job.subject]
     left = walk(workspace, names)
     done = Archived([])
     while True:
@@ -312,7 +339,7 @@ def _store_batch(
     stored = put_walk(cas, workspace, batch, stop)
     row = Archive(
         campaign_id=job.campaign_id,
-        idea_id=job.idea_id,
+        subject=job.subject,
         files=len(stored.manifest.entries),
         bytes=stored.size,
         complete=complete,
@@ -333,16 +360,8 @@ def _parents(path: str) -> list[str]:
     return [str(p) for p in PurePosixPath(path).parents][:-1]
 
 
-@dataclass(frozen=True)
-class Restored:
-    """What ``restore`` wrote back, from how many archivings."""
-
-    archives: int
-    done: Materialised
-
-
-def restore(s: Session, cas: Cas, home: Path, campaign: Campaign, target: int | str | None) -> Restored:
-    """Write archived files back into the campaign's workspace: an idea's (``target`` an id), a path's, or all.
+def restore(s: Session, cas: Cas, home: Path, campaign: Campaign, target: TargetRef | str | None) -> Restored:
+    """Write archived files back into the campaign's workspace: a subject's (``target`` a ``TargetRef``), a path's, or all.
 
     A path is workspace-relative: the file itself or everything under it. When several archivings hold a path, the
     latest wins, and a newer file where an older one had a directory (or the reverse) displaces the older paths. A file
@@ -363,8 +382,8 @@ def restore(s: Session, cas: Cas, home: Path, campaign: Campaign, target: int | 
             path: e for path, e in latest.items() if path not in dirs and not any(p in newer for p in _parents(path))
         } | newer
     entries = list(latest.values())
-    if isinstance(target, int):  # by name alone: an archive outlives a deleted idea
-        entries = [e for e in entries if idea_of(e.path.split('/', 1)[0]) == target]
+    if isinstance(target, TargetRef):  # by name alone: an archive outlives a deleted subject
+        entries = [e for e in entries if subject_of(e.path.split('/', 1)[0]) == target]
     elif target is not None:
         prefix = target.strip('/')
         entries = [e for e in entries if e.path == prefix or e.path.startswith(f'{prefix}/')]

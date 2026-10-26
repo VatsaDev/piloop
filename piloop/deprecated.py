@@ -319,8 +319,7 @@ def wake_budget(toml: Path, raw: dict[str, object], removed_in: Version) -> None
     from piloop.plugins.role.contract import ROLES, new_role  # here: the roles import this module
     from piloop.plugins.section.contract import SECTIONS, defaults  # here: the sections import this module
 
-    memory = _table(raw, 'memory')
-    shared = memory.pop('wake_budget', None) if memory is not None else None
+    shared = _popped(raw, 'memory', 'wake_budget')
     roles = raw.setdefault('roles', {})
     if not isinstance(roles, dict):
         return
@@ -347,6 +346,34 @@ def wake_budget(toml: Path, raw: dict[str, object], removed_in: Version) -> None
 
 
 _MOVED = "wake_budget is deprecated; set budget in the lessons entry of the role's sections"
+
+
+@bridge('0.4.0', '[memory] documents is [plugins.memory] documents: delete the memory_documents bridge')
+def memory_documents(toml: Path, raw: dict[str, object], removed_in: Version) -> None:
+    """``[memory] documents`` is ``documents`` in ``[plugins.memory]``, of the ``local`` provider.
+
+    A value that ``[plugins.memory]`` sets too wins.
+    """
+    memory = _table(raw, 'memory')
+    if memory is None or 'documents' not in memory:
+        return
+    _into(raw, 'memory', {'documents': _popped(raw, 'memory', 'documents')})
+    warn(
+        toml,
+        'memory.documents',
+        '[memory] documents is deprecated; write documents in [plugins.memory]',
+        removed_in=removed_in,
+        nth=_nth(toml, 'memory', 'documents'),
+    )
+
+
+def _popped(raw: dict[str, object], table: str, key: str) -> object:
+    """Pop ``key`` from ``[table]`` of the parsed file, or None, and the table too once it is empty."""
+    found = _table(raw, table)
+    value = found.pop(key, None) if found is not None else None
+    if found == {}:
+        del raw[table]
+    return value
 
 
 @bridge(

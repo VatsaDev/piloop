@@ -57,7 +57,6 @@ from piloop.agents.roles import compose_brief, role_of
 from piloop.campaign.anomaly import AnomalyReported, assigned
 from piloop.campaign.campaigns import WORKSPACE, CampaignAdded, vcs_of, workspace_dir
 from piloop.campaign.ideas import defined_by, park_stranded, runnable, supersede, waiting
-from piloop.campaign.memory import sync_documents
 from piloop.campaign.stop import (
     CampaignClosed,
     CancelRequested,
@@ -84,7 +83,6 @@ from piloop.campaign.stop import (
     unclosed,
 )
 from piloop.config import CampaignConfig
-from piloop.daemon.archiver import Archiver, Archiving, DiskAnomaly
 from piloop.daemon.loop import Consumer, Kinds, Loop, Soonest, Turn
 from piloop.daemon.run_controller import (
     RUNS,
@@ -166,10 +164,12 @@ from piloop.ids import (
     TrackName,
 )
 from piloop.otel import Tracer
-from piloop.plugins.contribution import collect
+from piloop.plugins.archive.contract import Archiver
+from piloop.plugins.contribution import collect, installed
 from piloop.plugins.executor.contract import AgentKey, LeftJob, Prompt
 from piloop.plugins.fact_source import facts
 from piloop.plugins.fact_source.contract import FactReadError, FactSource
+from piloop.plugins.memory.contract import MEMORY
 from piloop.plugins.role.contract import ImplementerRole, Stall, SweepRole, ideas_taken
 from piloop.plugins.section.contract import Rendering, markdown
 from piloop.plugins.stop_rule.contract import GO, STOP_RULES, Go, Hold, Stop, WhileHeld
@@ -284,8 +284,6 @@ EVALUATIONS: Kinds = frozenset({EvaluationCancelled, MeasurementRecorded, *LIMIT
 """What wakes the evaluation queue: a cancel to stop, a slot that an evaluation freed, or more slots."""
 WINDING: Kinds = frozenset({Commented, StopRequested, CancelRequested, CampaignStatusChanged, AgentSessionRunning})
 """What wakes the wind-down: a finding, a stop or a cancel, and an agent that runs, to tell it."""
-ARCHIVING: Kinds = frozenset({IdeaStatusChanged, CampaignStatusChanged, RunFinished, AgentSessionFinished})
-"""What makes a workspace due for its archiving: an idea or a campaign that ends, a run or a sweep that ends."""
 CAMPAIGN_STATE: Kinds = frozenset(
     {
         CampaignAdded,
@@ -333,7 +331,6 @@ IGNORED: Kinds = frozenset(
         WorkspaceConflict,
         WrapUp,
         AnomalyReported,
-        DiskAnomaly,
         CampaignTypeChanged,
         CampaignParentChanged,
         RunBriefChanged,
@@ -380,10 +377,13 @@ class Scheduler:
         tracer: Tracer,
         home: Path,
         runtime_factory: RuntimeFactory = make_runtime,
-        archiving: Archiving | None = None,
+        archiver: Archiver | None = None,
         now: Callable[[], datetime] = utcnow,
     ) -> None:
-        """``now``: the clock."""
+        """``archiver``: the home's archive provider, opened, which the daemon always passes. ``now``: the clock.
+
+        A test without an archiver archives nothing.
+        """
         self._db = db
         self._now = now
         self._controller = controller
@@ -409,15 +409,11 @@ class Scheduler:
         """The earliest due that the campaigns' pass found so far."""
         self._launched: list[AgentSessionId] = []
         """What the latest campaigns' pass launched."""
-        self._archiver = (
-            Archiver(db, archiving.cas, home, archiving.policy, tracer, self._pool, self._stop, self._archived)
-            if archiving is not None
-            else None
-        )
-        """Archives the workspaces in the background. The daemon always passes ``archiving``; a test that does not
-        archives nothing."""
-        self.contributions = collect((controller.executor,), [c.name for c in self._own()])
-        """What the providers that the daemon opened add: its executor's."""
+        self._archiver = archiver
+        opened = (controller.executor,) if archiver is None else (controller.executor, archiver)
+        self.contributions = collect((*opened, *installed()), [c.name for c in self._own()])
+        """What the providers add: the executor and the archiver that the daemon opened, then each installed one that a
+        campaign may choose."""
         self.loop = Loop(db, self.consumers(), now)
 
     def reap(self) -> None:
@@ -619,7 +615,6 @@ class Scheduler:
             Consumer('prompts', frozenset({Commented, AgentSessionRunning}), self._prompts),
             Consumer('wind_down', WINDING, self._wind_down),
             Consumer('facts', frozenset({CampaignStatusChanged}), self._read_facts),
-            Consumer('archiver', ARCHIVING, self._archive),
             Consumer('campaigns', campaign_kinds() | capacity, self._campaigns),
         )
 
@@ -636,9 +631,6 @@ class Scheduler:
         """Stop the evaluations that someone cancelled, and submit those that a slot freed for."""
         self._controller.stop_cancelled()
         self._controller.dispatch()
-
-    def _archive(self, turn: Turn) -> datetime | None:
-        return self._archiver.run(turn.now) if self._archiver is not None else None
 
     def _campaigns(self, turn: Turn) -> datetime | None:
         """Pass over every campaign: its ideas, its stop rule, its remeasures, its triggers, and the launches.
@@ -709,10 +701,6 @@ class Scheduler:
     def _ended(self, _future: Future[None]) -> None:
         """A thread of an agent or of scoring ended: the next turn forgets it and fills its slot."""
         self.loop.wake('campaigns')
-
-    def _archived(self, _future: Future[None]) -> None:
-        """The archiver's job ended: the next turn starts the next one."""
-        self.loop.wake('archiver')
 
     def _read_facts(self, turn: Turn) -> datetime | None:
         """Read each fact source of each campaign that is due (``FactSource.due``), and record what it read.
@@ -1050,7 +1038,7 @@ class Scheduler:
     def _close_campaign(
         self, s: Session, campaign: Campaign, cfg: CampaignConfig, sweeping: Mapping[RoleName, SweepRole], now: datetime
     ) -> None:
-        """Close a stopped campaign: sync its ``[memory]`` documents, fire the ``stopped`` triggers of ``sweeping``.
+        """Close a stopped campaign: sync its documents into its memory, fire the ``stopped`` triggers of ``sweeping``.
 
         The pass closes a campaign that the daemon stopped once it ``settled``, with every sweeping role: by default,
         the watchdog's closing review, which can then search the campaign's reports. A stop rule with
@@ -1059,7 +1047,7 @@ class Scheduler:
         """
         try:
             with s.begin_nested():
-                synced = sync_documents(s, campaign, cfg, DAEMON_ACTOR)
+                synced = MEMORY.selected(cfg.plugins).sync(s, campaign, DAEMON_ACTOR)
         except OSError as e:  # the repo could not be read: the closing review still happens
             self._tracer.event('documents.sync_failed', campaign=campaign.name, error=f'{type(e).__name__}: {e}')
         else:
@@ -1692,12 +1680,17 @@ class Scheduler:
         self._stop.set()
         self.interrupt()
         self._controller.hand_over()
-        wait([*self._futures.values(), *self._scoring.values(), *self._archiving()], timeout=timeout)
+        wait([*self._futures.values(), *self._scoring.values()], timeout=timeout)
+        self._stop_archiver(timeout)
         self._pool.shutdown(wait=False, cancel_futures=True)
 
-    def _archiving(self) -> list[Future[None]]:
-        """The archiver's job in flight: it prunes and evicts, so the next daemon must not start under it."""
-        return self._archiver.running() if self._archiver is not None else []
+    def _stop_archiver(self, timeout: float) -> None:
+        """Stop the archiver, and wait for its job in flight.
+
+        The job prunes and evicts, so the next daemon must not start under it.
+        """
+        if self._archiver is not None:
+            self._archiver.stop(timeout)
 
     def stop(self, timeout: float) -> None:
         """Stop the loop, kill the agents in flight, fail their runs and release the thread pool.
@@ -1711,7 +1704,7 @@ class Scheduler:
         self._controller.stop(timeout)
         self._await_in_flight(timeout)  # what is still open after it is written below
         self._fail_open(RunEnd.DAEMON_STOPPED, reaped=False)
-        wait(self._archiving(), timeout=timeout)
+        self._stop_archiver(timeout)
         self._pool.shutdown(wait=False, cancel_futures=True)
 
 

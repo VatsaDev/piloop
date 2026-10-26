@@ -1,5 +1,6 @@
 """Contributions: what a provider that the daemon opened, or an installed package, adds to the kernel."""
 
+from collections.abc import Iterator
 from datetime import datetime
 from importlib.metadata import EntryPoint
 from pathlib import Path
@@ -8,33 +9,44 @@ import cyclopts
 import pytest
 from fastapi import APIRouter
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
+from piloop.actor import Actor
 from piloop.cli.main import COMMANDS, add_commands
-from piloop.daemon.api import Handlers, daemon_state, with_api
+from piloop.daemon.api import Handlers, daemon_state, openapi, with_api
 from piloop.daemon.loop import Consumer, Turn
 from piloop.daemon.main import DECLARED
 from piloop.daemon.run_controller import RunController
 from piloop.daemon.scheduler import Scheduler
-from piloop.db.models import TABLES, TARGET_KINDS, Idea
+from piloop.db.models import TARGET_KINDS, Campaign, Idea
 from piloop.db.session import Database
 from piloop.net import Route
 from piloop.net.server import app, executor_router
 from piloop.net.tokens import Caller, Tokens
 from piloop.otel import Tracer
+from piloop.plugins import contribution
+from piloop.plugins.archive.contract import ArchiveHost
+from piloop.plugins.archive.local import LocalArchive
 from piloop.plugins.contribution import Contribution, collect
 from piloop.plugins.executor.contract import JOB_KINDS, AgentFinished, AgentJob, JobKind
 from piloop.plugins.executor.workers import Workers
 from piloop.plugins.host import PluginError
+from piloop.plugins.memory.contract import MEMORY, MemoryProvider, Synced
+from piloop.plugins.memory.local import api as local_api
 from piloop.plugins.network.contract import NetworkHost
 from piloop.plugins.network.https import Https
 from piloop.plugins.secrets.contract import HomeSecrets
 from piloop.plugins.secrets.local import LocalSecrets
 from piloop.settings import Settings
 from tests.conftest import disk
-from tests.daemon.test_roles import installed
+from tests.daemon.test_roles import forget_loaded, installed
 
 
 def idle(_turn: Turn) -> datetime | None:
+    return None
+
+
+def idle_wake() -> None:
     return None
 
 
@@ -43,10 +55,13 @@ class Archiver:
         return Contribution(consumers=(Consumer('archiver', frozenset(), idle),))
 
 
-def test_the_executor_s_upkeep_runs_after_limits_and_before_the_scheduler_s_own(db: Database, tmp_path: Path) -> None:
+def test_the_executor_s_upkeep_and_the_archiver_run_after_limits_and_before_the_scheduler_s_own(
+    db: Database, tmp_path: Path
+) -> None:
     controller = RunController(db, Tracer(None), tmp_path, executor=Workers())
-    names = [c.name for c in Scheduler(db, controller, Tracer(None), tmp_path).consumers()]
-    assert names == ['limits', 'executor', 'evaluations', 'prompts', 'wind_down', 'facts', 'archiver', 'campaigns']
+    archiver = LocalArchive().open(ArchiveHost(db, disk(tmp_path), tmp_path, 0, Tracer(None), idle_wake))
+    names = [c.name for c in Scheduler(db, controller, Tracer(None), tmp_path, archiver=archiver).consumers()]
+    assert names == ['limits', 'executor', 'archiver', 'evaluations', 'prompts', 'wind_down', 'facts', 'campaigns']
 
 
 def test_a_consumer_name_that_the_daemon_or_another_contribution_has_is_refused() -> None:
@@ -82,6 +97,61 @@ def test_a_route_that_another_router_or_the_api_has_is_refused(db: Database, tmp
         with_api(app(tokens, network, [shadow]), api)
 
 
+NOTES = APIRouter(prefix='/v1')
+
+
+@NOTES.get('/notes', operation_id='notes')
+def notes() -> list[str]:
+    """The notes of every campaign."""
+    return []
+
+
+class Notes(MemoryProvider):
+    def sync(self, s: Session, campaign: Campaign, actor: Actor) -> Synced:
+        return Synced(added=[], unchanged=[], skipped={})
+
+    def contribution(self) -> Contribution:
+        return Contribution(router=NOTES)
+
+
+class Picky(Notes):
+    folder: str
+
+
+@pytest.fixture
+def forgets() -> Iterator[None]:
+    yield
+    forget_loaded()
+
+
+@pytest.mark.usefixtures('forgets')
+def test_each_installed_provider_that_a_campaign_may_choose_serves_and_documents_its_routes(
+    db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    installed(monkeypatch, [EntryPoint('notes', f'{__name__}:Notes', MEMORY.group)])
+    controller = RunController(db, Tracer(None), tmp_path, executor=Workers())
+    routers = Scheduler(db, controller, Tracer(None), tmp_path).contributions.routers
+    assert routers[1:] == (local_api.router, NOTES), "after the executor's, the memory providers', in registry order"
+    tokens = Tokens(db)
+    network = Https().open(NetworkHost(tokens, HomeSecrets(db, LocalSecrets())))
+    assert app(tokens, network, routers).url_path_for('notes') == '/v1/notes'
+    paths = openapi()['paths']
+    assert isinstance(paths, dict) and paths['/v1/notes']['get']['operationId'] == 'notes'
+    assert not any(path.startswith('/v1/executor') for path in paths), "the executor's routes are for its workers"
+
+
+@pytest.mark.usefixtures('forgets')
+def test_a_provider_that_contributes_and_cannot_be_built_with_its_defaults_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installed(monkeypatch, [EntryPoint('picky', f'{__name__}:Picky', MEMORY.group)])
+    with pytest.raises(
+        PluginError,
+        match="^the memory provider 'picky' contributes, and cannot be built with its defaults: folder: Field required$",
+    ):
+        contribution.installed()
+
+
 def hello() -> str:
     """Say hello."""
     return 'hello'
@@ -109,18 +179,6 @@ def check_declared() -> None:
     """What ``preflight`` checks of the packages' declarations."""
     for slot in DECLARED:
         slot.loaded()
-
-
-def test_a_package_s_table_is_checked_when_the_daemon_starts(monkeypatch: pytest.MonkeyPatch) -> None:
-    installed(monkeypatch, [EntryPoint('ideas', 'piloop.db.models:Idea', TABLES.group)])
-    check_declared()
-    assert TABLES.loaded() == {'ideas': Idea}
-    installed(monkeypatch, [EntryPoint('ideas', f'{__name__}:Ask', TABLES.group)])
-    with pytest.raises(PluginError, match='piloop.tables is not a table: Input should be a subclass of Base'):
-        check_declared()
-    installed(monkeypatch, [EntryPoint('notions', 'piloop.db.models:Idea', TABLES.group)])
-    with pytest.raises(PluginError, match="in piloop.tables: it names the table 'ideas': the names must be the same"):
-        check_declared()
 
 
 LATTICE = JobKind(AgentJob, AgentFinished)

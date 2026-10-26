@@ -171,22 +171,22 @@ class ScoringClient(Client):
     """A client of one daemon that also calls the optimization routes on candidates, measurements and evaluations."""
 
     def import_candidate(self, campaign: str, body: ImportBody) -> CandidateAnswer:
-        return self._post(f'/v1/campaigns/{segment(campaign)}/candidates', body, CandidateAnswer)
+        return self.post(f'/v1/campaigns/{segment(campaign)}/candidates', body, CandidateAnswer)
 
     def remeasure(self, candidate: CandidateId, body: RemeasureBody) -> Remeasured:
-        return self._post(f'/v1/candidates/{candidate}/remeasure', body, Remeasured)
+        return self.post(f'/v1/candidates/{candidate}/remeasure', body, Remeasured)
 
     def note(self, candidate: CandidateId, body: NoteBody) -> Noted:
-        return self._post(f'/v1/candidates/{candidate}/note', body, Noted)
+        return self.post(f'/v1/candidates/{candidate}/note', body, Noted)
 
     def set_verdict(self, candidate: CandidateId, body: VerdictBody) -> VerdictChanged:
-        return self._post(f'/v1/candidates/{candidate}/verdict', body, VerdictChanged)
+        return self.post(f'/v1/candidates/{candidate}/verdict', body, VerdictChanged)
 
     def add_measurement(self, candidate: CandidateId, body: Report) -> MeasurementAdded:
-        return self._post(f'/v1/candidates/{candidate}/measurements', body, MeasurementAdded)
+        return self.post(f'/v1/candidates/{candidate}/measurements', body, MeasurementAdded)
 
     def evaluations(self) -> EvaluationQueue:
         return self._get('/v1/evaluations', Params(), EvaluationQueue)
 
     def cancel_evaluation(self, candidate: CandidateId) -> CandidateAnswer:
-        return self._post(f'/v1/candidates/{candidate}/evaluation/cancel', None, CandidateAnswer)
+        return self.post(f'/v1/candidates/{candidate}/evaluation/cancel', None, CandidateAnswer)

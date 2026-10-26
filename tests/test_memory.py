@@ -1,4 +1,5 @@
-"""Research memory: the documents a campaign's ``[memory]`` globs name are synced once per content, and searchable."""
+"""The ``local`` memory: the documents that ``[plugins.memory] documents`` names are synced once per content, and
+searchable."""
 
 import os
 import sqlite3
@@ -10,20 +11,22 @@ from git import Repo
 from sqlalchemy import select
 
 from piloop.actor import Agent, System
-from piloop.campaign.memory import sync_documents, title_of
 from piloop.config import ConfigError, load_campaign_config
 from piloop.db import sql
-from piloop.db.models import Campaign, Document
+from piloop.db.models import Campaign
 from piloop.db.session import Database
+from piloop.plugins.memory.contract import MEMORY
+from piloop.plugins.memory.local.documents import title_of
+from piloop.plugins.memory.local.tables import Document
 from piloop.plugins.vcs.git.commands import identity
 
 REPORT = '# Sync acquisition report\n\nThe clock recovery gained +0.4 gen_frame_correct; candidate#12.\n'
 
 
 def sync(db: Database, campaign: Campaign, *globs: str, config_from: Path | None = None) -> str:
-    cfg = load_campaign_config(config_from or Path(campaign.path), memory={'documents': list(globs)})
+    cfg = load_campaign_config(config_from or Path(campaign.path), plugins={'memory': {'documents': list(globs)}})
     with db.session() as s:
-        line = sync_documents(s, s.get_one(Campaign, campaign.id), cfg, System.HUMAN).line()
+        line = MEMORY.selected(cfg.plugins).sync(s, s.get_one(Campaign, campaign.id), System.HUMAN).line()
         s.commit()
     return line
 
@@ -141,7 +144,7 @@ def test_a_title_is_the_first_heading_else_the_file_name() -> None:
 def test_a_document_glob_outside_the_repo_is_refused_when_the_config_loads(campaign: Campaign, glob: str) -> None:
     """Greptile on hiloopai/piloop#7: an absolute glob passed validation, then `Path.glob` raised at the stop."""
     with pytest.raises(ConfigError, match='is not a glob inside the repo'):
-        load_campaign_config(Path(campaign.path), memory={'documents': ['docs/*.md', glob]})
+        load_campaign_config(Path(campaign.path), plugins={'memory': {'documents': ['docs/*.md', glob]}})
 
 
 @pytest.mark.parametrize(

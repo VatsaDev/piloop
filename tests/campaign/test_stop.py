@@ -15,7 +15,6 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from piloop.actor import Agent, System
-from piloop.api.views import Synced
 from piloop.campaign.ops import pause
 from piloop.campaign.stop import (
     StopRequested,
@@ -39,7 +38,6 @@ from piloop.db.models import (
     Campaign,
     Candidate,
     Comment,
-    Document,
     Event,
     Idea,
     Measurement,
@@ -91,6 +89,9 @@ from piloop.plugins.fact_source.facts import (
 )
 from piloop.plugins.fact_source.kit.readings import FactRead, Readings
 from piloop.plugins.host import data_errors
+from piloop.plugins.memory.contract import Synced
+from piloop.plugins.memory.local import LocalMemory
+from piloop.plugins.memory.local.tables import Document
 from piloop.plugins.metric import Direction
 from piloop.plugins.stop_rule import limits as limits_module
 from piloop.plugins.stop_rule.contract import GO, STOP_RULES, Escalate, Hold, Stop, StopCase, StopRule
@@ -718,16 +719,16 @@ def test_closing_review_skip_ends_the_stop_at_once_with_an_escalation(
     stop_while_held(db, campaign, 'spend', 'skip')
     synced: list[str] = []
 
-    def sync(_s: Session, c: Campaign, *_: object) -> Synced:
+    def sync(_memory: LocalMemory, _s: Session, c: Campaign, *_: object) -> Synced:
         synced.append(c.name)
         return Synced(added=[], unchanged=[], skipped={})
 
-    monkeypatch.setattr('piloop.daemon.scheduler.sync_documents', sync)
+    monkeypatch.setattr(LocalMemory, 'sync', sync)
     sched = make_scheduler(db, runtime, tmp_path)
     assert sched.run_all() == []
     assert campaign_state(db, campaign) == (CampaignStatus.STOPPED, 'stopped by human: over budget')
     assert closing_reviews(db, campaign) == [], 'no closing review is requested'
-    assert synced == ['demo'], 'the [memory] documents are synced, as at every close'
+    assert synced == ['demo'], 'the documents are synced, as at every close'
     with db.session() as s:
         last = s.scalars(select(Comment).order_by(Comment.id.desc()).limit(1)).one()
         assert (last.kind, last.priority, last.author) == (CommentKind.ESCALATION, 0, 'daemon')
@@ -883,7 +884,7 @@ def test_a_stop_syncs_the_memory_documents_before_the_closing_watchdog_whose_bri
     write_toml(Path(campaign.path), HARNESS_NOOP)
     with db.session() as s:
         cfg = load_campaign_config(
-            Path(campaign.path), plugins={'stop_rule': {'max_runs': 1}}, memory={'documents': ['docs/*.md']}
+            Path(campaign.path), plugins={'stop_rule': {'max_runs': 1}, 'memory': {'documents': ['docs/*.md']}}
         )
         s.get_one(Campaign, campaign.id).config = cfg
         s.commit()
@@ -922,7 +923,7 @@ def test_a_stop_whose_document_sync_fails_still_stops_and_launches_the_closing_w
     write_toml(Path(campaign.path), HARNESS_NOOP)
     with db.session() as s:
         cfg = load_campaign_config(
-            Path(campaign.path), plugins={'stop_rule': {'max_runs': 1}}, memory={'documents': ['docs/*.md']}
+            Path(campaign.path), plugins={'stop_rule': {'max_runs': 1}, 'memory': {'documents': ['docs/*.md']}}
         )
         s.get_one(Campaign, campaign.id).config = cfg
         s.commit()
@@ -931,7 +932,7 @@ def test_a_stop_whose_document_sync_fails_still_stops_and_launches_the_closing_w
     def broken(*_args: object) -> None:
         raise PermissionError(13, 'Permission denied', 'docs')
 
-    monkeypatch.setattr('piloop.daemon.scheduler.sync_documents', broken)
+    monkeypatch.setattr(LocalMemory, 'sync', broken)
     sched = make_scheduler(db, runtime, tmp_path, tracer)
     [watchdog] = sched.run_all()
     sched.wait()

@@ -40,8 +40,6 @@ MAX_POLL_SECONDS = 25
 LIMIT = 100
 """How many events a read returns at most, by default."""
 MAX_LIMIT = 1000
-JOURNAL_LINE_BYTES = 280
-"""The longest journal line, in UTF-8 bytes: one decision, plan or result, with its ids."""
 
 
 class Access(StrEnum):
@@ -323,24 +321,6 @@ class TokenBody(Params):
     name: str
     """The name of the caller that uses it, such as a worker."""
     access: Access
-
-
-def _journal_line(line: str) -> str:
-    """``line`` with each run of whitespace as one space. Refuses one of no byte or of more than ``JOURNAL_LINE_BYTES``."""
-    collapsed = ' '.join(line.split())
-    if not 0 < (size := len(collapsed.encode())) <= JOURNAL_LINE_BYTES:
-        raise PydanticCustomError(
-            'journal_line',
-            'a journal line is 1 to {most} bytes, not {size}: say less',
-            {'most': JOURNAL_LINE_BYTES, 'size': size},
-        )
-    return collapsed
-
-
-class JournalBody(Params):
-    """A line of the orchestrator's journal: a decision, a plan or a result, with its ids."""
-
-    line: Annotated[str, AfterValidator(_journal_line)]
 
 
 class SecretBody(Params):

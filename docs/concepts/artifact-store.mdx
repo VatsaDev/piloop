@@ -14,8 +14,9 @@ the local copies later, and `piloop restore` brings them back.
 
 The daemon archives in the background, one job at a time. Its scheduling loop never waits for an archiving.
 
-- **When an idea is done** (its last run is judged), the entries that belong to it are archived:
-  `workspace/idea<id>…` (`idea12/`, `idea12-canary.log`). Implementers are told to put their output there.
+- **When a subject settles**, the entries named after it are archived: `workspace/<kind><id>…` (`idea12/`,
+  `idea12-canary.log`). An idea settles when it is done and none of its runs is open, and again after each new run.
+  The `subject.settled` event on the idea says so. Implementers are told to put their output there.
 - **When a campaign stops** and none of its agents is alive any more, everything left in its workspace is archived.
 - **Never archived**: `NOTES.md` and `research/` at the top of the workspace. These small knowledge files stay where
   research sweeps read them.
@@ -45,14 +46,14 @@ reserve. Only the last batch of a job that stored everything marks the job as do
 stops short, because of the disk, a failure or a stop of the daemon, stays due, and its next run stores the rest.
 After a failed or deferred archiving the daemon waits 10 minutes before the next one.
 
-Which archivings are due is computed from the database. A daemon that stops in the middle of a backlog picks it up
+Which archivings are due is computed from the event feed and the campaigns. A daemon that stops in the middle of a backlog picks it up
 where it was when it starts again. Content that was already stored is found by its hash and is not stored twice.
 `piloop store status` shows how many are still due.
 
 ## Getting files back
 
 ```bash
-piloop restore my-campaign 12            # the files of idea#12
+piloop restore my-campaign idea#12       # the files of idea#12; 12 for short
 piloop restore my-campaign idea12/plots  # one path, or everything under it
 piloop restore my-campaign               # everything
 ```

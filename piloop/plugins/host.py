@@ -420,6 +420,14 @@ class Slot[T]:
         """
         return {name: ep.value for name, ep in _entries(self.group, self.noun).items()}
 
+    def sources(self) -> dict[str, PythonSource]:
+        """The package of each entry by name, in order, with nothing imported.
+
+        Raises:
+            PluginError: Two entry points have one name.
+        """
+        return {name: _source(ep) for name, ep in _entries(self.group, self.noun).items()}
+
     def loaded(self) -> dict[str, T]:
         """What each entry names by name, in order, imported and checked.
 

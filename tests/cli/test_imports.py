@@ -22,10 +22,15 @@ HEAVY = ('sqlalchemy', 'alembic', 'git', 'textual', 'fastapi', 'uvicorn', 'coval
         'limits',
         'token',
         'secret',
-        'memory',
     ],
 )
 def test_a_client_command_loads_no_heavy_dependency(module: str) -> None:
     probe = f'import sys, piloop.cli.{module}; print(*sorted(m for m in {HEAVY!r} if m in sys.modules))'
+    loaded = subprocess.run([sys.executable, '-c', probe], capture_output=True, text=True, check=True).stdout
+    assert loaded.split() == []
+
+
+def test_the_journal_command_loads_no_heavy_dependency() -> None:
+    probe = f'import sys, piloop.plugins.memory.local.cli; print(*sorted(m for m in {HEAVY!r} if m in sys.modules))'
     loaded = subprocess.run([sys.executable, '-c', probe], capture_output=True, text=True, check=True).stdout
     assert loaded.split() == []

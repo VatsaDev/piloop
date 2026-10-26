@@ -35,7 +35,6 @@ from piloop.api.contract import (
     EventsQuery,
     IdeaBody,
     InboxQuery,
-    JournalBody,
     LaunchBody,
     LimitBody,
     Located,
@@ -68,7 +67,6 @@ from piloop.db.models import (
     Evaluation,
     Event,
     EventModel,
-    Journal,
     Pause,
     RunStatus,
     UnknownEvent,
@@ -94,6 +92,9 @@ from piloop.ids import (
 from piloop.net import tokens
 from piloop.net.server import OPENAPI, Server, app, local_listener
 from piloop.net.tokens import Tokens
+from piloop.plugins.contribution import collect, installed
+from piloop.plugins.memory.local.api import JournalBody, Journaled
+from piloop.plugins.memory.local.tables import Journal
 from piloop.plugins.network.contract import NetworkHost
 from piloop.plugins.network.https import ACTOR_HEADER, TOKEN_ENV, Https
 from piloop.plugins.network.proxy import Proxy
@@ -215,9 +216,11 @@ def test_the_server_serves_the_openapi_document_of_its_routes(cfg: Settings, db:
     with serving_api(cfg), Client.on(cfg.socket_file, System.HUMAN) as client:
         assert client._http.get(OPENAPI).json() == openapi()
     paths = openapi()['paths']
+    routers = (*ROUTERS, *collect(installed(), ()).routers)
     assert isinstance(paths, dict) and sorted(paths) == sorted(
-        {r.path for routes in ROUTERS for r in routes.routes if isinstance(r, APIRoute)}
+        {r.path for routes in routers for r in routes.routes if isinstance(r, APIRoute)}
     )
+    assert '/v1/journal' in paths, 'the route of local, the default memory provider'
 
 
 def test_a_route_that_crashes_is_an_answer_that_says_so(db: Database, cfg: Settings) -> None:
@@ -822,9 +825,9 @@ def test_a_journal_line_is_signed_by_the_caller_s_actor_and_the_server_refuses_o
     db: Database, campaign: Campaign, cfg: Settings
 ) -> None:
     with serving_api(cfg), Client.on(cfg.socket_file, System.ORCHESTRATOR) as client:
-        written = client.journal(JournalBody(line=' parked idea#4:\n dup of #2 '))
+        written = client.post('/v1/journal', JournalBody(line=' parked idea#4:\n dup of #2 '), Journaled)
         with pytest.raises(Refused, match='^line: a journal line is 1 to 280 bytes, not 281: say less$') as long:
-            client.journal(JournalBody.model_construct(line='x' * 281))
+            client.post('/v1/journal', JournalBody.model_construct(line='x' * 281), Journaled)
     assert long.value.error is None
     with db.session() as s:
         entry = s.get_one(Journal, written.journal)

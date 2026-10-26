@@ -39,15 +39,21 @@ from piloop.db.session import (
     SchemaAhead,
     SchemaMismatch,
     SchemaTooOld,
+    alembic_config,
     backups,
     fingerprints,
+    heads,
     migrate,
     revision,
     revisions,
     schema_mismatch,
+    scripts,
+    stamps,
 )
 from piloop.db.triggers import PERSISTENT, campaigns, legacy
 from piloop.db.triggers.roles import known_role
+from piloop.plugins.memory.contract import MEMORY
+from piloop.plugins.memory.local import LocalMemory
 from piloop.plugins.role.research import ResearchRole
 from piloop.plugins.role.scout import ScoutRole
 from piloop.plugins.role.watchdog import WatchdogRole
@@ -124,6 +130,7 @@ def test_head_has_every_table_and_trigger_and_matches_the_models(tmp_path: Path)
             'lessons',
             'limits',
             'measurements',
+            'migrations',
             'runs',
             'secrets',
             'sqlite_sequence',
@@ -154,6 +161,17 @@ def test_head_has_every_table_and_trigger_and_matches_the_models(tmp_path: Path)
             ).fetchall()
             == []
         )
+
+
+def test_each_chain_at_head_matches_its_tables(tmp_path: Path) -> None:
+    path = tmp_path / 'piloop.db'
+    engine = create_engine(f'sqlite:///{path}')
+    migrate(engine, cas=disk(tmp_path), backups=0, daemon=None)
+    engine.dispose()
+    for name in heads():
+        command.check(alembic_config(f'sqlite:///{path}', name, disk(tmp_path)))
+    with closing(sqlite3.connect(path)) as con:
+        assert dict(con.execute('SELECT name, package FROM migrations')) == dict.fromkeys(heads(), 'piloop')
 
 
 def schema(path: Path) -> list[tuple[str, ...]]:
@@ -340,7 +358,7 @@ def test_a_database_at_a_revision_this_build_does_not_have_is_refused_and_left_a
     this = re.escape(installed())
     with pytest.raises(
         SchemaAhead,
-        match=rf'^{re.escape(str(path))} was migrated by a different piloop build \(revision 0006_role_keys is not in '
+        match=rf'^{re.escape(str(path))} was migrated by a different piloop build \(core revision 0006_role_keys is not in '
         rf'the history of this {this}, which knows up to {head}\): install the piloop that migrated it \(`piloop '
         r'upgrade` for a newer release\), or set PILOOP_HOME to another directory$',
     ):
@@ -393,7 +411,7 @@ def test_a_database_at_the_previous_release_or_newer_migrates(tmp_path: Path, mo
     engine = create_engine(f'sqlite:///{path}')
     migrate(engine, cas=disk(tmp_path), backups=0, daemon=None)
     engine.dispose()
-    assert revision(path) == session.head()
+    assert stamps(path) == heads()
 
 
 def test_a_database_from_before_the_first_recorded_release_names_every_stop(
@@ -454,11 +472,14 @@ def test_a_database_that_another_branch_migrated_to_a_revision_of_the_same_id_is
     tmp_path: Path,
 ) -> None:
     path = tmp_path / 'piloop.db'
-    command.upgrade(branch(tmp_path), 'head')
+    cfg = branch(tmp_path)
+    command.upgrade(cfg, 'head')
+    with closing(sqlite3.connect(path)) as con:  # what the branch's migrate records
+        con.execute(f'PRAGMA user_version = {fingerprints(ScriptDirectory.from_config(cfg))["0006"]}')
     engine = create_engine(f'sqlite:///{path}')
     before, tables = path.read_bytes(), schema(path)
     assert revision(path) == '0006'
-    refused = r'revision 0006 is not in the history of this .*: this build has a different 0006 or one before it\)'
+    refused = r'core revision 0006 is not in the history of this .*: this build has a different 0006 or one before it\)'
     with pytest.raises(SchemaAhead, match=refused):
         migrate(engine, cas=disk(tmp_path), backups=2, daemon=None)
     assert re.search(refused, str(schema_mismatch(path, None, System.HUMAN)))
@@ -475,9 +496,10 @@ def test_a_database_that_a_build_before_fingerprints_migrated_is_trusted_at_a_kn
         con.execute('PRAGMA user_version = 0')
     engine = create_engine(f'sqlite:///{path}')
     migrate(engine, cas=disk(tmp_path), backups=0, daemon=None)
-    head = list(fingerprints(ScriptDirectory(str(MIGRATIONS))).values())[-1]
+    marks = {name: list(fingerprints(script).values())[-1] for name, script in scripts().items()}
     with closing(sqlite3.connect(path)) as con:
-        assert con.execute('PRAGMA user_version').fetchone() == (head,)
+        assert dict(con.execute('SELECT name, fingerprint FROM migrations')) == marks
+        assert con.execute('PRAGMA user_version').fetchone() == (0,), 'migrations has the fingerprints now'
     engine.dispose()
 
 
@@ -649,8 +671,8 @@ def test_concurrent_migrations_of_a_fresh_database_run_one_at_a_time(
     release.set()
     first.join(5)
     second.join(5)
-    head = ScriptDirectory.from_config(alembic(path)).get_current_head()
-    assert entered == ['first', 'second'] and revision(path) == head
+    assert set(entered) == {'first'}, 'the second found the database at head'
+    assert stamps(path) == heads()
     for engine in engines:
         engine.dispose()
 
@@ -942,8 +964,8 @@ def test_0011_makes_scout_sweeps_scout_rows_and_stored_configs_valid_and_downgra
 
 def upgraded(config: dict[str, object]) -> object:
     """``config`` as revisions 0018 (``roles.implementer``), 0034 (no herdr), 0035 (no ``workdir``), 0036 (no Entire),
-    0038 (a trigger's ``provider``), 0039 (the rules' limits), 0055 (the incident triggers), 0056 (``[[facts]]``) and
-    0057 (an inherited ``mcp``) store it, so that today's piloop reads it."""
+    0038 (a trigger's ``provider``), 0039 (the rules' limits), 0055 (the incident triggers), 0056 (``[[facts]]``),
+    0057 (an inherited ``mcp``) and 0061 (``plugins.memory``) store it, so that today's piloop reads it."""
     roles = config.get('roles')
     if isinstance(roles, dict) and 'worker' in roles:
         roles['implementer'] = roles.pop('worker')
@@ -955,7 +977,8 @@ def upgraded(config: dict[str, object]) -> object:
     config = revisions.get_revision('0039').module.upgraded(config)
     config = revisions.get_revision('0055').module.upgraded(config)
     config = revisions.get_revision('0056').module.upgraded(config)
-    return revisions.get_revision('0057').module.upgraded(config)
+    config = revisions.get_revision('0057').module.upgraded(config)
+    return revisions.get_revision('0061').module.upgraded(config)
 
 
 def test_0012_leaves_the_cached_input_out_of_the_input_of_codex_rows_and_downgrades(tmp_path: Path) -> None:
@@ -1938,6 +1961,87 @@ def test_0058_admits_the_message_comment_kind_keeps_the_search_and_downgrades_me
             (1, 'note', None),
             (2, 'note', 2),
         ]
+
+
+def test_0061_moves_the_memory_documents_into_plugins_memory_and_downgrades(tmp_path: Path) -> None:
+    """``plugins.memory`` selects ``local`` unless it selects a provider already. No documents leaves no table."""
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0060')
+    configs = [
+        {'memory': {'documents': ['docs/*.md']}},
+        {'memory': {'documents': ['a.md']}, 'plugins': {'memory': {'provider': 'local'}, 'vcs': {'provider': 'git'}}},
+        {'memory': {'documents': []}},
+        {},
+    ]
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        for n, config in enumerate(configs):
+            con.execute(
+                'INSERT INTO campaigns (name, path, config) VALUES (?, ?, ?)', (f'p{n}', f'/p{n}', dumps(config))
+            )
+    stored = 'SELECT config FROM campaigns ORDER BY id'
+    command.upgrade(cfg, '0061')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        upgraded_ = [loads(c) for (c,) in con.execute(stored)]
+    assert upgraded_ == [
+        {'plugins': {'memory': {'provider': 'local', 'documents': ['docs/*.md']}}},
+        {'plugins': {'memory': {'provider': 'local', 'documents': ['a.md']}, 'vcs': {'provider': 'git'}}},
+        {},
+        {},
+    ]
+    whole = bare_config('p').model_dump(mode='json') | upgraded_[0]
+    assert MEMORY.selected(CampaignConfig.model_validate(whole).plugins) == LocalMemory(documents=['docs/*.md'])
+    command.downgrade(cfg, '0060')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert [loads(c) for (c,) in con.execute(stored)] == [
+            {'plugins': {'memory': {'provider': 'local'}}, 'memory': {'documents': ['docs/*.md']}},
+            {
+                'memory': {'documents': ['a.md']},
+                'plugins': {'memory': {'provider': 'local'}, 'vcs': {'provider': 'git'}},
+            },
+            {},
+            {},
+        ], 'the documents go back; the table that selects local stays, which 0060 reads as before'
+
+
+def test_archive_0002_makes_the_idea_of_each_archiving_its_subject_and_of_each_disk_anomaly_and_downgrades(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / 'piloop.db'
+    command.upgrade(alembic(path), 'head')
+    archive = alembic_config(f'sqlite:///{path}', 'archive/local', disk(tmp_path))
+    command.upgrade(archive, '0001')
+    disk_anomaly = {'kind': 'anomaly.disk', 'needed': 1, 'free': 0, 'reserve': 1, 'retry_seconds': 600.0}
+    payloads = [disk_anomaly | {'idea': 12}, disk_anomaly | {'idea': None}, {'kind': 'idea.created', 'idea': 12}]
+    events = 'SELECT payload FROM events ORDER BY id'
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute("INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', '{}')")
+        con.execute('INSERT INTO archives (campaign_id, idea_id) VALUES (1, 12), (1, NULL)')
+        con.executemany(
+            "INSERT INTO events (target_kind, target_id, actor, payload) VALUES ('campaign', 1, 'daemon', ?)",
+            [(dumps(p),) for p in payloads],
+        )
+    command.upgrade(archive, '0002')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        rows = 'SELECT subject_kind, subject_id FROM archives ORDER BY id'
+        assert con.execute(rows).fetchall() == [('idea', 12), (None, None)]
+        assert [loads(p) for (p,) in con.execute(events)] == [
+            disk_anomaly | {'subject': 'idea#12'},
+            disk_anomaly | {'subject': None},
+            payloads[2],
+        ], 'only the disk anomalies change'
+        for subject in ("'idea', NULL", 'NULL, 3', "'nope', 3"):
+            with pytest.raises(sqlite3.IntegrityError, match='CHECK constraint failed'):
+                con.execute(f'INSERT INTO archives (campaign_id, subject_kind, subject_id) VALUES (1, {subject})')
+        con.execute("INSERT INTO archives (campaign_id, subject_kind, subject_id) VALUES (1, 'run', 3)")
+        assert [i for (_, i, *_) in con.execute('PRAGMA index_list(archives)')] == ['ix_archives_campaign_subject']
+    command.downgrade(archive, '0001')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute('SELECT idea_id FROM archives ORDER BY id').fetchall() == [(12,), (None,)], (
+            'the archiving of a run has no idea: it goes'
+        )
+        assert [loads(p) for (p,) in con.execute(events)] == payloads
+        assert [i for (_, i, *_) in con.execute('PRAGMA index_list(archives)')] == ['ix_archives_campaign_idea']
 
 
 def test_0040_checks_the_role_of_a_row_against_its_campaign_config_alone_and_downgrades(tmp_path: Path) -> None:

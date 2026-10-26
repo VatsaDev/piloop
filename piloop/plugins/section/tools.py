@@ -1,6 +1,6 @@
 from piloop.api.views import Lines, Rendered
 from piloop.config import TRANSCRIPT
-from piloop.db.models import Base
+from piloop.db.schema import tables
 from piloop.plugins.section.contract import Rendering, Section, Surface
 from piloop.plugins.vcs.contract import VCS, prompted
 from piloop.reports.history import IDEAS_IN_HISTORY
@@ -32,6 +32,6 @@ class Tools(Section):
 
     def render(self, r: Rendering) -> Rendered:
         vcs = VCS.selected(r.campaign.config.plugins)
-        schema = [f'  - {t.name}({", ".join(c.name for c in t.columns)})' for t in Base.metadata.sorted_tables]
+        schema = [f'  - {t.name}({", ".join(c.name for c in t.columns)})' for t in tables()]
         lines = (*(prompted(line, vcs) for line in TOOLS), *schema)
         return Rendered(title='Tools', blocks=(Lines(lines=lines),))

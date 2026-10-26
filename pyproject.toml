@@ -74,7 +74,7 @@ restore = "piloop.cli.store:restore"
 launch = "piloop.cli.agents:launch"
 prompt = "piloop.cli.agents:prompt"
 attach = "piloop.cli.agent_io:attach"
-journal = "piloop.cli.memory:journal"
+journal = "piloop.plugins.memory.local.cli:journal"
 message = "piloop.cli.inbox:message"
 wake = "piloop.cli.wake:wake"
 serve = "piloop.cli.daemon:serve"
@@ -104,6 +104,9 @@ vcs = "piloop.plugins.vcs.contract:VCS"
 secrets = "piloop.plugins.secrets.contract:SECRETS"
 section = "piloop.plugins.section.contract:SECTIONS"
 fact_source = "piloop.plugins.fact_source.contract:FACT_SOURCES"
+campaign_type = "piloop.plugins.campaign_type.contract:CAMPAIGN_TYPES"
+memory = "piloop.plugins.memory.contract:MEMORY"
+archive = "piloop.plugins.archive.contract:ARCHIVES"
 
 [project.entry-points."piloop.runtimes"]
 subprocess = "piloop.plugins.runtime.subprocess:Subprocess"
@@ -176,6 +179,21 @@ campaign = "piloop.plugins.fact_source.campaign:CampaignFacts"
 optimization = "piloop.plugins.fact_source.optimization:OptimizationFacts"
 command = "piloop.plugins.fact_source.command:Command"
 
+[project.entry-points."piloop.campaign_types"]
+optimization = "piloop.plugins.campaign_type.optimization:Optimization"
+
+[project.entry-points."piloop.memory"]
+local = "piloop.plugins.memory.local:LocalMemory"
+
+[project.entry-points."piloop.archives"]
+local = "piloop.plugins.archive.local:LocalArchive"
+
+# The tables of each plugin that has its own, by schema name (piloop.db.schema.SCHEMAS); the others are core's.
+[project.entry-points."piloop.schemas"]
+optimization = "piloop.plugins.campaign_type.optimization.tables:SCHEMA"
+"memory/local" = "piloop.plugins.memory.local.tables:SCHEMA"
+"archive/local" = "piloop.plugins.archive.local.tables:SCHEMA"
+
 [project.entry-points."piloop.roles"]
 implementer = "piloop.plugins.role.implementer:ImplementerRole"
 watchdog = "piloop.plugins.role.watchdog:WatchdogRole"
@@ -242,7 +260,7 @@ convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["D"]
-"piloop/db/migrations/**/*.py" = ["D"]
+"piloop/**/migrations/**/*.py" = ["D"]
 # the re-exports are grouped by capability, not sorted by module
 "piloop/capabilities.py" = ["I001"]
 
@@ -257,6 +275,7 @@ extra-paths = ["examples/plugins/nice-runtime", "examples/plugins/sqlite-cas", "
 include = ["piloop", "tests", "scripts", "examples"]
 exclude = [
     "piloop/db/migrations/versions",
+    "piloop/plugins/*/*/migrations",
     "piloop/campaign/templates",  # projects with their own deps
     "tests/typing",  # wrong on purpose: tests/test_typing.py checks it
 ]
@@ -279,7 +298,7 @@ filterwarnings = [
 [tool.coverage.run]
 data_file = ".coverage/.coverage"
 source = ["piloop"]
-omit = ["piloop/db/migrations/*", "piloop/__main__.py", "piloop/campaign/templates/*"]
+omit = ["piloop/db/migrations/*", "piloop/plugins/*/*/migrations/*", "piloop/__main__.py", "piloop/campaign/templates/*"]
 branch = true
 
 [tool.coverage.report]

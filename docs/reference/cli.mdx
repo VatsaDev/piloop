@@ -638,17 +638,21 @@ it before it writes. An agent's brief has the agents' part.
 ### piloop restore
 
 ```text
-piloop restore REF [IDEA | PATH]
+piloop restore REF [SUBJECT | PATH]
 ```
 
-Writes archived workspace files back into the campaign's workspace: the files of `IDEA` (`12` or `idea#12`), one
+Writes archived workspace files back into the campaign's workspace: the files of `SUBJECT` (`idea#12`, or `12` for an idea), one
 workspace-relative `PATH` or everything under it, or with neither, every archived file. See
 [Getting files back](/concepts/artifact-store#getting-files-back).
 
 ### piloop store status
 
 Prints the CAS provider and, for a cache, what it holds (blobs, their local size, how many are on the remote), how much of each campaign was
-archived, and how many done ideas and stopped campaigns are still due.
+archived, and how many settled subjects and stopped campaigns are still due:
+
+```text
+to archive: 0 settled subject(s), 0 stopped campaign(s) (the daemon works through them in the background, one at a time)
+```
 
 ### piloop store evict
 

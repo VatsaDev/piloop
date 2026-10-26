@@ -3,14 +3,17 @@ title: Database schema
 description: The tables that piloop sql reads and writes.
 ---
 
-{/* WARNING: This file is auto-generated (uv run -m scripts.generate_all). Update the models in `piloop/db/models.py` if you want to change anything here. */}
+{/* WARNING: This file is auto-generated (uv run -m scripts.generate_all). Update the tables of core and of each plugin (`piloop.db.schema`) if you want to change anything here. */}
 
 Every client reads and writes one SQLite database, `$PILOOP_HOME/piloop.db`. Run one statement with `piloop sql`.
 `piloop schema` prints the same tables with the conventions that agents follow. The agents' procedures are in
 [sql_procedures.md](https://github.com/hiloopai/piloop/blob/main/piloop/agents/prompts/sql_procedures.md).
 
 The indexes are part of the contract: they show which filters are cheap. The [data model](/architecture/data-model)
-shows the same tables as a diagram.
+shows the same tables as a diagram. Each section is core's tables, or a plugin's that adds them
+([tables and migrations](/architecture/extension-points#tables-and-migrations)).
+
+## core
 
 ```sql
 CREATE TABLE campaigns (
@@ -75,15 +78,6 @@ CREATE TABLE events (
 );
 CREATE INDEX ix_events_kind ON events (kind, target_kind, target_id, id);
 CREATE INDEX ix_events_target ON events (target_kind, target_id, id);
-CREATE TABLE journal (
-	id INTEGER NOT NULL,
-	author VARCHAR NOT NULL,
-	line VARCHAR NOT NULL,
-	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
-	PRIMARY KEY (id),
-	CONSTRAINT "journal.line is text of 1 to 280 bytes" CHECK (typeof(line) IN ('text') AND length(CAST(line AS BLOB)) BETWEEN 1 AND 280),
-	CONSTRAINT "journal.author must be a text value" CHECK (typeof(author) IN ('text'))
-);
 CREATE TABLE lease_workers (
 	id VARCHAR NOT NULL,
 	pool VARCHAR NOT NULL,
@@ -110,6 +104,12 @@ CREATE TABLE limits (
 	CONSTRAINT "limits.key must be a text value" CHECK (typeof(key) IN ('text')),
 	CONSTRAINT "limits.reason must be a text value" CHECK (typeof(reason) IN ('text')),
 	CONSTRAINT "limits.actor must be a text value" CHECK (typeof(actor) IN ('text'))
+);
+CREATE TABLE migrations (
+	name VARCHAR NOT NULL,
+	package VARCHAR NOT NULL,
+	fingerprint INTEGER NOT NULL,
+	PRIMARY KEY (name)
 );
 CREATE TABLE tokens (
 	id INTEGER NOT NULL,
@@ -140,10 +140,98 @@ CREATE TABLE worker_instances (
 	CONSTRAINT instanceend CHECK ("end" IN ('drained', 'register_timeout', 'start_refused', 'lost', 'gone'))
 );
 CREATE INDEX ix_worker_instances_state ON worker_instances (state);
+CREATE TABLE first_transfers (
+	campaign_id INTEGER NOT NULL,
+	revision VARCHAR NOT NULL,
+	blob VARCHAR NOT NULL,
+	PRIMARY KEY (campaign_id),
+	CONSTRAINT "first_transfers.revision must be a text value" CHECK (typeof(revision) IN ('text')),
+	CONSTRAINT "first_transfers.blob must be a text value" CHECK (typeof(blob) IN ('text')),
+	FOREIGN KEY(campaign_id) REFERENCES campaigns (id) ON DELETE CASCADE
+);
+CREATE TABLE secrets (
+	id INTEGER NOT NULL,
+	campaign_id INTEGER,
+	name VARCHAR NOT NULL,
+	value VARCHAR NOT NULL,
+	PRIMARY KEY (id),
+	UNIQUE (campaign_id, name),
+	FOREIGN KEY(campaign_id) REFERENCES campaigns (id)
+);
+CREATE UNIQUE INDEX ux_secrets_home_name ON secrets (name) WHERE campaign_id IS NULL;
+CREATE TABLE agent_sessions (
+	id INTEGER NOT NULL,
+	kind VARCHAR NOT NULL,
+	campaign_id INTEGER,
+	run_id INTEGER,
+	harness VARCHAR,
+	model VARCHAR,
+	runtime VARCHAR,
+	handle JSON DEFAULT '{}' NOT NULL,
+	state VARCHAR(16) DEFAULT 'requested' NOT NULL,
+	reason VARCHAR,
+	log_dir VARCHAR,
+	started_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+	ended_at DATETIME,
+	error VARCHAR,
+	session_id VARCHAR,
+	machine VARCHAR,
+	session_file VARCHAR,
+	usage JSON,
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+	updated_by VARCHAR,
+	PRIMARY KEY (id),
+	CONSTRAINT "agent_sessions.kind must be a text value" CHECK (typeof(kind) IN ('text')),
+	CONSTRAINT "agent_sessions.reason must be a text value" CHECK (typeof(reason) IN ('text', 'null')),
+	CONSTRAINT "agent_sessions.harness must be a text value" CHECK (typeof(harness) IN ('text', 'null')),
+	CONSTRAINT "agent_sessions.model must be a text value" CHECK (typeof(model) IN ('text', 'null')),
+	FOREIGN KEY(campaign_id) REFERENCES campaigns (id) ON DELETE CASCADE,
+	FOREIGN KEY(run_id) REFERENCES runs (id) ON DELETE SET NULL,
+	CONSTRAINT agentsessionstate CHECK (state IN ('requested', 'starting', 'running', 'ending', 'exited', 'killed'))
+);
+CREATE INDEX ix_agent_sessions_campaign_kind_state ON agent_sessions (campaign_id, kind, state);
+CREATE INDEX ix_agent_sessions_run ON agent_sessions (run_id);
+CREATE TABLE leases (
+	id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+	kind VARCHAR(16) NOT NULL,
+	agent_session_id INTEGER,
+	evaluation_id INTEGER,
+	state VARCHAR(16) DEFAULT 'queued' NOT NULL,
+	worker VARCHAR,
+	job_cid VARCHAR NOT NULL,
+	handle JSON DEFAULT '{}' NOT NULL,
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+	acquired_at DATETIME,
+	started_at DATETIME,
+	renewed_at DATETIME,
+	expires_at DATETIME,
+	revoked_at DATETIME,
+	ended_at DATETIME,
+	acquire_request VARCHAR,
+	report_request VARCHAR,
+	receipt JSON DEFAULT '{}' NOT NULL,
+	CONSTRAINT "leases.a lease has the job of its kind" CHECK ((kind = 'agent') = (agent_session_id IS NOT NULL) AND (kind = 'evaluation') = (evaluation_id IS NOT NULL)),
+	CONSTRAINT "leases.worker must be a text value" CHECK (typeof(worker) IN ('text', 'null')),
+	CONSTRAINT "leases.report_request must be a text value" CHECK (typeof(report_request) IN ('text', 'null')),
+	CONSTRAINT leasekind CHECK (kind IN ('agent', 'evaluation')),
+	FOREIGN KEY(agent_session_id) REFERENCES agent_sessions (id) ON DELETE CASCADE,
+	CONSTRAINT leasestate CHECK (state IN ('queued', 'acquired', 'running', 'reported', 'expired', 'cancelled'))
+);
+CREATE UNIQUE INDEX ix_leases_acquire_request ON leases (acquire_request);
+CREATE INDEX ix_leases_agent_session ON leases (agent_session_id);
+CREATE INDEX ix_leases_evaluation ON leases (evaluation_id);
+CREATE INDEX ix_leases_state ON leases (state);
+CREATE VIRTUAL TABLE comments_fts USING fts5(body, content='comments', content_rowid='id', tokenize='porter unicode61 remove_diacritics 2');
+```
+
+## archive/local
+
+```sql
 CREATE TABLE archives (
 	id INTEGER NOT NULL,
 	campaign_id INTEGER NOT NULL,
-	idea_id INTEGER,
+	subject_kind VARCHAR(16),
+	subject_id INTEGER,
 	manifest VARCHAR,
 	files INTEGER DEFAULT 0 NOT NULL,
 	bytes INTEGER DEFAULT 0 NOT NULL,
@@ -151,9 +239,25 @@ CREATE TABLE archives (
 	pruned_at DATETIME,
 	complete BOOLEAN DEFAULT 1 NOT NULL,
 	PRIMARY KEY (id),
-	FOREIGN KEY(campaign_id) REFERENCES campaigns (id) ON DELETE CASCADE
+	CONSTRAINT archives_subject CHECK ((subject_kind IS NULL) = (subject_id IS NULL)),
+	FOREIGN KEY(campaign_id) REFERENCES campaigns (id) ON DELETE CASCADE,
+	CONSTRAINT targetkind CHECK (subject_kind IN ('campaign', 'idea', 'run', 'candidate', 'measurement', 'agent_session', 'comment', 'instance', 'home'))
 );
-CREATE INDEX ix_archives_campaign_idea ON archives (campaign_id, idea_id);
+CREATE INDEX ix_archives_campaign_subject ON archives (campaign_id, subject_kind, subject_id);
+```
+
+## memory/local
+
+```sql
+CREATE TABLE journal (
+	id INTEGER NOT NULL,
+	author VARCHAR NOT NULL,
+	line VARCHAR NOT NULL,
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+	PRIMARY KEY (id),
+	CONSTRAINT "journal.line is text of 1 to 280 bytes" CHECK (typeof(line) IN ('text') AND length(CAST(line AS BLOB)) BETWEEN 1 AND 280),
+	CONSTRAINT "journal.author must be a text value" CHECK (typeof(author) IN ('text'))
+);
 CREATE TABLE documents (
 	id INTEGER NOT NULL,
 	campaign_id INTEGER NOT NULL,
@@ -174,6 +278,33 @@ CREATE TABLE documents (
 	CONSTRAINT "documents.created_by must be a text value" CHECK (typeof(created_by) IN ('text')),
 	FOREIGN KEY(campaign_id) REFERENCES campaigns (id) ON DELETE CASCADE
 );
+CREATE TABLE lessons (
+	id INTEGER NOT NULL,
+	campaign_id INTEGER NOT NULL,
+	family VARCHAR NOT NULL,
+	status VARCHAR(16) NOT NULL,
+	effect DOUBLE,
+	metric VARCHAR,
+	body VARCHAR NOT NULL,
+	created_by VARCHAR NOT NULL,
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+	PRIMARY KEY (id),
+	CONSTRAINT "lessons.effect and lessons.metric go together" CHECK ((effect IS NULL) = (metric IS NULL)),
+	CONSTRAINT "lessons.effect must be a number" CHECK (typeof(effect) IN ('integer', 'real', 'null')),
+	CONSTRAINT "lessons.family must be a text value" CHECK (typeof(family) IN ('text')),
+	CONSTRAINT "lessons.body must be a text value" CHECK (typeof(body) IN ('text')),
+	CONSTRAINT "lessons.created_by must be a text value" CHECK (typeof(created_by) IN ('text')),
+	CONSTRAINT "lessons.metric must be a text value" CHECK (typeof(metric) IN ('text', 'null')),
+	FOREIGN KEY(campaign_id) REFERENCES campaigns (id) ON DELETE CASCADE,
+	CONSTRAINT lessonstatus CHECK (status IN ('dead', 'promising', 'untested'))
+);
+CREATE INDEX ix_lessons_campaign_family ON lessons (campaign_id, family);
+CREATE VIRTUAL TABLE documents_fts USING fts5(title, body, content='documents', content_rowid='id', tokenize='porter unicode61 remove_diacritics 2');
+```
+
+## optimization
+
+```sql
 CREATE TABLE evaluators (
 	id INTEGER NOT NULL,
 	campaign_id INTEGER NOT NULL,
@@ -183,15 +314,6 @@ CREATE TABLE evaluators (
 	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
 	PRIMARY KEY (id),
 	UNIQUE (campaign_id, "key"),
-	FOREIGN KEY(campaign_id) REFERENCES campaigns (id) ON DELETE CASCADE
-);
-CREATE TABLE first_transfers (
-	campaign_id INTEGER NOT NULL,
-	revision VARCHAR NOT NULL,
-	blob VARCHAR NOT NULL,
-	PRIMARY KEY (campaign_id),
-	CONSTRAINT "first_transfers.revision must be a text value" CHECK (typeof(revision) IN ('text')),
-	CONSTRAINT "first_transfers.blob must be a text value" CHECK (typeof(blob) IN ('text')),
 	FOREIGN KEY(campaign_id) REFERENCES campaigns (id) ON DELETE CASCADE
 );
 CREATE TABLE ideas (
@@ -226,37 +348,6 @@ CREATE TABLE ideas (
 	CONSTRAINT ideastatus CHECK (status IN ('seed', 'proposed', 'ready', 'scheduled', 'done', 'parked', 'rejected'))
 );
 CREATE INDEX ix_ideas_campaign_status_priority ON ideas (campaign_id, status, priority);
-CREATE TABLE lessons (
-	id INTEGER NOT NULL,
-	campaign_id INTEGER NOT NULL,
-	family VARCHAR NOT NULL,
-	status VARCHAR(16) NOT NULL,
-	effect DOUBLE,
-	metric VARCHAR,
-	body VARCHAR NOT NULL,
-	created_by VARCHAR NOT NULL,
-	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
-	PRIMARY KEY (id),
-	CONSTRAINT "lessons.effect and lessons.metric go together" CHECK ((effect IS NULL) = (metric IS NULL)),
-	CONSTRAINT "lessons.effect must be a number" CHECK (typeof(effect) IN ('integer', 'real', 'null')),
-	CONSTRAINT "lessons.family must be a text value" CHECK (typeof(family) IN ('text')),
-	CONSTRAINT "lessons.body must be a text value" CHECK (typeof(body) IN ('text')),
-	CONSTRAINT "lessons.created_by must be a text value" CHECK (typeof(created_by) IN ('text')),
-	CONSTRAINT "lessons.metric must be a text value" CHECK (typeof(metric) IN ('text', 'null')),
-	FOREIGN KEY(campaign_id) REFERENCES campaigns (id) ON DELETE CASCADE,
-	CONSTRAINT lessonstatus CHECK (status IN ('dead', 'promising', 'untested'))
-);
-CREATE INDEX ix_lessons_campaign_family ON lessons (campaign_id, family);
-CREATE TABLE secrets (
-	id INTEGER NOT NULL,
-	campaign_id INTEGER,
-	name VARCHAR NOT NULL,
-	value VARCHAR NOT NULL,
-	PRIMARY KEY (id),
-	UNIQUE (campaign_id, name),
-	FOREIGN KEY(campaign_id) REFERENCES campaigns (id)
-);
-CREATE UNIQUE INDEX ux_secrets_home_name ON secrets (name) WHERE campaign_id IS NULL;
 CREATE TABLE techniques (
 	id INTEGER NOT NULL,
 	campaign_id INTEGER NOT NULL,
@@ -314,38 +405,6 @@ CREATE TABLE runs (
 	CONSTRAINT runend CHECK ("end" IN ('finished', 'failed', 'timed_out', 'awaiting_answer', 'cancelled', 'campaign_stopped', 'daemon_stopped', 'stale', 'role_removed', 'not_started', 'worker_lost'))
 );
 CREATE INDEX ix_runs_status ON runs (status);
-CREATE TABLE agent_sessions (
-	id INTEGER NOT NULL,
-	kind VARCHAR NOT NULL,
-	campaign_id INTEGER,
-	run_id INTEGER,
-	harness VARCHAR,
-	model VARCHAR,
-	runtime VARCHAR,
-	handle JSON DEFAULT '{}' NOT NULL,
-	state VARCHAR(16) DEFAULT 'requested' NOT NULL,
-	reason VARCHAR,
-	log_dir VARCHAR,
-	started_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
-	ended_at DATETIME,
-	error VARCHAR,
-	session_id VARCHAR,
-	machine VARCHAR,
-	session_file VARCHAR,
-	usage JSON,
-	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
-	updated_by VARCHAR,
-	PRIMARY KEY (id),
-	CONSTRAINT "agent_sessions.kind must be a text value" CHECK (typeof(kind) IN ('text')),
-	CONSTRAINT "agent_sessions.reason must be a text value" CHECK (typeof(reason) IN ('text', 'null')),
-	CONSTRAINT "agent_sessions.harness must be a text value" CHECK (typeof(harness) IN ('text', 'null')),
-	CONSTRAINT "agent_sessions.model must be a text value" CHECK (typeof(model) IN ('text', 'null')),
-	FOREIGN KEY(campaign_id) REFERENCES campaigns (id) ON DELETE CASCADE,
-	FOREIGN KEY(run_id) REFERENCES runs (id) ON DELETE SET NULL,
-	CONSTRAINT agentsessionstate CHECK (state IN ('requested', 'starting', 'running', 'ending', 'exited', 'killed'))
-);
-CREATE INDEX ix_agent_sessions_campaign_kind_state ON agent_sessions (campaign_id, kind, state);
-CREATE INDEX ix_agent_sessions_run ON agent_sessions (run_id);
 CREATE TABLE candidates (
 	id INTEGER NOT NULL,
 	campaign_id INTEGER NOT NULL,
@@ -391,36 +450,6 @@ CREATE TABLE evaluations (
 	FOREIGN KEY(candidate_id) REFERENCES candidates (id) ON DELETE CASCADE,
 	FOREIGN KEY(evaluator_id) REFERENCES evaluators (id)
 );
-CREATE TABLE leases (
-	id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-	kind VARCHAR(16) NOT NULL,
-	agent_session_id INTEGER,
-	evaluation_id INTEGER,
-	state VARCHAR(16) DEFAULT 'queued' NOT NULL,
-	worker VARCHAR,
-	job_cid VARCHAR NOT NULL,
-	handle JSON DEFAULT '{}' NOT NULL,
-	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
-	acquired_at DATETIME,
-	started_at DATETIME,
-	renewed_at DATETIME,
-	expires_at DATETIME,
-	revoked_at DATETIME,
-	ended_at DATETIME,
-	acquire_request VARCHAR,
-	report_request VARCHAR,
-	receipt JSON DEFAULT '{}' NOT NULL,
-	CONSTRAINT "leases.a lease has the job of its kind" CHECK ((kind = 'agent') = (agent_session_id IS NOT NULL) AND (kind = 'evaluation') = (evaluation_id IS NOT NULL)),
-	CONSTRAINT "leases.worker must be a text value" CHECK (typeof(worker) IN ('text', 'null')),
-	CONSTRAINT "leases.report_request must be a text value" CHECK (typeof(report_request) IN ('text', 'null')),
-	CONSTRAINT leasekind CHECK (kind IN ('agent', 'evaluation')),
-	FOREIGN KEY(agent_session_id) REFERENCES agent_sessions (id) ON DELETE CASCADE,
-	CONSTRAINT leasestate CHECK (state IN ('queued', 'acquired', 'running', 'reported', 'expired', 'cancelled'))
-);
-CREATE UNIQUE INDEX ix_leases_acquire_request ON leases (acquire_request);
-CREATE INDEX ix_leases_agent_session ON leases (agent_session_id);
-CREATE INDEX ix_leases_evaluation ON leases (evaluation_id);
-CREATE INDEX ix_leases_state ON leases (state);
 CREATE TABLE measurements (
 	id INTEGER NOT NULL,
 	candidate_id INTEGER NOT NULL,
@@ -437,6 +466,4 @@ CREATE TABLE measurements (
 );
 CREATE INDEX ix_measurements_candidate_evaluator ON measurements (candidate_id, evaluator_id);
 CREATE VIRTUAL TABLE ideas_fts USING fts5(title, hypothesis, plan, content='ideas', content_rowid='id', tokenize='porter unicode61 remove_diacritics 2');
-CREATE VIRTUAL TABLE comments_fts USING fts5(body, content='comments', content_rowid='id', tokenize='porter unicode61 remove_diacritics 2');
-CREATE VIRTUAL TABLE documents_fts USING fts5(title, body, content='documents', content_rowid='id', tokenize='porter unicode61 remove_diacritics 2');
 ```

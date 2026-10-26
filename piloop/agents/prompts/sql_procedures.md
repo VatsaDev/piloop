@@ -147,7 +147,7 @@ ORDER BY l.status, l.family;
 
 - `SELECT body FROM lessons WHERE id = <n>` reads why, with the ids it cites.
 
-Documents: campaign reports, logs and design notes (`[memory] documents` in `piloop.toml`):
+Documents: campaign reports, logs and design notes (`[plugins.memory] documents` in `piloop.toml`):
 
 ```sql
 SELECT p.name AS campaign, d.id, d.path, snippet(documents_fts, 1, '[', ']', '…', 12) AS hit

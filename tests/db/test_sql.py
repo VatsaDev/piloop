@@ -16,12 +16,13 @@ from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 
 from piloop.actor import Agent, System
-from piloop.api.contract import JOURNAL_LINE_BYTES
 from piloop.daemon.main import ACTOR
 from piloop.db import sql
-from piloop.db.models import AgentSession, AgentSessionState, Base, Campaign
+from piloop.db.models import AgentSession, AgentSessionState, Campaign
+from piloop.db.schema import tables
 from piloop.db.session import Database
 from piloop.ids import CommentKind
+from piloop.plugins.memory.local.tables import JOURNAL_LINE_BYTES
 from tests.conftest import WRITER, bare_config
 
 
@@ -49,6 +50,8 @@ def test_anything_but_schema_changes(con: sqlite3.Connection) -> None:
         'BEGIN',
         'SAVEPOINT s',
         'DELETE FROM alembic_version',
+        "UPDATE alembic_version_memory__local SET version_num = '0002'",
+        'DELETE FROM migrations',
         'CREATE TEMP TABLE t (x)',
         'CREATE TEMP TRIGGER t AFTER UPDATE ON campaigns BEGIN SELECT 1; END',
         "INSERT INTO session_actor (actor) VALUES ('me')",
@@ -91,6 +94,7 @@ def test_schema_ddl_lists_every_table_with_its_indexes_and_runs(tmp_path: Path) 
             'lessons',
             'limits',
             'measurements',
+            'migrations',
             'runs',
             'secrets',
             'techniques',
@@ -102,7 +106,7 @@ def test_schema_ddl_lists_every_table_with_its_indexes_and_runs(tmp_path: Path) 
     with closing(sqlite3.connect(tmp_path / 'from_ddl.db')) as con:
         con.executescript(ddl)
         indexes = [i for (i,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL")]
-    assert sorted(indexes) == sorted(str(i.name) for t in Base.metadata.tables.values() for i in t.indexes)
+    assert sorted(indexes) == sorted(str(i.name) for t in tables() for i in t.indexes)
     assert ddl.count('CREATE VIRTUAL TABLE') == 3, (
         'the indexes are schema the agents query, listed without triggers too'
     )
@@ -154,8 +158,8 @@ def test_every_update_is_stamped_with_the_connection_actor(db: Database, tmp_pat
 
 
 def test_actor_triggers_cover_every_table_with_updated_by() -> None:
-    tracked = {t.name for t in Base.metadata.sorted_tables if 'updated_by' in t.columns}
-    triggered = set(re.findall(r'CREATE TEMP TRIGGER (\w+)_updated_by AFTER UPDATE ON \1', sql.ACTOR_TRIGGERS))
+    tracked = {t.name for t in tables() if 'updated_by' in t.columns}
+    triggered = set(re.findall(r'CREATE TEMP TRIGGER (\w+)_updated_by AFTER UPDATE ON \1', sql.declared().actor_sql))
     assert (
         triggered
         == tracked
@@ -384,7 +388,7 @@ def test_verdict_brief_and_campaign_status_changes_carry_what_the_feed_needs(
         assert events(daemon, since=6) == snapshot(
             [('run.brief_cid', 'daemon', 'run', 1, f'{{"kind":"run.brief_cid","old":"{COMPOSED}","new":"{REVISED}"}}')]
         )
-    assert f"= '{ACTOR}'" in sql.ACTOR_TRIGGERS, 'the SQL names the daemon by its actor string'
+    assert f"= '{ACTOR}'" in sql.declared().actor_sql, 'the SQL names the daemon by its actor string'
 
 
 def test_deletes_leave_tombstones_and_cascades_too(con: sqlite3.Connection) -> None:

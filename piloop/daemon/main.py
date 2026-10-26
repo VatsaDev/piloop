@@ -8,9 +8,7 @@ from types import FrameType
 
 from piloop import deprecated
 from piloop.actor import System
-from piloop.campaign.archive import ManifestNotMigrated, migrate_manifests
 from piloop.daemon.api import Handlers, daemon_state, with_api
-from piloop.daemon.archiver import ArchivePolicy, Archiving
 from piloop.daemon.run_controller import RunController
 from piloop.daemon.scheduler import Scheduler
 from piloop.daemon.serve import (
@@ -22,12 +20,15 @@ from piloop.daemon.serve import (
     secrets,
     serve_argv,
 )
-from piloop.db.models import TABLES, TARGET_KINDS, utcnow
+from piloop.db.models import TARGET_KINDS, utcnow
+from piloop.db.schema import schemas
 from piloop.db.session import BackupFailed, Database, OlderDaemon, SchemaMismatch, migrate
 from piloop.net.server import Server, app, local_listener, url
 from piloop.net.tokens import Tokens
 from piloop.otel import Span, tracer
 from piloop.plugins import host as plugins
+from piloop.plugins.archive.contract import ARCHIVES, CONSUMER, ArchiveHost
+from piloop.plugins.archive.local.store import ManifestNotMigrated, migrate_manifests
 from piloop.plugins.cas import contract as cas
 from piloop.plugins.executor.contract import EXECUTORS, JOB_KINDS
 from piloop.plugins.network import contract as network
@@ -38,7 +39,7 @@ from piloop.settings import CONFIG_FILE, Settings, settings
 from piloop.text import iso
 from piloop.version import code_digest
 
-DECLARED = (TABLES, JOB_KINDS, TARGET_KINDS)
+DECLARED = (JOB_KINDS, TARGET_KINDS)
 """The slots of what packages add that the daemon reads, which it checks before it starts."""
 ACTOR = System.DAEMON
 """The actor that the daemon's connections record in ``updated_by``. The change-log triggers use this name."""
@@ -81,11 +82,13 @@ def preflight(cfg: Settings, listen: network.Address | None = None) -> network.N
     daemon. ``piloop.toml`` is checked when it loads (``piloop init``).
 
     Raises:
-        PluginError: A provider or a package's declaration (``DECLARED``) does not load, or ``config.toml``
+        PluginError: A provider, a schema (``schemas``) or another declaration (``DECLARED``) does not load, or
+            ``config.toml``
             selects a provider that there is not, or one that refuses its parameters (``[plugins]``, ``[runtimes]``),
             or the network refuses ``listen``.
     """
     plugins.compose(*bound(cfg))
+    schemas()
     for slot in DECLARED:
         slot.loaded()
     try:
@@ -147,13 +150,11 @@ class Daemon:
             network=self.network,
             secrets=SECRETS.selected(cfg.providers),
         )
+        archiver = ARCHIVES.selected(cfg.providers).open(
+            ArchiveHost(self.db, self._cas, cfg.home, cfg.storage.reserve, self.tracer, self._wake_archiver)
+        )
         self.scheduler = Scheduler(
-            self.db,
-            self.controller,
-            self.tracer,
-            cfg.home,
-            archiving=Archiving(self._cas, ArchivePolicy.of(cfg.storage)),
-            runtime_factory=opened,
+            self.db, self.controller, self.tracer, cfg.home, archiver=archiver, runtime_factory=opened
         )
         self._restart = False
 
@@ -262,6 +263,10 @@ class Daemon:
                 port = listener.socket.getsockname()[1]
                 self._argv = serve_argv(self._address.model_copy(update={'port': port}))
             span.set(listen=listen)
+
+    def _wake_archiver(self) -> None:
+        """The archiver's job ended: the next turn of the loop starts the next one."""
+        self.scheduler.loop.wake(CONSUMER)
 
     def _on_sigterm(self, signum: int, frame: FrameType | None) -> None:
         """Treat a service manager's stop as Ctrl-C: the loop ends and ``shutdown`` kills the running agents."""

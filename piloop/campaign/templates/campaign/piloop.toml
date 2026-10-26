@@ -151,7 +151,7 @@ max_concurrent = 1
 # notices = { spend = [300, 600] }        # piloop posts one inbox note when a value crosses each
 # interval = 300                          # seconds between two readings
 
-# [memory]                                # what past campaigns leave for the next ones; see the research memory page
+# [plugins.memory]                        # what past campaigns leave for the next ones; see the research memory page
 # documents = ["docs/evidence/**/*.md"]   # repo files that `piloop init` and the stop copy into `documents`; default none
 
 [[metrics]]                               # one entry for each METRIC <name>=<value> line; one primary for each track

@@ -211,7 +211,7 @@ def test_a_broken_package_of_a_capability_that_nothing_binds_is_a_warning(
     found = next(c for c in doctor.checks(home) if c.name == 'plugins')
     assert found.fix is None
     assert found.found == (
-        '5 CAS providers, 1 executor, 3 fact sources, 2 networks, 1 provisioner, 4 roles, 1 runtime, 1 secrets provider, 21 sections, 1 stop rule, 9 triggers, 1 vcs provider, 1 verdict rule; all built in; warning: nothing selects a extra, and they do not load:'
+        '1 archive provider, 1 campaign type, 5 CAS providers, 1 executor, 3 fact sources, 1 memory provider, 2 networks, 1 provisioner, 4 roles, 1 runtime, 1 secrets provider, 21 sections, 1 stop rule, 9 triggers, 1 vcs provider, 1 verdict rule; all built in; warning: nothing selects a extra, and they do not load:'
         ' entry point gone = tests.fixtures.no_such_module:Gone in piloop.example.extras does not load: ModuleNotFoundError:'
         " No module named 'tests.fixtures.no_such_module'"
     )
@@ -335,7 +335,7 @@ def test_a_pure_plugin_is_installed_selected_by_config_and_answers_with_data(
         ({'verdict_rule': {'provider': 'min_gain'}}, 'min_gain: Field required'),
         (
             {'planner': {'provider': 'min_gain'}},
-            'plugins.planner: no capability has that name; there is stop_rule, vcs, verdict_rule',
+            'plugins.planner: no capability has that name; there is memory, stop_rule, vcs, verdict_rule',
         ),
         (
             {'verdict_rule': {'provider': 'bootstrap', 'min_gain': 2}},

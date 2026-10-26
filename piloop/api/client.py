@@ -29,7 +29,6 @@ from piloop.api.contract import (
     EventsQuery,
     IdeaBody,
     InboxQuery,
-    JournalBody,
     LaunchBody,
     LimitBody,
     Located,
@@ -59,7 +58,6 @@ from piloop.api.views import (
     Defined,
     IdeaAnswer,
     Inbox,
-    Journaled,
     LiveKeys,
     Messaged,
     News,
@@ -143,34 +141,34 @@ class Client:
         return self._get(f'/v1/inbox/{comment}', Params(), Thread)
 
     def register_campaign(self, body: Registration) -> Registered:
-        return self._post('/v1/campaigns', body, Registered)
+        return self.post('/v1/campaigns', body, Registered)
 
     def sync_campaign(self, campaign: str) -> CampaignSynced:
-        return self._post(f'/v1/campaigns/{segment(campaign)}/sync', None, CampaignSynced)
+        return self.post(f'/v1/campaigns/{segment(campaign)}/sync', None, CampaignSynced)
 
     def message(self, campaign: str, body: MessageBody) -> Messaged:
-        return self._post(f'/v1/campaigns/{segment(campaign)}/messages', body, Messaged)
+        return self.post(f'/v1/campaigns/{segment(campaign)}/messages', body, Messaged)
 
     def pause(self, campaign: str, body: PauseBody) -> CampaignAnswer:
-        return self._post(f'/v1/campaigns/{segment(campaign)}/pause', body, CampaignAnswer)
+        return self.post(f'/v1/campaigns/{segment(campaign)}/pause', body, CampaignAnswer)
 
     def resume(self, campaign: str) -> CampaignAnswer:
-        return self._post(f'/v1/campaigns/{segment(campaign)}/resume', None, CampaignAnswer)
+        return self.post(f'/v1/campaigns/{segment(campaign)}/resume', None, CampaignAnswer)
 
     def stop(self, campaign: str, body: StopBody) -> CampaignAnswer:
-        return self._post(f'/v1/campaigns/{segment(campaign)}/stop', body, CampaignAnswer)
+        return self.post(f'/v1/campaigns/{segment(campaign)}/stop', body, CampaignAnswer)
 
     def add_idea(self, campaign: str, body: IdeaBody) -> Defined:
-        return self._post(f'/v1/campaigns/{segment(campaign)}/ideas', body, Defined)
+        return self.post(f'/v1/campaigns/{segment(campaign)}/ideas', body, Defined)
 
     def file_seed(self, campaign: str, body: SeedBody) -> IdeaAnswer:
-        return self._post(f'/v1/campaigns/{segment(campaign)}/seeds', body, IdeaAnswer)
+        return self.post(f'/v1/campaigns/{segment(campaign)}/seeds', body, IdeaAnswer)
 
     def develop(self, idea: IdeaId, body: DevelopBody) -> Defined:
-        return self._post(f'/v1/ideas/{idea}/develop', body, Defined)
+        return self.post(f'/v1/ideas/{idea}/develop', body, Defined)
 
     def set_status(self, idea: IdeaId, body: StatusBody) -> StatusChanged:
-        return self._post(f'/v1/ideas/{idea}/status', body, StatusChanged)
+        return self.post(f'/v1/ideas/{idea}/status', body, StatusChanged)
 
     def link(self, idea: IdeaId, kind: LinkKind, target: IdeaId, body: Reasoned) -> IdeaAnswer:
         return self._send('PUT', f'/v1/ideas/{idea}/links/{kind}/{target}', body, IdeaAnswer)
@@ -179,10 +177,10 @@ class Client:
         return self._send('DELETE', f'/v1/ideas/{idea}/links/{kind}/{target}', body, IdeaAnswer)
 
     def set_base(self, idea: IdeaId, body: BaseBody) -> IdeaAnswer:
-        return self._post(f'/v1/ideas/{idea}/base', body, IdeaAnswer)
+        return self.post(f'/v1/ideas/{idea}/base', body, IdeaAnswer)
 
     def set_track(self, idea: IdeaId, body: TrackBody) -> TrackChanged:
-        return self._post(f'/v1/ideas/{idea}/track', body, TrackChanged)
+        return self.post(f'/v1/ideas/{idea}/track', body, TrackChanged)
 
     def limits(self) -> LiveKeys:
         return self._get('/v1/limits', Params(), LiveKeys)
@@ -197,7 +195,7 @@ class Client:
         return self._get('/v1/tokens', Params(), TokenList)
 
     def create_token(self, body: TokenBody) -> TokenMade:
-        return self._post('/v1/tokens', body, TokenMade)
+        return self.post('/v1/tokens', body, TokenMade)
 
     def revoke_token(self, name: str) -> TokenList:
         return self._send('DELETE', f'/v1/tokens/{segment(name)}', None, TokenList)
@@ -212,25 +210,22 @@ class Client:
         return self._send('DELETE', f'/v1/secrets/{segment(name)}', None, SecretChanged, query)
 
     def launch(self, campaign: str, body: LaunchBody) -> AgentAnswer:
-        return self._post(f'/v1/campaigns/{segment(campaign)}/agents', body, AgentAnswer)
+        return self.post(f'/v1/campaigns/{segment(campaign)}/agents', body, AgentAnswer)
 
     def prompt(self, agent: AgentSessionId, body: PromptBody) -> Prompted:
-        return self._post(f'/v1/agents/{agent}/prompt', body, Prompted)
+        return self.post(f'/v1/agents/{agent}/prompt', body, Prompted)
 
     def cancel_agent(self, agent: AgentSessionId, body: CancelBody) -> AgentAnswer:
-        return self._post(f'/v1/agents/{agent}/cancel', body, AgentAnswer)
+        return self.post(f'/v1/agents/{agent}/cancel', body, AgentAnswer)
 
     def cancel_run(self, run: RunId, body: CancelBody) -> RunAnswer:
-        return self._post(f'/v1/runs/{run}/cancel', body, RunAnswer)
-
-    def journal(self, body: JournalBody) -> Journaled:
-        return self._post('/v1/journal', body, Journaled)
+        return self.post(f'/v1/runs/{run}/cancel', body, RunAnswer)
 
     def ack(self, body: AckBody) -> Acked:
-        return self._post('/v1/inbox/ack', body, Acked)
+        return self.post('/v1/inbox/ack', body, Acked)
 
     def reply(self, comment: CommentId, body: ReplyBody) -> Replied:
-        return self._post(f'/v1/inbox/{comment}/reply', body, Replied)
+        return self.post(f'/v1/inbox/{comment}/reply', body, Replied)
 
     def _get[A: BaseModel](self, path: str, query: Params, answer: type[A]) -> A:
         """GET ``path`` with ``query`` as its query string, and read the answer as ``answer``.
@@ -242,7 +237,12 @@ class Client:
         response = self._http.get(path, params=params, timeout=_timeout(query))
         return _answer(response, answer)
 
-    def _post[A: BaseModel](self, path: str, body: Params | None, answer: type[A]) -> A:
+    def post[A: BaseModel](self, path: str, body: Params | None, answer: type[A]) -> A:
+        """POST ``body`` as JSON to ``path``, and read the answer as ``answer``. A plugin's command calls its routes so.
+
+        Raises:
+            Refused: The daemon refused the call.
+        """
         return self._send('POST', path, body, answer)
 
     def _send[A: BaseModel](
