@@ -42,7 +42,7 @@ from piloop.api.contract import (
     SeedBody,
     Selection,
 )
-from piloop.api.views import CampaignState, Envelope
+from piloop.api.views import AckOutcome, CampaignState, Envelope
 from piloop.plugins.network.https import TOKEN_ENV, Https
 from tests.e2e.campaign import CHEAPEST_MODEL, CommandFailed, needs
 from tests.e2e.conftest import Install
@@ -311,7 +311,10 @@ def test_a_person_files_a_seed_that_the_orchestrator_develops(server: Server) ->
 
 @needs(test_measures_the_baseline)
 def test_a_message_to_the_orchestrator_is_answered(server: Server) -> None:
-    """``POST /v1/campaigns/{campaign}/messages`` wakes the orchestrator, whose reply reaches the person's thread."""
+    """``POST /v1/campaigns/{campaign}/messages`` wakes the orchestrator, whose reply reaches the person's thread.
+
+    Each acknowledges what the other wrote: the author of a comment cannot.
+    """
     after = server.cursor
     sent = server.api.message(server.name, MessageBody(body='e2e: what runs now?'))
     woke = server.piloop('inbox', 'wait', server.name, '--after', str(after), '--timeout', str(WAIT))
@@ -320,8 +323,10 @@ def test_a_message_to_the_orchestrator_is_answered(server: Server) -> None:
     thread = server.api.thread(sent.comment.id)
     replies = [c for c in thread.linked if c.author.startswith(ORCHESTRATING)]
     assert replies, thread
-    acked = server.api.ack(AckBody(ids=(sent.comment.id,)))
-    assert server.api.thread(sent.comment.id).comment.acked_at is not None, acked
+    server.piloop('inbox', 'ack', str(sent.comment.id))
+    assert server.api.thread(sent.comment.id).comment.acked_by == f'{ORCHESTRATING}{sent.comment.author}'
+    [acked] = server.api.ack(AckBody(ids=(replies[0].id,))).results
+    assert acked.outcome is AckOutcome.ACKED, acked
     print(f'comment#{sent.comment.id} by {sent.comment.author}, answered by comment#{replies[0].id}')
 
 
