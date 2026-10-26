@@ -236,6 +236,19 @@ triggers = [{ provider = "low_water" }, { provider = "seed" }, { provider = "sta
 `[memory] documents` is `documents` in [`[plugins.memory]`](/concepts/research-memory#documents); the old key works
 until 0.4.0, with a warning.
 
+### The journal is per campaign
+
+Each journal line belongs to a campaign (`journal.campaign_id`). `piloop journal` writes to the campaign of the current
+directory, else to the only active campaign: name another with `--campaign`. `piloop wake <name>` prints that
+campaign's journal, inbox and head.
+
+The upgrade gives each line the only campaign of the home, else the campaign of the agent that wrote it. The other
+lines keep no campaign. Each campaign's `piloop wake` prints them after its own lines, under their own heading:
+
+```sql
+SELECT created_at, author, line FROM journal WHERE campaign_id IS NULL ORDER BY id;
+```
+
 ### Archivings of subjects
 
 An archiving is of a subject: `archives.subject_kind` and `archives.subject_id` replace `archives.idea_id`, and

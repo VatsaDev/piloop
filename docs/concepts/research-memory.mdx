@@ -44,14 +44,15 @@ documents = ["docs/evidence/**/*.md"]
 
 ## The orchestrator's journal
 
-An orchestrator session can lose its context. The **journal** lets the next session continue the work:
+An orchestrator session can lose its context. Each campaign's **journal** lets the next session continue the work:
 
 ```bash
-piloop journal "lesson on lzma recorded; idea#2 (context mixer) is next, p1"
+piloop journal "lesson on lzma recorded; idea#2 (context mixer) is next, p1" --campaign enwik8
 ```
 
-A line has at most 280 bytes, and no agent can change it later. `piloop wake` prints what a new session needs first,
-in a fixed budget: the latest journal lines, the open inbox, the head of each active campaign and the current lessons.
+A line has at most 280 bytes, and no agent can change it later. Without `--campaign`, it goes to the campaign of the
+current directory, else to the only active campaign. `piloop wake enwik8` prints what a new session needs first, in a
+fixed budget: the latest lines of the campaign's journal, its open inbox, its head and the current lessons.
 
 ```text
 ## Journal, oldest to newest (1 lines in all)

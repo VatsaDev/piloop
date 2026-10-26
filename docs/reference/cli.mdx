@@ -518,20 +518,21 @@ Writes to the campaign's orchestrator, which answers in your inbox. `--priority`
 ### piloop wake
 
 ```text
-piloop wake [--budget TOKENS]
+piloop wake [REF] [--budget TOKENS]
 ```
 
-Prints what an orchestrator session needs first, in a fixed budget of tokens (default 2000). See
+Prints what the orchestrator of a campaign needs first, in a fixed budget of tokens (default 2000). Without `REF`, it
+uses the campaign of the current directory, else the only active campaign, else the whole home. See
 [Memory and sessions](/concepts/research-memory).
 
 ### piloop journal
 
 ```text
-piloop journal LINE
+piloop journal LINE [--campaign REF]
 ```
 
-Adds one line, at most 280 bytes, to the orchestrator's append-only journal: a decision, a plan or a result, with its
-ids.
+Adds one line, at most 280 bytes, to the campaign's append-only journal: a decision, a plan or a result, with its
+ids. Without `--campaign`, it uses the campaign of the current directory, else the only active campaign.
 
 ## Agents
 

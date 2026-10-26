@@ -89,15 +89,16 @@ class Document(Tracked, Base):
 
 
 class Journal(Base):
-    """The orchestrator's journal: one line for each decision, plan or result, so a new session can pick up the work.
+    """The journal of a campaign's orchestrator: a line for each decision, plan or result, for the next session.
 
-    A coordinating session can lose its context (a crash, a full window). ``piloop wake`` prints the latest lines
-    first, next to the lessons, the inbox and the heads. ``piloop journal "<line>"`` appends a line, signed with the
-    actor. Rows are never updated or deleted.
+    A coordinating session can lose its context (a crash, a full window). ``piloop wake`` prints the campaign's latest
+    lines first, next to the lessons, the inbox and the head. ``piloop journal "<line>"`` appends a line, signed with
+    the actor. Rows are never updated or deleted.
     """
 
     __tablename__ = 'journal'
     __table_args__ = (
+        Index('ix_journal_campaign', 'campaign_id'),
         CheckConstraint(
             f"typeof(line) IN ('text') AND length(CAST(line AS BLOB)) BETWEEN 1 AND {JOURNAL_LINE_BYTES}",
             name=f'journal.line is text of 1 to {JOURNAL_LINE_BYTES} bytes',
@@ -106,6 +107,8 @@ class Journal(Base):
     )
 
     id: Mapped[JournalId] = mapped_column(Integer, primary_key=True)
+    campaign_id: Mapped[CampaignId | None] = mapped_column(ForeignKey('campaigns.id'))
+    """NULL for a line of the home-wide journal that came before, when the upgrade could not tell its campaign."""
     author: Mapped[str]
     """Who wrote it, for example ``orchestrator``."""
     line: Mapped[str]

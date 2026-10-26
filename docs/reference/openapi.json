@@ -3045,20 +3045,33 @@
         }
       }
     },
-    "/v1/journal": {
+    "/v1/campaigns/{campaign}/journal": {
       "post": {
         "summary": "Journal",
-        "description": "Append a line to the orchestrator's journal, signed by the caller's actor. ``piloop wake`` prints it.",
+        "description": "Append a line to the journal of the campaign, signed by the caller's actor. ``piloop wake`` prints it.",
         "operationId": "journal",
+        "parameters": [
+          {
+            "name": "campaign",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "The campaign's name.",
+              "title": "Campaign"
+            },
+            "description": "The campaign's name."
+          }
+        ],
         "requestBody": {
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/JournalBody"
               }
             }
-          },
-          "required": true
+          }
         },
         "responses": {
           "200": {
@@ -3072,24 +3085,24 @@
             }
           },
           "404": {
-            "description": "Not Found",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetail"
                 }
               }
-            }
+            },
+            "description": "Not Found"
           },
           "409": {
-            "description": "Conflict",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetail"
                 }
               }
-            }
+            },
+            "description": "Conflict"
           },
           "422": {
             "description": "Validation Error",

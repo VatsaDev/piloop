@@ -2610,3 +2610,56 @@ def test_0056_makes_spend_a_command_source_of_facts_its_latest_reading_events_an
         assert 'facts' not in first
         assert second['spend'] is None
         assert con.execute(reads).fetchall() == []
+
+
+def test_memory_0002_gives_each_journal_line_of_an_agent_its_campaign_keeps_the_rest_and_downgrades(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / 'piloop.db'
+    command.upgrade(alembic(path), 'head')
+    memory = alembic_config(f'sqlite:///{path}', 'memory/local', disk(tmp_path))
+    command.upgrade(memory, '0001')
+    lines = [
+        ('orchestrator', 'enwik8: parked idea#4 (dup of #2)'),
+        ('orchestrator', 'enwik8-r2 started; next: compose c#5+c#6'),
+        ('research#1', 'filed idea#7, the context mixer'),
+        ('orchestrator', 'enwik8 and enwik8-r2 share the evaluator'),
+        ('orchestrator', 'piloop upgraded; nothing open'),
+        ('orchestrator', 'xenwik8 is no campaign, enwik8.'),
+    ]
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute(
+            'INSERT INTO campaigns (name, path, config) VALUES (?, ?, ?), (?, ?, ?)',
+            ('enwik8', '/a', '{}', 'enwik8-r2', '/b', dumps({'roles': {'research': {}}})),
+        )
+        con.execute("INSERT INTO agent_sessions (kind, campaign_id) VALUES ('research', 2)")
+        con.executemany('INSERT INTO journal (author, line) VALUES (?, ?)', lines)
+    command.upgrade(memory, '0002')
+    journal = 'SELECT campaign_id, line FROM journal ORDER BY id'
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert [c for c, _ in con.execute(journal)] == [None, None, 2, None, None, None], (
+            'the campaign of the agent that wrote it; never a guess from the words of the line'
+        )
+        assert [line for _, line in con.execute(journal)] == [line for _, line in lines], 'no line is lost'
+        with pytest.raises(sqlite3.IntegrityError, match='FOREIGN KEY constraint failed'):
+            con.execute('PRAGMA foreign_keys = ON')
+            con.execute("INSERT INTO journal (campaign_id, author, line) VALUES (9, 'orchestrator', 'x')")
+        with pytest.raises(sqlite3.IntegrityError, match='journal rows are never replaced'):
+            con.execute("INSERT OR REPLACE INTO journal (id, author, line) VALUES (1, 'orchestrator', 'x')")
+        assert [i for (_, i, *_) in con.execute('PRAGMA index_list(journal)')] == ['ix_journal_campaign']
+    command.downgrade(memory, '0001')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute('SELECT author, line FROM journal ORDER BY id').fetchall() == lines
+
+
+def test_memory_0002_gives_every_journal_line_the_only_campaign_of_the_home(tmp_path: Path) -> None:
+    path = tmp_path / 'piloop.db'
+    command.upgrade(alembic(path), 'head')
+    memory = alembic_config(f'sqlite:///{path}', 'memory/local', disk(tmp_path))
+    command.upgrade(memory, '0001')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute("INSERT INTO campaigns (name, path, config) VALUES ('enwik8', '/a', '{}')")
+        con.execute("INSERT INTO journal (author, line) VALUES ('orchestrator', 'piloop upgraded; nothing open')")
+    command.upgrade(memory, '0002')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute('SELECT campaign_id FROM journal').fetchall() == [(1,)]

@@ -51,9 +51,9 @@ Do not let your shell tool kill the wait:
 
 Steps:
 
-1. **Start.** Run `PILOOP_ACTOR=orchestrator piloop wake` first. In a fixed budget (`--budget <tokens>`), it prints
-   your journal (what earlier sessions decided, planned and found), the open inbox, the head of each active campaign
-   and the current lessons. Then run `piloop status` and `piloop inbox`. Items that already wait are yours too: the
+1. **Start.** Run `PILOOP_ACTOR=orchestrator piloop wake <name>` first, for each campaign. In a fixed budget
+   (`--budget <tokens>`), it prints the campaign's journal (what earlier sessions decided, planned and found), its open
+   inbox, its head and the current lessons. Then run `piloop status` and `piloop inbox`. Items that already wait are yours too: the
    wait reports only new items.
    Then run `piloop doctor`, and again once a day. Run the commands that it names exactly as it names them: a second
    install, such as `piloop-canary`, names its own command, so that you never restart or upgrade the other install.
@@ -77,7 +77,7 @@ Steps:
    Never raise `hold_at` in `[plugins.stop_rule]` yourself. An escalation that a fact reached its `hold_at` belongs to
    the human.
 7. **Journal** each decision, plan and result as you go, one line with its ids:
-   `PILOOP_ACTOR=orchestrator piloop journal 'sync-r1: parked idea#412 (dup of #398); next: compose c#486+c#501'`.
+   `PILOOP_ACTOR=orchestrator piloop journal 'parked idea#412 (dup of #398); next: c#486+c#501' --campaign <name>`.
    At most 280 bytes. A session that loses its context (a crash, a full window) starts again from `piloop wake`, so
    write what the next session needs, not what the database already says.
 8. **Report** when the human is present, at least every few waits or every hour. Then go back to step 2.

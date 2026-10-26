@@ -251,15 +251,6 @@ CREATE INDEX ix_archives_campaign_subject ON archives (campaign_id, subject_kind
 ## memory/local
 
 ```sql
-CREATE TABLE journal (
-	id INTEGER NOT NULL,
-	author VARCHAR NOT NULL,
-	line VARCHAR NOT NULL,
-	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
-	PRIMARY KEY (id),
-	CONSTRAINT "journal.line is text of 1 to 280 bytes" CHECK (typeof(line) IN ('text') AND length(CAST(line AS BLOB)) BETWEEN 1 AND 280),
-	CONSTRAINT "journal.author must be a text value" CHECK (typeof(author) IN ('text'))
-);
 CREATE TABLE documents (
 	id INTEGER NOT NULL,
 	campaign_id INTEGER NOT NULL,
@@ -280,6 +271,18 @@ CREATE TABLE documents (
 	CONSTRAINT "documents.created_by must be a text value" CHECK (typeof(created_by) IN ('text')),
 	FOREIGN KEY(campaign_id) REFERENCES campaigns (id) ON DELETE CASCADE
 );
+CREATE TABLE journal (
+	id INTEGER NOT NULL,
+	campaign_id INTEGER,
+	author VARCHAR NOT NULL,
+	line VARCHAR NOT NULL,
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+	PRIMARY KEY (id),
+	CONSTRAINT "journal.line is text of 1 to 280 bytes" CHECK (typeof(line) IN ('text') AND length(CAST(line AS BLOB)) BETWEEN 1 AND 280),
+	CONSTRAINT "journal.author must be a text value" CHECK (typeof(author) IN ('text')),
+	FOREIGN KEY(campaign_id) REFERENCES campaigns (id)
+);
+CREATE INDEX ix_journal_campaign ON journal (campaign_id);
 CREATE TABLE lessons (
 	id INTEGER NOT NULL,
 	campaign_id INTEGER NOT NULL,

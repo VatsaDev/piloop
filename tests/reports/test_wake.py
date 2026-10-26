@@ -182,8 +182,9 @@ def test_wake_prints_the_journal_newest_lines_in_order_the_inbox_the_active_head
     db: Database, campaign: Campaign
 ) -> None:
     with db.session() as s:
-        assert orchestrator_overview(s, 0, NOW) == ''
-        assert orchestrator_overview(s, 2000, NOW).splitlines()[2:] == [
+        demo = s.get_one(Campaign, campaign.id)
+        assert orchestrator_overview(s, demo, 0, NOW) == ''
+        assert orchestrator_overview(s, demo, 2000, NOW).splitlines()[2:] == [
             '## Journal, oldest to newest (0 lines in all)',
             '- none',
             '',
@@ -196,42 +197,64 @@ def test_wake_prints_the_journal_newest_lines_in_order_the_inbox_the_active_head
             '## Current lessons on their repos (0)',
             '- none',
         ]
-        sibling, _ = clones(s, campaign)
+        sibling, other = clones(s, campaign)
         s.get_one(Campaign, sibling.id).status = CampaignStatus.STOPPED
         voting = lesson(s, sibling.id, 'voting', 'dead')
         for i in range(40):
-            s.add(Journal(author='orchestrator', line=f'step {i:02d}: ' + 'x' * 60, created_at=NOW))
-        s.add(
-            Comment(
-                target=TargetRef(TargetKind.CAMPAIGN, campaign.id),
-                author='w',
-                body='Raise the floor?',
-                kind=CommentKind.ESCALATION,
-                priority=1,
+            s.add(
+                Journal(
+                    campaign_id=campaign.id, author='orchestrator', line=f'step {i:02d}: ' + 'x' * 60, created_at=NOW
+                )
             )
-        )
+        s.add(Journal(campaign_id=other.id, author='orchestrator', line='other: started', created_at=NOW))
+        s.add(Journal(author='orchestrator', line='piloop upgraded', created_at=NOW))
+        for target, body in ((campaign.id, 'Raise the floor?'), (other.id, 'Log in?')):
+            s.add(
+                Comment(
+                    target=TargetRef(TargetKind.CAMPAIGN, target),
+                    author='w',
+                    body=body,
+                    kind=CommentKind.ESCALATION,
+                    priority=1,
+                )
+            )
         s.commit()
-        lines = orchestrator_overview(s, 1000, NOW).splitlines()
-    assert lines[0] == '# piloop wake, 2026-10-12 21:00 UTC'
+        lines = orchestrator_overview(s, demo, 1000, NOW).splitlines()
+        home = orchestrator_overview(s, None, 2000, NOW).splitlines()
+    assert lines[0] == '# piloop wake: demo, 2026-10-12 21:00 UTC'
     journal = lines[
         lines.index('## Journal, oldest to newest (40 lines in all)') + 1 : lines.index('## Inbox (1 open)') - 1
     ]
-    assert journal[0].endswith(' older: SELECT created_at, author, line FROM journal ORDER BY id DESC')
+    assert journal[0].endswith(
+        f' older: SELECT created_at, author, line FROM journal WHERE campaign_id = {campaign.id} ORDER BY id DESC'
+    )
     older = int(journal[0].split()[1])
     assert [line[:31] for line in journal[1:3]] == [
         '- 2026-10-12 21:00 orchestrator',
         '- 2026-10-12 21:00 orchestrator',
     ]
     assert journal[1].split(': ', 1)[1].startswith(f'step {older:02d}'), 'the newest lines, oldest first'
-    assert journal[-1].split(': ', 1)[1].startswith('step 39')
+    assert journal[-1].split(': ', 1)[1].startswith('step 39'), "only the campaign's own lines"
     assert '- p1 comment#1 escalation on campaign#1 by w (demo): Raise the floor?' in lines
     active = lines[
-        lines.index('## Active campaigns (2)') + 1 : lines.index('## Current lessons on their repos (1)') - 1
+        lines.index('## Active campaigns (1)') + 1 : lines.index('## Current lessons on their repos (1)') - 1
     ]
-    assert [line.split(' · ')[0] for line in active] == ['- demo', '- other'], 'the stopped sibling is not active'
+    assert [line.split(' · ')[0] for line in active] == ['- demo']
     assert lines[-1] == f'- [sibling] voting | dead | +1 score (lesson#{voting})', (
         "a stopped campaign's lessons count when it shares a repo with an active one"
     )
+    assert home[0] == '# piloop wake: the home, 2026-10-12 21:00 UTC'
+    inbox_at = home.index('## Inbox (2 open)')
+    assert home[inbox_at - 3 : inbox_at + 3] == [
+        '- 2026-10-12 21:00 orchestrator: other: started',
+        '- 2026-10-12 21:00 orchestrator: piloop upgraded',
+        '',
+        '## Inbox (2 open)',
+        '- p1 comment#1 escalation on campaign#1 by w (demo): Raise the floor?',
+        '- p1 comment#2 escalation on campaign#3 by w (other): Log in?',
+    ], 'every campaign, and the lines of no campaign'
+    assert '## Journal, oldest to newest (42 lines in all)' in home
+    assert '## Active campaigns (2)' in home
 
 
 @pytest.mark.parametrize('budget', [*range(0, 120, 7), 200, 500, 1000])
@@ -243,7 +266,9 @@ def test_wake_and_a_brief_print_no_more_than_their_budget_headings_and_notices_i
         s.get_one(Campaign, campaign.id).repo = 'github.com/o/r'
         for i in range(30):
             lesson(s, campaign.id, f'family {i}', 'dead', i)
-            s.add(Journal(author='orchestrator', line=f'step {i}: ' + 'x' * 60, created_at=NOW))
+            s.add(
+                Journal(campaign_id=campaign.id, author='orchestrator', line=f'step {i}: ' + 'x' * 60, created_at=NOW)
+            )
             s.add(
                 Comment(
                     target=TargetRef(TargetKind.CAMPAIGN, campaign.id),
@@ -254,7 +279,7 @@ def test_wake_and_a_brief_print_no_more_than_their_budget_headings_and_notices_i
                 )
             )
         s.commit()
-        wake = orchestrator_overview(s, budget, NOW).splitlines()
+        wake = orchestrator_overview(s, campaign, budget, NOW).splitlines()
         brief = lessons_overview(s, s.get_one(Campaign, campaign.id), budget).splitlines()
     assert cost(wake) <= budget and cost(brief) <= budget
     if budget >= 200:
@@ -270,7 +295,7 @@ def test_wake_reads_only_the_journal_lines_that_can_fit(db: Database, campaign: 
         s.commit()
         loaded: list[object] = []
         event.listen(s, 'loaded_as_persistent', lambda _s, obj: loaded.append(obj))
-        lines = orchestrator_overview(s, 100, NOW).splitlines()
+        lines = orchestrator_overview(s, None, 100, NOW).splitlines()
     journal = [o for o in loaded if isinstance(o, Journal)]
     assert 0 < len(journal) <= 100 * 0.4, 'no more rows than tokens in the journal share'
     assert lines[2] == '## Journal, oldest to newest (5000 lines in all)', 'the total is a count, not a load'
@@ -282,9 +307,40 @@ def test_a_value_with_newlines_counts_every_line_it_prints(db: Database, campaig
         s.get_one(Campaign, campaign.id).repo = 'github.com/o/r'
         lesson(s, campaign.id, 'multi\n' * 600, 'dead', 1, 'score\n' * 50)
         lesson(s, campaign.id, 'plain', 'dead', 2)
-        s.add(Journal(author='orchestrator', line='a\n' * 140, created_at=NOW))
+        s.add(Journal(campaign_id=campaign.id, author='orchestrator', line='a\n' * 140, created_at=NOW))
         s.commit()
         brief = lessons_overview(s, s.get_one(Campaign, campaign.id), 400)
-        wake = orchestrator_overview(s, 1000, NOW)
+        wake = orchestrator_overview(s, campaign, 1000, NOW)
     assert cost(brief.split('\n')) <= 400 and cost(wake.split('\n')) <= 1000
     assert '- [demo] plain | dead | +2 score' in brief, 'what fits is still printed'
+
+
+def test_a_campaign_s_wake_shows_the_lines_of_no_campaign_after_its_own_and_never_another_campaign_s(
+    db: Database, campaign: Campaign
+) -> None:
+    with db.session() as s:
+        demo = s.get_one(Campaign, campaign.id)
+        _, other = clones(s, campaign)
+        s.add(Journal(campaign_id=other.id, author='orchestrator', line='other: started', created_at=NOW))
+        s.commit()
+        assert 'Home journal' not in orchestrator_overview(s, demo, 2000, NOW), 'no line of no campaign, no heading'
+        s.add_all(Journal(author='orchestrator', line=f'before {i}', created_at=NOW) for i in range(3))
+        s.add(Journal(campaign_id=campaign.id, author='orchestrator', line='demo: parked idea#4', created_at=NOW))
+        s.commit()
+        lines = orchestrator_overview(s, demo, 2000, NOW).splitlines()
+        tight = orchestrator_overview(s, demo, 80, NOW).splitlines()
+    assert lines[2 : lines.index('## Inbox (0 open)') - 1] == [
+        '## Journal, oldest to newest (1 lines in all)',
+        '- 2026-10-12 21:00 orchestrator: demo: parked idea#4',
+        '',
+        '## Home journal from before lines had a campaign, oldest to newest (3 lines in all)',
+        '- 2026-10-12 21:00 orchestrator: before 0',
+        '- 2026-10-12 21:00 orchestrator: before 1',
+        '- 2026-10-12 21:00 orchestrator: before 2',
+    ]
+    assert not any('other: started' in line for line in lines)
+    assert tight[2:4] == [
+        '## Journal, oldest to newest (1 lines in all)',
+        '- 2026-10-12 21:00 orchestrator: demo: parked idea#4',
+    ], "the campaign's own lines take the journal's share first"
+    assert cost(tight) <= 80

@@ -164,7 +164,7 @@ JOIN campaigns p ON p.id = i.campaign_id
 WHERE ideas_fts MATCH '<mechanism>' AND p.repo = (SELECT repo FROM campaigns WHERE id = <p>) ORDER BY bm25(ideas_fts);
 
 -- The orchestrator's journal: what it decided and planned, in its own words
-SELECT created_at, author, line FROM journal ORDER BY id;
+SELECT created_at, author, line FROM journal WHERE campaign_id = <p> ORDER BY id;
 
 -- Goalposts: verdict overrides, status changes, evaluator versions
 SELECT at, actor, kind, payload FROM events WHERE kind IN ('candidate.verdict', 'campaign.status')

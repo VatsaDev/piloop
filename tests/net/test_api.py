@@ -220,7 +220,7 @@ def test_the_server_serves_the_openapi_document_of_its_routes(cfg: Settings, db:
     assert isinstance(paths, dict) and sorted(paths) == sorted(
         {r.path for routes in routers for r in routes.routes if isinstance(r, APIRoute)}
     )
-    assert '/v1/journal' in paths, 'the route of local, the default memory provider'
+    assert '/v1/campaigns/{campaign}/journal' in paths, 'the route of local, the default memory provider'
 
 
 def test_a_route_that_crashes_is_an_answer_that_says_so(db: Database, cfg: Settings) -> None:
@@ -390,7 +390,7 @@ def test_an_agent_s_token_acts_as_its_agent_only_and_the_owner_on_the_socket_as_
                 **({SOCKET_ACTOR_HEADER: named} if named else {}),
                 **({'Authorization': f'Bearer {bearer}'} if bearer else {}),
             }
-            return http.post('/v1/journal', json={'line': text}, headers=headers)
+            return http.post(f'/v1/campaigns/{campaign.name}/journal', json={'line': text}, headers=headers)
 
         for named in (None, 'human', 'orchestrator', 'human:ana'):
             assert journal(f'owner as {named}', named).status_code == 200, 'the owner needs no setup'
@@ -903,17 +903,25 @@ def test_a_cancel_asks_the_daemon_to_end_an_open_run_or_a_live_agent_and_refuses
     assert asked == [('agent_session.cancel_requested', 1, 'orchestrator'), ('run.cancel_requested', 1, 'orchestrator')]
 
 
-def test_a_journal_line_is_signed_by_the_caller_s_actor_and_the_server_refuses_one_too_long(
+def test_a_journal_line_is_the_campaign_s_signed_by_the_caller_s_actor_and_the_server_refuses_one_too_long(
     db: Database, campaign: Campaign, cfg: Settings
 ) -> None:
+    path = f'/v1/campaigns/{campaign.name}/journal'
     with serving_api(cfg), Client.on(cfg.socket_file, System.ORCHESTRATOR) as client:
-        written = client.post('/v1/journal', JournalBody(line=' parked idea#4:\n dup of #2 '), Journaled)
+        written = client.post(path, JournalBody(line=' parked idea#4:\n dup of #2 '), Journaled)
         with pytest.raises(Refused, match='^line: a journal line is 1 to 280 bytes, not 281: say less$') as long:
-            client.post('/v1/journal', JournalBody.model_construct(line='x' * 281), Journaled)
+            client.post(path, JournalBody.model_construct(line='x' * 281), Journaled)
+        with pytest.raises(Refused) as unknown:
+            client.post('/v1/campaigns/nope/journal', JournalBody(line='parked idea#4'), Journaled)
     assert long.value.error is None
+    assert unknown.value.error == Problem.UNKNOWN_CAMPAIGN
     with db.session() as s:
         entry = s.get_one(Journal, written.journal)
-        assert (entry.author, entry.line) == ('orchestrator', 'parked idea#4: dup of #2')
+        assert (entry.campaign_id, entry.author, entry.line) == (
+            campaign.id,
+            'orchestrator',
+            'parked idea#4: dup of #2',
+        )
 
 
 def test_a_write_needs_act_access_and_a_caller_whose_name_signs(

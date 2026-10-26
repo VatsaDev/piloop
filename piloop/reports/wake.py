@@ -2,8 +2,8 @@
 
 A session reads a short overview first and queries for more only when it needs it (the idea of OptMem's
 ``memo wake``). Two readers use it. A brief shows the current lessons of the repo (the ``lessons`` section). The
-orchestrator runs ``piloop wake`` (``orchestrator_overview``): its latest journal lines, the open inbox, the head of
-each active campaign and the current lessons. A budget is in tokens, counted as
+orchestrator runs ``piloop wake`` (``orchestrator_overview``): the latest lines of its campaign's journal, the open
+inbox, the head of the campaign and the current lessons. A budget is in tokens, counted as
 ``CHARS_PER_TOKEN`` characters each. It covers every line printed: the headings, and the last line of a list that
 counts what did not fit and says how to read it.
 """
@@ -11,16 +11,16 @@ counts what did not fit and says how to read it.
 import re
 from collections.abc import Sequence
 from datetime import datetime
-from enum import IntEnum
+from enum import Enum, IntEnum, auto
 from typing import NamedTuple
 
-from sqlalchemy import func, select
+from sqlalchemy import ColumnElement, func, select
 from sqlalchemy.orm import Session
 
 from piloop.campaign import inbox
 from piloop.config import CampaignConfig
 from piloop.db.models import Campaign
-from piloop.ids import CampaignStatus
+from piloop.ids import CampaignId, CampaignStatus
 from piloop.plugins.memory.local.tables import Journal, Lesson, LessonStatus
 from piloop.reports.overview import summary
 from piloop.text import metric as number
@@ -175,29 +175,26 @@ def lesson_line(lesson: Lesson, campaign: str) -> str:
     return f'- [{campaign}] {lesson.family} | {lesson.status} | {best} (lesson#{lesson.id})'
 
 
-def orchestrator_overview(s: Session, budget: int, now: datetime) -> str:
+def orchestrator_overview(s: Session, campaign: Campaign | None, budget: int, now: datetime) -> str:
     """What ``piloop wake`` prints: the journal, the open inbox, the active campaigns and their lessons, in ``budget``.
 
-    The title comes off the budget first. Of the rest, the journal gets ``JOURNAL_SHARE`` and each other section
+    Of ``campaign``, or of the whole home when it is None: every campaign's journal, and the lines that no campaign
+    has. A campaign's wake shows those lines too, under a heading of their own, after its own lines. The title comes
+    off the budget first. Of the rest, the journal gets ``JOURNAL_SHARE``, its own lines first, and each other section
     ``OTHER_SHARE``, its heading included. A section that does not fit is left out. Empty when the title does not fit.
     """
-    title = f'# piloop wake, {now:%Y-%m-%d %H:%M} UTC'
+    scope = _scope(campaign)
+    title = f'# piloop wake: {scope.name}, {now:%Y-%m-%d %H:%M} UTC'
     rest = budget - cost([title])
     if rest < 0:
         return ''
     journal_share, other_share = int(rest * JOURNAL_SHARE), int(rest * OTHER_SHARE)
 
-    lines = s.scalar(select(func.count()).select_from(Journal)) or 0
-    journal_title = f'## Journal, oldest to newest ({lines} lines in all)'
-    # a line costs at least one token, so no more lines than tokens fit: the read never grows with the journal
-    newest = s.scalars(select(Journal).order_by(Journal.id.desc()).limit(journal_share)).all()
-    journal = _journal(
-        [f'- {j.created_at:%Y-%m-%d %H:%M} {j.author}: {j.line}' for j in newest],
-        lines,
-        _room(journal_title, journal_share),
-    )
+    journal: list[str] = []
+    for part in scope.journals:
+        journal += _journal_part(s, part, journal_share - cost(journal))
 
-    items = inbox.items(s)
+    items = inbox.items(s, campaign_id=scope.campaign_id)
     inbox_title = f'## Inbox ({len(items)} open)'
     inbox_lines = fitted(
         [
@@ -206,13 +203,17 @@ def orchestrator_overview(s: Session, budget: int, now: datetime) -> str:
             for c, p in items
         ],
         _room(inbox_title, other_share),
-        'piloop inbox',
+        f'piloop inbox{scope.ref}',
     )
 
-    active = s.scalars(select(Campaign).where(Campaign.status == CampaignStatus.ACTIVE).order_by(Campaign.id)).all()
+    active = s.scalars(
+        select(Campaign).where(Campaign.status == CampaignStatus.ACTIVE, *scope.campaigns).order_by(Campaign.id)
+    ).all()
     campaigns_title = f'## Active campaigns ({len(active)})'
     campaign_lines = fitted(
-        [f'- {summary(s, p, p.config)}' for p in active], _room(campaigns_title, other_share), 'piloop status'
+        [f'- {summary(s, p, p.config)}' for p in active],
+        _room(campaigns_title, other_share),
+        f'piloop status{scope.ref}',
     )
 
     repos = sorted({p.repo for p in active if p.repo is not None})
@@ -223,12 +224,83 @@ def orchestrator_overview(s: Session, budget: int, now: datetime) -> str:
     )
 
     sections = (
-        _section(journal_title, journal, lines, journal_share),
+        journal,
         _section(inbox_title, inbox_lines, len(items), other_share),
         _section(campaigns_title, campaign_lines, len(active), other_share),
         _section(lessons_title, lesson_lines, len(lessons), other_share),
     )
     return '\n'.join([title, *(line for section in sections for line in section)])
+
+
+class IfEmpty(Enum):
+    """What a part of the journal shows when it has no line."""
+
+    NONE = auto()
+    """Its heading and ``- none``."""
+    LEFT_OUT = auto()
+    """Nothing."""
+
+
+class JournalPart(NamedTuple):
+    """Some lines of the journal, under a heading of their own."""
+
+    heading: str
+    conditions: tuple[ColumnElement[bool], ...]
+    """The conditions on ``journal`` rows."""
+    where: str
+    """The same in SQL, for the reader: a ``WHERE`` clause after a space, or empty."""
+    if_empty: IfEmpty
+
+
+HOME_JOURNAL = JournalPart(
+    'Home journal from before lines had a campaign, oldest to newest',
+    (Journal.campaign_id.is_(None),),
+    ' WHERE campaign_id IS NULL',
+    IfEmpty.LEFT_OUT,
+)
+"""The lines that no campaign has, which a campaign's wake shows after its own: nothing tells their campaign."""
+
+
+class Scope(NamedTuple):
+    """What ``piloop wake`` reads: one campaign, or the whole home."""
+
+    name: str
+    campaign_id: CampaignId | None
+    ref: str
+    """The argument of a command that reads more of the same, after a space; empty for the whole home."""
+    journals: tuple[JournalPart, ...]
+    """The parts of the journal, in the order that they take the journal's share and print."""
+    campaigns: tuple[ColumnElement[bool], ...]
+    """The conditions on ``campaigns`` rows."""
+
+
+def _scope(campaign: Campaign | None) -> Scope:
+    if campaign is None:
+        return Scope('the home', None, '', (JournalPart('Journal, oldest to newest', (), '', IfEmpty.NONE),), ())
+    own = JournalPart(
+        'Journal, oldest to newest',
+        (Journal.campaign_id == campaign.id,),
+        f' WHERE campaign_id = {campaign.id}',
+        IfEmpty.NONE,
+    )
+    return Scope(campaign.name, campaign.id, f' {campaign.name}', (own, HOME_JOURNAL), (Campaign.id == campaign.id,))
+
+
+def _journal_part(s: Session, part: JournalPart, budget: int) -> list[str]:
+    """The section of ``part``: its newest lines that fit in ``budget``, its heading included."""
+    lines = s.scalar(select(func.count()).select_from(Journal).where(*part.conditions)) or 0
+    if not lines and part.if_empty is IfEmpty.LEFT_OUT:
+        return []
+    title = f'## {part.heading} ({lines} lines in all)'
+    # a line costs at least one token, so no more lines than tokens fit: the read never grows with the journal
+    newest = s.scalars(select(Journal).where(*part.conditions).order_by(Journal.id.desc()).limit(budget)).all()
+    kept = _journal(
+        [f'- {j.created_at:%Y-%m-%d %H:%M} {j.author}: {j.line}' for j in newest],
+        lines,
+        _room(title, budget),
+        part.where,
+    )
+    return _section(title, kept, lines, budget)
 
 
 def _room(title: str, budget: int) -> int:
@@ -248,11 +320,14 @@ def _section(title: str, lines: Sequence[str], total: int, budget: int) -> list[
     return block if cost(block) <= budget else []
 
 
-def _journal(newest_first: Sequence[str], total: int, budget: int) -> list[str]:
-    """The newest journal lines that fit in ``budget``, oldest first, after a line that says how to read the older."""
+def _journal(newest_first: Sequence[str], total: int, budget: int, where: str) -> list[str]:
+    """The newest journal lines that fit in ``budget``, oldest first, after a line that says how to read the older.
+
+    ``where`` is the clause of that query that selects the lines of the journal, or empty for the whole home.
+    """
     kept, _ = fit(newest_first, budget)
     while len(kept) < total:
-        notice = f'… {total - len(kept)} older: SELECT created_at, author, line FROM journal ORDER BY id DESC'
+        notice = f'… {total - len(kept)} older: SELECT created_at, author, line FROM journal{where} ORDER BY id DESC'
         if cost([notice, *kept]) <= budget:
             return [notice, *reversed(kept)]
         if not kept:

@@ -43,12 +43,6 @@ erDiagram
         integer target_id
         json payload
     }
-    journal {
-        integer id PK
-        varchar author
-        varchar line
-        datetime created_at
-    }
     lease_workers {
         varchar id PK
         varchar pool
@@ -146,6 +140,13 @@ erDiagram
         datetime created_at
         datetime updated_at
         varchar updated_by
+    }
+    journal {
+        integer id PK
+        integer campaign_id FK
+        varchar author
+        varchar line
+        datetime created_at
     }
     lessons {
         integer id PK
@@ -283,6 +284,7 @@ erDiagram
     campaigns ||--o{ evaluators : "campaign_id"
     campaigns ||--o{ first_transfers : "campaign_id"
     campaigns ||--o{ ideas : "campaign_id"
+    campaigns |o--o{ journal : "campaign_id"
     campaigns ||--o{ lessons : "campaign_id"
     campaigns |o--o{ secrets : "campaign_id"
     campaigns ||--o{ techniques : "campaign_id"

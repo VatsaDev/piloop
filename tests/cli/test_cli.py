@@ -643,18 +643,34 @@ def test_init_syncs_the_memory_documents_and_names_the_repo(campaign_path: Path,
 
 @pytest.mark.usefixtures('api')
 def test_journal_lines_come_back_in_wake(campaign_path: Path, out, monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(SystemExit, match='^the home has no campaign: `piloop init <repo>` registers one$'):
+        run_cli(['journal', 'parked idea#4'])
     run_cli(['init', str(campaign_path)])
     out()
     monkeypatch.setattr(common, 'settings', Settings(home=common.settings.home, actor='orchestrator'))
     run_cli(['journal', '  demo: parked idea#4,\n  dup of #2  '])
-    assert out().strip() == 'journal#1'
+    assert out().strip() == 'journal#1', 'the only campaign'
     with pytest.raises(SystemExit, match='a journal line is 1 to 280 bytes, not 281: say less'):
         run_cli(['journal', 'x' * 281])
+    other = shutil.copytree(campaign_path, campaign_path.parent / 'other')
+    toml = other / 'piloop.toml'
+    toml.write_text(re.sub(r'(?m)^name = .*$', 'name = "other"', toml.read_text(), count=1))
+    run_cli(['init', str(other)])
+    out()
+    with pytest.raises(SystemExit, match='^name the campaign with --campaign, one of: demo, other$'):
+        run_cli(['journal', 'which campaign?'])
+    run_cli(['journal', 'other: started', '--campaign', 'other'])
+    assert out().strip() == 'journal#2'
+    run_cli(['wake', 'demo'])
+    text = out()
+    assert text.startswith('# piloop wake: demo, ')
+    assert 'orchestrator: demo: parked idea#4, dup of #2' in text, 'one line, signed with the actor'
+    assert 'other: started' not in text, "only the campaign's journal"
+    assert '- demo · head score' in text
     run_cli(['wake'])
     text = out()
-    assert text.startswith('# piloop wake, ')
-    assert 'orchestrator: demo: parked idea#4, dup of #2' in text, 'one line, signed with the actor'
-    assert '- demo · head score' in text
+    assert text.startswith('# piloop wake: the home, '), 'two active campaigns, and the directory is in neither'
+    assert 'demo: parked idea#4' in text and 'other: started' in text
     run_cli(['wake', '--budget', '0'])
     assert out() == ''
 
