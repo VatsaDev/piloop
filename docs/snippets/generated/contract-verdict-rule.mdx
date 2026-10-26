@@ -16,10 +16,16 @@
 | `Criterion.direction: Direction` | Whether a larger or a smaller value is better. |
 | `Criterion.margin: float \| None` | The largest regression from the bar that a guardrail may show, in the metric's units. None on a primary. |
 | `Criterion.floor: float \| None` | The worst value that a candidate may have, whatever the bar, or None. |
+| `Criterion.fraction: float \| None` | The largest regression from the bar that a guardrail may show, as a fraction of the bar's value. A guardrail has a `margin` or a `fraction`, never both. |
+| `Criterion.allowed(bar: float) -> float` | The largest regression from `bar`, the bar's value, in the metric's units. |
+| `Criterion.limit() -> str` | How a reason names the regression allowed: `margin 20` or `fraction 0.1`. |
+| `Criterion.past_floor(value: float) -> bool` | Whether `value` is past the floor, in the metric's direction. |
 | `Side.name: str` | How a reason names it: `candidate#73`. |
 | `Side.means: dict[str, float]` | The mean of each metric over its successful measurements. Empty when none succeeded. |
 | `Side.units: dict[str, dict[str, float]]` | The per-unit results of each metric that has them: unit id → the unit's mean contribution. |
 | `Side.samples: dict[str, list[float]]` | The samples of each metric that ran in pairs with the other side's: the i-th of the candidate and the i-th of the bar ran one after the other, on one worker. Empty without pairs. |
+| `Side.stopped: Stopped \| None` | Where its latest climb of the ladder stopped, if it stopped. `means` never include a rung. |
+| `Side.rungs: dict[RungName, dict[str, float]]` | The mean of each metric at each rung of the ladder that it measured. |
 | `Judgement.verdict: Outcome` | `keep`, `interesting`, `discard` or `crash`. |
 | `Judgement.reason: str` | Why, as piloop stores and shows it with the verdict. |
 | `Node.id: CandidateId` | The candidate's id. |

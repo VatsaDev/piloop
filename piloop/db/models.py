@@ -62,6 +62,7 @@ from piloop.ids import (
     MeasurementId,
     Revision,
     RoleName,
+    RungName,
     RunId,
     TargetKind,
     TargetRef,
@@ -477,6 +478,7 @@ class Base(DeclarativeBase):
         RoleName: String,
         TrackName: String,
         Revision: String,
+        RungName: String,
         dict[str, float]: JSON,
         dict[str, object]: JSON,
         Usage: PydanticJSON(TypeAdapter(Usage)),
@@ -865,7 +867,14 @@ class Measurement(Base):
     """One run of an evaluator on a candidate. A candidate can have many: repeats, or a new version of the evaluator."""
 
     __tablename__ = 'measurements'
-    __table_args__ = (Index('ix_measurements_candidate_evaluator', 'candidate_id', 'evaluator_id'),)
+    __table_args__ = (
+        Index('ix_measurements_candidate_evaluator', 'candidate_id', 'evaluator_id'),
+        CheckConstraint(
+            'stopped IS NULL OR (rung IS NOT NULL AND error IS NULL)',
+            name='measurements.a stop is at a rung, with no error',
+        ),
+        *text_checks('measurements', nullable=('rung', 'stopped')),
+    )
 
     id: Mapped[MeasurementId] = mapped_column(primary_key=True)
     candidate_id: Mapped[CandidateId] = mapped_column(ForeignKey('candidates.id', ondelete='CASCADE'))
@@ -876,6 +885,11 @@ class Measurement(Base):
     seconds: Mapped[float | None]
     pair_id: Mapped[MeasurementId | None] = mapped_column(ForeignKey('measurements.id', ondelete='SET NULL'))
     """The bar's measurement that ran next to this one in a paired evaluation. NULL on any other measurement."""
+    rung: Mapped[RungName | None]
+    """The rung of the evaluation ladder that it measured (``[[ladder]]``). NULL for the full panel: only a measurement
+    of the full panel scores."""
+    stopped: Mapped[str | None]
+    """Why the climb stopped at ``rung``: the stop that held. NULL when the climb went on."""
     created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=NOW)
 
     candidate: Mapped[Candidate] = relationship(back_populates='measurements')

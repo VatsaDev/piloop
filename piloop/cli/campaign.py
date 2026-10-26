@@ -115,7 +115,7 @@ failed one makes, or a stop, after which the daemon measures nothing unasked."""
 
 
 def _measured(client: Client, added: Registered) -> dict[str, float]:
-    """Follow the feed after the registration until the daemon measures the baseline, and return its metrics.
+    """Follow the feed after the registration until the daemon measures the baseline's full panel, and return its metrics.
 
     Exit with the reason when the campaign is paused or stopped first: a baseline that fails to evaluate pauses it.
     """
@@ -125,7 +125,7 @@ def _measured(client: Client, added: Registered) -> dict[str, float]:
         batch = client.events(query)
         for event in batch.events:
             match EVENT.validate_python(event.payload):
-                case MeasurementRecorded(candidate=added.baseline, error=None, metrics=metrics):
+                case MeasurementRecorded(candidate=added.baseline, error=None, rung=None, metrics=metrics):
                     return metrics
                 case CampaignPausedChanged(paused_reason=str(reason)):
                     raise SystemExit(reason)

@@ -107,12 +107,14 @@ from piloop.plugins.vcs.contract import Repository, RunVersion, Transfer, Versio
 from piloop.plugins.verdict_rule.contract import Lineage, Outcome, Trunk
 from piloop.runtime.factory import RuntimeFactory, make_runtime
 from piloop.scoring import queue
+from piloop.scoring.ladder import Gate
 from piloop.scoring.ledger import (
     MOVED,
     CandidateJudged,
     RejudgeFailed,
     answer_rejudge,
     bar_of,
+    criterion,
     current_evaluator,
     head,
     judge,
@@ -122,6 +124,7 @@ from piloop.scoring.ledger import (
     remeasure_asked,
     reproposed,
     resolve,
+    rungs,
     score,
     side,
     unjudged,
@@ -829,6 +832,7 @@ class RunController:
                 again = candidate.origin in UNMEASURED or reproposed(candidate, s.get_one(Run, run_id))
                 judge_now = pending(candidate) or (unmeasured is None and again)
                 needs_measurement = unmeasured is None and not measured(candidate, scope.evaluator_id)
+                gate = bar_id if judgeable(candidate) else None
             with self._tracer.span('piloop.candidate', run=run_id, revision=revision, candidate=candidate_id) as span:
                 if unmeasured is not None:
                     span.set(status=unmeasured)
@@ -845,6 +849,7 @@ class RunController:
                     log_dir / f'eval-{i}',
                     bar=bar_id if scope.track.repeats else None,
                     repeats=scope.track.repeats or 1,
+                    gate=gate,
                 ):
                     span.set(status='cancelled')
                     return None
@@ -888,6 +893,7 @@ class RunController:
                 revision, parent_id = candidate.revision, candidate.parent_id
                 needs_measurement = not measured(candidate, scope.evaluator_id)
                 judge_now = pending(candidate)
+                gated = judgeable(candidate)
             assert parent_id is not None  # A rebased candidate's parent is the head it was merged onto.
             with self._tracer.span('piloop.candidate', run=scope.run_id, revision=revision, candidate=current) as span:
                 span.set(rebased=True)
@@ -901,6 +907,7 @@ class RunController:
                     log_dir / f'eval-rebased-{current}',
                     bar=parent_id if scope.track.repeats else None,
                     repeats=scope.track.repeats or 1,
+                    gate=parent_id if gated else None,
                 ):
                     span.set(status='cancelled')
                     return False
@@ -920,11 +927,14 @@ class RunController:
         *,
         bar: CandidateId | None = None,
         repeats: int = 1,
+        gate: CandidateId | None = None,
     ) -> bool:
         """Measure ``revision`` on the executor, and wait until its measurement is recorded. False if the daemon stopped.
 
         With ``bar``, it is a paired evaluation: ``repeats`` samples of ``revision``, each next to one of the bar's
-        (``EvaluationJob.bar``). Without, ``repeats`` samples of ``revision`` alone.
+        (``EvaluationJob.bar``). Without, ``repeats`` samples of ``revision`` alone. With ``gate``, the candidate whose
+        rungs the ladder's stops compare with, the first sample may stop at a rung (``EvaluationJob.gate``): only a run's
+        own version that the daemon may judge. Without, every sample climbs every rung, as what may become a bar must.
 
         A request for a candidate that already waits or runs under the evaluator waits for that evaluation and submits
         nothing of its own (``queue.request``). It is submitted when the queue gives it a slot (``dispatch``), and its
@@ -956,6 +966,11 @@ class RunController:
                         required=[m.name for m in cfg.metrics if m.role is not MetricRole.WATCH],
                         known=[m.name for m in cfg.metrics],
                         max_evidence_bytes=self._evaluation.max_evidence_bytes,
+                        ladder=cfg.ladder,
+                        gate=gate_of(s.get_one(Candidate, gate), evaluator_id, cfg)
+                        if gate is not None and cfg.ladder
+                        else None,
+                        stop_grace=self._evaluation.stop_grace_seconds,
                         bar=paired,
                         repeats=repeats,
                     )
@@ -1204,7 +1219,7 @@ class RunController:
             )
         if cfg.multitrack:
             guards = ', '.join(
-                f'{m.name} (margin {m.margin:g}' + (f', floor {m.floor:g})' if m.floor is not None else ')')
+                f'{m.name} ({criterion(m).limit()}' + (f', floor {m.floor:g})' if m.floor is not None else ')')
                 for m in track.guardrails
             )
             lines.append(
@@ -1433,6 +1448,11 @@ def branches(s: Session, campaign: Campaign, pinned: Candidate | None, computed:
     if bar_of(s, pinned).id == computed.id:
         return False
     return not repository(campaign).contains(pinned.revision, computed.revision)
+
+
+def gate_of(bar: Candidate, evaluator_id: EvaluatorId, cfg: CampaignConfig) -> Gate:
+    """What the ladder's stops compare with: ``bar``'s means at each rung, and the metrics' directions."""
+    return Gate(bar=rungs(bar, evaluator_id), directions={m.name: m.direction for m in cfg.metrics})
 
 
 def unmeasured_of(version: Version) -> Unmeasured | None:

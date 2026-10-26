@@ -23,6 +23,7 @@ from piloop.plugins.trigger.contract import TRIGGERS
 from piloop.plugins.trigger.low_water import LowWaterTrigger
 from piloop.plugins.trigger.seed import SeedTrigger
 from piloop.plugins.trigger.stalled import StalledTrigger
+from piloop.scoring.ledger import criterion
 from tests.conftest import AGENT_TIMEOUT, RESEARCH, SCOUT, WATCHDOG, role_of
 
 
@@ -299,11 +300,17 @@ def test_metric_roles_are_validated(campaign_path: Path) -> None:
     assert cfg.guardrails[0].gain(9, 10) == 1 and track.primary.gain(9, 10) == -1
     with pytest.raises(KeyError, match="no track 'speed' in piloop.toml; tracks: score"):
         cfg.track(TrackName('speed'))
-    with pytest.raises(ValueError, match="guardrail 'size' needs a margin"):
+    with pytest.raises(ValueError, match="guardrail 'size' needs a margin or a fraction"):
         load_campaign_config(campaign_path, metrics=[primary, {**guard, 'margin': None}])
-    with pytest.raises(ValueError, match="'size': margin and floor apply to guardrails and primaries only"):
+    with pytest.raises(ValueError, match='set margin or fraction, not both'):
+        load_campaign_config(campaign_path, metrics=[primary, {**guard, 'fraction': 0.1}])
+    relative = load_campaign_config(campaign_path, metrics=[primary, {**guard, 'margin': None, 'fraction': 0.1}])
+    assert criterion(relative.guardrails[0]).allowed(40) == 4.0, "a fraction of the bar, in the metric's units"
+    with pytest.raises(ValueError, match="'size': floor, margin and fraction apply to guardrails and primaries only"):
         load_campaign_config(campaign_path, metrics=[primary, {**guard, 'role': 'watch'}])
-    with pytest.raises(ValueError, match="'score': margin and floor on a primary apply only with several tracks"):
+    with pytest.raises(
+        ValueError, match="'score': floor, margin and fraction on a primary apply only with several tracks"
+    ):
         load_campaign_config(campaign_path, metrics=[{**primary, 'floor': 1}])
     with pytest.raises(ValueError, match="'size': track applies to primaries only"):
         load_campaign_config(campaign_path, metrics=[primary, {**guard, 'track': 'x'}])
@@ -333,7 +340,10 @@ def test_tracks_are_primaries_each_with_a_margin_a_table_and_a_share(campaign_pa
     tracks = {'metrics': [ACCURACY, COST], 'tracks': SHARES}
     refusals = {
         r"tracks \['accuracy'\] have more than one primary": {'metrics': [ACCURACY, {**COST, 'track': 'accuracy'}]},
-        r"primaries \['size'\] need a margin": {**tracks, 'metrics': [ACCURACY, {**COST, 'margin': None}]},
+        r"primaries \['size'\] need a margin or a fraction": {
+            **tracks,
+            'metrics': [ACCURACY, {**COST, 'margin': None}],
+        },
         r"tracks \['serving'\] need a \[tracks.<name>\] table": {**tracks, 'tracks': {'accuracy': {'share': 1}}},
         r"\[tracks\] \['speed'\] name no track a primary declares": {
             **tracks,
@@ -387,6 +397,7 @@ def test_the_evaluator_is_what_scores_the_judging_metrics_not_how_the_verdict_re
         'another order of the metrics': key(size, primary),
         'a verdict rule': key(primary, size, plugins={'verdict_rule': {'confidence': 0.9}}),
         'a new watch metric': key(primary, size, {'name': 'eval_cost_usd', 'direction': 'lower'}),
+        'no ladder': key(primary, size, ladder=[]),
     }
     assert unchanged == dict.fromkeys(unchanged, cfg.evaluator_key), 'none changes a verdict already given'
     changed = {
@@ -395,7 +406,12 @@ def test_the_evaluator_is_what_scores_the_judging_metrics_not_how_the_verdict_re
         'a new direction': key({**primary, 'direction': 'lower'}, size),
         'a new evaluate command': key(primary, size, evaluate=['true']),
         'a new linked input': key(primary, size, link=['data', 'more']),
+        'a ladder': key(primary, size, ladder=[SCREEN]),
+        "a rung's command": key(primary, size, ladder=[{**SCREEN, 'evaluate': ['smoke']}]),
     }
+    assert key(primary, size, ladder=[SCREEN]) == key(
+        primary, size, ladder=[{**SCREEN, 'stop': {'size': {'floor': 9}}}]
+    ), "a rung's stop is the policy of the climb"
     assert len({cfg.evaluator_key, *changed.values()}) == len(changed) + 1, 'each can change a verdict'
     assert (
         load_campaign_config(campaign_path).evaluator_key
@@ -573,3 +589,34 @@ def test_a_table_with_runs_defines_a_role_that_does_runs_with_the_implementer_de
     )
     assert 'roles.watchdog.runs = True: Input should be False' in fails({'watchdog': {'runs': True}})
     assert 'roles.implementer.runs = False: Input should be True' in fails({'implementer': {'runs': False}})
+
+
+SCREEN = {'name': 'screen', 'stop': {'score': {'margin': 0.1}}}
+
+
+@pytest.mark.parametrize(
+    ('ladder', 'error'),
+    [
+        ([SCREEN, SCREEN], "ladder: rungs ['screen'] appear more than once"),
+        ([{**SCREEN, 'stop': {'accuracy': {'floor': 1}}}], "ladder.screen.stop: ['accuracy'] are not in [[metrics]]"),
+        (
+            [SCREEN, {'name': 'smoke', 'stop': {'score': {'floor': 1}}, 'evaluate': ['smoke']}],
+            'ladder: the rungs with their own evaluate come first',
+        ),
+        ([{**SCREEN, 'stop': {'score': {'margin': 0.1, 'fraction': 0.1}}}], 'set margin or fraction, not both'),
+        ([{**SCREEN, 'stop': {'score': {}}}], "stop of ['score']: set floor, margin or fraction"),
+        ([{**SCREEN, 'stop': {}}], 'stop'),
+        ([{**SCREEN, 'name': 'Bad Name'}], 'name'),
+    ],
+)
+def test_a_ladder_names_its_rungs_once_stops_on_known_metrics_and_runs_its_own_commands_first(
+    campaign_path: Path, ladder: list[dict[str, object]], error: str
+) -> None:
+    with pytest.raises(ConfigError, match=re.escape(error)):
+        load_campaign_config(campaign_path, ladder=ladder)
+
+
+def test_a_rung_may_stop_on_a_floor_and_a_regression_together(campaign_path: Path) -> None:
+    rung = {'name': 'smoke', 'evaluate': ['smoke'], 'stop': {'score': {'floor': 1, 'fraction': 0.2}}}
+    cfg = load_campaign_config(campaign_path, ladder=[rung, SCREEN])
+    assert [r.name for r in cfg.ladder] == ['smoke', 'screen']

@@ -553,7 +553,8 @@ class CampaignResults:
     def _measured(self, s: Session, job: EvaluationJob, report: EvaluationReport) -> None:
         """Record each sample of an evaluation as one measurement, and take the evaluation out of the queue.
 
-        A sample of the candidate names the bar's sample that ran next to it (``Measurement.pair``).
+        A sample of the full panel of the candidate names the bar's that ran next to it (``Measurement.pair``): the i-th
+        of one side with the i-th of the other. A rung's sample has no pair.
 
         A cancelled evaluation records nothing: ``queue.cancel`` recorded its crash. Nor does one that ends while the
         daemon stops: its evaluator was killed, and the next daemon measures it again.
@@ -566,14 +567,15 @@ class CampaignResults:
             return
         evaluator_id = evaluation.evaluator_id
         bar = job.bar
-        assert bar is not None or not report.bar_samples  # a bar's samples come only from a paired evaluation
-        pairs = (
-            []
-            if bar is None
-            else [record(s, self._units_dir, None, bar.candidate, evaluator_id, b) for b in report.bar_samples]
-        )
-        for i, sample in enumerate(report.samples):
-            pair = pairs[i] if i < len(pairs) else None
+        pairs: list[MeasurementId] = []
+        for b in report.bar_samples:
+            assert bar is not None  # a bar's samples come only from a paired evaluation
+            measurement = record(s, self._units_dir, None, bar.candidate, evaluator_id, b)
+            if b.rung is None:
+                pairs.append(measurement)
+        pending = iter(pairs)
+        for sample in report.samples:
+            pair = next(pending, None) if sample.rung is None else None
             record(s, self._units_dir, job.run, job.candidate, evaluator_id, sample, pair=pair)
         if any(sample.channel is Channel.METRIC_LINES for sample in (*report.samples, *report.bar_samples)):
             ledger.note_metric_lines(s, evaluation.candidate.campaign_id, evaluator_id)
@@ -725,6 +727,8 @@ def record(
         seconds=sample.seconds,
         run=run_id,
         pair=pair,
+        rung=sample.rung,
+        stopped=sample.stopped,
     )
     save_units(units_dir, measurement.id, sample.units)
     return measurement.id

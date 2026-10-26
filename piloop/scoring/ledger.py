@@ -49,6 +49,7 @@ from piloop.ids import (
     IdeaStatus,
     LinkKind,
     MeasurementId,
+    RungName,
     RunId,
     TargetKind,
     TargetRef,
@@ -78,6 +79,7 @@ from piloop.plugins.verdict_rule.contract import (
     Rebase,
     Seed,
     Side,
+    Stopped,
     Trunk,
     VerdictRule,
 )
@@ -121,9 +123,28 @@ def evaluator_runners() -> tuple[str, ...]:
     return (PROCESS,)
 
 
+def full(m: Measurement) -> bool:
+    """Whether ``m`` scores: it measured the full panel, and succeeded. A rung of the ladder never scores."""
+    return m.error is None and m.rung is None
+
+
+def full_clause() -> ColumnElement[bool]:
+    """Select the measurements that ``full`` is true of."""
+    return Measurement.error.is_(None) & Measurement.rung.is_(None)
+
+
 def metrics(candidate: Candidate, evaluator_id: EvaluatorId | None) -> dict[str, float]:
-    """Return the mean of each metric over the candidate's successful measurements under ``evaluator_id``."""
-    return means([m.metrics for m in candidate.measurements if m.evaluator_id == evaluator_id and m.error is None])
+    """Return the mean of each metric over the candidate's ``full`` measurements under ``evaluator_id``."""
+    return means([m.metrics for m in candidate.measurements if m.evaluator_id == evaluator_id and full(m)])
+
+
+def rungs(candidate: Candidate, evaluator_id: EvaluatorId | None) -> dict[RungName, dict[str, float]]:
+    """Return the mean of each metric at each rung of the ladder, over the candidate's measurements of the rung."""
+    found: dict[RungName, list[dict[str, float]]] = {}
+    for m in candidate.measurements:
+        if m.evaluator_id == evaluator_id and m.error is None and m.rung is not None:
+            found.setdefault(m.rung, []).append(m.metrics)
+    return {rung: means(rows) for rung, rows in found.items()}
 
 
 def means(rows: Sequence[dict[str, float]]) -> dict[str, float]:
@@ -138,8 +159,14 @@ def score(candidate: Candidate, evaluator_id: EvaluatorId | None, primary: Metri
 
 
 def measured(candidate: Candidate, evaluator_id: EvaluatorId | None) -> bool:
-    """Return whether any measurement under ``evaluator_id`` exists. A crashed measurement counts too."""
-    return any(m.evaluator_id == evaluator_id for m in candidate.measurements)
+    """Return whether the candidate needs no evaluation under ``evaluator_id``: a ``full`` measurement, or a crash.
+
+    A climb that stopped at a rung does not count, so what needs a score, a head or a bar, is measured in full, and a
+    run that reaches the tree again climbs again.
+    """
+    return any(
+        m.evaluator_id == evaluator_id and (m.rung is None or m.error is not None) for m in candidate.measurements
+    )
 
 
 def head(s: Session, campaign: Campaign, *, excluding: Candidate | None = None) -> Candidate | None:
@@ -203,7 +230,7 @@ def _nodes(s: Session, ids: Select[CandidateId], evaluator_id: EvaluatorId | Non
     measured = select(Measurement.candidate_id, Measurement.metrics).where(
         Measurement.candidate_id.in_(given),
         Measurement.evaluator_id == evaluator_id,
-        Measurement.error.is_(None),
+        full_clause(),
     )
     results: dict[CandidateId, list[dict[str, float]]] = {}
     for c, values in s.execute(measured.order_by(Measurement.id)):
@@ -371,21 +398,34 @@ def record(
     seconds: float | None,
     run: RunId | None = None,
     pair: MeasurementId | None = None,
+    rung: RungName | None = None,
+    stopped: str | None = None,
 ) -> Measurement:
     """Store a measurement of ``candidate``, with ``MeasurementRecorded``. The caller commits.
 
-    The one writer of measurements. ``run`` is the run that the daemon measured it for, and ``pair`` the bar's
-    measurement that ran next to it in a paired evaluation. A measurement under the campaign's current evaluator
-    answers the pending request to measure the candidate again (``request_remeasure``).
+    The one writer of measurements. ``run`` is the run that the daemon measured it for, ``pair`` the bar's
+    measurement that ran next to it in a paired evaluation, ``rung`` the rung of the ladder that it measured, and
+    ``stopped`` why the climb stopped there. A measurement of the full panel under the campaign's current evaluator
+    answers the pending request to measure the candidate again (``request_remeasure``). A rung does not: the request
+    waits for the full panel.
     """
     measurement = Measurement(
-        candidate=candidate, evaluator_id=evaluator_id, metrics=metrics, error=error, seconds=seconds, pair_id=pair
+        candidate=candidate,
+        evaluator_id=evaluator_id,
+        metrics=metrics,
+        error=error,
+        seconds=seconds,
+        pair_id=pair,
+        rung=rung,
+        stopped=stopped,
     )
     s.add(measurement)
     s.flush()
-    recorded = MeasurementRecorded(candidate=candidate.id, metrics=metrics, error=error, run=run, pair=pair)
+    recorded = MeasurementRecorded(
+        candidate=candidate.id, metrics=metrics, error=error, run=run, pair=pair, rung=rung, stopped=stopped
+    )
     emit(s, recorded, TargetRef(TargetKind.MEASUREMENT, measurement.id), actor)
-    if evaluator_id == s.get_one(Campaign, candidate.campaign_id).evaluator_id:
+    if rung is None and evaluator_id == s.get_one(Campaign, candidate.campaign_id).evaluator_id:
         for asked, _ in requests.pending(
             s, RemeasureRequested, Event.target == TargetRef(TargetKind.CANDIDATE, candidate.id)
         ):
@@ -451,6 +491,10 @@ class MeasurementRecorded(EventModel):
     """The run that the daemon measured it for. None for a measurement by hand or a cancelled evaluation."""
     pair: MeasurementId | None = None
     """The bar's measurement that ran next to it in a paired evaluation."""
+    rung: RungName | None = None
+    """The rung of the ladder that it measured. None for the full panel."""
+    stopped: str | None = None
+    """Why the climb stopped at ``rung``. None when it went on."""
 
 
 def unjudged(candidate: Candidate) -> bool:
@@ -525,19 +569,27 @@ def save_units(units_dir: Path, measurement_id: MeasurementId, units: Units) -> 
     path.write_text(json.dumps(units))
 
 
+def stop_of(candidate: Candidate, evaluator_id: EvaluatorId) -> Stopped | None:
+    """Where the candidate's latest climb under ``evaluator_id`` stopped, as a verdict rule reads it, or None."""
+    for m in reversed(candidate.measurements):
+        if m.evaluator_id == evaluator_id and m.rung is not None and m.stopped is not None:
+            return Stopped(m.rung, m.stopped)
+    return None
+
+
 def pairs(candidate: Candidate, bar: Candidate, evaluator_id: EvaluatorId) -> tuple[Samples, Samples]:
     """Return the samples that ``candidate`` and ``bar`` measured next to each other under ``evaluator_id``.
 
     The i-th sample of a metric of the candidate and the i-th of the bar are one pair (``Measurement.pair``). A pair
-    counts when both of its measurements succeeded.
+    counts when both of its measurements are ``full``.
     """
     mine: Samples = {}
     theirs: Samples = {}
     for m in candidate.measurements:
         other = m.pair
-        if m.evaluator_id != evaluator_id or m.error is not None or other is None:
+        if m.evaluator_id != evaluator_id or not full(m) or other is None:
             continue
-        if other.candidate_id != bar.id or other.error is not None:
+        if other.candidate_id != bar.id or not full(other):
             continue
         for name in m.metrics.keys() & other.metrics.keys():
             mine.setdefault(name, []).append(m.metrics[name])
@@ -550,7 +602,7 @@ def units(candidate: Candidate, evaluator_id: EvaluatorId, units_dir: Path) -> U
     rows = [
         UNITS.validate_json(path.read_bytes())
         for m in candidate.measurements
-        if m.evaluator_id == evaluator_id and m.error is None and (path := units_file(units_dir, m.id)).is_file()
+        if m.evaluator_id == evaluator_id and full(m) and (path := units_file(units_dir, m.id)).is_file()
     ]
     per_metric: dict[str, dict[str, list[float]]] = {}
     for row in rows:
@@ -587,7 +639,14 @@ def judge(
     mine_samples, theirs_samples = pairs(candidate, own, evaluator_id)
 
     def as_side(c: Candidate, samples: Samples | None = None) -> Side:
-        return Side(f'candidate#{c.id}', metrics(c, evaluator_id), units(c, evaluator_id, units_dir), samples or {})
+        return Side(
+            f'candidate#{c.id}',
+            metrics(c, evaluator_id),
+            units(c, evaluator_id, units_dir),
+            samples or {},
+            stopped=stop_of(c, evaluator_id),
+            rungs=rungs(c, evaluator_id),
+        )
 
     parent = candidate.parent
     verdict, reason = decide(
@@ -611,7 +670,7 @@ def judge(
 
 def criterion(m: Metric) -> Criterion:
     """Return what a verdict rule reads of a metric of ``piloop.toml``."""
-    return Criterion(m.name, m.direction, m.margin, m.floor)
+    return Criterion(m.name, m.direction, m.margin, m.floor, m.fraction)
 
 
 def decide(

@@ -8,6 +8,9 @@ from pathlib import Path
 import pytest
 from inline_snapshot import snapshot
 
+from piloop.config import Rung, Tolerance
+from piloop.ids import RungName
+from piloop.plugins.metric import Direction
 from piloop.proc import Channel
 from piloop.scoring.evaluate import (
     BadResult,
@@ -17,12 +20,18 @@ from piloop.scoring.evaluate import (
     Killed,
     Measured,
     MissingMetrics,
+    Step,
+    StoppedAt,
     TimedOut,
     Track,
     no_track,
     parse_metrics,
+    printed,
     run_evaluate,
 )
+from piloop.scoring.ladder import Gate
+
+HIGHER, LOWER = Direction.HIGHER, Direction.LOWER
 
 KNOWN = frozenset({'a', 'b', 'cost'})
 
@@ -36,7 +45,8 @@ def evaluate(
     cap: int = 1000,
     track: Track = no_track,
 ) -> EvalResult:
-    return run_evaluate(
+    """Run ``script`` as an evaluate command with no ladder: its one result."""
+    [result] = run_evaluate(
         ['sh', '-c', script],
         cwd=tmp_path,
         log_dir=tmp_path,
@@ -46,6 +56,7 @@ def evaluate(
         max_evidence_bytes=cap,
         track=track,
     )
+    return result
 
 
 def write(result: object) -> str:
@@ -159,7 +170,7 @@ def assert_dead(pid: int) -> None:
         ('true', 'it wrote no result to PILOOP_RESULT_FILE'),
         (
             f'{write({"metrics": {"a": 1}})}; {write({"metrics": {"a": 2}})}',
-            'it wrote 2 results to PILOOP_RESULT_FILE; one run writes one line',
+            'it wrote a line after its last one',
         ),
         (
             f'echo METRIC a=1; {write({"metrics": {"a": 1}})}',
@@ -167,7 +178,7 @@ def assert_dead(pid: int) -> None:
         ),
         (
             'printf \'{\\n  "metrics": {"a": 1}\\n}\\n\' >> "$PILOOP_RESULT_FILE"',
-            'it wrote 3 results to PILOOP_RESULT_FILE; one run writes one line',
+            'expected one JSON object of the result schema: Invalid JSON: EOF while parsing an object at line 1 column 1',
         ),
         (
             'printf \'not json\\n\' >> "$PILOOP_RESULT_FILE"',
@@ -253,7 +264,7 @@ def test_bad_evidence_is_a_crash(tmp_path: Path, script: str, error: str) -> Non
     worktree = tmp_path / 'worktree'
     worktree.mkdir()
     (tmp_path / 'outside').write_text('x')
-    r = run_evaluate(
+    [r] = run_evaluate(
         ['sh', '-c', script],
         cwd=worktree,
         log_dir=tmp_path,
@@ -263,7 +274,7 @@ def test_bad_evidence_is_a_crash(tmp_path: Path, script: str, error: str) -> Non
         max_evidence_bytes=1000,
     )
     assert isinstance(r, Failed) and r.why == BadResult(error)
-    assert r.printed == {'a': 1.0}
+    assert r.printed == {}, 'a refused line counts nothing'
     assert not (tmp_path / 'evidence').exists()
 
 
@@ -286,3 +297,104 @@ def test_a_bad_units_file_of_metric_lines_is_a_crash(tmp_path: Path) -> None:
 def test_metric_lines_of_a_failed_command_are_kept(tmp_path: Path) -> None:
     r = evaluate(tmp_path, 'echo METRIC a=1; exit 2')
     assert isinstance(r, Failed) and r.printed == {'a': 1.0}
+
+
+SMOKE = Rung(name=RungName('smoke'), stop={'a': Tolerance(floor=0.5)}, evaluate=['smoke'])
+SCREEN = Rung(name=RungName('screen'), stop={'a': Tolerance(margin=0.1)})
+WIDE = Rung(name=RungName('wide'), stop={'b': Tolerance(fraction=0.1)})
+GATE = Gate(bar={RungName('screen'): {'a': 0.7}, RungName('wide'): {'b': 10}}, directions={'a': HIGHER, 'b': LOWER})
+
+
+def climb(
+    tmp_path: Path, script: str, step: Step, *, gate: Gate | None = GATE, timeout: float = 5, grace: float = 5
+) -> list[EvalResult]:
+    return run_evaluate(
+        ['sh', '-c', script],
+        cwd=tmp_path,
+        log_dir=tmp_path,
+        timeout=timeout,
+        required={'a'},
+        known=set(KNOWN),
+        max_evidence_bytes=1000,
+        step=step,
+        gate=gate,
+        stop_grace=grace,
+    )
+
+
+def rung(name: str, metrics: dict[str, float]) -> str:
+    return write({'rung': name, 'metrics': metrics})
+
+
+def test_a_climb_reports_each_rung_then_the_full_panel(tmp_path: Path) -> None:
+    script = (
+        f'{rung("screen", {"a": 0.65, "cost": 0.1})}; {rung("wide", {"b": 10.5})}; {write({"metrics": {"a": 0.7}})}'
+    )
+    results = climb(tmp_path, script, Step(rungs=(SCREEN, WIDE)))
+    assert [(type(r).__name__, getattr(r, 'rung', None), printed(r)) for r in results] == [
+        ('Measured', 'screen', {'a': 0.65, 'cost': 0.1}),
+        ('Measured', 'wide', {'b': 10.5}),
+        ('Measured', None, {'a': 0.7}),
+    ], 'each within its margin: the climb goes on'
+
+
+def test_a_stop_ends_the_command_and_its_later_lines_are_not_read(tmp_path: Path) -> None:
+    script = f'{rung("screen", {"a": 0.5})}; sleep 30; {write({"metrics": {"a": 0.9}})}'
+    started = time.monotonic()
+    results = climb(tmp_path, script, Step(rungs=(SCREEN, WIDE)))
+    assert results == [StoppedAt(RungName('screen'), 'a 0.5 vs 0.7 (-0.2; margin 0.1)', {'a': 0.5}, results[0].seconds)]
+    assert time.monotonic() - started < 5, 'SIGTERM ended it at once'
+
+
+def test_a_command_that_ignores_sigterm_is_killed_after_the_grace(tmp_path: Path) -> None:
+    script = f"trap '' TERM; {rung('screen', {'a': 0.5})}; sleep 30"
+    started = time.monotonic()
+    results = climb(tmp_path, script, Step(rungs=(SCREEN,)), grace=0.3)
+    assert isinstance(results[-1], StoppedAt)
+    assert time.monotonic() - started < 5, 'SIGKILL after 0.3 s'
+
+
+def test_without_a_gate_every_rung_is_climbed(tmp_path: Path) -> None:
+    script = f'{rung("screen", {"a": 0.1})}; {write({"metrics": {"a": 0.9}})}'
+    results = climb(tmp_path, script, Step(rungs=(SCREEN,)), gate=None)
+    assert [getattr(r, 'rung', None) for r in results] == ['screen', None]
+    assert all(isinstance(r, Measured) for r in results)
+
+
+def test_a_rung_that_the_bar_lacks_stops_only_on_a_floor(tmp_path: Path) -> None:
+    lacking = Gate(bar={}, directions=GATE.directions)
+    results = climb(
+        tmp_path, f'{rung("screen", {"a": 0.1})}; {write({"metrics": {"a": 0.9}})}', Step(rungs=(SCREEN,)), gate=lacking
+    )
+    assert isinstance(results[-1], Measured)
+
+
+def test_a_rungs_own_command_reports_one_line_without_its_name(tmp_path: Path) -> None:
+    results = climb(tmp_path, write({'metrics': {'a': 0.9}}), Step(last=SMOKE))
+    assert results == [Measured({'a': 0.9}, results[0].seconds, {}, Channel.RESULT, RungName('smoke'))]
+    results = climb(tmp_path, write({'metrics': {'a': 0.2}}), Step(last=SMOKE))
+    assert results == [StoppedAt(RungName('smoke'), 'a 0.2 past its floor 0.5', {'a': 0.2}, results[0].seconds)]
+
+
+@pytest.mark.parametrize(
+    ('script', 'error', 'rung_of_failure'),
+    [
+        (rung('wide', {'b': 1}), "it reported rung 'wide' where 'screen' comes", 'screen'),
+        (write({'metrics': {'a': 1}}), "it reported rung None where 'screen' comes", 'screen'),
+        (rung('screen', {'cost': 1}), None, 'screen'),
+        (rung('screen', {'a': 0.7}), 'it stopped after rung screen, before its last line', None),
+        ('echo METRIC a=1', 'a ladder reports its rungs on PILOOP_RESULT_FILE, not as METRIC lines', 'screen'),
+    ],
+)
+def test_a_climb_that_breaks_the_order_or_lacks_a_stops_metric_fails(
+    tmp_path: Path, script: str, error: str | None, rung_of_failure: str | None
+) -> None:
+    *_, last = climb(tmp_path, script, Step(rungs=(SCREEN,)))
+    assert isinstance(last, Failed) and last.rung == rung_of_failure
+    assert last.why == (BadResult(error) if error is not None else MissingMetrics(('a',)))
+
+
+def test_a_crash_after_a_rung_keeps_the_rung_and_fails_the_next(tmp_path: Path) -> None:
+    results = climb(tmp_path, f'{rung("screen", {"a": 0.7, "cost": 1})}; exit 3', Step(rungs=(SCREEN, WIDE)))
+    assert [type(r) for r in results] == [Measured, Failed]
+    assert isinstance(results[1], Failed) and (results[1].rung, results[1].error) == ('wide', 'evaluate exit 3: ')

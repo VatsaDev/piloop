@@ -81,7 +81,7 @@ from piloop.plugins.role.watchdog import WatchdogRole
 from piloop.plugins.role.orchestrator import OrchestratorRole
 
 from piloop.plugins.verdict_rule.contract import VERDICT_RULES, VerdictRule, Case
-from piloop.plugins.verdict_rule.contract import Criterion, Side
+from piloop.plugins.verdict_rule.contract import Criterion, Side, Stopped
 from piloop.plugins.metric import Direction
 from piloop.plugins.verdict_rule.contract import Judgement, Outcome
 from piloop.plugins.verdict_rule.contract import Node, Trunk, Branch, Imported
@@ -120,6 +120,8 @@ from piloop.plugins.executor.contract import EXECUTORS, Executor, ExecutorConfig
 from piloop.plugins.executor.contract import Results, Settled
 from piloop.plugins.executor.contract import AgentJob, EvaluationJob, LeftJob, Resume
 from piloop.plugins.executor.contract import AgentReport, EvaluationReport, Sample
+from piloop.config import Rung, Tolerance
+from piloop.scoring.ladder import Gate
 from piloop.plugins.executor.contract import AgentFinished, AgentNotStarted, HarnessSession
 from piloop.plugins.executor.contract import AgentKey, EvaluationKey, JobKey
 from piloop.plugins.executor.contract import key_of, Capacity, Prompt

@@ -104,7 +104,7 @@ Before you trust the results:
 WITH s AS (SELECT c.id, c.run_id, c.parent_id, c.verdict, c.created_at,
                   AVG(json_extract(m.metrics, '$.<m>')) AS score, COUNT(*) AS n
            FROM candidates c JOIN measurements m ON m.candidate_id = c.id
-           WHERE c.campaign_id = <p> AND c.origin != 'reference' AND m.error IS NULL
+           WHERE c.campaign_id = <p> AND c.origin != 'reference' AND m.error IS NULL AND m.rung IS NULL
              AND m.evaluator_id = (SELECT evaluator_id FROM campaigns WHERE id = <p>)
            GROUP BY c.id)
 SELECT *, MAX(score) OVER (ORDER BY created_at ROWS UNBOUNDED PRECEDING) AS best FROM s ORDER BY created_at;
@@ -124,7 +124,7 @@ WHERE c.campaign_id = <p> AND c.verdict = 'keep' AND json_extract(m.metrics, '$.
 -- Selection noise: spread among the candidates of one run (SQLite has no STDEV)
 SELECT run_id, COUNT(*) n, AVG(s) mean, SQRT(AVG(s*s) - AVG(s)*AVG(s)) sd, MIN(s), MAX(s)
 FROM (SELECT c.run_id, json_extract(m.metrics, '$.<m>') s FROM candidates c
-      JOIN measurements m ON m.candidate_id = c.id WHERE c.campaign_id = <p> AND m.error IS NULL
+      JOIN measurements m ON m.candidate_id = c.id WHERE c.campaign_id = <p> AND m.error IS NULL AND m.rung IS NULL
         AND m.evaluator_id = (SELECT evaluator_id FROM campaigns WHERE id = <p>)) GROUP BY run_id HAVING n > 3;
 
 -- Repeat measurements of one tree (double evaluation) and their cost

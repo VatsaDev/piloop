@@ -13,7 +13,7 @@ from statistics import fmean
 from pydantic import Field
 
 from piloop.plugins.metric import Direction, number
-from piloop.plugins.verdict_rule.contract import Case, Criterion, Judgement, Outcome, Side, VerdictRule
+from piloop.plugins.verdict_rule.contract import Case, Criterion, Judgement, Outcome, Side, Stopped, VerdictRule
 
 RESAMPLES = 4000
 """Bootstrap resamples per comparison. With 4000, the 5% quantile changes by much less than one unit between seeds."""
@@ -137,7 +137,7 @@ class Bootstrap(VerdictRule):
 
         The rules apply in this order:
 
-        1. No primary value is ``crash``.
+        1. No primary value is ``discard`` after a stop at a rung of the ladder (``Side.stopped``), else ``crash``.
         2. A guardrail past its floor is ``discard``.
         3. A bar with no score is ``keep``.
         4. A primary that did not go up is ``discard``.
@@ -149,12 +149,17 @@ class Bootstrap(VerdictRule):
         keep's reason names every guardrail.
         """
         primary, mine, theirs = case.primary, case.candidate.means, case.bar.means
-        if primary.name not in mine:
-            return Judgement(Outcome.CRASH, 'no successful measurement')
+        match primary.name in mine, case.candidate.stopped:
+            case False, Stopped(rung=rung, reason=why):
+                return Judgement(Outcome.DISCARD, f'stopped at {rung}: {why}')
+            case False, None:
+                return Judgement(Outcome.CRASH, 'no successful measurement')
+            case _:
+                pass
         floors = {
             m.name: f'{m.name} {number(mine[m.name])} past its floor {number(m.floor)}'
             for m in case.guardrails
-            if m.floor is not None and m.name in mine and m.direction.better(m.floor, mine[m.name])
+            if m.floor is not None and m.name in mine and m.past_floor(mine[m.name])
         }
         floored = 'floor: ' + '; '.join(floors.values())
         if primary.name not in theirs:
@@ -215,8 +220,7 @@ def _guardrails(case: Case, confidence: float) -> list[tuple[Criterion, str, boo
             found.append((m, f'{m.name} unmeasured', True))
             continue
         g = _compare(case, m, confidence)
-        margin = m.margin or 0
-        breached = g.worst < -margin
-        text = f'{g.text(confidence)} {"beyond" if breached else "within"} its margin {number(margin)}'
+        breached = g.worst < -m.allowed(g.theirs)
+        text = f'{g.text(confidence)} {"beyond" if breached else "within"} its {m.limit()}'
         found.append((m, text, breached))
     return found

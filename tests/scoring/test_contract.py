@@ -98,7 +98,7 @@ def test_a_result_is_one_json_line_of_finite_metrics_units_and_evidence() -> Non
 
 def test_a_failed_or_incomplete_evaluation_gives_an_error(tmp_path: Path) -> None:
     def evaluate(script: str) -> tuple[dict[str, float], str | None]:
-        r = run_evaluate(
+        [r] = run_evaluate(
             ['sh', '-c', script],
             cwd=tmp_path,
             log_dir=tmp_path,
@@ -107,11 +107,8 @@ def test_a_failed_or_incomplete_evaluation_gives_an_error(tmp_path: Path) -> Non
             known={'errors', 'seconds'},
             max_evidence_bytes=0,
         )
-        match r:
-            case Measured(metrics=metrics):
-                return metrics, None
-            case Failed() as failed:
-                return failed.printed, failed.error
+        assert isinstance(r, Measured | Failed), 'no ladder: no rung to stop at'
+        return (r.metrics, None) if isinstance(r, Measured) else (r.printed, r.error)
 
     def write(metrics: dict[str, float]) -> str:
         return f"printf '%s\\n' '{json.dumps({'metrics': metrics})}' >> \"$PILOOP_RESULT_FILE\""

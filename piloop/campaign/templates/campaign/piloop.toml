@@ -189,8 +189,14 @@ role = "primary"                          # primary: must beat the head · guard
 # direction = "lower"
 # role = "guardrail"
 # margin = 20                             # in the metric's own units, compared with the run's bar
+# fraction = 0.1                         # instead of margin: a fraction of the bar's value (0.1 = 10%)
 # floor = 500                             # optional hard limit on the value
 # repeats = 3                             # a noisy metric (a time): each candidate runs 3 times next to its bar
+
+# [[ladder]]                             # a rung that a run's own version climbs before the full panel, cheapest first
+# name = "screen"                         # evaluate reports it first, as a line with "rung": "screen"
+# stop = { score = { margin = 0.05 } }    # when the climb stops here, with a guardrail's keys: floor, margin, fraction
+# evaluate = ["uv", "run", "python", "smoke.py"]  # optional: a command of its own that reports this rung; such rungs come first
 
 # [tracks.<name>]                         # experimental: one table for each track when several metrics are primary
 # share = 1                               # the fraction of each role's run slots for this track; shares sum to 1

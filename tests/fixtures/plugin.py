@@ -227,3 +227,13 @@ class Astray(Bootstrap):
 
     def head(self, trunk: Sequence[Node]) -> CandidateId | None:
         return CandidateId(10**6)
+
+
+class StopIsInteresting(Bootstrap):
+    """``stop_is_interesting``: the built-in rule, but a candidate whose climb stopped at a rung is ``interesting``."""
+
+    def decide(self, case: Case) -> Judgement:
+        stopped = case.candidate.stopped
+        if stopped is not None and case.primary.name not in case.candidate.means:
+            return Judgement(Outcome.INTERESTING, f'stopped at {stopped.rung}, worth a full look: {stopped.reason}')
+        return super().decide(case)

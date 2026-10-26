@@ -4,7 +4,7 @@ from piloop.api.views import Lines, Rendered
 from piloop.db.models import Candidate
 from piloop.plugins.section.contract import Rendering, Section, Surface
 from piloop.reports.overview import minutes
-from piloop.scoring.ledger import metrics, track_of
+from piloop.scoring.ledger import full, metrics, track_of
 from piloop.text import age
 
 REFS_SHOWN = 8
@@ -34,7 +34,7 @@ class SameAsParent(Section):
                 continue
             found.append(f'candidate#{c.id}')
             if latest is None:
-                rows = [m for m in c.measurements if m.evaluator_id == evaluator_id and m.error is None]
+                rows = [m for m in c.measurements if m.evaluator_id == evaluator_id and full(m)]
                 others = [name for name in mine if name != primary]
                 same = sum(mine[name] == theirs.get(name) for name in others)
                 at = min(m.created_at for m in rows)

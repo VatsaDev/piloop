@@ -39,6 +39,7 @@ from piloop.plugins.role.contract import Files
 from piloop.runtime.factory import handle_for, runtime_for
 from piloop.scoring.ledger import (
     baseline,
+    full,
     head,
     keeps,
     references,
@@ -228,8 +229,8 @@ def scored(c: Candidate, evaluator_id: EvaluatorId | None, primary: Metric) -> t
 
 
 def known(c: Candidate) -> datetime:
-    """Return the time of the first successful measurement of the candidate, else its creation time."""
-    return min((m.created_at for m in c.measurements if m.error is None), default=c.created_at)
+    """Return the time of the first ``full`` measurement of the candidate, else its creation time."""
+    return min((m.created_at for m in c.measurements if full(m)), default=c.created_at)
 
 
 def latest_events(s: Session, campaign: Campaign, limit: int) -> Sequence[Event]:

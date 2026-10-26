@@ -328,7 +328,7 @@ def register(db: Database, campaign_path: Path) -> Campaign:
     cfg = load_campaign_config(campaign_path)
     repo = Repo(campaign_path)
     sha = repo.head.commit.hexsha
-    result = run_evaluate(
+    [result] = run_evaluate(
         cfg.evaluate,
         cwd=campaign_path,
         log_dir=campaign_path.parent,

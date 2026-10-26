@@ -28,6 +28,7 @@ LEAVES: dict[str, frozenset[str] | None] = {
     'db/models.py': None,
     'ids.py': None,
     'db/migrations/versions/*.py': None,
+    'plugins/campaign_type/*/migrations/*.py': None,
     'config.py': frozenset({'subprocess', 'orchestrator'}),
     'actor.py': frozenset({'orchestrator'}),
     'daemon/api.py': frozenset({'news'}),
@@ -43,8 +44,8 @@ LEAVES: dict[str, frozenset[str] | None] = {
 """The files that may name entries, and which ones (None: any). The reasons:
 
 - The harnesses (``plugins/harness/``), the triggers (``plugins/trigger/``) and ``ids.py`` (the built-in roles) define
-  the entries. The migrations are history.
-- ``db/models.py``: the states ``seed`` and ``stopped``, which share a name with a trigger.
+  the entries. The migrations, core's and each campaign type's, are history.
+- ``db/models.py``: the states ``seed`` and ``stopped``, and ``measurements.stopped``, which share a name with a trigger.
 - ``config.py``: the default of ``runtime``, and ``orchestrator`` among the names that sign writes.
 - ``actor.py``: the outside orchestrator, ``orchestrator``, one party with the agents of the role.
 - ``daemon/api.py``: ``news``, the operation id of the route that ``piloop inbox wait`` reads.

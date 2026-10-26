@@ -29,6 +29,7 @@ section.
 | `harness` | dict\[string, object\] | `{"claude": {}, "codex": {}, "pi": {}}` | `[harness.<name>]`: the table of each harness over its defaults: the built-in harnesses (`pi`, `claude`, `codex`), those that packages add, and new ones. A table with a new name and `provider = "<harness>"` is that harness over its defaults, with another name; without `provider`, it runs its argv and does nothing else. Built in: `claude`, `codex`, `pi`. |
 | `max_concurrent` | dict\[string, integer\] | `{}` | The maximum number of agents of one harness, across all roles of the campaign, that are started or queued to start. Example: `{claude = 2}` when the provider of its model limits the request rate. When it is the turn of a harness at its limit, the slot goes to the next harness of the rotation. An idea or request that pins that harness waits. When unset, only the limits of the roles apply. |
 | `evaluate_timeout` | number | `600` | The number of seconds before the evaluate command is stopped. The evaluation is then a crash. |
+| `ladder` | list\[[Rung](#rung)\] | `[]` | `[[ladder]]`: the rungs that a run's evaluation of its own version climbs before the full panel, cheapest first. The climb stops at the first rung whose `stop` holds. A baseline, a head, a bar, a reference and a remeasure climb every rung and never stop. |
 | `roles` | dict\[string, object\] | `{}` | `[roles.<name>]`: the table of each role over its defaults: the built-in roles (implementer, watchdog, research, scout), the roles that packages add, and the roles that you define. |
 | `link` | list\[string\] | `[]` | Repo-relative paths, ignored by git, that piloop puts into every worktree read-only, for example data or virtual environments. Each job gets them as they are when it is made. |
 | `context` | list\[string\] | `[]` | Repo-relative files or globs (for example `docs/error-analysis-*.md`) that hold the campaign's analysis: error analyses, comparisons with a reference, evaluation reports. The research pack lists each one with its outline, newest first, so that every sweep that reads the pack reads them before it proposes work. |
@@ -37,18 +38,33 @@ section.
 | `facts` | list\[object\] \| null | `null` | `[[facts]]`: where the campaign's facts come from, which its stop rule and its sections read: a list of `{ provider = "<source>", ... }` entries. When unset, every installed source that is on by default: `campaign`, the hours and tokens of any campaign, and `optimization`, its research. A list that adds a source lists those too, to keep their facts. |
 | `plugins` | dict\[string, object\] | `{}` | `[plugins.<capability>]`: the provider of each capability of the campaign, by its name (`provider`), and its parameters, the other keys of the table. A capability without a table, or a table without `provider`, has its default provider. |
 
+## Tolerance
+
+How far a metric may go: never past `floor`, nor worse than the bar by more than `margin` or `fraction`.
+
+A guardrail has one, and so has each stop of a rung of the ladder. A guardrail tests its regression on the confidence bound of the bootstrap when the evaluate command reports
+per-unit results or pairs, else on the aggregate. A stop of the ladder tests the rung's values.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `floor` | number \| null | `null` | Optional. The worst value allowed, whatever the bar: at least this for `higher`, at most this for `lower`. |
+| `margin` | number \| null | `null` | The largest regression from the bar, in the metric's own units: `20` for 20 ms. Not with `fraction`. |
+| `fraction` | number \| null | `null` | The largest regression from the bar, as a fraction of the bar's value: `0.1` for 10%. Not with `margin`. |
+
 ## Metric
 
 One metric that the evaluate command reports, by its name in `metrics` of its result.
+
+Its `floor`, `margin` and `fraction` (`Tolerance`) apply to a guardrail, which needs a `margin` or a
+`fraction`, and to each primary of a campaign with several tracks: when a candidate of another track is judged,
+that primary is a guardrail.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `name` | string | required | The name of the metric, as the evaluate command reports it. |
 | `direction` | `higher` \| `lower` | required | `higher` when a larger value is better, `lower` when a smaller value is better. |
-| `role` | `primary` \| `guardrail` \| `watch` | `"watch"` | How the metric affects the verdict. A `primary` metric must beat the bar with confidence for a `keep`, and each track has exactly one. A `guardrail` may get worse by at most its `margin`, or the candidate is at most `interesting`. It must never pass its `floor`, or the candidate is a `discard`. A `watch` metric is recorded and never affects the verdict. |
+| `role` | `primary` \| `guardrail` \| `watch` | `"watch"` | How the metric affects the verdict. A `primary` metric must beat the bar with confidence for a `keep`, and each track has exactly one. A `guardrail` may get worse by at most its `margin` or `fraction`, or the candidate is at most `interesting`. It must never pass its `floor`, or the candidate is a `discard`. A `watch` metric is recorded and never affects the verdict. |
 | `track` | string \| null | `null` | Primary metrics only. The name of the track (objective) that this metric is the primary of. When unset, the track has the metric's name, so a campaign with one primary needs nothing here. With several primaries, each one names its own track, and each track needs a `[tracks.<name>]` table. |
-| `margin` | number \| null | `null` | The largest regression from the bar that a candidate may show, in the metric's own units (an absolute value, not a fraction). Required on a guardrail. Also required on every primary of a campaign with several tracks: when a candidate of another track is judged, that primary is a guardrail. When the evaluate command writes per-unit results, the margin is tested on the confidence bound of the bootstrap. Otherwise it is tested on the aggregate. |
-| `floor` | number \| null | `null` | Optional. The worst value a candidate may have: at least this value for `higher`, at most this value for `lower`. It is a hard limit on the aggregate, independent of the bar, and only an edit of `piloop.toml` changes it. Allowed on a guardrail, and on a primary of a campaign with several tracks, where it applies to the candidates of the other tracks. |
 | `repeats` | integer \| null | `null` | Optional. Marks a noisy metric, such as a time: each evaluation of a run's candidate that this metric judges runs the evaluate command `repeats` times on the candidate and as many times on its bar, one after the other, and the verdict compares these pairs. Load then slows both sides alike. With several, the largest number counts. Allowed on a guardrail, and on a primary. |
 
 ## TrackConfig
@@ -99,6 +115,20 @@ the agent spent. Without either, no tokens are recorded.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `secret` | string | required | The name of the secret. |
+
+## Rung
+
+`[[ladder]]`: one rung of the evaluation ladder, which a run's evaluation climbs before the full panel.
+
+A rung without `evaluate` is reported by the evaluate command itself, as a line with `"rung": "<name>"` before
+its full result. A rung with `evaluate` runs that command first, which reports one line. After each rung, the
+climb of a run's own version stops when `stop` says so, and piloop ends the evaluate command.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `name` | string | required | The rung's name, which its line names and which the measurements of it record. |
+| `stop` | dict\[string, [Tolerance](#tolerance)\] | required | When the climb stops at this rung, by metric of `[[metrics]]`. Example: `{ accuracy = { margin = 0.03 }, latency_ms = { fraction = 0.1 } }`. |
+| `evaluate` | list\[string\] \| null | `null` | Optional. A command (argv) of its own, which runs before the evaluate command and reports this rung alone. The rungs that have one come first in `[[ladder]]`. |
 
 ## RoleConfig
 
@@ -422,6 +452,7 @@ stopped: <the condition>``.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `max_evidence_mb` | number | `10` | The evidence files that one run of the evaluate command may name in its result, in MB, all of them together. piloop keeps them with the evaluation's logs. A result with more is a crash. |
+| `stop_grace_seconds` | number | `10` | When a rung of the evaluation ladder stops a climb, piloop sends the evaluate command SIGTERM, then SIGKILL this many seconds later if it still runs. Put the command's cleanup in a SIGTERM handler. |
 
 ### `[plugins]`
 

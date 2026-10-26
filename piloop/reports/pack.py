@@ -137,7 +137,7 @@ def _metrics(s: Session, campaign: Campaign, cfg: CampaignConfig, table_box: box
                 else []
             ),
             str(m.direction),
-            _num(m.margin),
+            _num(m.margin) if m.fraction is None else f'{m.fraction:.0%} of the bar',
             _num(m.floor),
             _num(a),
             _num(b),

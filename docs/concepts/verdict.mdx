@@ -41,18 +41,18 @@ repeats = 3       # a time: measure it 3 times next to the bar
 | Verdict | When |
 |---|---|
 | `keep` | The primary beat the bar with confidence, and every guardrail held. On the trunk, it is the new head. |
-| `interesting` | The primary improved without enough confidence, or a guardrail got worse by more than its margin. |
-| `discard` | The primary did not improve, or a guardrail went past its floor. |
+| `interesting` | The primary improved without enough confidence, or a guardrail got worse by more than its `margin` or `fraction`. |
+| `discard` | The primary did not improve, a guardrail went past its floor, or its climb [stopped at a rung](/concepts/campaigns#the-evaluation-ladder). |
 | `crash` | No successful measurement: the evaluate command failed, timed out, or missed a metric. |
 
 The rule, in order:
 
-1. No value for the primary: `crash`.
+1. No value for the primary: `discard` when its climb stopped at a rung, else `crash`.
 2. A guardrail past its `floor`: `discard`.
 3. The bar has no score under the current evaluator: `keep`.
 4. The primary is not better than the bar: `discard`.
 5. The primary's worst case at the `confidence` level is not a gain: `interesting`.
-6. A guardrail's worst case is worse than the bar by more than its `margin`: `interesting`.
+6. A guardrail's worst case is worse than the bar by more than its `margin`, or than its `fraction` of the bar's value: `interesting`.
 7. Otherwise: `keep`.
 
 The reason names every guardrail past its floor or margin, whatever rule decided. A candidate whose values equal its

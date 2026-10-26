@@ -275,6 +275,8 @@ erDiagram
         varchar error
         double seconds
         integer pair_id FK
+        varchar rung
+        varchar stopped
         datetime created_at
     }
     campaigns |o--o{ campaigns : "parent_id"

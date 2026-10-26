@@ -10,7 +10,7 @@ import signal
 import subprocess
 import sys
 import threading
-from collections.abc import Collection
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -111,11 +111,13 @@ class ResultPipe:
     child that opens and closes the path for each line closes it, nor when no child has opened it yet. ``close`` ends
     the stream with a line of its own that no child can guess: what the child wrote before is read, and a line that
     comes later is not. Call it after the child exited. A line that lacks its final newline at the end counts as a line.
+    ``on_line`` sees each line as it is read, in the reader's thread.
     """
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, on_line: Callable[[str], None] = lambda _line: None) -> None:
         os.mkfifo(path, 0o600)
         self.path = path
+        self._on_line = on_line
         self._read = os.open(path, os.O_RDONLY | os.O_NONBLOCK)  # opening without a writer would wait
         self._hold = os.open(path, os.O_WRONLY)
         os.set_blocking(self._read, True)
@@ -148,7 +150,9 @@ class ResultPipe:
                 if line == self._end:
                     return
                 if line.strip():
-                    self._lines.append(line.decode(errors='replace'))
+                    text = line.decode(errors='replace')
+                    self._lines.append(text)
+                    self._on_line(text)
 
 
 def withhold(names: Collection[str]) -> None:

@@ -35,7 +35,7 @@ from pydantic_settings import (
 )
 
 from piloop import deprecated
-from piloop.ids import IMPLEMENTER, ROLE_NAME, RoleName, TrackName
+from piloop.ids import IMPLEMENTER, ROLE_NAME, RoleName, RungName, TrackName
 from piloop.mcp import EnvName, McpServer, ServerName, env_names
 from piloop.plugins.fact_source.contract import FACT_SOURCES, FactSource, FactSourceEntry, sources
 from piloop.plugins.harness.contract import Harness, Harnesses, defaults
@@ -60,10 +60,46 @@ class MetricRole(StrEnum):
     WATCH = 'watch'
 
 
-class Metric(BaseModel):
-    """One metric that the evaluate command reports, by its name in ``metrics`` of its result."""
+class Tolerance(BaseModel):
+    """How far a metric may go: never past ``floor``, nor worse than the bar by more than ``margin`` or ``fraction``.
+
+    A guardrail has one, and so has each stop of a rung of the ladder. A guardrail tests its regression on the confidence bound of the bootstrap when the evaluate command reports
+    per-unit results or pairs, else on the aggregate. A stop of the ladder tests the rung's values.
+    """
 
     model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
+
+    floor: float | None = None
+    """Optional. The worst value allowed, whatever the bar: at least this for ``higher``, at most this for ``lower``."""
+    margin: float | None = Field(default=None, ge=0)
+    """The largest regression from the bar, in the metric's own units: ``20`` for 20 ms. Not with ``fraction``."""
+    fraction: float | None = Field(default=None, gt=0)
+    """The largest regression from the bar, as a fraction of the bar's value: ``0.1`` for 10%. Not with ``margin``."""
+
+    @model_validator(mode='after')
+    def _one_regression(self) -> Self:
+        if self.margin is not None and self.fraction is not None:
+            raise ValueError('set margin or fraction, not both')
+        return self
+
+    @property
+    def regression(self) -> bool:
+        """Whether it limits the regression from the bar: it has a ``margin`` or a ``fraction``."""
+        return self.margin is not None or self.fraction is not None
+
+    @property
+    def empty(self) -> bool:
+        """Whether it limits nothing."""
+        return not self.regression and self.floor is None
+
+
+class Metric(Tolerance):
+    """One metric that the evaluate command reports, by its name in ``metrics`` of its result.
+
+    Its ``floor``, ``margin`` and ``fraction`` (``Tolerance``) apply to a guardrail, which needs a ``margin`` or a
+    ``fraction``, and to each primary of a campaign with several tracks: when a candidate of another track is judged,
+    that primary is a guardrail.
+    """
 
     name: str
     """The name of the metric, as the evaluate command reports it."""
@@ -71,24 +107,13 @@ class Metric(BaseModel):
     """``higher`` when a larger value is better, ``lower`` when a smaller value is better."""
     role: MetricRole = MetricRole.WATCH
     """How the metric affects the verdict. A ``primary`` metric must beat the bar with confidence for a ``keep``, and
-    each track has exactly one. A ``guardrail`` may get worse by at most its ``margin``, or the candidate is at most
+    each track has exactly one. A ``guardrail`` may get worse by at most its ``margin`` or ``fraction``, or the candidate is at most
     ``interesting``. It must never pass its ``floor``, or the candidate is a ``discard``. A ``watch`` metric is
     recorded and never affects the verdict."""
     track: TrackName | None = None
     """Primary metrics only. The name of the track (objective) that this metric is the primary of. When unset, the
     track has the metric's name, so a campaign with one primary needs nothing here. With several primaries, each one
     names its own track, and each track needs a ``[tracks.<name>]`` table."""
-    margin: float | None = Field(default=None, ge=0)
-    """The largest regression from the bar that a candidate may show, in the metric's own units (an absolute value,
-    not a fraction). Required on a guardrail. Also required on every primary of a campaign with several tracks: when a
-    candidate of another track is judged, that primary is a guardrail. When the evaluate command writes per-unit
-    results, the margin is tested on the confidence bound of the bootstrap. Otherwise it is tested on the aggregate."""
-    floor: float | None = None
-    """Optional. The worst value a candidate may have: at least this value for ``higher``, at most this value for
-    ``lower``. It is a hard limit on the aggregate, independent of the bar, and only an edit of ``piloop.toml`` changes
-    it. Allowed on a guardrail, and on a primary of a campaign with several tracks, where it applies to the candidates
-    of the other tracks."""
-
     repeats: int | None = Field(default=None, ge=1)
     """Optional. Marks a noisy metric, such as a time: each evaluation of a run's candidate that this metric judges runs
     the evaluate command ``repeats`` times on the candidate and as many times on its bar, one after the other, and the
@@ -97,12 +122,12 @@ class Metric(BaseModel):
 
     @model_validator(mode='after')
     def _check(self) -> Self:
-        if self.role is MetricRole.GUARDRAIL and self.margin is None:
-            raise ValueError(f'guardrail {self.name!r} needs a margin')
+        if self.role is MetricRole.GUARDRAIL and not self.regression:
+            raise ValueError(f'guardrail {self.name!r} needs a margin or a fraction')
         if self.role is MetricRole.WATCH and self.repeats is not None:
             raise ValueError(f'{self.name!r}: repeats applies to primaries and guardrails only')
-        if self.role is MetricRole.WATCH and (self.margin is not None or self.floor is not None):
-            raise ValueError(f'{self.name!r}: margin and floor apply to guardrails and primaries only')
+        if self.role is MetricRole.WATCH and not self.empty:
+            raise ValueError(f'{self.name!r}: floor, margin and fraction apply to guardrails and primaries only')
         if self.role is not MetricRole.PRIMARY and self.track is not None:
             raise ValueError(f'{self.name!r}: track applies to primaries only')
         return self
@@ -119,6 +144,32 @@ class Metric(BaseModel):
     def gain(self, a: float, b: float) -> float:
         """How much better ``a`` is than ``b``, in the metric's units. Positive when ``a`` is better."""
         return self.direction.gain(a, b)
+
+
+class Rung(BaseModel):
+    """``[[ladder]]``: one rung of the evaluation ladder, which a run's evaluation climbs before the full panel.
+
+    A rung without ``evaluate`` is reported by the evaluate command itself, as a line with ``"rung": "<name>"`` before
+    its full result. A rung with ``evaluate`` runs that command first, which reports one line. After each rung, the
+    climb of a run's own version stops when ``stop`` says so, and piloop ends the evaluate command.
+    """
+
+    model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
+
+    name: RungName = Field(pattern=r'^[a-z][a-z0-9_-]{0,31}$')
+    """The rung's name, which its line names and which the measurements of it record."""
+    stop: dict[str, Tolerance] = Field(min_length=1)
+    """When the climb stops at this rung, by metric of ``[[metrics]]``. Example:
+    ``{ accuracy = { margin = 0.03 }, latency_ms = { fraction = 0.1 } }``."""
+    evaluate: list[str] | None = Field(default=None, min_length=1)
+    """Optional. A command (argv) of its own, which runs before the evaluate command and reports this rung alone. The
+    rungs that have one come first in ``[[ladder]]``."""
+
+    @model_validator(mode='after')
+    def _each_stop_limits(self) -> Self:
+        if empty := sorted(name for name, test in self.stop.items() if test.empty):
+            raise ValueError(f'stop of {empty}: set floor, margin or fraction')
+        return self
 
 
 class TrackConfig(BaseModel):
@@ -267,6 +318,10 @@ class CampaignConfig(BaseModel):
     waits. When unset, only the limits of the roles apply."""
     evaluate_timeout: float = 600
     """The number of seconds before the evaluate command is stopped. The evaluation is then a crash."""
+    ladder: list[Rung] = []
+    """``[[ladder]]``: the rungs that a run's evaluation of its own version climbs before the full panel, cheapest
+    first. The climb stops at the first rung whose ``stop`` holds. A baseline, a head, a bar, a reference and a
+    remeasure climb every rung and never stop."""
     roles: Roles = Field(default={}, validate_default=True)
     """``[roles.<name>]``: the table of each role over its defaults: the built-in roles (implementer, watchdog,
     research, scout), the roles that packages add, and the roles that you define."""
@@ -294,6 +349,7 @@ class CampaignConfig(BaseModel):
     @model_validator(mode='after')
     def _check(self) -> Self:
         self._check_tracks()
+        self._check_ladder()
         self._check_facts()
         self._check_stop_rule()
         self._check_harnesses(self.harnesses, self.model, 'campaign')
@@ -310,6 +366,19 @@ class CampaignConfig(BaseModel):
             if Path(rel).is_absolute() or '..' in Path(rel).parts:
                 raise ValueError(f'{rel!r} must be a relative path inside the repo')
         return self
+
+    def _check_ladder(self) -> None:
+        """Each rung has its own name, stops on metrics of ``[[metrics]]``, and the rungs with a command come first."""
+        names = [rung.name for rung in self.ladder]
+        if repeated := sorted({n for n in names if names.count(n) > 1}):
+            raise ValueError(f'ladder: rungs {repeated} appear more than once')
+        known = {m.name for m in self.metrics}
+        for rung in self.ladder:
+            if unknown := sorted(rung.stop.keys() - known):
+                raise ValueError(f'ladder.{rung.name}.stop: {unknown} are not in [[metrics]]')
+        owned = [rung.evaluate is not None for rung in self.ladder]
+        if owned != sorted(owned, reverse=True):
+            raise ValueError('ladder: the rungs with their own evaluate come first')
 
     def _check_stop_rule(self) -> None:
         """Check that the stop rule serves this campaign (``StopRule.check_config``), and has a source for each fact."""
@@ -346,13 +415,17 @@ class CampaignConfig(BaseModel):
         if not primaries:
             raise ValueError('at least one metric must be primary')
         names = [m.track_name for m in primaries]
-        if len(primaries) == 1 and (primaries[0].margin is not None or primaries[0].floor is not None):
-            raise ValueError(f'{primaries[0].name!r}: margin and floor on a primary apply only with several tracks')
+        if len(primaries) == 1 and not primaries[0].empty:
+            raise ValueError(
+                f'{primaries[0].name!r}: floor, margin and fraction on a primary apply only with several tracks'
+            )
         if len(primaries) > 1:
             if dupes := sorted({n for n in names if names.count(n) > 1}):
                 raise ValueError(f'tracks {dupes} have more than one primary: give each primary its own track')
-            if unguarded := [m.name for m in primaries if m.margin is None]:
-                raise ValueError(f'primaries {unguarded} need a margin: with several tracks each guards the others')
+            if unguarded := [m.name for m in primaries if not m.regression]:
+                raise ValueError(
+                    f'primaries {unguarded} need a margin or a fraction: with several tracks each guards the others'
+                )
             if untabled := [n for n in names if n not in self.tracks]:
                 raise ValueError(f'tracks {untabled} need a [tracks.<name>] table with their share')
         if unknown := sorted(set(self.tracks) - set(names)):
@@ -459,18 +532,20 @@ class CampaignConfig(BaseModel):
     def evaluator_definition(self) -> dict[str, object]:
         """What decides a verdict's numbers: the evaluate command, the linked inputs and the judging metrics.
 
-        ``judging`` has the name and direction of each primary and guardrail, by name.
-        A watch metric never decides a verdict, so adding, removing or redirecting one measures nothing again: the
+        ``judging`` has the name and direction of each primary and guardrail, by name. ``ladder``, only when there is
+        one, has each rung's name and command: a rung's values compare only under the same rungs. Its ``stop`` is the
+        policy of the climb, as a margin is of the verdict. A watch metric never decides a verdict, so adding, removing or redirecting one measures nothing again: the
         older measurements just lack it. Promoting a watch metric to a guardrail, or demoting a guardrail, does. Roles
         among the judging metrics, margins, floors and the verdict rule are the policy of the verdict, not part of the
         score.
         """
         judging = sorted((m for m in self.metrics if m.role is not MetricRole.WATCH), key=attrgetter('name'))
+        rungs = [{'name': rung.name, 'evaluate': rung.evaluate} for rung in self.ladder]
         return {
             'evaluate': list(self.evaluate),
             'link': list(self.link),
             'judging': [{'name': m.name, 'direction': m.direction.value} for m in judging],
-        }
+        } | ({'ladder': rungs} if rungs else {})
 
     @property
     def evaluator_key(self) -> str:

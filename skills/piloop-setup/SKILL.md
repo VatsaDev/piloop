@@ -160,6 +160,8 @@ Wire the existing measurement, or write `evaluate.py`. The contract:
 - It exits 0. A non-zero exit is recorded as a crash.
 - It is deterministic: fixed seeds and splits.
 - When an evaluation costs money, it reports `eval_cost_usd` as a watch metric, also when it fails.
+- When the full panel is expensive, a `[[ladder]]` rung that it reports first can stop a bad commit early:
+  https://piloop.autoresearch.inc/concepts/campaigns#the-evaluation-ladder
 - In `brief.md`, tell implementers to compare a local check with the head's stored scores, not to measure the head
   again.
 

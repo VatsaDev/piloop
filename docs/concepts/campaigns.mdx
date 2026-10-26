@@ -86,13 +86,92 @@ still works, and piloop posts one inbox note for its evaluator.
 
 ## Metrics
 
+```toml
+[[metrics]]
+name = "bytes"
+direction = "lower"
+role = "primary"
+
+[[metrics]]
+name = "seconds"
+direction = "lower"
+role = "guardrail"
+fraction = 0.10    # at most 10% slower than the bar for each keep
+floor = 120        # and never slower than 120 s
+```
+
 | `role` | How the [verdict](/concepts/verdict) uses it |
 |---|---|
 | `primary` | The metric to improve. One per campaign, or one per [track](/concepts/tracks). |
-| `guardrail` | May get worse by at most `margin` for each keep, and never past `floor`. |
+| `guardrail` | May get worse than the bar by at most its tolerance for each keep, and never past `floor`. |
 | `watch` | Recorded only. |
 
-`direction` is `higher` or `lower`: which way is better.
+`direction` is `higher` or `lower`: which way is better. A **tolerance** is `floor`, plus one of `margin` and
+`fraction`. `margin` is in the metric's units: `margin = 60` allows 60 s more. `fraction` is of the bar's value:
+`fraction = 0.10` allows 10% more, whatever the bar's scale. The stops of the [ladder](#the-evaluation-ladder) take the
+same keys.
+
+## The evaluation ladder
+
+An evaluation ladder stops a bad candidate before the full panel. Each `[[ladder]]` table is a **rung**: a cheaper
+step that the evaluate command reports before its full result, and when the climb stops there:
+
+```toml
+evaluate = ["python3", "evaluate.py"]
+
+[[metrics]]
+name = "accuracy"
+direction = "higher"
+role = "primary"
+
+[[metrics]]
+name = "cost"
+direction = "lower"
+
+[[ladder]]
+name = "screen"
+stop = { accuracy = { margin = 0.05 } }
+```
+
+The evaluate command reports the rung, then extends it into the full panel, so no question is scored twice:
+
+```python
+done = score(PANEL[:50])
+report({"rung": "screen", "metrics": {"accuracy": sum(done) / len(done), "cost": 0.05}})
+done += score(PANEL[50:])
+report({"metrics": {"accuracy": sum(done) / len(done), "cost": 0.45}})
+```
+
+A run's commit scored 0.2 at the screen, where the baseline scored 1. piloop ended the command there:
+
+```bash
+piloop sql "SELECT candidate_id, rung, stopped, metrics FROM measurements"
+```
+
+```text
+┏━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ candidate_id ┃ rung   ┃ stopped                               ┃ metrics                         ┃
+┡━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ 1            │ screen │                                       │ {"accuracy": 1.0, "cost": 0.05} │
+│ 1            │        │                                       │ {"accuracy": 1.0, "cost": 0.45} │
+│ 2            │ screen │ accuracy 0.2 vs 1 (-0.8; margin 0.05) │ {"accuracy": 0.2, "cost": 0.05} │
+└──────────────┴────────┴───────────────────────────────────────┴─────────────────────────────────┘
+```
+
+The verdict of candidate#2 is `discard`: `stopped at screen: accuracy 0.2 vs 1 (-0.8; margin 0.05)`.
+
+- Each rung is a measurement with its `rung`, and only a measurement without one scores. Report each line's own
+  cost: piloop sums the rows.
+- `stop` gives a tolerance for metrics of `[[metrics]]`, with a guardrail's keys: past `floor`, or worse than the
+  [bar](/concepts/verdict#the-words) at the same rung by more than `margin` or `fraction`, the climb stops. Without
+  the bar's value at the rung, only `floor` stops.
+- Only a run's own commit can stop. The baseline, a head, a bar, a reference and `piloop candidate remeasure` climb
+  every rung, so every bar has a value at each rung.
+- At a stop, piloop sends the command SIGTERM, then SIGKILL `[evaluation] stop_grace_seconds` later, and reads no
+  more lines.
+- A rung with `evaluate` runs that command first, in the same worktree. It writes one line, without `rung`. Such rungs
+  come first in `[[ladder]]`.
+- A change to a rung's name or command, or a new rung, makes a new [evaluator](#evaluators). A change to `stop` does not.
 
 ## Per-unit results
 

@@ -29,7 +29,7 @@ from covalence import Cid
 from pydantic import SecretStr
 
 from piloop import deprecated
-from piloop.config import BRIEF_FILE, TRANSCRIPT
+from piloop.config import BRIEF_FILE, TRANSCRIPT, Rung
 from piloop.ids import CommentId
 from piloop.mcp import EnvName
 from piloop.otel import Span
@@ -62,9 +62,12 @@ from piloop.scoring.evaluate import (
     Killed,
     Measured,
     NotRun,
+    Step,
+    StoppedAt,
     printed,
     run_evaluate,
 )
+from piloop.scoring.ladder import Gate
 from piloop.settings import INPUTS_DIR
 from piloop.store.chunks import read as read_chunks
 from piloop.store.tree import Materialised, Seen, evict_unlinked, put_tree
@@ -526,18 +529,24 @@ def run_evaluation(job: EvaluationJob, control: Control, site: Site, span: Span)
 
     The order is candidate, bar, bar, candidate, candidate, bar (``order``). It stops at the first run that fails: a
     candidate that crashes once crashes again, and a pair needs both sides. The candidate runs first, so each job
-    measures it. Each run has its own worktree and logs, under ``<side>-<n>`` in the job's place, and the report names
-    the files of all of them.
+    measures it. Each run climbs the job's ladder (``_climb``): one sample for each rung, then one for the full panel.
+    Only the first run, on the candidate, runs the rungs that have a command of their own, and only it may stop at a
+    rung (``EvaluationJob.gate``), which ends the job too. Each run has its own worktree and logs, under
+    ``<side>-<n>`` in the job's place, and the report names the files of all of them.
     """
     samples: dict[Tree, list[Sample]] = {Tree.CANDIDATE: [], Tree.BAR: []}
-    for side in order(job.repeats, paired=job.bar is not None):
-        n = len(samples[side])
+    runs: dict[Tree, int] = {Tree.CANDIDATE: 0, Tree.BAR: 0}
+    for i, side in enumerate(order(job.repeats, paired=job.bar is not None)):
         artifact = job.artifact if side is Tree.CANDIDATE or job.bar is None else job.bar.artifact
-        one = job.model_copy(update={'artifact': artifact, 'place': f'{job.place}/{side}-{n}'})
-        result = sample(_evaluate(one, control, site, span))
-        span.set(error=result.error)
-        samples[side].append(result)
-        if result.error is not None or control.asked() or control.stopping():
+        one = job.model_copy(update={'artifact': artifact, 'place': f'{job.place}/{side}-{runs[side]}'})
+        runs[side] += 1
+        first = i == 0
+        own = tuple(r for r in job.ladder if r.evaluate is not None) if first else ()
+        climb = [sample(r) for r in _evaluate(one, control, site, span, own=own, gate=job.gate if first else None)]
+        last = climb[-1]
+        span.set(error=last.error, stopped=last.stopped)
+        samples[side].extend(climb)
+        if last.error is not None or last.stopped is not None or control.asked() or control.stopping():
             break
     return EvaluationReport(samples=samples[Tree.CANDIDATE], bar_samples=samples[Tree.BAR], files=site.files(job))
 
@@ -561,59 +570,83 @@ def order(repeats: int, *, paired: bool) -> list[Tree]:
     return [side for i in range(repeats) for side in pairs[i % 2]]
 
 
-def _evaluate(job: EvaluationJob, control: Control, site: Site, span: Span) -> EvalResult:
-    """Run the evaluator once on the job's tree.
+def _evaluate(
+    job: EvaluationJob, control: Control, site: Site, span: Span, *, own: tuple[Rung, ...], gate: Gate | None
+) -> list[EvalResult]:
+    """Climb the evaluator's ladder once on the job's tree (``_climb``).
 
-    An evaluate that another process killed, an agent's ``pkill -f`` say, measured nothing of the tree, so it runs
-    once more, in a new worktree. The executor's own kills (a cancel, its stop) are not run again.
+    An evaluate that another process killed, an agent's ``pkill -f`` say, measured nothing of the tree, so the climb
+    runs once more, in a new worktree. The executor's own kills (a cancel, its stop) are not run again.
     """
-    result = _evaluate_once(job, control, site, span)
-    match result:
-        case Failed(why=Killed() as killed) if killed.sent and not control.asked() and not control.stopping():
-            span.event('evaluation.retry', evaluation=job.evaluation, error=result.error)
-            result = _evaluate_once(job, control, site, span)
+    climb = _climb(job, control, site, span, own=own, gate=gate)
+    match climb[-1]:
+        case Failed(why=Killed() as killed) as failed if killed.sent and not control.asked() and not control.stopping():
+            span.event('evaluation.retry', evaluation=job.evaluation, error=failed.error)
+            climb = _climb(job, control, site, span, own=own, gate=gate)
         case _:
             pass
-    return result
+    return climb
 
 
 def sample(result: EvalResult) -> Sample:
-    """What the report says of one run of the evaluate command: what it measured, or why it failed."""
+    """What the report says of one line of the evaluate command: what it measured, where it stopped, or why it failed."""
     match result:
-        case Measured(metrics=metrics, seconds=seconds, units=units, channel=channel):
-            return Sample(metrics=metrics, seconds=seconds, error=None, units=units, channel=channel)
-        case Failed(seconds=seconds) as failed:
-            return Sample(metrics=failed.printed, seconds=seconds, error=failed.error)
+        case Measured(metrics=metrics, seconds=seconds, units=units, channel=channel, rung=rung):
+            return Sample(metrics=metrics, seconds=seconds, units=units, channel=channel, rung=rung)
+        case StoppedAt(rung=rung, reason=reason, metrics=metrics, seconds=seconds, units=units):
+            return Sample(metrics=metrics, seconds=seconds, units=units, rung=rung, stopped=reason)
+        case Failed(seconds=seconds, rung=rung) as failed:
+            return Sample(metrics=failed.printed, seconds=seconds, error=failed.error, rung=rung)
         case _:
             assert_never(result)
 
 
-def _evaluate_once(job: EvaluationJob, control: Control, site: Site, span: Span) -> EvalResult:
-    """Run the evaluate command in a new worktree, which is removed after. A failure to start is a crash.
+def _climb(
+    job: EvaluationJob, control: Control, site: Site, span: Span, *, own: tuple[Rung, ...], gate: Gate | None
+) -> list[EvalResult]:
+    """Climb the ladder in a new worktree, which is removed after: what each rung measured, then the full panel.
 
-    What it measured counts only if the linked inputs that it read still hold their blobs: a crash otherwise.
+    The rungs of ``own``, which have a command of their own, run first, each a run of its own. Then the evaluate
+    command reports the other rungs and the full panel. With ``gate``, a rung may stop the climb. The climb ends at the first rung
+    that stops it or fails. A failure to start is a crash. What it measured counts only if the linked inputs that it
+    read still hold their blobs: a crash otherwise.
     """
     log_dir, cwd = site.log_dir(job), site.cwd(job)
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
         links = _rebuilt(site.clones.checkout(job.artifact, cwd), span)
-        result = run_evaluate(
-            job.command,
-            cwd=cwd,
-            log_dir=log_dir,
-            timeout=job.timeout,
-            required=set(job.required),
-            known=set(job.known),
-            max_evidence_bytes=job.max_evidence_bytes,
-            track=lambda proc: _track(control, proc),
-        )
+
+        def run(command: list[str], step: Step, prefix: str) -> list[EvalResult]:
+            return run_evaluate(
+                command,
+                cwd=cwd,
+                log_dir=log_dir,
+                timeout=job.timeout,
+                required=set(job.required),
+                known=set(job.known),
+                max_evidence_bytes=job.max_evidence_bytes,
+                track=lambda proc: _track(control, proc),
+                step=step,
+                gate=gate,
+                stop_grace=job.stop_grace,
+                prefix=prefix,
+            )
+
+        climb: list[EvalResult] = []
+        for rung in own:
+            assert rung.evaluate is not None  # the rungs that have a command of their own
+            climb += run(rung.evaluate, Step(last=rung), f'eval-{rung.name}')
+            if not isinstance(climb[-1], Measured):
+                return climb
+        climb += run(job.command, Step(rungs=tuple(r for r in job.ladder if r.evaluate is None)), 'eval')
         if changed := sorted(rel for rel, copy in links.copies.items() if not copy.holds(cwd / rel)):
             span.event(INPUTS_CHANGED, evaluation=job.evaluation, paths=', '.join(changed[:SHOWN]))
-            return Failed(InputsChanged(tuple(changed[:SHOWN])), result.seconds, printed(result))
-        return result
+            last = climb[-1]
+            return [*climb[:-1], Failed(InputsChanged(tuple(changed[:SHOWN])), last.seconds, printed(last))]
+        return climb
     except Exception as e:
         span.error(e)
-        return Failed(NotRun(f'{type(e).__name__}: {e}'), 0.0)
+        return [Failed(NotRun(f'{type(e).__name__}: {e}'), 0.0)]
     finally:
         remove(job, site)
 

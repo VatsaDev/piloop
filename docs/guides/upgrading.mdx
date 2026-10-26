@@ -151,6 +151,13 @@ one. The [changelog](https://github.com/hiloopai/piloop/blob/main/CHANGELOG.md) 
 
 ## Upgrading to 0.4.0
 
+### Measurements of the evaluation ladder
+
+A campaign with a [`[[ladder]]`](/concepts/campaigns#the-evaluation-ladder) records each rung as a measurement with
+`measurements.rung`, and `measurements.stopped` where a climb stopped. Only a measurement whose `rung` is NULL scores:
+add `AND m.rung IS NULL` to your own SQL that averages `measurements.metrics`. The upgrade sets both to NULL on every
+earlier measurement.
+
 ### The evaluate command writes a result line
 
 The evaluate command writes its result as one JSON line to the pipe that `$PILOOP_RESULT_FILE` names, instead of

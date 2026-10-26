@@ -22,9 +22,9 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import assert_never
 
-from piloop.ids import CandidateId
+from piloop.ids import CandidateId, RungName
 from piloop.plugins.host import Capability, Choice, Parameters, Scope, Tier
-from piloop.plugins.metric import Direction
+from piloop.plugins.metric import Direction, number
 
 
 class Outcome(StrEnum):
@@ -48,6 +48,36 @@ class Criterion:
     """The largest regression from the bar that a guardrail may show, in the metric's units. None on a primary."""
     floor: float | None = None
     """The worst value that a candidate may have, whatever the bar, or None."""
+    fraction: float | None = None
+    """The largest regression from the bar that a guardrail may show, as a fraction of the bar's value. A guardrail
+    has a ``margin`` or a ``fraction``, never both."""
+
+    def allowed(self, bar: float) -> float:
+        """The largest regression from ``bar``, the bar's value, in the metric's units.
+
+        It is ``margin``, or ``fraction`` of ``|bar|``, or 0 without either.
+        """
+        return self.fraction * abs(bar) if self.fraction is not None else self.margin or 0.0
+
+    def limit(self) -> str:
+        """How a reason names the regression allowed: ``margin 20`` or ``fraction 0.1``."""
+        return (
+            f'fraction {number(self.fraction)}' if self.fraction is not None else f'margin {number(self.margin or 0)}'
+        )
+
+    def past_floor(self, value: float) -> bool:
+        """Whether ``value`` is past the floor, in the metric's direction."""
+        return self.floor is not None and self.direction.better(self.floor, value)
+
+
+@dataclass(frozen=True)
+class Stopped:
+    """Where a climb of the evaluation ladder stopped, before the full panel, and why: evidence, not a score."""
+
+    rung: RungName
+    """The rung of ``[[ladder]]`` where it stopped."""
+    reason: str
+    """The stop that held, such as ``accuracy 0.664 vs 0.702 (-0.038; margin 0.03)``."""
 
 
 @dataclass(frozen=True)
@@ -63,6 +93,10 @@ class Side:
     samples: dict[str, list[float]] = field(default_factory=dict)
     """The samples of each metric that ran in pairs with the other side's: the i-th of the candidate and the i-th of
     the bar ran one after the other, on one worker. Empty without pairs."""
+    stopped: Stopped | None = None
+    """Where its latest climb of the ladder stopped, if it stopped. ``means`` never include a rung."""
+    rungs: dict[RungName, dict[str, float]] = field(default_factory=dict)
+    """The mean of each metric at each rung of the ladder that it measured."""
 
 
 @dataclass(frozen=True)

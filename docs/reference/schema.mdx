@@ -463,8 +463,13 @@ CREATE TABLE measurements (
 	error VARCHAR,
 	seconds DOUBLE,
 	pair_id INTEGER,
+	rung VARCHAR,
+	stopped VARCHAR,
 	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
 	PRIMARY KEY (id),
+	CONSTRAINT "measurements.a stop is at a rung, with no error" CHECK (stopped IS NULL OR (rung IS NOT NULL AND error IS NULL)),
+	CONSTRAINT "measurements.rung must be a text value" CHECK (typeof(rung) IN ('text', 'null')),
+	CONSTRAINT "measurements.stopped must be a text value" CHECK (typeof(stopped) IN ('text', 'null')),
 	FOREIGN KEY(candidate_id) REFERENCES candidates (id) ON DELETE CASCADE,
 	FOREIGN KEY(evaluator_id) REFERENCES evaluators (id),
 	FOREIGN KEY(pair_id) REFERENCES measurements (id) ON DELETE SET NULL

@@ -30,9 +30,10 @@ from sqlalchemy.orm import Session
 from piloop import deprecated
 from piloop.actor import Agent
 from piloop.api.contract import Revealed
+from piloop.config import Rung
 from piloop.db.models import AgentSession, EventModel
 from piloop.db.session import Database
-from piloop.ids import AgentSessionId, CampaignId, CandidateId, CommentId, Revision, RunId
+from piloop.ids import AgentSessionId, CampaignId, CandidateId, CommentId, Revision, RungName, RunId
 from piloop.mcp import EnvName, McpServer
 from piloop.net.tokens import mint_agent
 from piloop.otel import Tracer
@@ -46,6 +47,7 @@ from piloop.plugins.secrets.contract import SecretsProvider, values
 from piloop.plugins.vcs.contract import VCS, Repository, Transfer, Vcs
 from piloop.proc import Channel
 from piloop.runtime.factory import RuntimeFactory
+from piloop.scoring.ladder import Gate
 from piloop.usage import Usage
 
 
@@ -244,6 +246,14 @@ class EvaluationJob(BaseModel):
     """Every metric that it may report: those of ``[[metrics]]``. A result with another is refused."""
     max_evidence_bytes: int = Field(ge=0)
     """The evidence files that one run may name, all together (``[evaluation] max_evidence_mb``)."""
+    ladder: list[Rung] = []
+    """The rungs that each run of the evaluator on the candidate climbs before the full panel (``[[ladder]]``)."""
+    gate: Gate | None = None
+    """Set: the first run on the candidate stops at the first rung whose ``stop`` holds. None: every run climbs every
+    rung."""
+    stop_grace: float = Field(default=0, ge=0)
+    """The seconds between the SIGTERM and the SIGKILL that end an evaluate command at a stop
+    (``[evaluation] stop_grace_seconds``)."""
     bar: Bar | None = None
     """The bar to run next to the candidate. None: the candidate alone."""
     repeats: int = Field(default=1, ge=1)
@@ -344,10 +354,17 @@ class Sample(BaseModel):
     units: dict[str, dict[str, float]] = Field(default_factory=dict)
     channel: Channel = Channel.RESULT
     """How the evaluate command reported it: a result, or ``METRIC`` lines until 0.4.0."""
+    rung: RungName | None = None
+    """The rung of the ladder that it measured. None for the full panel."""
+    stopped: str | None = None
+    """Why the climb stopped at ``rung``. None when it went on."""
 
 
 class EvaluationReport(BaseModel):
-    """What an evaluation measured, in the order of its runs. It stops at the first run that fails."""
+    """What an evaluation measured, in the order of its runs: each run's rungs, then its full panel.
+
+    It stops at the first run that fails or stops at a rung.
+    """
 
     kind: Literal['evaluation'] = 'evaluation'
     samples: list[Sample] = Field(min_length=1)

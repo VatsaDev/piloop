@@ -35,5 +35,6 @@ class Goal(Section):
 def _metric(m: Metric) -> str:
     """Format a primary metric as a guardrail of another track: ``accuracy, higher, margin 0.01, floor 0.8``."""
     margin = f', margin {metric(m.margin)}' if m.margin is not None else ''
+    margin += f', fraction {metric(m.fraction)}' if m.fraction is not None else ''
     floor = f', floor {metric(m.floor)}' if m.floor is not None else ''
     return f'{m.name}, {m.direction}{margin}{floor}'

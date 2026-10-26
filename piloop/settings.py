@@ -73,6 +73,10 @@ class EvaluationSettings(BaseModel):
     """The evidence files that one run of the evaluate command may name in its result, in MB, all of them together.
     piloop keeps them with the evaluation's logs. A result with more is a crash."""
 
+    stop_grace_seconds: float = Field(default=10, ge=0)
+    """When a rung of the evaluation ladder stops a climb, piloop sends the evaluate command SIGTERM, then SIGKILL this
+    many seconds later if it still runs. Put the command's cleanup in a SIGTERM handler."""
+
     @property
     def max_evidence_bytes(self) -> int:
         """``max_evidence_mb`` in bytes."""

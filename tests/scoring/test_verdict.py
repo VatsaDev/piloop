@@ -15,12 +15,12 @@ from sqlalchemy import Enum
 from piloop.actor import System
 from piloop.config import CampaignConfig, Metric, MetricRole, Track, TrackConfig
 from piloop.db.models import Candidate, Origin
-from piloop.ids import Cause, TrackName
+from piloop.ids import Cause, RungName, TrackName
 from piloop.plugins.host import data_errors
 from piloop.plugins.metric import Direction
 from piloop.plugins.verdict_rule import bootstrap as verdict_module
 from piloop.plugins.verdict_rule.bootstrap import Bootstrap, compare, lower_bound
-from piloop.plugins.verdict_rule.contract import VERDICT_RULES, Outcome, Side, VerdictRule
+from piloop.plugins.verdict_rule.contract import VERDICT_RULES, Outcome, Side, Stopped, VerdictRule
 from piloop.scoring import ledger
 from piloop.scoring.evaluate import Units
 from piloop.scoring.ledger import criterion
@@ -143,6 +143,19 @@ def test_a_crash_and_an_unscored_bar() -> None:
     )
 
 
+def test_a_climb_that_stopped_at_a_rung_is_a_discard_and_a_full_panel_outranks_it() -> None:
+    track, confidence = rule(config())
+    stopped = Stopped(RungName('screen'), 'accuracy 0.6 vs 0.7 (-0.1; margin 0.05)')
+    bar = Side(BAR, {'accuracy': 0.7}, {})
+    assert ledger.decide(Bootstrap(confidence=confidence), track, Side('c', {}, {}, stopped=stopped), bar) == (
+        Outcome.DISCARD,
+        'stopped at screen: accuracy 0.6 vs 0.7 (-0.1; margin 0.05)',
+    )
+    remeasured = Side('c', {'accuracy': 0.6}, {}, stopped=stopped)
+    assert ledger.decide(Bootstrap(confidence=confidence), track, remeasured, bar)[0] is Outcome.DISCARD
+    assert 'stopped' not in ledger.decide(Bootstrap(confidence=confidence), track, remeasured, bar)[1]
+
+
 COVERAGE = Metric(name='coverage', direction=Direction.HIGHER, role=MetricRole.GUARDRAIL, margin=10, floor=1000)
 ERRORS = Metric(name='errors', direction=Direction.LOWER, role=MetricRole.GUARDRAIL, margin=50, floor=450)
 
@@ -175,6 +188,21 @@ def test_a_guardrail_regression_within_its_margin_keeps_beyond_it_is_interesting
             Outcome.INTERESTING,
             'against candidate#73: accuracy 90 vs 80 (+10; aggregate: no per-unit results); guardrails: coverage 1009 vs 1020 (-11; aggregate: no per-unit results) beyond its margin 10; errors 351 vs 300 (+51; aggregate: no per-unit results) beyond its margin 50',
         )
+    )
+
+
+def test_a_guardrails_fraction_is_of_the_bars_value() -> None:
+    """``fraction = 0.1`` on errors at 300 allows 30 more: the same rule as a margin of 30, whatever the scale."""
+    relative = Metric(name='errors', direction=Direction.LOWER, role=MetricRole.GUARDRAIL, fraction=0.1)
+    theirs = {'accuracy': 80.0, 'errors': 300.0}
+    assert decide(*rule(config(relative)), {'accuracy': 90.0, 'errors': 330.0}, theirs, {}, {}, bar=BAR) == snapshot(
+        (
+            Outcome.KEEP,
+            'against candidate#73: accuracy 90 vs 80 (+10; aggregate: no per-unit results); guardrails: errors 330 vs 300 (+30; aggregate: no per-unit results) within its fraction 0.1',
+        )
+    )
+    assert decide(*rule(config(relative)), {'accuracy': 90.0, 'errors': 331.0}, theirs, {}, {}, bar=BAR)[0] is (
+        Outcome.INTERESTING
     )
 
 

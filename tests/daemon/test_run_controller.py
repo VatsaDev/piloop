@@ -439,11 +439,14 @@ def test_every_commit_of_a_run_is_a_candidate_before_the_first_is_measured(
         *,
         bar: CandidateId | None,
         repeats: int,
+        gate: CandidateId | None,
     ) -> bool:
         with db.session() as s:
             rows = s.scalars(select(Candidate).where(Candidate.run_id == run_id).order_by(Candidate.id)).all()
             seen.append([(c.summary, label(c), c.parent_id) for c in rows])
-        return measure(run, campaign_id, cfg, sha, candidate_id, evaluator_id, eval_dir, bar=bar, repeats=repeats)
+        return measure(
+            run, campaign_id, cfg, sha, candidate_id, evaluator_id, eval_dir, bar=bar, repeats=repeats, gate=gate
+        )
 
     monkeypatch.setattr(ex, '_measure', watched)
     execute(ex, db, run_id)
@@ -2977,10 +2980,13 @@ def test_a_merge_a_stop_left_unjudged_is_measured_and_judged_when_the_run_resume
         *,
         bar: CandidateId | None,
         repeats: int,
+        gate: CandidateId | None,
     ) -> bool:
         if candidate_id == merged_id:
             return False  # what a stop does to an evaluation in flight
-        return measure(run, campaign_id, cfg, sha, candidate_id, evaluator_id, eval_dir, bar=bar, repeats=repeats)
+        return measure(
+            run, campaign_id, cfg, sha, candidate_id, evaluator_id, eval_dir, bar=bar, repeats=repeats, gate=gate
+        )
 
     monkeypatch.setattr(ex, '_measure', stopped_at_the_merge)
     execute(ex, db, run_id)
