@@ -722,6 +722,13 @@ class Replied(View):
     comment: CommentView
 
 
+class Messaged(View):
+    """A message to a campaign's orchestrator, read at ``cursor``."""
+
+    cursor: int
+    comment: CommentView
+
+
 def thread_lines(thread: Thread, now: datetime) -> tuple[str, list[str]]:
     """``thread`` as ``piloop inbox show`` prints it: a title line, the body in full, then each linked comment, cut."""
     c = thread.comment

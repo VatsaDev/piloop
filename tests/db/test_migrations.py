@@ -1874,6 +1874,37 @@ def test_0057_a_built_in_harness_table_that_inherits_an_argv_with_mcp_inherits_i
         assert con.execute('SELECT config FROM campaigns').fetchall() == [(stored,)]
 
 
+def test_0058_admits_the_message_comment_kind_keeps_the_search_and_downgrades_messages_to_notes(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0057')
+    insert = (
+        "INSERT INTO comments (target_kind, target_id, author, kind, priority, body) VALUES ('campaign', 1, 'human'"
+    )
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute("INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', '{}')")
+        con.execute(f"{insert}, 'note', NULL, 'an old note')")
+        with pytest.raises(sqlite3.IntegrityError, match='CHECK constraint failed: commentkind'):
+            con.execute(f"{insert}, 'message', 2, 'too early')")
+    command.upgrade(cfg, '0058')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute(f"{insert}, 'message', 2, 'what next?')")
+        search = "SELECT rowid FROM comments_fts WHERE comments_fts MATCH 'old OR next'"
+        assert [r for (r,) in con.execute(search)] == [1, 2], 'the rebuilt table keeps its ids and its search'
+        triggers = "SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'comments'"
+        assert {t for (t,) in con.execute(triggers)} == {t.name for t in PERSISTENT if t.table == 'comments'}, (
+            'the rebuilt comments table has its triggers back'
+        )
+    command.downgrade(cfg, '0057')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute('SELECT id, kind, priority FROM comments ORDER BY id').fetchall() == [
+            (1, 'note', None),
+            (2, 'note', 2),
+        ]
+
+
 def test_0040_checks_the_role_of_a_row_against_its_campaign_config_alone_and_downgrades(tmp_path: Path) -> None:
     path = tmp_path / 'piloop.db'
     cfg = alembic(path)

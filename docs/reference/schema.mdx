@@ -55,7 +55,7 @@ CREATE TABLE comments (
 	CONSTRAINT "comments.author must be a text value" CHECK (typeof(author) IN ('text')),
 	CONSTRAINT "comments.body must be a text value" CHECK (typeof(body) IN ('text')),
 	CONSTRAINT targetkind CHECK (target_kind IN ('campaign', 'idea', 'run', 'candidate', 'measurement', 'agent_session', 'comment', 'instance')),
-	CONSTRAINT commentkind CHECK (kind IN ('note', 'finding', 'decision', 'escalation'))
+	CONSTRAINT commentkind CHECK (kind IN ('note', 'finding', 'decision', 'escalation', 'message'))
 );
 CREATE INDEX ix_comments_inbox ON comments (priority, id) WHERE priority IS NOT NULL AND acked_at IS NULL;
 CREATE INDEX ix_comments_target ON comments (target_kind, target_id);

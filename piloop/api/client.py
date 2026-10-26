@@ -33,6 +33,7 @@ from piloop.api.contract import (
     LaunchBody,
     LimitBody,
     Located,
+    MessageBody,
     NewsQuery,
     Params,
     PauseBody,
@@ -60,6 +61,7 @@ from piloop.api.views import (
     Inbox,
     Journaled,
     LiveKeys,
+    Messaged,
     News,
     Overview,
     ProblemDetail,
@@ -145,6 +147,9 @@ class Client:
 
     def sync_campaign(self, campaign: str) -> CampaignSynced:
         return self._post(f'/v1/campaigns/{segment(campaign)}/sync', None, CampaignSynced)
+
+    def message(self, campaign: str, body: MessageBody) -> Messaged:
+        return self._post(f'/v1/campaigns/{segment(campaign)}/messages', body, Messaged)
 
     def pause(self, campaign: str, body: PauseBody) -> CampaignAnswer:
         return self._post(f'/v1/campaigns/{segment(campaign)}/pause', body, CampaignAnswer)

@@ -189,6 +189,24 @@ def reply(s: Session, comment_id: CommentId, body: str, *, author: Actor, priori
     return answer
 
 
+def message(s: Session, campaign_id: CampaignId, body: str, *, author: Actor, priority: int) -> Comment:
+    """Write ``body`` to the orchestrator of campaign ``campaign_id`` as ``author``: a ``message`` on it, and commit.
+
+    The priority makes it an inbox item, so ``news`` reports it to every orchestrator except its author. The
+    orchestrator answers with ``reply``, which the author then sees in the inbox.
+    """
+    sent = Comment(
+        target=TargetRef(TargetKind.CAMPAIGN, campaign_id),
+        author=author.signature,
+        kind=CommentKind.MESSAGE,
+        priority=priority,
+        body=body.strip(),
+    )
+    s.add(sent)
+    s.commit()
+    return sent
+
+
 def comment_view(c: Comment) -> CommentView:
     """``c`` as the API shows it."""
     return CommentView(

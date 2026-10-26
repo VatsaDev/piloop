@@ -438,6 +438,7 @@ def test_every_comment_kind_is_an_event_shaped_like_the_escalation_one(con: sqli
                 4,
                 '{"kind":"comment.escalation","target_kind":"run","target_id":7}',
             ),
+            ('comment.message', 'pi', 'comment', 5, '{"kind":"comment.message","target_kind":"run","target_id":7}'),
         ]
     ), 'one event per comment: the persistent escalation trigger and the per-connection one never both fire'
 

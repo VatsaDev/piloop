@@ -748,6 +748,31 @@ def test_inbox_wait_blocks_until_an_item_lands_and_hands_over_a_cursor_that_miss
 
 
 @pytest.mark.usefixtures('api')
+def test_a_message_reaches_the_orchestrator_s_wait_and_its_reply_the_sender_s_inbox(
+    campaign_path: Path, out, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_cli(['init', str(campaign_path)])
+    out()
+    run_cli(['inbox', 'wait', '--timeout', '0'])
+    cursor = out().splitlines()[-1].split()[-1]
+    run_cli(['message', str(campaign_path), 'what next?', '--priority', '1'])
+    assert out().strip() == 'comment#1 message on campaign#1', 'a path names the campaign too'
+    as_human = common.settings
+    monkeypatch.setattr(common, 'settings', Settings(home=as_human.home, actor='orchestrator'))
+    run_cli(['inbox', 'wait', '--after', cursor, '--timeout', '30'])
+    assert out().splitlines()[0] == 'comment#1 message p1 on campaign#1 (demo) by human: what next?'
+    run_cli(['inbox', 'reply', '1', 'a cache: idea#3'])
+    assert out().strip() == 'comment#2 decision on comment#1'
+    monkeypatch.setattr(common, 'settings', as_human)
+    run_cli(['inbox', 'show', '2'])
+    title, answer = out().splitlines()[:2]
+    assert title.startswith('comment#2 decision on comment#1 by orchestrator, ') and answer == 'a cache: idea#3'
+    assert title.endswith(' · p2, unacknowledged')
+    with pytest.raises(SystemExit, match="^no campaign 'nope'"):
+        run_cli(['message', 'nope', 'hello?'])
+
+
+@pytest.mark.usefixtures('api')
 def test_cli_writes_as_the_actor_from_the_environment(
     campaign_path: Path, tmp_path: Path, out, monkeypatch: pytest.MonkeyPatch
 ) -> None:

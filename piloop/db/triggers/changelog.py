@@ -177,7 +177,7 @@ class CandidateDeleted(EventModel):
 class Commented(EventModel):
     """A comment was written: ``comment.<its kind>``, on the comment, with what the comment is about."""
 
-    kind: Literal['comment.note', 'comment.finding', 'comment.decision', 'comment.escalation']
+    kind: Literal['comment.note', 'comment.finding', 'comment.decision', 'comment.escalation', 'comment.message']
     target_kind: TargetKind
     target_id: int
 
@@ -436,4 +436,4 @@ CHANGES = (
 TOMBSTONES = (tombstone(IdeaDeleted), tombstone(CommentDeleted), tombstone(CandidateDeleted))
 """The deletes that are logged, with the key columns, so the feed can still say what was there."""
 COMMENTS = (comment_event(),)
-"""The forum (``comment.note``, ``comment.finding``, ``comment.decision``), which the daemon pushes to implementers."""
+"""Every comment but an escalation, as ``comment.<kind>``. The daemon pushes the forum's to implementers."""

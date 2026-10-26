@@ -745,6 +745,78 @@
         }
       }
     },
+    "/v1/campaigns/{campaign}/messages": {
+      "post": {
+        "summary": "Message",
+        "description": "Write to the campaign's orchestrator as the caller's actor: a ``message``, which wakes ``piloop inbox wait``.",
+        "operationId": "message",
+        "parameters": [
+          {
+            "name": "campaign",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "The campaign's name.",
+              "title": "Campaign"
+            },
+            "description": "The campaign's name."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MessageBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Messaged"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/campaigns/{campaign}/pause": {
       "post": {
         "summary": "Pause",
@@ -3711,7 +3783,8 @@
           "note",
           "finding",
           "decision",
-          "escalation"
+          "escalation",
+          "message"
         ],
         "title": "CommentKind",
         "description": "Why a comment was written. An ``escalation`` asks for a decision and is always in the human's inbox."
@@ -4966,6 +5039,42 @@
         ],
         "title": "Merge",
         "description": "A keep off the head, merged onto it: a candidate that the daemon measures and judges against that head."
+      },
+      "MessageBody": {
+        "properties": {
+          "body": {
+            "type": "string",
+            "title": "Body"
+          },
+          "priority": {
+            "$ref": "#/components/schemas/Priority",
+            "default": 2
+          }
+        },
+        "type": "object",
+        "required": [
+          "body"
+        ],
+        "title": "MessageBody",
+        "description": "A word to a campaign's orchestrator: a ``message`` on the campaign, which it answers with a reply."
+      },
+      "Messaged": {
+        "properties": {
+          "cursor": {
+            "type": "integer",
+            "title": "Cursor"
+          },
+          "comment": {
+            "$ref": "#/components/schemas/CommentView"
+          }
+        },
+        "type": "object",
+        "required": [
+          "cursor",
+          "comment"
+        ],
+        "title": "Messaged",
+        "description": "A message to a campaign's orchestrator, read at ``cursor``."
       },
       "Named": {
         "properties": {

@@ -196,8 +196,9 @@ from piloop.usage import Usage
 AGENT_SESSIONS = 'agent_sessions'
 """The directory under the home of each sweep's place: ``agent_sessions/<id>``."""
 NO_RUN_ERROR = 'an implementer needs a run; the scheduler requests them from ready ideas'
-PUSHED_KINDS = tuple(kind for kind in CommentKind if kind is not CommentKind.ESCALATION)
-"""Comment kinds that are sent to a running implementer. Escalations are not sent, because they are for the human."""
+PUSHED_KINDS = (CommentKind.NOTE, CommentKind.FINDING, CommentKind.DECISION)
+"""Comment kinds that are sent to a running implementer. Escalations are for the human, and messages for the
+orchestrator."""
 STEER_LINE_CHARS = 200
 """The number of characters of a comment's first line that a ``[piloop]`` line quotes. The implementer can query the rest."""
 STOP_GRACE_SECONDS = 600

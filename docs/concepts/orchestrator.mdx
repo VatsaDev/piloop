@@ -43,6 +43,7 @@ has a kind:
 | `finding` | A result: what an agent tried and learned. |
 | `decision` | A decision, with the reason and how to revert it. |
 | `escalation` | A question that needs a decision. |
+| `message` | Someone's word to the orchestrator. |
 
 A comment on an idea goes into the brief of the idea's next run.
 
@@ -74,6 +75,20 @@ priority 3 or 4. A decision that cannot be undone and can wait, the orchestrator
 
 To revise a decision, reply to it in `piloop watch` (key `r`). The orchestrator's next wait returns your reply, and it
 applies your reply first.
+
+## Messages
+
+To ask the orchestrator something, or to tell it what to do, send it a **message**:
+
+```bash
+piloop message enwik8 'Try a larger dictionary next'
+```
+
+```text
+comment#41 message on campaign#1
+```
+
+Its next wait returns the message. It answers with `piloop inbox reply`, and the answer is in your inbox.
 
 ## Several campaigns
 

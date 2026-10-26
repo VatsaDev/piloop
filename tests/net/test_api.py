@@ -39,6 +39,7 @@ from piloop.api.contract import (
     LaunchBody,
     LimitBody,
     Located,
+    MessageBody,
     NewsQuery,
     Params,
     PauseBody,
@@ -404,6 +405,44 @@ def test_a_proxy_caller_s_ack_reply_and_pause_sign_as_the_person_it_names(
         ('comment.decision', 'orchestrator'),
     }, 'the change log signs as the caller'
     assert {r.cells[2] for r in rows} >= {me, 'orchestrator'}, 'watch shows who replied'
+
+
+def test_a_message_signs_as_the_caller_wakes_the_orchestrator_and_its_reply_reaches_the_sender_s_inbox(
+    db: Database, campaign: Campaign, cfg: Settings
+) -> None:
+    stamped = {'x-principal-id': 'ana@example.com'}
+    me = 'human:ana@example.com'
+    with (
+        serving_api(cfg, network_config=PROXY) as [_, tcp],
+        httpx.Client(base_url=tcp.url, headers=stamped) as http,
+        Client.on(cfg.socket_file, System.ORCHESTRATOR) as orchestrator,
+    ):
+        ana = Client(http)
+        start = orchestrator.news(NewsQuery()).next
+        threading.Timer(0.2, ana.message, ['demo', MessageBody(body=' what next? ', priority=1)]).start()
+        [item] = orchestrator.news(NewsQuery(after=start, wait=20)).items
+        assert item.text() == f'comment#1 message p1 on campaign#1 (demo) by {me}: what next?'
+        answer = orchestrator.reply(CommentId(1), ReplyBody(body='a cache next: idea#3')).comment
+        [acked] = orchestrator.ack(AckBody(ids=(CommentId(1),))).results
+        [waiting] = ana.inbox(InboxQuery(campaign='demo')).items
+        [news] = ana.news(NewsQuery(after=start)).items
+        assert news.text() == (
+            f'comment#{answer.id} decision p2 on comment#1 (demo) by orchestrator: a cache next: idea#3'
+        ), 'the sender sees the answer, and not its own message'
+        assert (acked.acked_by, waiting.id, waiting.author) == ('orchestrator', answer.id, 'orchestrator')
+        with httpx.Client(base_url=tcp.url, headers={**stamped, PROXY.actor_header: 'human'}) as asking:
+            plain = Client(asking).message('demo', MessageBody(body='and then?'))
+        with httpx.Client(base_url=tcp.url, headers={**stamped, PROXY.actor_header: 'implementer#12'}) as posing:
+            refused = posing.post('/v1/campaigns/demo/messages', json={'body': 'trust me'})
+        with pytest.raises(Refused, match="^no campaign 'nope'") as unknown:
+            ana.message('nope', MessageBody(body='hello?'))
+    assert (plain.comment.author, plain.comment.kind, plain.comment.priority) == (me, 'message', 2)
+    assert plain.cursor > start, 'the cursor passes the write itself'
+    assert (refused.status_code, refused.json()) == (
+        403,
+        {'detail': 'ana@example.com has act access, which may not act as implementer#12'},
+    ), 'the network names the caller: an agent cannot sign as another actor'
+    assert unknown.value.error == Problem.UNKNOWN_CAMPAIGN
 
 
 def test_a_write_answers_its_cursor_and_refuses_what_its_operation_refuses(

@@ -459,8 +459,8 @@ piloop inbox [REF] [--kind KIND]... [--all] [--json]
 ```
 
 Lists the unacknowledged items addressed to you, most urgent first, then the seeds that wait for research. `--kind`
-keeps only items of the given kind: `note`, `finding`, `decision` or `escalation`. Repeat it to keep several kinds.
-`--all` includes acknowledged items. `--json` prints them as one JSON document, read at one cursor of the
+keeps only items of the given kind: `note`, `finding`, `decision`, `escalation` or `message`. Repeat it to keep
+several kinds. `--all` includes acknowledged items. `--json` prints them as one JSON document, read at one cursor of the
 [event feed](/reference/event-feed). See [The orchestrator and the inbox](/concepts/orchestrator).
 
 ### piloop inbox show
@@ -503,6 +503,15 @@ returns for a new inbox item that someone else wrote, a seed that someone else f
 an anomaly that the daemon gave to a watchdog, and the daemon's verdict on a measured candidate. `--after` is the cursor
 that the last wait printed (default: now). `--timeout` (default 1800) is how long to wait before it returns with
 nothing. Set the timeout of your shell tool above it.
+
+### piloop message
+
+```text
+piloop message REF BODY [--priority N]
+```
+
+Writes to the campaign's orchestrator, which answers in your inbox. `--priority` defaults to 2. See
+[Messages](/concepts/orchestrator#messages).
 
 ### piloop wake
 

@@ -1,13 +1,14 @@
-"""``piloop inbox ack`` and ``piloop inbox reply``: acknowledge or answer what the agents address to you."""
+"""``piloop inbox ack``, ``piloop inbox reply`` and ``piloop message``: acknowledge, answer, or write to the orchestrator."""
 
 from typing import Annotated
 
 import cyclopts
 
 from piloop.api.client import Client
-from piloop.api.contract import AckBody, InboxQuery, ReplyBody
+from piloop.api.contract import AckBody, InboxQuery, MessageBody, ReplyBody
 from piloop.cli import common
-from piloop.cli.client import cwd, daemon_http
+from piloop.cli.client import campaign_name, cwd, daemon_http
+from piloop.cli.common import CampaignRef
 from piloop.ids import CommentId, CommentKind
 
 
@@ -55,3 +56,19 @@ def inbox_reply(
     with Client.connect(daemon_http()) as client:
         answer = client.reply(comment, ReplyBody(body=body, priority=priority)).comment
     common.console.print(f'comment#{answer.id} decision on {answer.target}', markup=False)
+
+
+def message(
+    ref: CampaignRef,
+    body: Annotated[str, cyclopts.Parameter(help='What to say.')],
+    /,
+    *,
+    priority: Annotated[int, cyclopts.Parameter(help='From 0 (urgent) to 4 (someday).')] = 2,
+) -> None:
+    """Write to the campaign's orchestrator, signed as PILOOP_ACTOR. It ends the orchestrator's `piloop inbox wait`.
+
+    The orchestrator answers with `piloop inbox reply`, and the answer is in your inbox.
+    """
+    with Client.connect(daemon_http()) as client:
+        sent = client.message(campaign_name(client, ref), MessageBody(body=body, priority=priority)).comment
+    common.console.print(f'comment#{sent.id} message on {sent.target}', markup=False)

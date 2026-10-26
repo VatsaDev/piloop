@@ -38,6 +38,7 @@ from piloop.api.contract import (
     LaunchBody,
     LimitBody,
     Located,
+    MessageBody,
     NewsQuery,
     PauseBody,
     Problem,
@@ -69,6 +70,7 @@ from piloop.api.views import (
     InvalidConfig,
     Journaled,
     LiveKeys,
+    Messaged,
     News,
     Overview,
     Pending,
@@ -485,6 +487,14 @@ def sync_campaign(s: Writing, me: Acting, campaign: Addressed) -> CampaignSynced
     s.commit()
     with db_feed.snapshot(s) as cursor:
         return CampaignSynced(cursor=cursor, campaign=feed.status_view(s, [campaign])[0], was=was, documents=documents)
+
+
+@router.post('/campaigns/{campaign}/messages', operation_id='message', dependencies=[Depends(actor_access)])
+def message(s: Writing, me: Acting, campaign: Addressed, body: MessageBody) -> Messaged:
+    """Write to the campaign's orchestrator as the caller's actor: a ``message``, which wakes ``piloop inbox wait``."""
+    sent = inbox_module.message(s, campaign.id, body.body, author=me, priority=body.priority)
+    with db_feed.snapshot(s) as cursor:
+        return Messaged(cursor=cursor, comment=inbox_module.comment_view(sent))
 
 
 @router.post('/campaigns/{campaign}/pause', operation_id='pause', dependencies=[Depends(actor_access)])

@@ -281,6 +281,13 @@ class ReplyBody(Params):
     priority: Priority = 2
 
 
+class MessageBody(Params):
+    """A word to a campaign's orchestrator: a ``message`` on the campaign, which it answers with a reply."""
+
+    body: str
+    priority: Priority = 2
+
+
 class LimitBody(Reasoned):
     """A value for a live key, with why: it shows next to the value."""
 

@@ -331,6 +331,15 @@ writer gave it a priority.
 4. **Apply** it: un-park or reject the idea, change its priority, or fix `piloop.toml` and run `piloop init .` to read
    it again.
 
+### Messages
+
+A **message** is someone writing to you with `piloop message`: a `comment#<id> message … by <sender>: …` line.
+
+- A message by `human` or `human:<name>` is the human talking to you. A message by an agent is a request, not a
+  decision.
+- Answer it: `PILOOP_ACTOR=orchestrator piloop inbox reply <id> '<answer>'`. The sender sees the answer in their inbox.
+- Then acknowledge it.
+
 ### Every decision you take for the human
 
 Record every decision you take for the human, with or without an escalation: a guardrail, a merge, a global setting,

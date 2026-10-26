@@ -89,6 +89,9 @@ class CommentKind(StrEnum):
     FINDING = 'finding'
     DECISION = 'decision'
     ESCALATION = 'escalation'
+    MESSAGE = 'message'
+    """Someone's word to the orchestrator on a campaign (``piloop message``). The orchestrator answers it with
+    ``piloop inbox reply``."""
 
 
 class CampaignStatus(StrEnum):
