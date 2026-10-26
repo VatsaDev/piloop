@@ -44,7 +44,7 @@ from piloop.campaign.campaigns import (
 )
 from piloop.campaign.ops import hold_on_failed_baseline
 from piloop.campaign.stop import attempts, park_cancelled, run_cancel, seconds, timeout as agent_timeout
-from piloop.config import TRANSCRIPT, CampaignConfig, MetricRole, Track
+from piloop.config import TRANSCRIPT, CampaignConfig, Track
 from piloop.db.events import emit, has, in_order, latest
 from piloop.db.models import (
     AgentSession,
@@ -963,8 +963,8 @@ class RunController:
                         place=eval_dir.relative_to(self._home).as_posix(),
                         command=cfg.evaluate,
                         timeout=cfg.evaluate_timeout,
-                        required=[m.name for m in cfg.metrics if m.role is not MetricRole.WATCH],
-                        known=[m.name for m in cfg.metrics],
+                        required=cfg.required,
+                        known=cfg.reported,
                         max_evidence_bytes=self._evaluation.max_evidence_bytes,
                         ladder=cfg.ladder,
                         gate=gate_of(s.get_one(Candidate, gate), evaluator_id, cfg)

@@ -37,6 +37,14 @@ class Outcome(StrEnum):
 
 
 @dataclass(frozen=True)
+class Ratio:
+    """A metric that piloop computes, ``numerator / denominator``: the parts that a rule resamples."""
+
+    numerator: str
+    denominator: str
+
+
+@dataclass(frozen=True)
 class Criterion:
     """A metric that decides the verdict: the primary of the candidate's track, or one of its guardrails."""
 
@@ -51,6 +59,8 @@ class Criterion:
     fraction: float | None = None
     """The largest regression from the bar that a guardrail may show, as a fraction of the bar's value. A guardrail
     has a ``margin`` or a ``fraction``, never both."""
+    ratio: Ratio | None = None
+    """For a metric that piloop computes: its parts, whose units and samples are in each ``Side`` by their names."""
 
     def allowed(self, bar: float) -> float:
         """The largest regression from ``bar``, the bar's value, in the metric's units.

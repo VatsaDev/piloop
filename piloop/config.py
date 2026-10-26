@@ -93,6 +93,21 @@ class Tolerance(BaseModel):
         return not self.regression and self.floor is None
 
 
+class Ratio(BaseModel):
+    """A metric that piloop computes from two that the evaluate command reports: ``numerator / denominator``.
+
+    Each side's value is the ratio of its means. With per-unit results for both, the bootstrap takes the ratio of the
+    unit sums in each resample, so the verdict tests the ratio with confidence; with pairs, the ratio of each pair.
+    """
+
+    model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
+
+    numerator: str
+    """The metric above the line, which the evaluate command reports. Example: ``cost_usd``."""
+    denominator: str
+    """The metric below the line, which the evaluate command reports. Example: ``solved``."""
+
+
 class Metric(Tolerance):
     """One metric that the evaluate command reports, by its name in ``metrics`` of its result.
 
@@ -114,6 +129,9 @@ class Metric(Tolerance):
     """Primary metrics only. The name of the track (objective) that this metric is the primary of. When unset, the
     track has the metric's name, so a campaign with one primary needs nothing here. With several primaries, each one
     names its own track, and each track needs a ``[tracks.<name>]`` table."""
+    ratio: Ratio | None = None
+    """Optional. Primaries and guardrails only. piloop computes this metric from two others of ``[[metrics]]``, and the
+    evaluate command does not report it. Example: ``{ numerator = "cost_usd", denominator = "solved" }``."""
     repeats: int | None = Field(default=None, ge=1)
     """Optional. Marks a noisy metric, such as a time: each evaluation of a run's candidate that this metric judges runs
     the evaluate command ``repeats`` times on the candidate and as many times on its bar, one after the other, and the
@@ -128,6 +146,8 @@ class Metric(Tolerance):
             raise ValueError(f'{self.name!r}: repeats applies to primaries and guardrails only')
         if self.role is MetricRole.WATCH and not self.empty:
             raise ValueError(f'{self.name!r}: floor, margin and fraction apply to guardrails and primaries only')
+        if self.role is MetricRole.WATCH and self.ratio is not None:
+            raise ValueError(f'{self.name!r}: ratio applies to primaries and guardrails only')
         if self.role is not MetricRole.PRIMARY and self.track is not None:
             raise ValueError(f'{self.name!r}: track applies to primaries only')
         return self
@@ -349,6 +369,7 @@ class CampaignConfig(BaseModel):
     @model_validator(mode='after')
     def _check(self) -> Self:
         self._check_tracks()
+        self._check_ratios()
         self._check_ladder()
         self._check_facts()
         self._check_stop_rule()
@@ -366,6 +387,34 @@ class CampaignConfig(BaseModel):
             if Path(rel).is_absolute() or '..' in Path(rel).parts:
                 raise ValueError(f'{rel!r} must be a relative path inside the repo')
         return self
+
+    def _check_ratios(self) -> None:
+        """Each ratio divides two other metrics that the evaluate command reports, and no stop of the ladder reads one."""
+        reported = set(self.reported)
+        for m in self.metrics:
+            if m.ratio is None:
+                continue
+            parts = (m.ratio.numerator, m.ratio.denominator)
+            if missing := [p for p in parts if p not in reported]:
+                raise ValueError(f'{m.name!r}: ratio of {missing}, which are not metrics that evaluate reports')
+            if len(set(parts)) == 1:
+                raise ValueError(f'{m.name!r}: ratio of {parts[0]!r} by itself')
+        ratios = {m.name for m in self.metrics if m.ratio is not None}
+        for rung in self.ladder:
+            if named := sorted(rung.stop.keys() & ratios):
+                raise ValueError(f'ladder.{rung.name}.stop: {named} are ratios; stop on their parts')
+
+    @property
+    def reported(self) -> list[str]:
+        """The metrics that the evaluate command may report: every one but the ratios, which piloop computes."""
+        return [m.name for m in self.metrics if m.ratio is None]
+
+    @property
+    def required(self) -> list[str]:
+        """The metrics that the full panel must report: the primaries and guardrails, and the parts of their ratios."""
+        judging = [m for m in self.metrics if m.role is not MetricRole.WATCH]
+        names = [p for m in judging for p in ((m.ratio.numerator, m.ratio.denominator) if m.ratio else (m.name,))]
+        return list(dict.fromkeys(names))
 
     def _check_ladder(self) -> None:
         """Each rung has its own name, stops on metrics of ``[[metrics]]``, and the rungs with a command come first."""
@@ -532,7 +581,7 @@ class CampaignConfig(BaseModel):
     def evaluator_definition(self) -> dict[str, object]:
         """What decides a verdict's numbers: the evaluate command, the linked inputs and the judging metrics.
 
-        ``judging`` has the name and direction of each primary and guardrail, by name. ``ladder``, only when there is
+        ``judging`` has the name and direction of each primary and guardrail, by name, and the parts of a ratio. ``ladder``, only when there is
         one, has each rung's name and command: a rung's values compare only under the same rungs. Its ``stop`` is the
         policy of the climb, as a margin is of the verdict. A watch metric never decides a verdict, so adding, removing or redirecting one measures nothing again: the
         older measurements just lack it. Promoting a watch metric to a guardrail, or demoting a guardrail, does. Roles
@@ -544,7 +593,11 @@ class CampaignConfig(BaseModel):
         return {
             'evaluate': list(self.evaluate),
             'link': list(self.link),
-            'judging': [{'name': m.name, 'direction': m.direction.value} for m in judging],
+            'judging': [
+                {'name': m.name, 'direction': m.direction.value}
+                | ({'ratio': m.ratio.model_dump()} if m.ratio is not None else {})
+                for m in judging
+            ],
         } | ({'ladder': rungs} if rungs else {})
 
     @property

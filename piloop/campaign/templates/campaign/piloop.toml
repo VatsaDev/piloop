@@ -190,6 +190,7 @@ role = "primary"                          # primary: must beat the head · guard
 # role = "guardrail"
 # margin = 20                             # in the metric's own units, compared with the run's bar
 # fraction = 0.1                         # instead of margin: a fraction of the bar's value (0.1 = 10%)
+# ratio = { numerator = "cost_usd", denominator = "solved" }  # computed by piloop; keys: numerator, denominator
 # floor = 500                             # optional hard limit on the value
 # repeats = 3                             # a noisy metric (a time): each candidate runs 3 times next to its bar
 

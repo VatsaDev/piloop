@@ -65,7 +65,20 @@ that primary is a guardrail.
 | `direction` | `higher` \| `lower` | required | `higher` when a larger value is better, `lower` when a smaller value is better. |
 | `role` | `primary` \| `guardrail` \| `watch` | `"watch"` | How the metric affects the verdict. A `primary` metric must beat the bar with confidence for a `keep`, and each track has exactly one. A `guardrail` may get worse by at most its `margin` or `fraction`, or the candidate is at most `interesting`. It must never pass its `floor`, or the candidate is a `discard`. A `watch` metric is recorded and never affects the verdict. |
 | `track` | string \| null | `null` | Primary metrics only. The name of the track (objective) that this metric is the primary of. When unset, the track has the metric's name, so a campaign with one primary needs nothing here. With several primaries, each one names its own track, and each track needs a `[tracks.<name>]` table. |
+| `ratio` | [Ratio](#ratio) \| null | `null` | Optional. Primaries and guardrails only. piloop computes this metric from two others of `[[metrics]]`, and the evaluate command does not report it. Example: `{ numerator = "cost_usd", denominator = "solved" }`. |
 | `repeats` | integer \| null | `null` | Optional. Marks a noisy metric, such as a time: each evaluation of a run's candidate that this metric judges runs the evaluate command `repeats` times on the candidate and as many times on its bar, one after the other, and the verdict compares these pairs. Load then slows both sides alike. With several, the largest number counts. Allowed on a guardrail, and on a primary. |
+
+## Ratio
+
+A metric that piloop computes from two that the evaluate command reports: `numerator / denominator`.
+
+Each side's value is the ratio of its means. With per-unit results for both, the bootstrap takes the ratio of the
+unit sums in each resample, so the verdict tests the ratio with confidence; with pairs, the ratio of each pair.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `numerator` | string | required | The metric above the line, which the evaluate command reports. Example: `cost_usd`. |
+| `denominator` | string | required | The metric below the line, which the evaluate command reports. Example: `solved`. |
 
 ## TrackConfig
 

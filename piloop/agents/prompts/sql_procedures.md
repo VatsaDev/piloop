@@ -231,7 +231,8 @@ Roles, tracks, margins and floors are in `campaigns.config`.
 ## Useful queries
 
 ```sql
--- a candidate's score under the campaign's current evaluator (mean over its full-panel measurements)
+-- a candidate's score under the campaign's current evaluator (mean over its full-panel measurements);
+-- a ratio metric of [[metrics]] is not stored: divide the means of its parts
 SELECT c.id, c.verdict, c.summary, AVG(json_extract(m.metrics, '$.accuracy')) AS accuracy, COUNT(m.id) AS n
 FROM candidates c JOIN campaigns p ON p.id = c.campaign_id
 LEFT JOIN measurements m

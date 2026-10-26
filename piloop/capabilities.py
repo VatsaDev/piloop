@@ -81,7 +81,7 @@ from piloop.plugins.role.watchdog import WatchdogRole
 from piloop.plugins.role.orchestrator import OrchestratorRole
 
 from piloop.plugins.verdict_rule.contract import VERDICT_RULES, VerdictRule, Case
-from piloop.plugins.verdict_rule.contract import Criterion, Side, Stopped
+from piloop.plugins.verdict_rule.contract import Criterion, Ratio, Side, Stopped
 from piloop.plugins.metric import Direction
 from piloop.plugins.verdict_rule.contract import Judgement, Outcome
 from piloop.plugins.verdict_rule.contract import Node, Trunk, Branch, Imported

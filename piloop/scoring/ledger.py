@@ -13,12 +13,12 @@ from pathlib import Path
 from statistics import fmean
 from typing import Literal, assert_never
 
-from pydantic import Field
+from pydantic import BaseModel, Field, TypeAdapter
 from sqlalchemy import ColumnElement, Select, func, literal, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from piloop import deprecated
+from piloop import config, deprecated
 from piloop.actor import Actor, System
 from piloop.config import CampaignConfig, Metric, Track
 from piloop.db import requests
@@ -76,6 +76,7 @@ from piloop.plugins.verdict_rule.contract import (
     Moved,
     Node,
     Outcome,
+    Ratio,
     Rebase,
     Seed,
     Side,
@@ -133,9 +134,39 @@ def full_clause() -> ColumnElement[bool]:
     return Measurement.error.is_(None) & Measurement.rung.is_(None)
 
 
+class _Judged(BaseModel):
+    """A judging metric as an evaluator's ``definition`` stores it: its name, and its parts if piloop computes it."""
+
+    name: str
+    ratio: config.Ratio | None = None
+
+
+JUDGED = TypeAdapter(list[_Judged])
+
+
+def ratios(evaluator: Evaluator | None) -> dict[str, config.Ratio]:
+    """The ratio metrics of ``evaluator``, by name: piloop computes them from what it measured (``derive``)."""
+    if evaluator is None:
+        return {}
+    return {j.name: j.ratio for j in JUDGED.validate_python(evaluator.definition.get('judging', [])) if j.ratio}
+
+
+def derive(values: dict[str, float], found: dict[str, config.Ratio]) -> dict[str, float]:
+    """``values`` with each ratio of ``found`` whose parts it has, and whose denominator is not 0."""
+    return values | {
+        name: values[r.numerator] / values[r.denominator]
+        for name, r in found.items()
+        if r.numerator in values and values.get(r.denominator)
+    }
+
+
 def metrics(candidate: Candidate, evaluator_id: EvaluatorId | None) -> dict[str, float]:
-    """Return the mean of each metric over the candidate's ``full`` measurements under ``evaluator_id``."""
-    return means([m.metrics for m in candidate.measurements if m.evaluator_id == evaluator_id and full(m)])
+    """Return the mean of each metric over the candidate's ``full`` measurements under ``evaluator_id``.
+
+    A ratio is the ratio of the means of its parts (``derive``).
+    """
+    rows = [m for m in candidate.measurements if m.evaluator_id == evaluator_id and full(m)]
+    return derive(means([m.metrics for m in rows]), ratios(rows[0].evaluator) if rows else {})
 
 
 def rungs(candidate: Candidate, evaluator_id: EvaluatorId | None) -> dict[RungName, dict[str, float]]:
@@ -235,7 +266,8 @@ def _nodes(s: Session, ids: Select[CandidateId], evaluator_id: EvaluatorId | Non
     results: dict[CandidateId, list[dict[str, float]]] = {}
     for c, values in s.execute(measured.order_by(Measurement.id)):
         results.setdefault(c, []).append(values)
-    return [Node(c, made[c][0], made[c][1], means(results.get(c, []))) for c in order]
+    found = ratios(s.get(Evaluator, evaluator_id) if evaluator_id is not None else None)
+    return [Node(c, made[c][0], made[c][1], derive(means(results.get(c, [])), found)) for c in order]
 
 
 def _made(origin: Origin, branch: bool | None, base: CandidateId | None) -> Lineage | Imported:
@@ -591,9 +623,11 @@ def pairs(candidate: Candidate, bar: Candidate, evaluator_id: EvaluatorId) -> tu
             continue
         if other.candidate_id != bar.id or not full(other):
             continue
-        for name in m.metrics.keys() & other.metrics.keys():
-            mine.setdefault(name, []).append(m.metrics[name])
-            theirs.setdefault(name, []).append(other.metrics[name])
+        found = ratios(m.evaluator)
+        ours, its = derive(m.metrics, found), derive(other.metrics, found)
+        for name in ours.keys() & its.keys():
+            mine.setdefault(name, []).append(ours[name])
+            theirs.setdefault(name, []).append(its[name])
     return mine, theirs
 
 
@@ -670,7 +704,8 @@ def judge(
 
 def criterion(m: Metric) -> Criterion:
     """Return what a verdict rule reads of a metric of ``piloop.toml``."""
-    return Criterion(m.name, m.direction, m.margin, m.floor, m.fraction)
+    ratio = None if m.ratio is None else Ratio(m.ratio.numerator, m.ratio.denominator)
+    return Criterion(m.name, m.direction, m.margin, m.floor, m.fraction, ratio)
 
 
 def decide(

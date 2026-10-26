@@ -17,6 +17,7 @@
 | `Criterion.margin: float \| None` | The largest regression from the bar that a guardrail may show, in the metric's units. None on a primary. |
 | `Criterion.floor: float \| None` | The worst value that a candidate may have, whatever the bar, or None. |
 | `Criterion.fraction: float \| None` | The largest regression from the bar that a guardrail may show, as a fraction of the bar's value. A guardrail has a `margin` or a `fraction`, never both. |
+| `Criterion.ratio: Ratio \| None` | For a metric that piloop computes: its parts, whose units and samples are in each `Side` by their names. |
 | `Criterion.allowed(bar: float) -> float` | The largest regression from `bar`, the bar's value, in the metric's units. |
 | `Criterion.limit() -> str` | How a reason names the regression allowed: `margin 20` or `fraction 0.1`. |
 | `Criterion.past_floor(value: float) -> bool` | Whether `value` is past the floor, in the metric's direction. |

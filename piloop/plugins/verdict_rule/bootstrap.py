@@ -5,6 +5,7 @@ standard library, pydantic and its contract, as a rule from a plugin does. It is
 ``pyproject.toml``, in ``piloop.verdict_rules``. https://piloop.autoresearch.inc/concepts/verdict describes the rule.
 """
 
+import math
 import random
 from dataclasses import dataclass
 from enum import StrEnum
@@ -13,7 +14,7 @@ from statistics import fmean
 from pydantic import Field
 
 from piloop.plugins.metric import Direction, number
-from piloop.plugins.verdict_rule.contract import Case, Criterion, Judgement, Outcome, Side, Stopped, VerdictRule
+from piloop.plugins.verdict_rule.contract import Case, Criterion, Judgement, Outcome, Ratio, Side, Stopped, VerdictRule
 
 RESAMPLES = 4000
 """Bootstrap resamples per comparison. With 4000, the 5% quantile changes by much less than one unit between seeds."""
@@ -193,10 +194,47 @@ def same(case: Case, parent: Side) -> bool:
     return case.primary.name in mine and all(mine.get(m.name) == theirs.get(m.name) for m in deciding)
 
 
+def ratio_bound(criterion: Criterion, ratio: Ratio, mine: Side, theirs: Side, confidence: float) -> Comparison | None:
+    """Compare a ratio with a paired bootstrap over the units that both sides report for both of its parts.
+
+    Each resample takes the same units on both sides and compares the ratios of their sums. A resample whose
+    denominator sums to 0 on a side counts as the worst gain. None when the units do not allow it: then the pairs or
+    the aggregates decide (``compare``).
+    """
+    parts = (ratio.numerator, ratio.denominator)
+    found = [side.units.get(p) for side in (mine, theirs) for p in parts]
+    if any(u is None for u in found):
+        return None
+    mine_top, mine_bottom, their_top, their_bottom = (u or {} for u in found)
+    keys = sorted(mine_top)
+    if any(set(u) != set(keys) for u in (mine_bottom, their_top, their_bottom)):
+        return None
+    rng = random.Random(SEED)
+    gains = []
+    for _ in range(RESAMPLES):
+        drawn = rng.choices(keys, k=len(keys))
+        mine_den, their_den = sum(mine_bottom[k] for k in drawn), sum(their_bottom[k] for k in drawn)
+        if not mine_den or not their_den:
+            gains.append(-math.inf)
+            continue
+        ours = sum(mine_top[k] for k in drawn) / mine_den
+        its = sum(their_top[k] for k in drawn) / their_den
+        gains.append(criterion.direction.gain(ours, its))
+    gains.sort()
+    name = criterion.name
+    worst = gains[int((1 - confidence) * RESAMPLES)]
+    return Comparison(criterion, mine.means[name], theirs.means[name], worst, len(keys))
+
+
 def _compare(case: Case, criterion: Criterion, confidence: float) -> Comparison:
-    """Compare the candidate with the bar on ``criterion``, which both sides measured."""
+    """Compare the candidate with the bar on ``criterion``, which both sides measured.
+
+    A ratio is compared over the units of its parts (``ratio_bound``) when both sides have them.
+    """
     name = criterion.name
     mine, theirs = case.candidate, case.bar
+    if criterion.ratio is not None and (found := ratio_bound(criterion, criterion.ratio, mine, theirs, confidence)):
+        return found
     return compare(
         criterion,
         mine.means[name],

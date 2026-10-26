@@ -111,6 +111,38 @@ floor = 120        # and never slower than 120 s
 `fraction = 0.10` allows 10% more, whatever the bar's scale. The stops of the [ladder](#the-evaluation-ladder) take the
 same keys.
 
+### Ratio metrics
+
+A primary or a guardrail can be a **ratio** of two metrics that the evaluate command reports. piloop computes it:
+
+```toml
+[[metrics]]
+name = "solved"
+direction = "higher"
+role = "primary"
+
+[[metrics]]
+name = "cost_usd"
+direction = "lower"
+
+[[metrics]]
+name = "cost_per_solved"
+direction = "lower"
+role = "guardrail"
+ratio = { numerator = "cost_usd", denominator = "solved" }
+fraction = 0.05
+```
+
+The evaluate command reports `solved` and `cost_usd`, with their [per-unit results](#per-unit-results), and never
+`cost_per_solved`. Each side's value is the ratio of its means. The verdict resamples the units of both parts together
+and takes the ratio of their sums in each resample, so the guardrail is tested with confidence:
+
+```text
+guardrails: cost_per_solved 2.4 vs 2 (+0.4; 95% worst case +0.7692 over 40 units) beyond its fraction 0.05
+```
+
+`measurements.metrics` holds the parts only. A stop of the ladder names the parts, not the ratio.
+
 ## The evaluation ladder
 
 An evaluation ladder stops a bad candidate before the full panel. Each `[[ladder]]` table is a **rung**: a cheaper
