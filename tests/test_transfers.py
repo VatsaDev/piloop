@@ -109,12 +109,12 @@ def test_empty_clones_start_from_one_first_transfer_and_take_the_versions_beyond
     assert len(answered(partial(first.send, repo, [head], []))) == 1, 'nothing beyond the head'
     later = commit(path, 'later.txt')
     for n in range(3):
-        clone = Git().clone(tmp_path / f'clone{n}')
-        clone.fetch(store, [later], partial(fetched, first, repo))
-        assert clone.version(later).summary == 'later.txt'
+        replica = Git().replica(tmp_path / f'replica{n}')
+        replica.fetch(store, [later], partial(fetched, first, repo))
+        assert replica.version(later).summary == 'later.txt'
     newer = commit(path, 'newer.txt')
-    clone.fetch(store, [newer], partial(fetched, first, repo))  # it names what it has: no first transfer
-    assert clone.version(newer).summary == 'newer.txt' and record.full == 1
+    replica.fetch(store, [newer], partial(fetched, first, repo))  # it names what it has: no first transfer
+    assert replica.version(newer).summary == 'newer.txt' and record.full == 1
     with db.session() as s:
         row = s.get(FirstTransfer, repo)
         assert row is not None and row.revision == head

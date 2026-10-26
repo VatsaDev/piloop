@@ -33,7 +33,7 @@ from piloop.api.views import (
     thread_lines,
 )
 from piloop.cli import common
-from piloop.cli.client import api, cwd
+from piloop.cli.client import cwd, daemon_http
 from piloop.cli.common import CampaignRef, JsonFlag
 from piloop.ids import CommentId, CommentKind
 from piloop.text import age, cell
@@ -54,7 +54,7 @@ def status(ref: CampaignRef | None = None, /, *, json_: JsonFlag = False) -> Non
     With --json, it prints the daemon's pid and the URL it listens on, and the main facts of each campaign, read at one
     cursor: follow them with `piloop events --after <cursor>`.
     """
-    with api() as client:
+    with Client.connect(daemon_http()) as client:
         status = client.status(Selection(campaign=ref, cwd=cwd()))
         status = status.model_copy(update={'campaigns': defaulted(status.campaigns)})
         if json_:
@@ -106,7 +106,7 @@ def inbox_list(
     Priority 0 is urgent and 4 is someday. Without a campaign, it lists the items of every campaign. With --json, it
     prints them read at one cursor: follow them with `piloop events --after <cursor>`.
     """
-    with api() as client:
+    with Client.connect(daemon_http()) as client:
         inbox = client.inbox(InboxQuery(campaign=ref, cwd=cwd(), kind=kind, acked=all_))
     if json_:
         common.print_json(inbox.model_dump(mode='json'))
@@ -139,7 +139,7 @@ def inbox_list(
 
 def inbox_show(comment: Annotated[CommentId, cyclopts.Parameter(help='The id of the item.')], /) -> None:
     """Show one item in full, then the comments that it cites as `comment#<id>`, that cite it, or reply to it."""
-    with api() as client:
+    with Client.connect(daemon_http()) as client:
         title, lines = thread_lines(client.thread(comment), clock())
     common.console.print(title, style='bold', markup=False)
     common.console.print('\n'.join(lines), markup=False, highlight=False)
@@ -163,7 +163,7 @@ def inbox_wait(
     Set the timeout of your shell tool higher than --timeout. Without a campaign, it waits for every campaign.
     """
     deadline, cursor = time.monotonic() + timeout, after
-    with api() as client:
+    with Client.connect(daemon_http()) as client:
         while True:
             wait = min(MAX_POLL_SECONDS, max(0.0, deadline - time.monotonic()))
             found = client.news(NewsQuery(after=cursor, campaign=ref, cwd=cwd(), wait=wait))
@@ -209,7 +209,7 @@ def events(
     An event can come twice then: skip an id that you have handled.
     """
     deadline, cursor = time.monotonic() + (timeout if follow else 0), after
-    with api() as client:
+    with Client.connect(daemon_http()) as client:
         while True:
             wait = min(MAX_POLL_SECONDS, max(0.0, deadline - time.monotonic()))
             try:

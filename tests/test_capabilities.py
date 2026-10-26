@@ -97,6 +97,7 @@ HELPERS: set[object] = {
     capabilities.VcsError,  # what a vcs provider raises
     capabilities.NotARepository,
     capabilities.UnknownRevision,
+    capabilities.CloneFailed,
     capabilities.GitRepository,  # what a built-in provider's open makes
     capabilities.values,  # what an executor calls at an agent's start
     capabilities.executor_router,  # what an executor's contribution routes its workers' calls with

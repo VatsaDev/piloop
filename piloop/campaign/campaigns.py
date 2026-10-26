@@ -4,13 +4,13 @@ import os
 import re
 import shutil
 import subprocess
-from pathlib import Path
-from typing import Literal, assert_never
-from uuid import uuid4
+from pathlib import Path, PurePosixPath
+from typing import Literal
+from urllib.parse import urlsplit
 
 import httpx2 as httpx
 from covalence import Cid
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 from rich.console import Console
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -19,21 +19,20 @@ from piloop import deprecated
 from piloop.actor import Actor, System
 from piloop.config import CONFIG_FILE, CampaignConfig, ConfigError, load_campaign_config
 from piloop.db.events import emit
-from piloop.db.models import Campaign, Candidate, EventModel, Measurement, Origin
+from piloop.db.models import Campaign, Candidate, EventModel, Origin
 from piloop.db.session import Database
 from piloop.db.sql import sql_error
 from piloop.ids import CampaignId, CampaignStatus, CandidateId, Revision, TargetKind, TargetRef
-from piloop.plugins.cas.contract import CAS, Cas
+from piloop.plugins.cas.contract import Cas
 from piloop.plugins.executor.contract import RepoId, Source, Workspace
 from piloop.plugins.role.contract import ideas_taken
 from piloop.plugins.stop_rule.contract import STOP_RULES
 from piloop.plugins.vcs.contract import VCS, Repository, Vcs
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.proc import child_env
-from piloop.scoring.evaluate import Failed, Measured, run_evaluate
-from piloop.scoring.ledger import current_evaluator, resolve, save_units
-from piloop.settings import INPUTS_DIR, settings
-from piloop.store.tree import Copies, Manifest, Seen, materialise, put_tree
+from piloop.scoring.ledger import current_evaluator, resolve
+from piloop.settings import settings
+from piloop.store.tree import Seen, put_tree
 
 console = Console(stderr=True)
 
@@ -50,6 +49,8 @@ WORKSPACE = 'workspace'
 deprecated.until('0.4.0', 'campaign directories keep their 0.1.0 name: move projects/ to campaigns/, delete PROJECTS')
 PROJECTS = 'projects'
 """The directory under the piloop home that holds each campaign's directory."""
+REPOS = 'repos'
+"""The directory under the piloop home that holds the checkout of each campaign that the daemon cloned (``clone``)."""
 IGNORED = ('data', '.venv', WORKSPACE, '__pycache__')
 """What no version of a new campaign holds (``Vcs.init``)."""
 TEMPLATES = Path(__file__).parent / 'templates'
@@ -111,7 +112,9 @@ def create_campaign_repo(dest: Path, template: Path, data: dict[str, str]) -> li
         )
     if CONFIG_FILE in written:
         toml = dest / CONFIG_FILE
-        toml.write_text(toml.read_text().replace(f'name = "{NAME_PLACEHOLDER}"', f'name = "{_slug(dest)}"', 1))
+        toml.write_text(
+            toml.read_text().replace(f'name = "{NAME_PLACEHOLDER}"', f'name = "{_slug(dest.resolve().name)}"', 1)
+        )
     for rel, url in data.items():
         target = dest / rel
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -139,9 +142,24 @@ def _template_files(template: Path) -> list[str]:
     ]
 
 
-def _slug(dest: Path) -> str:
-    """Make a directory name safe to use as a campaign name, which git refs use."""
-    return re.sub(r'[^A-Za-z0-9._-]+', '-', dest.resolve().name).strip('-') or NAME_PLACEHOLDER
+def _slug(name: str) -> str:
+    """Make a directory's name safe to use as a campaign name, which git refs use."""
+    return re.sub(r'[^A-Za-z0-9._-]+', '-', name).strip('-') or NAME_PLACEHOLDER
+
+
+def clone(home: Path, vcs: Vcs, url: str, credential: SecretStr | None) -> Path:
+    """Clone ``url`` into a new directory of the home's ``REPOS``, named after the repository, and return it.
+
+    Raises:
+        CampaignError: The directory exists: a campaign of that name was cloned there.
+        CloneFailed: The clone failed.
+    """
+    path = home / REPOS / _slug(PurePosixPath(urlsplit(url).path).name.removesuffix('.git'))
+    if path.exists():
+        raise CampaignError(f'{path} exists: register that checkout by its path, or delete it')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    vcs.clone(url, path, credential)
+    return path
 
 
 def stub_untouched(path: Path) -> bool:
@@ -174,86 +192,30 @@ def check_takes(path: Path, cfg: CampaignConfig) -> None:
         )
 
 
-def register(s: Session, path: Path, actor: Actor) -> tuple[Campaign, Measurement]:
-    """Score the head version in a clean checkout, then insert the campaign row and its baseline measurement.
+def register(s: Session, path: Path, actor: Actor) -> tuple[Campaign, Candidate]:
+    """Insert the campaign of the checkout at ``path``, its evaluator and the baseline candidate of its head version.
 
-    The evaluation runs before any write, in a staging directory under ``campaigns_dir``, with no transaction open.
-    An evaluation can take an hour, and an open write transaction locks all other clients out of the database.
-    The rows are inserted afterwards in one short transaction, and the staging directory becomes the campaign's.
-    ``actor`` signs the ``campaign.added`` event.
+    The baseline is a keep by the daemon, which measures it next (``ledger.due``: the head first). ``actor`` signs the
+    ``campaign.added`` event. The caller commits.
 
     Raises:
-        CampaignError: Another repo uses the name, or the evaluate command failed on HEAD.
+        CampaignError: Another repo uses the name.
     """
     cfg = load_campaign_config(path)
     check_takes(path, cfg)
     other = s.scalars(select(Campaign).where(Campaign.name == cfg.name)).first()
-    s.rollback()
     if other is not None:
         raise CampaignError(f'campaign name {cfg.name!r} is already used by {other.path}; change `name` in piloop.toml')
-    repo = VCS.selected(cfg.plugins).open(path)
-    version = repo.head()
-    staging = campaigns_dir(settings.home) / f'.registering-{uuid4().hex}'
-    log_dir = staging / 'baseline'
-    log_dir.mkdir(parents=True)
-    wt = log_dir / 'worktree'
-    cas = CAS.selected(settings.providers).open(settings.home)
-    workspace = staging / WORKSPACE
-    workspace.mkdir()
-    try:
-        repo.checkout(version.revision, wt)
-        if not (wt / WORKSPACE).exists():
-            (wt / WORKSPACE).symlink_to(workspace)
-        copies = Copies(cas, settings.home / INPUTS_DIR)
-        for blob in links_of(cas, cfg, path.resolve()).values():
-            materialise(cas, Manifest.get(cas, blob), wt, into=copies)
-        settings.units_dir.mkdir(parents=True, exist_ok=True)
-        result = run_evaluate(
-            cfg.evaluate,
-            cwd=wt,
-            log_dir=log_dir,
-            timeout=cfg.evaluate_timeout,
-            required={m.name for m in cfg.metrics},
-            units_file=settings.units_dir / f'{uuid4().hex}.pending',
-        )
-    finally:
-        repo.discard(wt)
-    match result:
-        case Failed() as failed:
-            raise CampaignError(f'baseline failed to evaluate: {failed.error}; its log is in {log_dir}')
-        case Measured() as measured:
-            pass
-        case _:
-            assert_never(result)
-    campaign = Campaign(
-        name=cfg.name,
-        path=str(path.resolve()),
-        repo=VCS.selected(cfg.plugins).identity(path),
-        config=cfg,
-    )
+    vcs = VCS.selected(cfg.plugins)
+    version = vcs.open(path).head()
+    campaign = Campaign(name=cfg.name, path=str(path.resolve()), repo=vcs.identity(path), config=cfg)
     s.add(campaign)
     s.flush()
-    shutil.copytree(staging, campaign_dir(settings.home, campaign.id), symlinks=True, dirs_exist_ok=True)
-    shutil.rmtree(staging)
+    current_evaluator(s, campaign, cfg)
     baseline, _ = resolve(s, campaign.id, version, parent=None, run_id=None, origin=Origin.BASELINE)
     baseline.verdict, baseline.verdict_by = Outcome.KEEP, System.DAEMON.signature
-    measurement = Measurement(
-        candidate_id=baseline.id,
-        evaluator_id=current_evaluator(s, campaign, cfg).id,
-        metrics=measured.metrics,
-        seconds=measured.seconds,
-    )
-    s.add(measurement)
-    s.flush()
-    save_units(settings.units_dir, measurement.id, measured.units)
     emit(s, CampaignAdded(baseline=baseline.id), TargetRef(TargetKind.CAMPAIGN, campaign.id), actor)
-    s.commit()
-    return campaign, measurement
-
-
-def registered(s: Session, path: Path) -> Campaign | None:
-    """Return the campaign row for a repo path, or None."""
-    return s.scalars(select(Campaign).where(Campaign.path == str(path.resolve()))).first()
+    return campaign, baseline
 
 
 def find(s: Session, ref: str, cwd: Path | None = None) -> Campaign | None:
@@ -363,7 +325,7 @@ def campaigns_dir(home: Path) -> Path:
 
 
 def campaign_dir(home: Path, campaign_id: CampaignId) -> Path:
-    """The directory of a campaign: its shared workspace, its baseline and the evaluations of its candidates."""
+    """The directory of a campaign: its shared workspace and the evaluations of its candidates."""
     return campaigns_dir(home) / str(campaign_id)
 
 

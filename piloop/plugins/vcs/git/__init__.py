@@ -1,7 +1,7 @@
 """``git``: the default vcs provider. A version is a commit of the campaign's git repository, and its revision the SHA.
 
 Agents work in detached worktrees and save their work as commits, with trailers for what they ask of piloop
-(``Piloop-Eval: skip``, ``Piloop-Note``). Commits travel between a worker's clone and the repo of record as git bundles
+(``Piloop-Eval: skip``, ``Piloop-Note``). Commits travel between a worker's replica and the repo of record as git bundles
 in the CAS (``bundles``). Refs under ``refs/piloop/`` keep the commits that piloop needs from garbage collection, so
 ``git show <sha>`` keeps working.
 """
@@ -16,6 +16,7 @@ from typing import assert_never
 from covalence import Cid
 from git import Repo
 from git.exc import BadName, GitError, InvalidGitRepositoryError, NoSuchPathError
+from pydantic import SecretStr
 
 from piloop.ids import Revision, RunId
 from piloop.plugins.cas.contract import Cas
@@ -53,7 +54,7 @@ PROMPTS = Path(__file__).parent / 'prompts'
 GITIGNORE = '.gitignore'
 """What the built-in prompts say about each ``Part``, one file each."""
 FETCHED = 'refs/piloop/fetched/'
-"""Where a clone pins each commit that came as a bundle: it stays, and the next fetch names it as a commit it has."""
+"""Where a replica pins each commit that came as a bundle: it stays, and the next fetch names it as a commit it has."""
 
 
 def ref(why: Keep) -> str:
@@ -75,7 +76,7 @@ def runs(campaign: str, run: RunId) -> str:
 
 
 class GitRepository(Repository):
-    """A git checkout: the repo of record, a worker's clone, or a worktree of either."""
+    """A git checkout: the repo of record, a worker's replica, or a worktree of either."""
 
     def __init__(self, repo: Repo) -> None:
         self.repo = repo
@@ -115,7 +116,7 @@ class GitRepository(Repository):
         return bundles.bundle(cas, self.repo, revisions, have)
 
     def fetch(self, cas: Cas, revisions: Sequence[Revision], ask: Fetch) -> None:
-        """The clone names its newest commits, as git's have/want does, and pins those that came (``FETCHED``)."""
+        """The replica names its newest commits, as git's have/want does, and pins those that came (``FETCHED``)."""
         wanted = list(dict.fromkeys(revisions))
         held = set(git.commits(self.repo, wanted))
         if not (missing := [sha for sha in wanted if sha not in held]):
@@ -198,7 +199,12 @@ class Git(Vcs):
         except (InvalidGitRepositoryError, NoSuchPathError) as e:
             raise NotARepository(f'{path} is not a git checkout: {type(e).__name__}: {e}') from e
 
-    def clone(self, path: Path) -> GitRepository:
+    def clone(self, url: str, path: Path, credential: SecretStr | None) -> GitRepository:
+        """``git clone``. Over HTTPS, the credential is the password of the user ``x-access-token``."""
+        git.clone(url, path, credential)
+        return self.open(path)
+
+    def replica(self, path: Path) -> GitRepository:
         if not (path / '.git').is_dir():
             Repo.init(path)
         return self.open(path)

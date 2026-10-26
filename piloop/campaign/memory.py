@@ -5,13 +5,13 @@ next to the ideas, comments and lessons of every campaign. A sync inserts the te
 content (``UNIQUE (campaign_id, path, hash)``), so running it again does nothing, and an edited file is a new version.
 """
 
-from dataclasses import dataclass, field
 from pathlib import Path
 
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.orm import Session
 
 from piloop.actor import Actor
+from piloop.api.views import Synced
 from piloop.config import CampaignConfig
 from piloop.db.models import Campaign, Document
 from piloop.db.sql import digest
@@ -23,37 +23,24 @@ def title_of(text: str, path: str) -> str:
     return next((m[2] for line in text.splitlines() if (m := HEADING.match(line))), Path(path).stem)
 
 
-@dataclass
-class Synced:
-    """What one sync did: the files it added as a new version, the files already there, the files it could not read."""
-
-    added: list[str] = field(default_factory=list)
-    unchanged: list[str] = field(default_factory=list)
-    skipped: dict[str, str] = field(default_factory=dict)
-    """Repo-relative path → why the sync did not read it (not UTF-8 text, unreadable, outside the repo)."""
-
-    def line(self) -> str:
-        """One line for the console or a span event."""
-        skipped = ''.join(f'; skipped {path}: {why}' for path, why in self.skipped.items())
-        return f'documents: {len(self.added)} added, {len(self.unchanged)} unchanged{skipped}'
-
-
 def sync_documents(s: Session, campaign: Campaign, cfg: CampaignConfig, actor: Actor) -> Synced:
     """Insert every file under the repo that ``cfg.memory.documents`` matches and that is not in yet. It only flushes."""
     root = Path(campaign.path).resolve()
-    synced = Synced()
+    added: list[str] = []
+    unchanged: list[str] = []
+    skipped: dict[str, str] = {}
     for rel in _matches(root, cfg.memory.documents):
         path = root / rel
         if not path.resolve().is_relative_to(root):
-            synced.skipped[rel] = 'resolves outside the repo'
+            skipped[rel] = 'resolves outside the repo'
             continue
         try:
             text = path.read_text(encoding='utf-8')
         except UnicodeDecodeError as e:
-            synced.skipped[rel] = f'not UTF-8 text ({e.reason} at byte {e.start})'
+            skipped[rel] = f'not UTF-8 text ({e.reason} at byte {e.start})'
             continue
         except OSError as e:
-            synced.skipped[rel] = f'unreadable ({e.strerror})'
+            skipped[rel] = f'unreadable ({e.strerror})'
             continue
         values = {
             'campaign_id': campaign.id,
@@ -64,8 +51,8 @@ def sync_documents(s: Session, campaign: Campaign, cfg: CampaignConfig, actor: A
             'created_by': actor.signature,
         }
         inserted = s.scalar(insert(Document).values(values).on_conflict_do_nothing().returning(Document.id))
-        (synced.added if inserted is not None else synced.unchanged).append(rel)
-    return synced
+        (added if inserted is not None else unchanged).append(rel)
+    return Synced(added=added, unchanged=unchanged, skipped=skipped)
 
 
 def _matches(root: Path, globs: list[str]) -> list[str]:

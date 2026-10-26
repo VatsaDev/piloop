@@ -168,25 +168,21 @@ Show both files to the human. Ask once more before you register.
 
 ## 4. Register
 
-Run `piloop init .` again. It commits your edits, measures HEAD as the baseline and registers the campaign.
+Run `piloop init .` again. It commits your edits, starts the daemon unless one runs, registers the campaign, and waits
+while the daemon measures HEAD as the baseline. A baseline that fails to evaluate pauses the campaign, and `init` exits
+with why. The daemon's log is at `$PILOOP_HOME/serve.log`. `piloop stop` stops the daemon, not the
+campaign: the campaign stays active, and the next `piloop serve --detach` continues it.
 
 Tell the human the baseline value in one line. A surprising value means that the evaluate command is wrong.
 
-## 5. Start the daemon
-
-Run `piloop serve --detach`. The log is at `$PILOOP_HOME/serve.log`. `piloop stop` stops the daemon, not the
-campaign: the campaign stays active, and the next `piloop serve` continues it.
-
-Run `piloop status <name>`. It shows the pid of the daemon and the campaign.
-
-## 6. Start the backlog
+## 5. Start the backlog
 
 Do one of these:
 
 - Add two or three ideas with the human: `piloop idea add <name> '<title>' --hypothesis '…' --priority 1`.
 - Ask for a research sweep: `piloop launch <name> research`.
 
-## 7. Choose the orchestrator
+## 6. Choose the orchestrator
 
 While the campaign runs, someone must answer escalations and record decisions. That is you: follow the
 `piloop-operate` skill and its loop on `piloop inbox wait`. Ask the human, in one question, whether to run the loop in

@@ -616,6 +616,135 @@
         }
       }
     },
+    "/v1/campaigns": {
+      "post": {
+        "summary": "Register Campaign",
+        "description": "Register a campaign: a checkout where it is, or a repository that the daemon clones under its home first.\n\nIt adds the campaign with its head version as the baseline candidate, and syncs the ``[memory]`` documents. The\ndaemon then measures the baseline: its ``measurement.recorded`` event comes after the answer's cursor, and a\nbaseline that fails pauses the campaign. A clone that does not register is deleted.",
+        "operationId": "register_campaign",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/Checkout"
+                  },
+                  {
+                    "$ref": "#/components/schemas/Clone"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Registered"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/campaigns/{campaign}/sync": {
+      "post": {
+        "summary": "Sync Campaign",
+        "description": "Read the campaign's ``piloop.toml`` again, and sync its ``[memory]`` documents.\n\nA changed evaluate command, metric set or link makes a new evaluator. A stopped campaign whose stop conditions\nchanged is active again.",
+        "operationId": "sync_campaign",
+        "parameters": [
+          {
+            "name": "campaign",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "The campaign's name.",
+              "title": "Campaign"
+            },
+            "description": "The campaign's name."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignSynced"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/campaigns/{campaign}/pause": {
       "post": {
         "summary": "Pause",
@@ -1131,6 +1260,267 @@
               }
             },
             "description": "Conflict"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/secrets": {
+      "get": {
+        "summary": "List Secrets",
+        "description": "The secrets: the name, whose it is, and who set it last and when. Never a value.",
+        "operationId": "list_secrets",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecretList"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/secrets/{name}": {
+      "put": {
+        "summary": "Set Secret",
+        "description": "Set a secret of the home, or of the campaign named, in place of any. Agents get it from their next start.\n\nAn agent sets only its own campaign's secrets.",
+        "operationId": "set_secret",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+              "title": "Name"
+            }
+          },
+          {
+            "name": "campaign",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The campaign's name, or a path inside its repo.",
+              "title": "Campaign"
+            },
+            "description": "The campaign's name, or a path inside its repo."
+          },
+          {
+            "name": "cwd",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Where the client runs, as an absolute path: a relative path in ``campaign`` is from there.",
+              "title": "Cwd"
+            },
+            "description": "Where the client runs, as an absolute path: a relative path in ``campaign`` is from there."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SecretBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecretChanged"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Remove Secret",
+        "description": "Delete a secret of the home, or of the campaign named. An agent that starts after it no longer gets it.",
+        "operationId": "remove_secret",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+              "title": "Name"
+            }
+          },
+          {
+            "name": "campaign",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The campaign's name, or a path inside its repo.",
+              "title": "Campaign"
+            },
+            "description": "The campaign's name, or a path inside its repo."
+          },
+          {
+            "name": "cwd",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Where the client runs, as an absolute path: a relative path in ``campaign`` is from there.",
+              "title": "Cwd"
+            },
+            "description": "Where the client runs, as an absolute path: a relative path in ``campaign`` is from there."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecretChanged"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Forbidden"
           },
           "422": {
             "description": "Validation Error",
@@ -2535,7 +2925,7 @@
     "/v1/candidates/{candidate}/evaluation/cancel": {
       "post": {
         "summary": "Cancel Evaluation",
-        "description": "Cancel a candidate's evaluation, waiting or running, or its requested remeasure: it measures a crash at once.",
+        "description": "Cancel a candidate's evaluation, waiting or running, or its requested remeasure: it measures a crash at once.\n\nA baseline that never measured pauses its campaign, as when it fails (``ops.hold_on_failed_baseline``).",
         "operationId": "cancel_evaluation",
         "parameters": [
           {
@@ -3144,6 +3534,33 @@
         "title": "CampaignStatus",
         "description": "Whether the daemon still requests work for a campaign. ``stopped`` after a ``[stop]`` condition held."
       },
+      "CampaignSynced": {
+        "properties": {
+          "cursor": {
+            "type": "integer",
+            "title": "Cursor"
+          },
+          "campaign": {
+            "$ref": "#/components/schemas/CampaignEntry"
+          },
+          "was": {
+            "$ref": "#/components/schemas/CampaignStatus",
+            "description": "Its status before: a stopped campaign whose stop conditions changed is active again."
+          },
+          "documents": {
+            "$ref": "#/components/schemas/Synced"
+          }
+        },
+        "type": "object",
+        "required": [
+          "cursor",
+          "campaign",
+          "was",
+          "documents"
+        ],
+        "title": "CampaignSynced",
+        "description": "A campaign whose ``piloop.toml`` was read again, read at ``cursor``."
+      },
       "CancelBody": {
         "properties": {
           "ending": {
@@ -3258,6 +3675,35 @@
         ],
         "title": "Cause",
         "description": "Why an ``interesting`` verdict is not the verdict rule's own.\n\n``note``: an agent marked a regressed result as a lead (``piloop candidate note``, the ``Piloop-Note`` trailer).\n``moved``: it kept against its own bar, but the head moved on, so it was merged onto the head."
+      },
+      "Checkout": {
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "title": "Checkout",
+        "description": "A checkout on the daemon's machine, registered where it is."
+      },
+      "Clone": {
+        "properties": {
+          "clone": {
+            "$ref": "#/components/schemas/Remote"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "clone"
+        ],
+        "title": "Clone",
+        "description": "A repository that the daemon clones under its home, then registers."
       },
       "CommentKind": {
         "type": "string",
@@ -3604,6 +4050,10 @@
         ],
         "title": "Ending",
         "description": "How the daemon ends the agents of a stop or a cancel that someone requested."
+      },
+      "EnvName": {
+        "type": "string",
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
       },
       "Envelope": {
         "properties": {
@@ -4919,6 +5369,33 @@
         "title": "Reasoned",
         "description": "A change to an idea, with why: it goes into the event or a note on the idea."
       },
+      "Registered": {
+        "properties": {
+          "cursor": {
+            "type": "integer",
+            "title": "Cursor"
+          },
+          "campaign": {
+            "$ref": "#/components/schemas/CampaignEntry"
+          },
+          "baseline": {
+            "type": "integer",
+            "title": "Baseline"
+          },
+          "documents": {
+            "$ref": "#/components/schemas/Synced"
+          }
+        },
+        "type": "object",
+        "required": [
+          "cursor",
+          "campaign",
+          "baseline",
+          "documents"
+        ],
+        "title": "Registered",
+        "description": "A campaign that registering added, read at ``cursor``, with its baseline candidate, which the daemon measures."
+      },
       "RemeasureBody": {
         "properties": {
           "repeats": {
@@ -4982,6 +5459,32 @@
         ],
         "title": "Remeasured",
         "description": "A candidate that the daemon measures again."
+      },
+      "Remote": {
+        "properties": {
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "secret": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EnvName"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The name of the home's secret that holds the credential, such as a token. None: the host asks for none."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "url"
+        ],
+        "title": "Remote",
+        "description": "A repository to clone, and the home's secret that its host asks for."
       },
       "Rendered": {
         "properties": {
@@ -5129,6 +5632,122 @@
         ],
         "title": "RunningSince",
         "description": "An evaluation that has a slot of the executor."
+      },
+      "SecretBody": {
+        "properties": {
+          "value": {
+            "$ref": "#/components/schemas/Revealed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "value"
+        ],
+        "title": "SecretBody",
+        "description": "The value of a secret, in place of any."
+      },
+      "SecretChanged": {
+        "properties": {
+          "cursor": {
+            "type": "integer",
+            "title": "Cursor"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "campaign": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Campaign",
+            "description": "The name of the campaign whose secret it is. None: the home's."
+          }
+        },
+        "type": "object",
+        "required": [
+          "cursor",
+          "name",
+          "campaign"
+        ],
+        "title": "SecretChanged",
+        "description": "A secret that a change set or deleted, read at ``cursor``: never its value."
+      },
+      "SecretList": {
+        "properties": {
+          "secrets": {
+            "items": {
+              "$ref": "#/components/schemas/SecretView"
+            },
+            "type": "array",
+            "title": "Secrets"
+          }
+        },
+        "type": "object",
+        "required": [
+          "secrets"
+        ],
+        "title": "SecretList",
+        "description": "The secrets, the home's first, by name."
+      },
+      "SecretView": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "campaign": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Campaign",
+            "description": "The name of the campaign whose secret it is. None: the home's, for every campaign."
+          },
+          "set_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Set At",
+            "description": "None for a value that piloop did not set: a provider elsewhere."
+          },
+          "set_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Set By",
+            "description": "The actor that set it last."
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "campaign",
+          "set_at",
+          "set_by"
+        ],
+        "title": "SecretView",
+        "description": "A secret of the home or of a campaign: who set it last and when, never its value."
       },
       "Seed": {
         "properties": {
@@ -5387,6 +6006,40 @@
         ],
         "title": "Subject",
         "description": "The row that an event is about."
+      },
+      "Synced": {
+        "properties": {
+          "added": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Added"
+          },
+          "unchanged": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Unchanged"
+          },
+          "skipped": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Skipped",
+            "description": "Repo-relative path \u2192 why the sync did not read it (not UTF-8 text, unreadable, outside the repo)."
+          }
+        },
+        "type": "object",
+        "required": [
+          "added",
+          "unchanged",
+          "skipped"
+        ],
+        "title": "Synced",
+        "description": "What one sync of the ``[memory]`` documents did: the files that it added, those already in, those it skipped."
       },
       "Table": {
         "properties": {

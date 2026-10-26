@@ -2,75 +2,79 @@
 
 import errno
 import os
+import subprocess
 import threading
 import time
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
+from http import HTTPStatus
 from pathlib import Path
-from typing import Annotated, get_args, get_origin, get_type_hints
+from types import UnionType
+from typing import Annotated, TypeAliasType, get_args, get_origin, get_type_hints
 
 import httpx2 as httpx
 import pytest
 from fastapi.dependencies.models import Dependant
 from fastapi.routing import APIRoute
+from pydantic import BaseModel, SecretStr
 from pytest_mock import MockerFixture
 from rich.console import Console
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from piloop.actor import Agent, System
 from piloop.agents.results import PromptOutcome
 from piloop.api import client as client_module
 from piloop.api.client import Client, NoDaemon, Refused
 from piloop.api.contract import (
+    MAX_POLL_SECONDS,
     Access,
     AckBody,
     CancelBody,
+    Checkout,
+    Clone,
     EventsQuery,
     IdeaBody,
     InboxQuery,
     JournalBody,
     LaunchBody,
     LimitBody,
+    Located,
     NewsQuery,
     Params,
     PauseBody,
     Problem,
     PromptBody,
     Reasoned,
-    RemeasureBody,
+    Remote,
     ReplyBody,
+    SecretBody,
     Selection,
     StatusBody,
     StopBody,
     TokenBody,
     defaulted,
 )
-from piloop.api.views import (
-    CampaignState,
-    CancelledBy,
-    InvalidConfig,
-    Pending,
-    Queued,
-    RunningSince,
-    Status,
-    thread_lines,
-)
+from piloop.api.views import CampaignState, InvalidConfig, Pending, Queued, Status, thread_lines
 from piloop.cli import common, main as cli
 from piloop.daemon.api import ROUTERS, Handlers, daemon_state, openapi, with_api
 from piloop.db.events import emit
 from piloop.db.models import (
+    EVENT,
     AgentSession,
     AgentSessionState,
     Campaign,
     Comment,
     Evaluation,
     Event,
+    EventModel,
     Journal,
+    Pause,
     RunStatus,
     UnknownEvent,
     utcnow,
 )
 from piloop.db.session import Database
+from piloop.db.triggers.changelog import CampaignPausedChanged
 from piloop.ids import (
     AgentSessionId,
     CampaignStatus,
@@ -92,12 +96,15 @@ from piloop.net.tokens import Tokens
 from piloop.plugins.network.contract import NetworkHost
 from piloop.plugins.network.https import ACTOR_HEADER, TOKEN_ENV, Https
 from piloop.plugins.network.proxy import Proxy
-from piloop.plugins.secrets.contract import HomeSecrets
+from piloop.plugins.secrets.contract import HomeSecrets, values
 from piloop.plugins.secrets.local import LocalSecrets
+from piloop.plugins.vcs.git import Git
+from piloop.scoring.api import CancelledBy, RemeasureBody, RunningSince, ScoringClient
+from piloop.scoring.ledger import MeasurementRecorded
 from piloop.settings import Settings
 from piloop.watch.panels import Context, InboxPanel
 from tests.campaign.test_stop import add_run
-from tests.conftest import disk, home_cas, serving_api, store_config
+from tests.conftest import disk, home_cas, measuring, serving_api, store_config
 
 
 @pytest.fixture
@@ -262,7 +269,7 @@ def test_each_method_of_the_client_calls_its_route_with_the_route_s_models() -> 
         sent.append(request)
         return httpx.Response(500, text='only the request counts')
 
-    client = Client(httpx.Client(transport=httpx.MockTransport(record), base_url='http://piloop'))
+    client = ScoringClient(httpx.Client(transport=httpx.MockTransport(record), base_url='http://piloop'))
     for route in [r for routes in ROUTERS for r in routes.routes]:
         assert isinstance(route, APIRoute)
         hints = get_type_hints(getattr(client, route.name))
@@ -270,9 +277,11 @@ def test_each_method_of_the_client_calls_its_route_with_the_route_s_models() -> 
         path = _path_params(route.dependant)
         assert answer is route.response_model, route.name
         assert {n for n, _ in taken if n in path} == path, f"{route.name}: the route's path parameters"
-        assert all(t in _queries(route) for n, t in taken if n not in path), f"{route.name}: the route's query model"
+        assert all({*_models(t)} <= _queries(route) for n, t in taken if n not in path), (
+            f"{route.name}: the route's query model"
+        )
         with pytest.raises(Refused):
-            getattr(client, route.name)(*('1' if n in path else t.model_construct() for n, t in taken))
+            getattr(client, route.name)(*('1' if n in path else _models(t)[0].model_construct() for n, t in taken))
         sent_path = route.path.format(**dict.fromkeys(path, 1))
         assert ({sent[-1].method}, sent[-1].url.path) == (route.methods, sent_path), route.name
 
@@ -287,10 +296,23 @@ def _queries(route: APIRoute) -> set[type]:
     found: set[type] = set()
     for call in (route.endpoint, *(d.call for d in route.dependant.dependencies if d.call is not None)):
         for hint in get_type_hints(call, include_extras=True).values():
-            model = get_args(hint)[0] if get_origin(hint) is Annotated else hint
-            if isinstance(model, type) and issubclass(model, Params):
-                found.add(model)
+            found.update(model for model in _models(hint) if issubclass(model, Params))
     return found
+
+
+def _models(hint: object) -> list[type[BaseModel]]:
+    """The models of a hint: itself, the one that it annotates, or each of a union's, as a type alias names them."""
+    match hint:
+        case TypeAliasType():
+            return _models(hint.__value__)
+        case UnionType():
+            return [model for arg in get_args(hint) for model in _models(arg)]
+        case type() if issubclass(hint, BaseModel):
+            return [hint]
+        case _ if get_origin(hint) is Annotated:
+            return _models(get_args(hint)[0])
+        case _:
+            return []
 
 
 def comment(db: Database, author: str, body: str) -> None:
@@ -387,7 +409,7 @@ def test_a_proxy_caller_s_ack_reply_and_pause_sign_as_the_person_it_names(
 def test_a_write_answers_its_cursor_and_refuses_what_its_operation_refuses(
     db: Database, campaign: Campaign, cfg: Settings
 ) -> None:
-    with serving_api(cfg), Client.on(cfg.socket_file, System.HUMAN) as client:
+    with serving_api(cfg), ScoringClient.on(cfg.socket_file, System.HUMAN) as client:
         added = client.add_idea('demo', IdeaBody(title='try a cache', priority=1))
         assert (added.idea.title, added.idea.status, added.idea.created_by, added.review) == (
             'try a cache',
@@ -430,7 +452,7 @@ def test_the_evaluation_queue_answers_each_state_and_a_cancel_refuses_a_candidat
     with db.session() as s:
         s.add(Evaluation(candidate_id=1, evaluator_id=campaign.evaluator_id, created_at=then, started_at=then))
         s.commit()
-    with serving_api(cfg), Client.on(cfg.socket_file, System.ORCHESTRATOR) as client:
+    with serving_api(cfg), ScoringClient.on(cfg.socket_file, System.ORCHESTRATOR) as client:
         [running] = client.evaluations().evaluations
         assert (running.candidate, running.campaign, running.summary) == (1, 'demo', 'baseline')
         assert running.state == RunningSince(since=then)
@@ -445,6 +467,24 @@ def test_the_evaluation_queue_answers_each_state_and_a_cancel_refuses_a_candidat
         with pytest.raises(Refused, match='^no candidate#9$') as unknown:
             client.cancel_evaluation(CandidateId(9))
         assert unknown.value.error == Problem.UNKNOWN_CANDIDATE
+    with db.session() as s:
+        assert s.get_one(Campaign, campaign.id).paused is None, 'a baseline that measured before holds nothing'
+
+
+def test_a_cancelled_evaluation_of_a_baseline_that_never_measured_pauses_its_campaign(
+    db: Database, campaign_path: Path, cfg: Settings
+) -> None:
+    with serving_api(cfg), ScoringClient.on(cfg.socket_file, System.HUMAN) as client:
+        added = client.register_campaign(Checkout(path=str(campaign_path)))
+        client.remeasure(added.baseline, RemeasureBody())
+        client.cancel_evaluation(added.baseline)
+    with db.session() as s:
+        held = s.get_one(Campaign, added.campaign.id)
+        assert (held.paused, held.paused_reason) == (
+            Pause.LAUNCHES,
+            'the baseline failed to evaluate: evaluation cancelled by human; fix it, then'
+            f' `piloop candidate remeasure {added.baseline}` and `piloop resume demo`',
+        )
 
 
 def test_a_limit_is_set_and_unset_by_an_admin_and_refused_on_a_key_that_is_not_live(
@@ -467,6 +507,160 @@ def test_a_limit_is_set_and_unset_by_an_admin_and_refused_on_a_key_that_is_not_l
         actor = {'Authorization': f'Bearer {token(db, "ana", Access.ACT)}'}
         refused = httpx.get(tcp.url + '/v1/limits', headers=actor)
     assert refused.json() == {'detail': 'ana has act access, and this route needs admin'}
+
+
+def test_an_admin_sets_lists_and_removes_secrets_and_an_agent_writes_only_its_own_campaign_s(
+    db: Database, campaign: Campaign, cfg: Settings, tmp_path: Path
+) -> None:
+    with db.session() as s:
+        s.add(Campaign(name='other', path=str(tmp_path / 'other'), config=campaign.config))
+        s.add(AgentSession(kind='watchdog', campaign_id=campaign.id))
+        s.commit()
+    home, demo, other = Located(), Located(campaign='demo'), Located(campaign='other')
+    body = SecretBody(value=SecretStr('s3cret'))
+    assert 's3cret' not in repr(body), 'a log of the body shows no value'
+    agent = Agent(role='watchdog', session=1)
+    with (
+        serving_api(cfg, listen='127.0.0.1:0') as [_, tcp],
+        Client.on(cfg.socket_file, System.HUMAN) as admin,
+        Client.on(cfg.socket_file, agent) as watchdog,
+    ):
+        assert admin.set_secret('KEY', home, body).campaign is None
+        assert admin.set_secret('KEY', demo, body).campaign == 'demo'
+        for elsewhere in (home, other):
+            with pytest.raises(Refused, match='^watchdog#1 writes only the secrets of its own campaign$') as denied:
+                watchdog.set_secret('KEY', elsewhere, body)
+            assert denied.value.error == Problem.FORBIDDEN
+        with pytest.raises(Refused, match='^watchdog#1 writes only the secrets') as denied:
+            watchdog.remove_secret('KEY', home)
+        assert denied.value.error == Problem.FORBIDDEN
+        assert watchdog.set_secret('OWN', demo, body).campaign == 'demo'
+        listed = [(f.name, f.campaign, f.set_by) for f in admin.list_secrets().secrets]
+        assert listed == [('KEY', None, 'human'), ('KEY', 'demo', 'human'), ('OWN', 'demo', 'watchdog#1')]
+        with db.session() as s:
+            assert values(s, LocalSecrets(), AgentSessionId(1), ['OWN'])['OWN'].get_secret_value() == 's3cret'
+        assert admin.remove_secret('KEY', demo).campaign == 'demo'
+        with pytest.raises(Refused, match=r'^campaign demo has no secret KEY: see `piloop secret list`$') as unknown:
+            admin.remove_secret('KEY', demo)
+        assert unknown.value.error == Problem.UNKNOWN_SECRET
+        with pytest.raises(Refused) as nowhere:
+            admin.set_secret('KEY', Located(campaign='nowhere'), body)
+        assert nowhere.value.error == Problem.UNKNOWN_CAMPAIGN
+        with pytest.raises(Refused, match='^name: String should match pattern'):
+            admin.set_secret('1X', home, body)
+        actor = {'Authorization': f'Bearer {token(db, "ana", Access.ACT)}'}
+        refused = httpx.get(tcp.url + '/v1/secrets', headers=actor)
+    assert refused.json() == {'detail': 'ana has act access, and this route needs admin'}
+
+
+def bare(checkout: Path, at: Path) -> str:
+    """A bare clone of ``checkout`` at ``at``, as a file:// URL."""
+    subprocess.run(['git', 'clone', '-q', '--bare', str(checkout), str(at)], check=True)
+    return at.as_uri()
+
+
+def first(client: Client, after: int, *kinds: str) -> EventModel:
+    """The payload of the first event of ``kinds`` after the cursor ``after``, once it comes."""
+    while not (batch := client.events(EventsQuery(after=after, kind=kinds, wait=MAX_POLL_SECONDS))).events:
+        after = batch.next
+    return EVENT.validate_python(batch.events[0].payload)
+
+
+def test_a_checkout_registers_at_once_the_daemon_measures_its_baseline_and_its_piloop_toml_is_read_again(
+    db: Database, campaign_path: Path, cfg: Settings
+) -> None:
+    with serving_api(cfg), Client.on(cfg.socket_file, System.HUMAN) as client:
+        added = client.register_campaign(Checkout(path=str(campaign_path)))
+        assert (added.campaign.name, added.campaign.path, added.baseline) == (
+            'demo',
+            str(campaign_path),
+            CandidateId(1),
+        )
+        assert isinstance(added.campaign, CampaignState)
+        head = added.campaign.head
+        assert head is not None and (head.candidate, [t.value for t in head.tracks]) == (added.baseline, [None]), (
+            'the baseline is the head, and nothing measured it yet'
+        )
+        assert added.documents.line() == 'documents: 0 added, 0 unchanged'
+        with measuring(cfg):  # the daemon's next pass, which also follows a restart
+            recorded = first(client, added.cursor, *MeasurementRecorded.kinds())
+        assert recorded == MeasurementRecorded(
+            candidate=added.baseline, metrics={'score': 1.0, 'size': 5.0}, error=None, run=None
+        )
+        with pytest.raises(Refused, match=f"^campaign name 'demo' is already used by {campaign_path};") as taken:
+            client.register_campaign(Checkout(path=str(campaign_path)))
+        assert taken.value.error == Problem.REFUSED
+        with pytest.raises(Refused, match='^path: an absolute path, not campaign$'):
+            client.register_campaign(Checkout.model_construct(path='campaign'))
+        transport = httpx.HTTPTransport(uds=str(cfg.socket_file))
+        with httpx.Client(transport=transport, base_url='http://piloop') as raw:
+            for neither_or_both in ({}, {'path': str(campaign_path), 'clone': {'url': 'file:///x.git'}}):
+                assert raw.post('/v1/campaigns', json=neither_or_both).status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+        with db.session() as s:
+            s.execute(update(Campaign).values(status=CampaignStatus.STOPPED))
+            s.commit()
+        (campaign_path / 'piloop.toml').write_text('name = "demo"\n')
+        with pytest.raises(Refused, match='is not a valid piloop config') as invalid:
+            client.sync_campaign('demo')
+        assert invalid.value.error == Problem.REFUSED
+        subprocess.run(['git', 'checkout', '-q', 'piloop.toml'], cwd=campaign_path, check=True)
+        synced = client.sync_campaign('demo')
+        assert (synced.was, synced.campaign.status) == (CampaignStatus.STOPPED, CampaignStatus.STOPPED), (
+            'the stop conditions did not change'
+        )
+
+
+def test_a_baseline_that_fails_to_evaluate_registers_and_then_pauses_its_campaign(
+    db: Database, campaign_path: Path, cfg: Settings
+) -> None:
+    toml = campaign_path / 'piloop.toml'
+    toml.write_text(toml.read_text().replace('"sh", "-c"', '"false", "-c"'))
+    with serving_api(cfg), measuring(cfg), Client.on(cfg.socket_file, System.HUMAN) as client:
+        added = client.register_campaign(Checkout(path=str(campaign_path)))
+        paused = first(client, added.cursor, *CampaignPausedChanged.kinds())
+    logs = cfg.home / 'projects' / str(added.campaign.id) / 'measure' / f'{added.baseline}-e1'
+    assert isinstance(paused, CampaignPausedChanged) and paused.new is Pause.LAUNCHES
+    assert paused.paused_reason == (
+        f'the baseline failed to evaluate: evaluate exit 1: ; its logs are in {logs}; fix it, then'
+        f' `piloop candidate remeasure {added.baseline}` and `piloop resume demo`'
+    )
+    with db.session() as s:
+        assert s.get_one(Campaign, added.campaign.id).name == 'demo', 'it stays registered'
+
+
+def test_a_git_url_is_cloned_under_the_home_with_the_home_s_secret_and_then_registered(
+    db: Database, campaign_path: Path, cfg: Settings, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    url = bare(campaign_path, tmp_path / 'demo.git')
+    cloned = mocker.spy(Git, 'clone')
+    with serving_api(cfg), Client.on(cfg.socket_file, System.HUMAN) as client:
+        with pytest.raises(Refused, match=r'^the home has no secret TOKEN: see `piloop secret list`$') as unknown:
+            client.register_campaign(Clone(clone=Remote(url=url, secret='TOKEN')))
+        assert unknown.value.error == Problem.REFUSED and not (cfg.home / 'repos').exists()
+        client.set_secret('TOKEN', Located(), SecretBody(value=SecretStr('tok')))
+        added = client.register_campaign(Clone(clone=Remote(url=url, secret='TOKEN')))
+        checkout = cfg.home / 'repos' / 'demo'
+        assert added.campaign.path == str(checkout)
+        [(_, _, path, credential)] = [c.args for c in cloned.call_args_list]
+        assert (path, credential.get_secret_value()) == (checkout, 'tok')
+        with pytest.raises(Refused, match=f'^{checkout} exists: register that checkout by its path') as exists:
+            client.register_campaign(Clone(clone=Remote(url=url)))
+        assert exists.value.error == Problem.REFUSED
+
+
+def test_a_clone_that_fails_or_does_not_register_leaves_nothing_under_the_home(
+    db: Database, campaign_path: Path, cfg: Settings, tmp_path: Path
+) -> None:
+    url = bare(campaign_path, tmp_path / 'taken.git')
+    with serving_api(cfg), Client.on(cfg.socket_file, System.HUMAN) as client:
+        with pytest.raises(Refused, match='^git clone of file:///nowhere.git failed: ') as failed:
+            client.register_campaign(Clone(clone=Remote(url='file:///nowhere.git')))
+        assert failed.value.error == Problem.REFUSED
+        client.register_campaign(Checkout(path=str(campaign_path)))
+        with pytest.raises(Refused, match="^campaign name 'demo' is already used") as taken:
+            client.register_campaign(Clone(clone=Remote(url=url)))
+        assert taken.value.error == Problem.REFUSED
+    assert list((cfg.home / 'repos').iterdir()) == [], 'a retry clones again'
 
 
 def test_an_admin_makes_a_token_whose_secret_only_its_answer_carries_and_revokes_it(

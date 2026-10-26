@@ -18,11 +18,16 @@ from tests.cli.test_cli import run_cli
 
 
 @pytest.fixture
-def out(db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def isolated_home(db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Console:
     monkeypatch.setattr(common, 'settings', Settings(home=tmp_path, uv_tool_dir=tmp_path / 'uv-tools'))
     console = Console(record=True, width=200, force_terminal=False)
     monkeypatch.setattr(common, 'console', console)
-    return lambda: console.export_text(clear=True)
+    return console
+
+
+@pytest.fixture
+def out(isolated_home: Console, api: object):
+    return lambda: isolated_home.export_text(clear=True)
 
 
 def piped(monkeypatch: pytest.MonkeyPatch, args: list[str], stdin: str) -> None:

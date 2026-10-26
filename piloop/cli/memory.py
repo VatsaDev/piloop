@@ -5,9 +5,10 @@ from typing import Annotated
 import cyclopts
 from pydantic import ValidationError
 
+from piloop.api.client import Client
 from piloop.api.contract import JOURNAL_LINE_BYTES, JournalBody
 from piloop.cli import common
-from piloop.cli.client import api
+from piloop.cli.client import daemon_http
 
 
 def journal(line: Annotated[str, cyclopts.Parameter(help=f'At most {JOURNAL_LINE_BYTES} bytes.')], /) -> None:
@@ -19,5 +20,5 @@ def journal(line: Annotated[str, cyclopts.Parameter(help=f'At most {JOURNAL_LINE
         body = JournalBody(line=line)
     except ValidationError as e:
         raise SystemExit(e.errors()[0]['msg']) from e
-    with api() as client:
+    with Client.connect(daemon_http()) as client:
         common.console.print(f'journal#{client.journal(body).journal}', markup=False)

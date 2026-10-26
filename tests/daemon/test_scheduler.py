@@ -36,6 +36,7 @@ from piloop.agents.results import (
     WrapUp,
 )
 from piloop.agents.roles import SQL_HINT, compose_brief
+from piloop.campaign import campaigns, ops
 from piloop.campaign.campaigns import sync
 from piloop.campaign.stop import request_cancel, request_stop, runs
 from piloop.config import CampaignConfig, load_campaign_config
@@ -60,6 +61,7 @@ from piloop.db.models import (
     LeaseState,
     Measurement,
     Origin,
+    Pause,
     Run,
     RunEnd,
     RunStatus,
@@ -102,6 +104,7 @@ from piloop.plugins.vcs.git import UNCOMMITTED, GitRepository, commands as git
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring.ledger import current_evaluator, due, head, import_reference, request_remeasure
 from tests.conftest import (
+    EVALUATE,
     HARNESS_APPEND,
     HARNESS_SLEEPS,
     HARNESS_TWO_COMMITS,
@@ -1493,6 +1496,62 @@ def measured_by(db: Database, candidate_id: CandidateId) -> list[tuple[int, floa
     with db.session() as s:
         rows = s.get_one(Candidate, candidate_id).measurements
         return [(m.evaluator_id, m.metrics.get('score'), m.error) for m in rows]
+
+
+def test_the_next_pass_measures_a_registered_baseline_with_its_links_and_unpinned_runs_wait_for_it(
+    db: Database, campaign_path: Path, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """Registering measures nothing. The daemon's next pass does, also the first pass of a daemon that restarted."""
+    write_toml(
+        campaign_path, HARNESS_APPEND, evaluate=['sh', '-c', 'echo METRIC score=$(cat data/x.csv); echo METRIC size=1']
+    )
+    with db.session() as s:
+        campaign, baseline = campaigns.register(s, campaign_path, System.HUMAN)
+        s.commit()
+        assert baseline.measurements == []
+    add_ideas(db, campaign, 'one more line')
+    sched = make_scheduler(db, runtime, tmp_path)
+    assert sched.run_all() == [], 'the run waits for the baseline'
+    sched.wait()
+    assert measured_by(db, baseline.id) == [(1, 1.0, None)], 'the linked data/x.csv is in its checkout'
+    assert sched.run_all() == [1]
+
+
+def test_a_baseline_that_fails_to_evaluate_pauses_its_campaign_and_one_measured_before_does_not(
+    db: Database, campaign_path: Path, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    write_toml(campaign_path, HARNESS_APPEND, evaluate=['false'])
+    with db.session() as s:
+        campaign, baseline = campaigns.register(s, campaign_path, System.HUMAN)
+        s.commit()
+    sched = make_scheduler(db, runtime, tmp_path)
+
+    def evaluated(evaluate: list[str] = EVALUATE) -> Campaign:
+        """The campaign once the daemon measured its baseline with ``evaluate``, and acted on what that did."""
+        write_toml(campaign_path, HARNESS_APPEND, evaluate=evaluate)
+        with db.session() as s:
+            sync(s, s.get_one(Campaign, campaign.id))
+            s.commit()
+        sched.run_all()
+        sched.wait()
+        sched.run_all()
+        with db.session() as s:
+            return s.get_one(Campaign, campaign.id)
+
+    logs = tmp_path / 'projects' / str(campaign.id) / 'measure' / f'{baseline.id}-e1'
+    held = evaluated(['false'])
+    assert (held.status, held.paused, held.paused_reason) == (
+        CampaignStatus.ACTIVE,
+        Pause.LAUNCHES,
+        f'the baseline failed to evaluate: evaluate exit 1: ; its logs are in {logs}; fix it, then'
+        f' `piloop candidate remeasure {baseline.id}` and `piloop resume demo`',
+    )
+    assert evaluated().paused is Pause.LAUNCHES, 'the pause still measures: a fixed evaluate command measures it'
+    with db.session() as s:  # the human resumes it
+        ops.resume(s, campaign.id)
+        s.commit()
+    assert evaluated(['false', 'again']).paused is None, 'an older evaluator measured the baseline'
+    assert [error is None for _, _, error in measured_by(db, baseline.id)] == [False, True, False]
 
 
 def test_a_new_evaluator_measures_the_head_runs_wait_for_it_and_older_keeps_only_on_request(

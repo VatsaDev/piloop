@@ -20,9 +20,11 @@ evaluations = 1
 Set `tls` in `[plugins.network]`: a certificate, `tls = { cert = "<cert.pem>", key = "<key.pem>" }`, or `"proxy"`
 when a reverse proxy or an SSH tunnel ends TLS. Only a loopback address may go without it.
 
-Then listen, serve the CAS, and make the worker's token:
+Then listen, serve the CAS, and make the worker's token. `piloop init` started a daemon on the socket only, so stop it
+first:
 
 ```bash
+piloop stop
 piloop serve --detach --listen 0.0.0.0:8443
 piloop cas serve --listen 0.0.0.0:7701
 piloop token create gpu1

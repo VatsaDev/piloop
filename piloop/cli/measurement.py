@@ -6,10 +6,10 @@ from typing import Annotated
 import cyclopts
 from pydantic import ValidationError
 
-from piloop.api.contract import Report
 from piloop.cli import common
-from piloop.cli.client import api
+from piloop.cli.client import daemon_http
 from piloop.ids import CandidateId
+from piloop.scoring.api import Report, ScoringClient
 
 app = cyclopts.App(name='measurement', help='Record a measurement made outside the daemon.')
 
@@ -37,6 +37,6 @@ def measurement_add(
         parsed = Report.model_validate_json(report.read_text())
     except ValidationError as e:
         raise SystemExit(f'the report is not {{"metrics": {{…}}, "seconds": …, "error": …}}: {e}') from e
-    with api() as client:
+    with ScoringClient.connect(daemon_http()) as client:
         added = client.add_measurement(candidate_id, parsed)
     common.console.print(f'measurement#{added.measurement} of candidate#{candidate_id}: {added.effect}', markup=False)

@@ -42,6 +42,7 @@ from piloop.campaign.campaigns import (
     vcs_of,
     workspace_dir,
 )
+from piloop.campaign.ops import hold_on_failed_baseline
 from piloop.campaign.stop import attempts, park_cancelled, run_cancel, timeout as agent_timeout
 from piloop.config import TRANSCRIPT, CampaignConfig, Track
 from piloop.db.events import emit, has, in_order, latest
@@ -671,7 +672,8 @@ class RunController:
         asks (``ledger.request_remeasure``). What someone asked for is a paired evaluation: ``repeats`` samples, each
         next to one of its bar's (``bar_of`` its parent). Then a ``crash``, ``discard`` or ``interesting`` that the
         daemon judged is judged again on the pairs (``_rejudge``), as after ``piloop measurement add``. What runs need,
-        the head and the bars, gets one sample.
+        the head and the bars, gets one sample. A baseline that fails and never measured pauses its campaign
+        (``hold_on_failed_baseline``).
         """
         with self._db.session() as s:
             candidate = s.get_one(Candidate, candidate_id)
@@ -698,8 +700,12 @@ class RunController:
             with self._db.session() as s:
                 error = Sample(metrics={}, seconds=0.0, error=f'{type(e).__name__}: {e}')
                 record(s, self._units_dir, None, candidate_id, evaluator_id, error)
+                hold_on_failed_baseline(s, s.get_one(Candidate, candidate_id), None)
                 s.commit()
             return
+        with self._db.session() as s:
+            hold_on_failed_baseline(s, s.get_one(Candidate, candidate_id), eval_dir)
+            s.commit()
         self._rejudge(candidate_id, repo, eval_dir)
 
     def rejudge(self, candidate_id: CandidateId) -> None:

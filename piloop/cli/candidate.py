@@ -5,12 +5,12 @@ from typing import Annotated
 import cyclopts
 from cyclopts import validators
 
-from piloop.api.contract import REPEATS, ImportBody, NoteBody, RemeasureBody, VerdictBody
 from piloop.cli import common
-from piloop.cli.client import api, campaign_name
+from piloop.cli.client import campaign_name, daemon_http
 from piloop.cli.common import CampaignRef
 from piloop.ids import CandidateId, TrackName
 from piloop.plugins.verdict_rule.contract import Outcome
+from piloop.scoring.api import REPEATS, ImportBody, NoteBody, RemeasureBody, ScoringClient, VerdictBody
 
 app = cyclopts.App(
     name='candidate',
@@ -37,7 +37,7 @@ def candidate_import(
     It does not count in the kept total, the sparkline or a stop condition. To import a candidate of another campaign,
     bring its `revision` into this campaign's repo first.
     """
-    with api() as client:
+    with ScoringClient.connect(daemon_http()) as client:
         name = campaign_name(client, ref)
         candidate = client.import_candidate(name, ImportBody(version=version, summary=summary)).candidate
     common.console.print(
@@ -65,7 +65,7 @@ def candidate_remeasure(
     is paused with `--evals`, or held by its stop rule. A commit that the daemon never measured, `skipped` or
     `recovered`, is measured and judged. A pending candidate is refused: its run measures and judges it.
     """
-    with api() as client:
+    with ScoringClient.connect(daemon_http()) as client:
         done = client.remeasure(candidate_id, RemeasureBody(repeats=repeats))
     later = '' if done.held is None else f' {done.held}'
     bar = 'alone' if done.bar is None else f'next to its bar candidate#{done.bar}'
@@ -104,7 +104,7 @@ def candidate_note(
     candidate. An implementer files no follow-ups. When its candidate does not exist yet, an implementer notes the
     version that it saves instead, and the daemon applies the note when it judges the version.
     """
-    with api() as client:
+    with ScoringClient.connect(daemon_http()) as client:
         noted = client.note(candidate_id, NoteBody(reason=reason, follow_ups=follow_ups, track=track))
     candidate = noted.candidate
     common.console.print(
@@ -130,7 +130,7 @@ def candidate_verdict(
     kept. So the candidate becomes `interesting`, and its merge onto the head is a new candidate that the daemon
     measures and judges against the head, as for its own keeps. A merge that conflicts files a seed to compose it.
     """
-    with api() as client:
+    with ScoringClient.connect(daemon_http()) as client:
         done = client.set_verdict(candidate_id, VerdictBody(verdict=verdict, reason=reason))
     common.console.print(
         f'candidate#{candidate_id} {done.was} → {done.candidate.label}: {done.candidate.verdict_reason}', markup=False

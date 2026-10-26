@@ -69,7 +69,6 @@ jobs:
           mkdir -p /tmp/enwik8/data && cp /tmp/enwik8.zip /tmp/enwik8/data/
           piloop init --example enwik8 /tmp/enwik8 | tee /tmp/init.txt
           grep -q "registered; baseline candidate#1" /tmp/init.txt
-          piloop serve --detach
           piloop status enwik8
           piloop stop
       - name: the example plugins install next to piloop and are selected through the configuration
@@ -84,7 +83,7 @@ jobs:
         run: |
           export PATH="$HOME/.local/bin:$PATH"
           uv tool install --force --from . piloop $(printf -- '--with ./%s ' examples/plugins/*/)
-          mkdir -p "$PILOOP_HOME" && printf '[plugins.cas]\nprovider = "sqlite"\npath = "/tmp/plugins-blobs.sqlite"\n' > "$PILOOP_HOME/config.toml"
+          mkdir -p -m 700 "$PILOOP_HOME" && printf '[plugins.cas]\nprovider = "sqlite"\npath = "/tmp/plugins-blobs.sqlite"\n' > "$PILOOP_HOME/config.toml"
           piloop serve --check
           mkdir -p /tmp/enwik8-nice/data && cp /tmp/enwik8.zip /tmp/enwik8-nice/data/
           piloop init --example enwik8 /tmp/enwik8-nice

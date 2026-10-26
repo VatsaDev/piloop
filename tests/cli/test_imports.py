@@ -21,6 +21,7 @@ HEAVY = ('sqlalchemy', 'alembic', 'git', 'textual', 'fastapi', 'uvicorn', 'coval
         'evaluation',
         'limits',
         'token',
+        'secret',
         'memory',
     ],
 )

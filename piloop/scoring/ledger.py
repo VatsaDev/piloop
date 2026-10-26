@@ -19,7 +19,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from piloop.actor import Actor, System
-from piloop.api.contract import REPEATS
 from piloop.config import CampaignConfig, Metric, Track
 from piloop.db import requests
 from piloop.db.events import emit
@@ -79,6 +78,7 @@ from piloop.plugins.verdict_rule.contract import (
     Trunk,
     VerdictRule,
 )
+from piloop.scoring.api import REPEATS
 from piloop.scoring.evaluate import UNITS, Units
 from piloop.scoring.verdict import judgeable, label, pending, pending_clause
 from piloop.text import metric

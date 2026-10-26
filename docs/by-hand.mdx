@@ -18,9 +18,11 @@ into as few bytes as possible. The agents edit `compressor.py`. The baseline is 
     cd ~/piloop-enwik8
     ```
 
-    `piloop init` copies the example, downloads the data, makes a git repo and measures the baseline:
+    `piloop init` copies the example, downloads the data, makes a git repo, starts the daemon and measures the
+    baseline. The daemon's log is `~/.piloop/serve.log`.
 
     ```text
+    daemon started: pid 41213, log ~/.piloop/serve.log
     campaign enwik8 #1 registered; baseline candidate#1: bytes 3688775, seconds 0.67
     ```
 
@@ -36,14 +38,7 @@ into as few bytes as possible. The agents edit `compressor.py`. The baseline is 
     idea#1 ready p2: Try lzma at the highest preset
     ```
 
-    When the backlog is short, the research agent adds more ideas.
-  </Step>
-  <Step title="Start the daemon">
-    ```bash
-    piloop serve --detach
-    ```
-
-    The daemon starts an implementer for the idea. Its log is `~/.piloop/serve.log`.
+    The daemon starts an implementer for the idea. When the backlog is short, the research agent adds more ideas.
   </Step>
   <Step title="Watch the campaign">
     ```bash
@@ -112,8 +107,8 @@ The second example, `piloop init --example titanic-tracks ~/piloop-titanic`, has
     that exists already. It stops while `evaluate.py` is the stub.
 
     <Warning>
-      If your repo has an `evaluate.py` already, `piloop init` keeps it and does not stop. It measures the baseline
-      with the template's `piloop.toml`, which usually fails. Edit `piloop.toml`, then run `piloop init` again.
+      If your repo has an `evaluate.py` already, `piloop init` keeps it and does not stop. It registers the campaign
+      with the template's `piloop.toml`, whose baseline usually fails to evaluate, and that pauses the campaign until you fix it.
     </Warning>
   </Step>
   <Step title="Write the evaluate command">
@@ -134,12 +129,11 @@ The second example, `piloop init --example titanic-tracks ~/piloop-titanic`, has
     piloop init
     ```
 
-    This commits your edits and measures `HEAD` as the baseline. A baseline that surprises you usually means that the
+    This commits your edits, starts the daemon and measures `HEAD` as the baseline. A baseline that surprises you usually means that the
     evaluate command is wrong.
   </Step>
   <Step title="Start the campaign">
     ```bash
-    piloop serve --detach
     piloop idea add my-repo "Cache the parsed input" --hypothesis "Parsing takes 40% of the time" --priority 1
     piloop watch
     ```

@@ -1,32 +1,34 @@
-"""What the commands that call the API share: the client of the home's daemon, and where the command runs.
+"""What the commands that call the API share: the daemon to call, and where the command runs.
+
+A command calls ``Client.connect(daemon_http())``, or the client of a capability's routes the same way. ``main.answered``
+turns no daemon, and a refusal, into the message to exit with.
 
 Each command that opens the database instead (``piloop.cli.local``) imports none of it.
 """
 
-from collections.abc import Generator
-from contextlib import contextmanager
 from pathlib import Path
 
-from piloop.api.client import Client, NoDaemon, Refused
+import httpx2 as httpx
+
+from piloop.api.client import Client, socket_http
 from piloop.api.contract import Selection
 from piloop.cli import common
 
 
-@contextmanager
-def api() -> Generator[Client]:
-    """A client of the home's daemon. Exit with what to do when there is no daemon or it refuses the call."""
-    actor, server = common.settings.actor, common.settings.server
-    try:
-        if server is None:
-            with Client.on(common.settings.socket_file, actor) as client:
-                yield client
-        else:
-            from piloop.plugins.network.contract import NETWORKS  # only a remote call needs a network's client
+def daemon_http() -> httpx.Client:
+    """The HTTP client of the daemon that this command calls.
 
-            with Client.at(NETWORKS.selected(common.settings.providers).client(server, actor)) as client:
-                yield client
-    except (NoDaemon, Refused) as e:
-        raise SystemExit(str(e)) from e
+    It is the home's socket, else ``PILOOP_SERVER`` through the home's network, which carries the actor.
+
+    Raises:
+        NoDaemon: Nothing listens on the home's socket.
+    """
+    actor, server = common.settings.actor, common.settings.server
+    if server is None:
+        return socket_http(common.settings.socket_file, actor)
+    from piloop.plugins.network.contract import NETWORKS  # only a remote call needs a network's client
+
+    return NETWORKS.selected(common.settings.providers).client(server, actor)
 
 
 def cwd() -> str | None:

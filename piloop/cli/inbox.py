@@ -4,9 +4,10 @@ from typing import Annotated
 
 import cyclopts
 
+from piloop.api.client import Client
 from piloop.api.contract import AckBody, InboxQuery, ReplyBody
 from piloop.cli import common
-from piloop.cli.client import api, cwd
+from piloop.cli.client import cwd, daemon_http
 from piloop.ids import CommentId, CommentKind
 
 
@@ -32,7 +33,7 @@ def inbox_ack(
         raise SystemExit('name the ids to acknowledge, or --up-to <id>')
     if ids and (campaign or kind):
         raise SystemExit('--campaign and --kind work only with --up-to <id>')
-    with api() as client:
+    with Client.connect(daemon_http()) as client:
         if up_to is not None:
             listed = client.inbox(InboxQuery(campaign=campaign, cwd=cwd(), kind=kind)).items
             ids = tuple(item.id for item in listed if item.id <= up_to)
@@ -51,6 +52,6 @@ def inbox_reply(
 
     The answer is an inbox item of its own, so every orchestrator but you sees it in `piloop inbox wait`.
     """
-    with api() as client:
+    with Client.connect(daemon_http()) as client:
         answer = client.reply(comment, ReplyBody(body=body, priority=priority)).comment
     common.console.print(f'comment#{answer.id} decision on {answer.target}', markup=False)

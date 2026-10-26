@@ -150,8 +150,8 @@ def make_campaign(request: pytest.FixtureRequest, piloop_install: Install, e2e_m
 
     Each campaign copies the bundled example ``template``, writes ``config`` over its ``piloop.toml`` (tables merge
     key by key), and writes ``home_config`` as the ``config.toml`` of a new ``PILOOP_HOME``. Then it runs
-    ``piloop init <repo> --example <template>`` (which keeps that ``piloop.toml`` and fetches the example's data),
-    ``piloop install-skills`` into temporary skills directories, and ``piloop serve --detach``. ``harness`` and
+    ``piloop install-skills`` into temporary skills directories, and ``piloop init <repo> --example <template>``, which
+    keeps that ``piloop.toml``, fetches the example's data and starts the daemon. ``harness`` and
     ``model`` default to ``--e2e-harness`` and ``--e2e-model``; every role of the campaign uses that harness and model.
     In distributed mode, the daemon listens, and a worker elsewhere runs every job (``elsewhere``).
     """
@@ -191,14 +191,12 @@ def make_campaign(request: pytest.FixtureRequest, piloop_install: Install, e2e_m
         }
         live_campaign = Smoke(directory, str(toml['name']), env)
         made.append((live_campaign, f'harness {harness}, model {model}', time.monotonic()))
-        live_campaign.piloop('init', str(repo), '--example', template)
         live_campaign.piloop('install-skills')
-        match e2e_mode:
-            case Mode.LOCAL:
-                live_campaign.piloop('serve', '--detach')
-                wait_until((home / 'serve.pid').is_file)
-            case Mode.DISTRIBUTED:
-                live_campaign.elsewhere = elsewhere(live_campaign, piloop_install, directory / 'worker')
+        if e2e_mode is Mode.DISTRIBUTED:
+            live_campaign.piloop('serve', '--detach', '--listen', '127.0.0.1:0')
+        live_campaign.piloop('init', str(repo), '--example', template)  # starts the daemon, unless it runs
+        if e2e_mode is Mode.DISTRIBUTED:
+            live_campaign.elsewhere = elsewhere(live_campaign, piloop_install, directory / 'worker')
         return live_campaign
 
     try:
@@ -216,11 +214,10 @@ def make_campaign(request: pytest.FixtureRequest, piloop_install: Install, e2e_m
 
 
 def elsewhere(live_campaign: Smoke, install: Install, home: Path) -> Elsewhere:
-    """Start the daemon on a loopback port, ``piloop cas serve`` beside it, and ``piloop worker`` in ``home``.
+    """Start ``piloop cas serve`` beside the daemon, which listens on a loopback port, and ``piloop worker`` in ``home``.
 
     The worker reaches the daemon through a fault proxy, and the CAS directly: as a machine elsewhere does.
     """
-    live_campaign.piloop('serve', '--detach', '--listen', '127.0.0.1:0')
     wait_until(lambda: live_campaign.status().daemon.listen, timeout=60)
     listen = live_campaign.status().daemon.listen
     assert listen is not None

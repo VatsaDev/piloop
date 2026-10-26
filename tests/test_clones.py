@@ -13,7 +13,7 @@ from git import GitCommandError, Repo
 from piloop.ids import CampaignId, Revision, RunId
 from piloop.plugins.cas.contract import Cas
 from piloop.plugins.executor.contract import RepoId, Source, Workspace
-from piloop.plugins.executor.kit.clones import WORKSPACE, Clones, Fetch, of_record, own_clone
+from piloop.plugins.executor.kit.clones import WORKSPACE, Clones, Fetch, of_record, own_replica
 from piloop.plugins.executor.kit.jobs import remote_site
 from piloop.plugins.vcs.contract import MAX_HAVE
 from piloop.plugins.vcs.git import FETCHED, Git
@@ -265,7 +265,7 @@ def test_two_jobs_that_start_at_once_on_a_new_worker_share_its_first_clone(
         return init(path)
 
     monkeypatch.setattr(Repo, 'init', slow_init)
-    clones = Clones(store, {REPO: tmp_path / 'clone'}.__getitem__, own_clone, fetch_from(store, origin, []), tmp_path)
+    clones = Clones(store, {REPO: tmp_path / 'clone'}.__getitem__, own_replica, fetch_from(store, origin, []), tmp_path)
     source = Source(vcs=Git(), repo=REPO, revision=Repo(origin).head.commit.hexsha)
     first = threading.Thread(target=clones.checkout, args=(source, tmp_path / 'one'))
     first.start()

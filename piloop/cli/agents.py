@@ -4,10 +4,11 @@ from typing import Annotated, assert_never
 
 import cyclopts
 
+from piloop.api.client import Client
 from piloop.api.contract import CancelBody, LaunchBody, PromptBody
 from piloop.api.views import Delivered, Pending, Queued, Undelivered
 from piloop.cli import common
-from piloop.cli.client import api, campaign_name
+from piloop.cli.client import campaign_name, daemon_http
 from piloop.cli.common import HARNESS_HELP, CampaignRef
 from piloop.ids import AgentSessionId, Ending, RoleName, RunId
 
@@ -37,7 +38,7 @@ def launch(
 
     The daemon launches it at once, within the role's `max_concurrent`.
     """
-    with api() as client:
+    with Client.connect(daemon_http()) as client:
         name = campaign_name(client, ref)
         agent = client.launch(name, LaunchBody(role=role, harness=harness, model=model, reason=reason))
     common.console.print(f'agent_session#{agent.agent} {agent.role} requested for {name}: {reason}')
@@ -59,7 +60,7 @@ def prompt(
     The message is a note on the agent. The daemon queues it through the agent's executor and its runtime. When it
     cannot, the command says why. After 20 seconds without an outcome, the daemon still queues it once the agent runs.
     """
-    with api() as client:
+    with Client.connect(daemon_http()) as client:
         prompted = client.prompt(agent_session_id, PromptBody(text=text, wait=DELIVERY_WAIT))
     comment = prompted.comment
     match prompted.delivery:
@@ -98,7 +99,7 @@ def agent_cancel(
     A requested agent never starts. A running one is ended with every process that it started, at once or, with
     `--wrap-up`, after it was told to save its work and stop. For an implementer, this cancels its run (`piloop run cancel`).
     """
-    with api() as client:
+    with Client.connect(daemon_http()) as client:
         client.cancel_agent(agent_session_id, _cancel(wrap_up))
     common.console.print(f'cancel requested for agent_session#{agent_session_id}: the daemon acts at once')
 
@@ -114,7 +115,7 @@ def run_cancel(
     closes as `cancelled`, unless the implementer left its finding before the daemon ended it: a later finding is
     refused. Its commits are scored, and its idea is parked: set it `ready` to run it again.
     """
-    with api() as client:
+    with Client.connect(daemon_http()) as client:
         client.cancel_run(run_id, _cancel(wrap_up))
     common.console.print(f'cancel requested for run#{run_id}: the daemon acts at once')
 

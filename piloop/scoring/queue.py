@@ -18,7 +18,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from piloop.actor import Actor
-from piloop.api.views import (
+from piloop.db.models import Campaign, Candidate, Evaluation
+from piloop.ids import CampaignId, CandidateId, EvaluatorId
+from piloop.scoring import ledger
+from piloop.scoring.api import (
     CancelledBy,
     EvaluationQueue,
     EvaluationState,
@@ -26,9 +29,6 @@ from piloop.api.views import (
     RunningSince,
     WaitingSince,
 )
-from piloop.db.models import Campaign, Candidate, Evaluation
-from piloop.ids import CampaignId, CandidateId, EvaluatorId
-from piloop.scoring import ledger
 from piloop.scoring.ledger import head
 
 CANCELLED = 'evaluation cancelled by {actor}'

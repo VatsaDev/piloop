@@ -1,16 +1,18 @@
 """The API's client: one method per route, which sends the route's query model and reads back its answer model.
 
 The models are the ones that the routes use (``piloop.api.contract``, ``piloop.api.views``), so the client needs no
-second set. ``tests/net/test_api.py`` checks each method's method, path and models against the server's routes.
+second set. A capability with routes of its own subclasses it. ``tests/net/test_api.py`` checks each method's method,
+path and models against the server's routes.
 """
 
 import errno
 import socket as sockets
 from collections.abc import Generator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
+from datetime import timedelta
 from http import HTTPStatus
 from pathlib import Path
-from typing import Self
+from typing import Final, Self
 from urllib.parse import quote
 
 import httpx2 as httpx
@@ -22,64 +24,64 @@ from piloop.api.contract import (
     AckBody,
     BaseBody,
     CancelBody,
+    Clone,
     DevelopBody,
     EventsQuery,
     IdeaBody,
-    ImportBody,
     InboxQuery,
     JournalBody,
     LaunchBody,
     LimitBody,
+    Located,
     NewsQuery,
-    NoteBody,
     Params,
     PauseBody,
     Polled,
     PromptBody,
     Reasoned,
-    RemeasureBody,
+    Registration,
     ReplyBody,
-    Report,
+    SecretBody,
     SeedBody,
     Selection,
     StatusBody,
     StopBody,
     TokenBody,
     TrackBody,
-    VerdictBody,
 )
 from piloop.api.views import (
     Acked,
     AgentAnswer,
     Batch,
     CampaignAnswer,
-    CandidateAnswer,
+    CampaignSynced,
     Defined,
-    EvaluationQueue,
     IdeaAnswer,
     Inbox,
     Journaled,
     LiveKeys,
-    MeasurementAdded,
     News,
-    Noted,
     Overview,
     ProblemDetail,
     Prompted,
-    Remeasured,
+    Registered,
     Replied,
     RunAnswer,
+    SecretChanged,
+    SecretList,
     Status,
     StatusChanged,
     Thread,
     TokenList,
     TokenMade,
     TrackChanged,
-    VerdictChanged,
 )
-from piloop.ids import AgentSessionId, CandidateId, CommentId, IdeaId, LinkKind, RunId
+from piloop.ids import AgentSessionId, CommentId, IdeaId, LinkKind, RunId
 
 TIMEOUT_SECONDS = 30
+CLONE_WAIT: Final = timedelta(minutes=15)
+"""How long a registration that clones a URL waits for its answer: longer than a vcs provider's clone may take, such
+as git's 10 minutes."""
 """How long a call waits for its answer, beyond a long-poll's own wait."""
 SOCKET_ACTOR_HEADER = 'x-piloop-actor'
 """The header in which a client on the home's socket asks to act as its ``PILOOP_ACTOR``. A network carries the ask its
@@ -106,29 +108,19 @@ class Client:
 
     @classmethod
     @contextmanager
-    def on(cls, socket: Path, actor: Actor) -> Generator[Self]:
-        """A client of the daemon that serves on the Unix socket ``socket``, acting as ``actor``, until the block ends.
+    def connect(cls, http: httpx.Client) -> Generator[Self]:
+        """A client over ``http`` until the block ends.
 
-        Raises:
-            NoDaemon: Nothing listens on the socket.
+        ``http`` is the home's socket (``socket_http``), or a network's client of a server (``NetworkConfig.client``),
+        which carries the actor.
         """
-        if not answers(socket):
-            raise NoDaemon(
-                f'no daemon listens on {socket}: start it with `piloop serve --detach`, or set PILOOP_HOME;'
-                ' a daemon of an older piloop serves no socket: `piloop restart`'
-            )
-        transport = httpx.HTTPTransport(uds=str(socket))
-        with httpx.Client(
-            transport=transport, base_url='http://piloop', headers={SOCKET_ACTOR_HEADER: actor.signature}
-        ) as http:
+        with http:
             yield cls(http)
 
     @classmethod
-    @contextmanager
-    def at(cls, http: httpx.Client) -> Generator[Self]:
-        """A client over ``http``: a network's client of a server (``NetworkConfig.client``), which carries the actor."""
-        with http:
-            yield cls(http)
+    def on(cls, socket: Path, actor: Actor) -> AbstractContextManager[Self]:
+        """A client of the daemon on the Unix socket ``socket``, acting as ``actor`` (``socket_http``)."""
+        return cls.connect(socket_http(socket, actor))
 
     def status(self, query: Selection) -> Status:
         return self._get('/v1/status', query, Status)
@@ -148,20 +140,26 @@ class Client:
     def thread(self, comment: CommentId) -> Thread:
         return self._get(f'/v1/inbox/{comment}', Params(), Thread)
 
+    def register_campaign(self, body: Registration) -> Registered:
+        return self._post('/v1/campaigns', body, Registered)
+
+    def sync_campaign(self, campaign: str) -> CampaignSynced:
+        return self._post(f'/v1/campaigns/{segment(campaign)}/sync', None, CampaignSynced)
+
     def pause(self, campaign: str, body: PauseBody) -> CampaignAnswer:
-        return self._post(f'/v1/campaigns/{_segment(campaign)}/pause', body, CampaignAnswer)
+        return self._post(f'/v1/campaigns/{segment(campaign)}/pause', body, CampaignAnswer)
 
     def resume(self, campaign: str) -> CampaignAnswer:
-        return self._post(f'/v1/campaigns/{_segment(campaign)}/resume', None, CampaignAnswer)
+        return self._post(f'/v1/campaigns/{segment(campaign)}/resume', None, CampaignAnswer)
 
     def stop(self, campaign: str, body: StopBody) -> CampaignAnswer:
-        return self._post(f'/v1/campaigns/{_segment(campaign)}/stop', body, CampaignAnswer)
+        return self._post(f'/v1/campaigns/{segment(campaign)}/stop', body, CampaignAnswer)
 
     def add_idea(self, campaign: str, body: IdeaBody) -> Defined:
-        return self._post(f'/v1/campaigns/{_segment(campaign)}/ideas', body, Defined)
+        return self._post(f'/v1/campaigns/{segment(campaign)}/ideas', body, Defined)
 
     def file_seed(self, campaign: str, body: SeedBody) -> IdeaAnswer:
-        return self._post(f'/v1/campaigns/{_segment(campaign)}/seeds', body, IdeaAnswer)
+        return self._post(f'/v1/campaigns/{segment(campaign)}/seeds', body, IdeaAnswer)
 
     def develop(self, idea: IdeaId, body: DevelopBody) -> Defined:
         return self._post(f'/v1/ideas/{idea}/develop', body, Defined)
@@ -181,35 +179,14 @@ class Client:
     def set_track(self, idea: IdeaId, body: TrackBody) -> TrackChanged:
         return self._post(f'/v1/ideas/{idea}/track', body, TrackChanged)
 
-    def import_candidate(self, campaign: str, body: ImportBody) -> CandidateAnswer:
-        return self._post(f'/v1/campaigns/{_segment(campaign)}/candidates', body, CandidateAnswer)
-
-    def remeasure(self, candidate: CandidateId, body: RemeasureBody) -> Remeasured:
-        return self._post(f'/v1/candidates/{candidate}/remeasure', body, Remeasured)
-
-    def note(self, candidate: CandidateId, body: NoteBody) -> Noted:
-        return self._post(f'/v1/candidates/{candidate}/note', body, Noted)
-
-    def set_verdict(self, candidate: CandidateId, body: VerdictBody) -> VerdictChanged:
-        return self._post(f'/v1/candidates/{candidate}/verdict', body, VerdictChanged)
-
-    def add_measurement(self, candidate: CandidateId, body: Report) -> MeasurementAdded:
-        return self._post(f'/v1/candidates/{candidate}/measurements', body, MeasurementAdded)
-
-    def evaluations(self) -> EvaluationQueue:
-        return self._get('/v1/evaluations', Params(), EvaluationQueue)
-
-    def cancel_evaluation(self, candidate: CandidateId) -> CandidateAnswer:
-        return self._post(f'/v1/candidates/{candidate}/evaluation/cancel', None, CandidateAnswer)
-
     def limits(self) -> LiveKeys:
         return self._get('/v1/limits', Params(), LiveKeys)
 
     def set_limit(self, key: str, body: LimitBody) -> LiveKeys:
-        return self._send('PUT', f'/v1/limits/{_segment(key)}', body, LiveKeys)
+        return self._send('PUT', f'/v1/limits/{segment(key)}', body, LiveKeys)
 
     def unset_limit(self, key: str) -> LiveKeys:
-        return self._send('DELETE', f'/v1/limits/{_segment(key)}', None, LiveKeys)
+        return self._send('DELETE', f'/v1/limits/{segment(key)}', None, LiveKeys)
 
     def list_tokens(self) -> TokenList:
         return self._get('/v1/tokens', Params(), TokenList)
@@ -218,10 +195,19 @@ class Client:
         return self._post('/v1/tokens', body, TokenMade)
 
     def revoke_token(self, name: str) -> TokenList:
-        return self._send('DELETE', f'/v1/tokens/{_segment(name)}', None, TokenList)
+        return self._send('DELETE', f'/v1/tokens/{segment(name)}', None, TokenList)
+
+    def list_secrets(self) -> SecretList:
+        return self._get('/v1/secrets', Params(), SecretList)
+
+    def set_secret(self, name: str, query: Located, body: SecretBody) -> SecretChanged:
+        return self._send('PUT', f'/v1/secrets/{segment(name)}', body, SecretChanged, query)
+
+    def remove_secret(self, name: str, query: Located) -> SecretChanged:
+        return self._send('DELETE', f'/v1/secrets/{segment(name)}', None, SecretChanged, query)
 
     def launch(self, campaign: str, body: LaunchBody) -> AgentAnswer:
-        return self._post(f'/v1/campaigns/{_segment(campaign)}/agents', body, AgentAnswer)
+        return self._post(f'/v1/campaigns/{segment(campaign)}/agents', body, AgentAnswer)
 
     def prompt(self, agent: AgentSessionId, body: PromptBody) -> Prompted:
         return self._post(f'/v1/agents/{agent}/prompt', body, Prompted)
@@ -254,24 +240,50 @@ class Client:
     def _post[A: BaseModel](self, path: str, body: Params | None, answer: type[A]) -> A:
         return self._send('POST', path, body, answer)
 
-    def _send[A: BaseModel](self, method: str, path: str, body: Params | None, answer: type[A]) -> A:
-        """Send ``body`` as JSON to ``path`` with ``method``, and read the answer as ``answer``.
+    def _send[A: BaseModel](
+        self, method: str, path: str, body: Params | None, answer: type[A], query: Params | None = None
+    ) -> A:
+        """Send ``body`` as JSON and ``query`` as the query string to ``path`` with ``method``; read back ``answer``.
 
         Raises:
             Refused: The daemon refused the call.
         """
         content = None if body is None else body.model_dump_json()
         headers = None if body is None else {'content-type': 'application/json'}
-        response = self._http.request(method, path, content=content, headers=headers, timeout=_timeout(body))
+        params = None if query is None else query.model_dump(mode='json', exclude_defaults=True)
+        response = self._http.request(
+            method, path, content=content, headers=headers, params=params, timeout=_timeout(body)
+        )
         return _answer(response, answer)
 
 
 def _timeout(params: Params | None) -> float:
-    """How long a call waits for its answer: a long-poll's own wait, and ``TIMEOUT_SECONDS``."""
-    return TIMEOUT_SECONDS + (min(params.wait, MAX_POLL_SECONDS) if isinstance(params, Polled) else 0)
+    """How long a call waits for its answer: a long-poll's own wait and ``TIMEOUT_SECONDS``, or a clone's."""
+    match params:
+        case Polled(wait=wait):
+            return TIMEOUT_SECONDS + min(wait, MAX_POLL_SECONDS)
+        case Clone():
+            return CLONE_WAIT.total_seconds()
+        case _:
+            return TIMEOUT_SECONDS
 
 
-def _segment(name: str) -> str:
+def socket_http(socket: Path, actor: Actor) -> httpx.Client:
+    """An HTTP client of the daemon on the Unix socket ``socket``, which asks to act as ``actor``.
+
+    Raises:
+        NoDaemon: Nothing listens on the socket.
+    """
+    if not answers(socket):
+        raise NoDaemon(
+            f'no daemon listens on {socket}: start it with `piloop serve --detach`, or set PILOOP_HOME;'
+            ' a daemon of an older piloop serves no socket: `piloop restart`'
+        )
+    transport = httpx.HTTPTransport(uds=str(socket))
+    return httpx.Client(transport=transport, base_url='http://piloop', headers={SOCKET_ACTOR_HEADER: actor.signature})
+
+
+def segment(name: str) -> str:
     """A name, such as a campaign's or a key, as one segment of a path."""
     return quote(name, safe='')
 

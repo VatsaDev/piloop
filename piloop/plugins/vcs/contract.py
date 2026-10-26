@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Protocol
 
 from covalence import Cid
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, SecretStr
 
 from piloop import deprecated
 from piloop.ids import CandidateId, Revision, RunId
@@ -90,10 +90,10 @@ type Keep = RunVersion | RebaseVersion | ReferenceVersion
 """Why a version must outlive whatever named it first (a branch, an agent's worktree): ``Repository.keep``."""
 
 type Fetch = Callable[[Sequence[Revision], Sequence[Revision]], list[Cid]]
-"""Ask the repo of record to put what ``revisions`` have beyond the revisions that a clone has into the CAS, and return
+"""Ask the repo of record to put what ``revisions`` have beyond the revisions that a replica has into the CAS, and return
 the addresses to take, in order: each one is what a ``Repository.send`` put there. Empty: nothing is missing."""
 MAX_HAVE = 64
-"""The most revisions that a clone names as those it has, when it fetches: its newest. Older ones rarely save a byte,
+"""The most revisions that a replica names as those it has, when it fetches: its newest. Older ones rarely save a byte,
 and each one adds to the server's work: git's own negotiation stops after 256 haves that find nothing new."""
 
 
@@ -139,8 +139,12 @@ class UnknownRevision(VcsError):
     """A name of a version names none in the repository."""
 
 
+class CloneFailed(VcsError):
+    """A clone of a URL failed. The message has the tool's error, with the credential redacted."""
+
+
 class Repository(Protocol):
-    """A checkout and the versions that it holds: the repo of record of a campaign, or a worker's clone of one."""
+    """A checkout and the versions that it holds: the repo of record of a campaign, or a worker's replica of one."""
 
     def head(self) -> Version:
         """The version that the checkout is at."""
@@ -249,8 +253,18 @@ class Vcs(Parameters, ABC):
         """
 
     @abstractmethod
-    def clone(self, path: Path) -> Repository:
-        """A worker's clone of a repo of record at ``path``, made empty if none is there: ``Repository.fetch`` fills it."""
+    def clone(self, url: str, path: Path, credential: SecretStr | None) -> Repository:
+        """Clone the repository at ``url`` into ``path``, and return it.
+
+        ``credential`` is a token that the host of ``url`` asks for. No argv, log or error holds it.
+
+        Raises:
+            CloneFailed: The clone failed.
+        """
+
+    @abstractmethod
+    def replica(self, path: Path) -> Repository:
+        """A worker's replica of a repo of record at ``path``, made empty if none is there: ``Repository.fetch`` fills it."""
 
     @abstractmethod
     def identity(self, path: Path) -> str:

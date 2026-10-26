@@ -1,15 +1,22 @@
 """Git operations on a repository and its worktrees: what the ``git`` provider runs."""
 
+import os
 import re
 import shutil
 import subprocess
 import threading
 from collections.abc import Iterable, Mapping, Sequence
+from datetime import timedelta
 from pathlib import Path
+from typing import Final
 from urllib.parse import urlsplit
 
 from git import Repo
 from git.exc import GitCommandError, InvalidGitRepositoryError, NoSuchPathError
+from pydantic import SecretStr
+
+from piloop.plugins.vcs.contract import CloneFailed
+from piloop.proc import kill_group
 
 WORKTREE_LOCK = threading.Lock()
 """Held for every worktree command of this process.
@@ -18,6 +25,57 @@ WORKTREE_LOCK = threading.Lock()
 still filling in. Prune checks for the ``locked`` file, then finds a ``gitdir`` that points at a ``.git`` that does not
 exist yet, and the add fails with ``Invalid path``. The daemon adds and removes worktrees from many threads at once,
 and every remove prunes."""
+
+
+CREDENTIAL = 'PILOOP_GIT_CREDENTIAL'
+"""The variable that holds a clone's credential, in the environment of its git only."""
+HELPER = f'!f() {{ test "$1" = get && echo username=x-access-token && echo "password=${CREDENTIAL}"; }}; f'
+"""The credential helper of a clone with a credential: it answers git's ``get`` from ``CREDENTIAL``, so the argv names
+the variable, never its value. GitHub and GitLab take a token as the password of any user."""
+
+
+CLONE_TIMEOUT: Final = timedelta(minutes=10)
+"""The longest that ``clone`` waits for git, so that a remote that stalls ends the clone instead of holding its thread."""
+
+
+def clone(url: str, path: Path, credential: SecretStr | None) -> None:
+    """``git clone`` of ``url`` into ``path``, with no prompt, in at most ``CLONE_TIMEOUT``.
+
+    With a credential, the helpers of the user's config are cleared first: none of them gets the credential to store.
+    An empty credential is none. A clone that takes longer is killed with the processes that git started. A clone that
+    fails leaves no directory: ``path`` is made first, so its removal does not depend on how git ended.
+    """
+    match credential:
+        case SecretStr() if secret := credential.get_secret_value():
+            config = ['-c', 'credential.helper=', '-c', f'credential.helper={HELPER}']
+            env = {CREDENTIAL: secret}
+        case _:
+            config, env = [], {}
+    path.mkdir(parents=True)
+    git = subprocess.Popen(
+        ['git', *config, 'clone', '--quiet', '--', url, str(path)],
+        env={**os.environ, 'GIT_TERMINAL_PROMPT': '0', **env},
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        start_new_session=True,  # its own group: the helpers that git starts die with it
+    )
+    try:
+        _, stderr = git.communicate(timeout=CLONE_TIMEOUT.total_seconds())
+    except subprocess.TimeoutExpired as e:
+        kill_group(git)
+        git.communicate()
+        shutil.rmtree(path)
+        raise CloneFailed(_redacted(f'git clone of {url} took longer than {CLONE_TIMEOUT}: it was stopped', env)) from e
+    if git.returncode:
+        shutil.rmtree(path)
+        raise CloneFailed(_redacted(f'git clone of {url} failed: {stderr.decode().strip()}', env))
+
+
+def _redacted(error: str, env: Mapping[str, str]) -> str:
+    for value in env.values():
+        error = error.replace(value, '***')
+    return error
 
 
 def open_repo(path: Path) -> Repo:

@@ -12,6 +12,7 @@ into a ``note`` on the row. An operation emits the events of the changes that no
 
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Literal, assert_never
 
 from sqlalchemy import select
@@ -20,7 +21,6 @@ from sqlalchemy.orm import Session
 
 from piloop.actor import Actor
 from piloop.agents.roles import files_of
-from piloop.api.contract import Report
 from piloop.campaign.campaigns import repository
 from piloop.campaign.ideas import Definition, NotASeed, develop
 from piloop.campaign.stop import held, request_stop
@@ -36,6 +36,7 @@ from piloop.db.models import (
     Idea,
     IdeaLink,
     Measurement,
+    Origin,
     Pause,
     Run,
 )
@@ -57,6 +58,7 @@ from piloop.ids import (
 from piloop.plugins.role.contract import Files
 from piloop.plugins.vcs.contract import VcsError
 from piloop.plugins.verdict_rule.contract import Outcome, Trunk
+from piloop.scoring.api import Report
 from piloop.scoring.ledger import (
     MOVED,
     Rebased,
@@ -107,6 +109,23 @@ def pause(s: Session, campaign_id: CampaignId, *, evals: bool, reason: str) -> C
         raise Refused(f'campaign {campaign.name} is paused already ({scope}): {campaign.paused_reason}')
     campaign.paused, campaign.paused_reason = scope, why
     return campaign
+
+
+def hold_on_failed_baseline(s: Session, candidate: Candidate, logs: Path | None) -> None:
+    """Pause the launches of an unpaused campaign when ``candidate`` is its baseline and each evaluation of it failed.
+
+    Nothing can be judged against a baseline without a score, and no agent should spend on a campaign that has none.
+    One that an older evaluator measured has one, and its campaign goes on. The pause measures what is asked, so it
+    can end on a measured baseline. The reason is the last error, with ``logs``, where that evaluation left its logs,
+    and what to do. The caller commits.
+    """
+    errors = [m.error for m in candidate.measurements]
+    campaign = s.get_one(Campaign, candidate.campaign_id)
+    if candidate.origin is not Origin.BASELINE or campaign.paused is not None or None in errors:
+        return
+    where = '' if logs is None else f'; its logs are in {logs}'
+    fix = f'fix it, then `piloop candidate remeasure {candidate.id}` and `piloop resume {campaign.name}`'
+    pause(s, campaign.id, evals=False, reason=f'the baseline failed to evaluate: {errors[-1]}{where}; {fix}')
 
 
 def resume(s: Session, campaign_id: CampaignId) -> Pause:

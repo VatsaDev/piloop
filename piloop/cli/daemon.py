@@ -55,10 +55,7 @@ def serve(
         common.console.print('the daemon can start')
         return
     if detach:
-        pid = spawn_detached(common.settings, address)
-        common.console.print(
-            f'daemon started: pid {pid}, log {common.settings.log_file}', markup=False, highlight=False, soft_wrap=True
-        )
+        detached(address)
         return
     inherited = Inherited.now()  # before the daemon starts a child of its own
     try:
@@ -66,6 +63,14 @@ def serve(
     except (OlderDaemon, SchemaMismatch, BackupFailed) as e:
         raise SystemExit(str(e)) from e
     daemon.serve()
+
+
+def detached(address: Address | None = None) -> None:
+    """Start the daemon in the background, and say where its log is. Exit with why when it does not start."""
+    pid = spawn_detached(common.settings, address)
+    common.console.print(
+        f'daemon started: pid {pid}, log {common.settings.log_file}', markup=False, highlight=False, soft_wrap=True
+    )
 
 
 def stop(*, timeout: Annotated[float, cyclopts.Parameter(help='Seconds to wait for the daemon to exit.')] = 30) -> None:

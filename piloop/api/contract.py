@@ -6,9 +6,20 @@ reads the answers of ``piloop.api.views``: one set of models on both sides.
 
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
+from pathlib import PurePath
 from typing import Annotated, Protocol
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, JsonValue
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Discriminator,
+    Field,
+    JsonValue,
+    PlainSerializer,
+    SecretStr,
+    Tag,
+)
 from pydantic_core import PydanticCustomError
 
 from piloop.ids import (
@@ -22,15 +33,13 @@ from piloop.ids import (
     RoleName,
     TrackName,
 )
-from piloop.plugins.verdict_rule.contract import Outcome
+from piloop.mcp import EnvName
 
 MAX_POLL_SECONDS = 25
 """The longest that the server holds a long-poll (``Polled.wait``), as the GitHub Actions runner's."""
 LIMIT = 100
 """How many events a read returns at most, by default."""
 MAX_LIMIT = 1000
-REPEATS = 3
-"""The pairs of a remeasure that asks for no number: the 95% bound of 3 pairs is near their worst pair."""
 JOURNAL_LINE_BYTES = 280
 """The longest journal line, in UTF-8 bytes: one decision, plan or result, with its ids."""
 
@@ -55,6 +64,11 @@ GRANTS: Mapping[Access, frozenset[Access]] = {
     Access.WORKER: frozenset({Access.WORKER}),
 }
 """The access of the routes that a caller of each access may call."""
+
+
+type Revealed = Annotated[SecretStr, PlainSerializer(SecretStr.get_secret_value, when_used='json')]
+"""A secret in a body or an answer: its JSON carries the value, which pydantic writes as stars otherwise. Its repr
+hides it."""
 
 
 class Params(BaseModel):
@@ -136,9 +150,12 @@ class Problem(StrEnum):
     UNKNOWN_RUN = 'unknown_run'
     UNKNOWN_LIMIT = 'unknown_limit'
     UNKNOWN_TOKEN = 'unknown_token'
+    UNKNOWN_SECRET = 'unknown_secret'
     CURSOR_AHEAD = 'cursor_ahead'
     REFUSED = 'refused'
     """An operation refused its input and changed nothing. The detail says why."""
+    FORBIDDEN = 'forbidden'
+    """The caller's actor may not make this change, which another actor may. The detail says why."""
 
 
 type Priority = Annotated[int, Field(ge=0, le=4)]
@@ -264,51 +281,6 @@ class ReplyBody(Params):
     priority: Priority = 2
 
 
-class ImportBody(Params):
-    """A version of the campaign's repo to register as a reference candidate."""
-
-    version: str
-    """A version as the campaign's vcs names one: a revision, a branch, a tag."""
-    summary: str | None = None
-    """A summary of the candidate. Default: the version's own summary."""
-
-
-class RemeasureBody(Params):
-    """How to measure a candidate again."""
-
-    repeats: int = Field(REPEATS, ge=1)
-    """How many pairs of the candidate and its bar."""
-
-
-class NoteBody(Params):
-    """Why a regressed result is worth starting from, and the seeds to pin to it."""
-
-    reason: str
-    follow_ups: tuple[str, ...] = ()
-    """A seed pinned to the candidate for each, for research to develop."""
-    track: TrackName | None = None
-    """The track of the follow-ups. Default: the track of the candidate's run, else the first track."""
-
-
-class VerdictBody(Reasoned):
-    """A candidate's verdict, set by hand."""
-
-    verdict: Outcome
-
-
-class Report(Params):
-    """A measurement made outside the daemon, for example by running the evaluate command by hand."""
-
-    model_config = ConfigDict(extra='forbid')
-
-    metrics: dict[str, Annotated[float, Field(strict=True, allow_inf_nan=False)]]
-    """Each metric's value, as the evaluate command's ``METRIC`` lines would give it."""
-    seconds: Annotated[float, Field(ge=0, allow_inf_nan=False)] | None = None
-    """How long the evaluation took."""
-    error: str | None = None
-    """Why the evaluation failed. A failed measurement may lack metrics."""
-
-
 class LimitBody(Reasoned):
     """A value for a live key, with why: it shows next to the value."""
 
@@ -362,3 +334,56 @@ class JournalBody(Params):
     """A line of the orchestrator's journal: a decision, a plan or a result, with its ids."""
 
     line: Annotated[str, AfterValidator(_journal_line)]
+
+
+class SecretBody(Params):
+    """The value of a secret, in place of any."""
+
+    value: Revealed
+
+
+def _absolute(path: str) -> str:
+    if not PurePath(path).is_absolute():
+        raise PydanticCustomError('absolute_path', 'an absolute path, not {path}', {'path': path})
+    return path
+
+
+class Checkout(Params):
+    """A checkout on the daemon's machine, registered where it is."""
+
+    model_config = ConfigDict(extra='forbid')
+
+    path: Annotated[str, AfterValidator(_absolute)]
+
+
+class Remote(Params):
+    """A repository to clone, and the home's secret that its host asks for."""
+
+    model_config = ConfigDict(extra='forbid')
+
+    url: str
+    secret: EnvName | None = None
+    """The name of the home's secret that holds the credential, such as a token. None: the host asks for none."""
+
+
+class Clone(Params):
+    """A repository that the daemon clones under its home, then registers."""
+
+    model_config = ConfigDict(extra='forbid')
+
+    clone: Remote
+
+
+def _source(value: object) -> str | None:
+    """Which of a ``Registration``'s models a body is, by its key."""
+    match value:
+        case Checkout() | {'path': _}:
+            return 'path'
+        case Clone() | {'clone': _}:
+            return 'clone'
+        case _:
+            return None
+
+
+type Registration = Annotated[Annotated[Checkout, Tag('path')] | Annotated[Clone, Tag('clone')], Discriminator(_source)]
+"""What to register as a campaign: exactly one of ``{"path": ...}`` and ``{"clone": {...}}``."""

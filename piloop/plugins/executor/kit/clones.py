@@ -30,7 +30,7 @@ type Fetch = Callable[[RepoId, Sequence[Revision], Sequence[Revision]], list[Cid
 """Ask the server to put what ``revisions`` of ``repo`` have beyond the revisions ``have`` into the CAS, and return the
 addresses to take, in order: ``Remote.send``. Raises ``NotSent``."""
 type Opener = Callable[[Vcs, Path], Repository]
-"""How a machine opens its clone of a repo of record: ``of_record`` or ``own_clone``."""
+"""How a machine opens its clone of a repo of record: ``of_record`` or ``own_replica``."""
 
 
 class NotSent(Exception):
@@ -42,9 +42,9 @@ def of_record(vcs: Vcs, path: Path) -> Repository:
     return vcs.open(path)
 
 
-def own_clone(vcs: Vcs, path: Path) -> Repository:
-    """A worker's own clone, made empty on first use (``Vcs.clone``)."""
-    return vcs.clone(path)
+def own_replica(vcs: Vcs, path: Path) -> Repository:
+    """A worker's own replica, made empty on first use (``Vcs.replica``)."""
+    return vcs.replica(path)
 
 
 class Clones:

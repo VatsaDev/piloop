@@ -218,14 +218,6 @@ class Settings(BaseSettings):
         return f'sqlite:///{self.home / "piloop.db"}'
 
     @property
-    def units_dir(self) -> Path:
-        """The per-unit results of the daemon's measurements (``piloop.scoring.ledger.units_file``).
-
-        Never inside a worktree.
-        """
-        return self.home / UNITS_DIR
-
-    @property
     def pid_file(self) -> Path:
         """The file with the pid of the running daemon. ``piloop serve`` writes it and removes it when it exits."""
         return self.home / 'serve.pid'

@@ -1,4 +1,4 @@
-"""Commits in a CAS, as git bundles: how they travel between a worker's clone and the repo of record."""
+"""Commits in a CAS, as git bundles: how they travel between a worker's replica and the repo of record."""
 
 import subprocess
 import tempfile

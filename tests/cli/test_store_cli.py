@@ -61,6 +61,7 @@ def archived(campaign_path: Path, out) -> tuple[Database, int, dict[str, bytes]]
     return db, idea, before
 
 
+@pytest.mark.usefixtures('api')
 def test_restore_writes_an_idea_a_path_or_everything_back(archived, out) -> None:
     db, idea, before = archived
     workspace = workspace_dir(common.settings.home, CampaignId(1))
@@ -82,6 +83,7 @@ def test_restore_writes_an_idea_a_path_or_everything_back(archived, out) -> None
     db.close()
 
 
+@pytest.mark.usefixtures('api')
 def test_restore_lists_at_most_ten_kept_files(campaign_path: Path, out) -> None:
     run_cli(['init', str(campaign_path)])
     db = Database(common.settings.database_url, actor=common.settings.actor)
@@ -99,6 +101,7 @@ def test_restore_lists_at_most_ten_kept_files(campaign_path: Path, out) -> None:
     db.close()
 
 
+@pytest.mark.usefixtures('api')
 def test_store_status_evict_and_verify(archived, out, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     db, _, _ = archived
     run_cli(['store', 'status'])
@@ -117,13 +120,13 @@ def test_store_status_evict_and_verify(archived, out, monkeypatch: pytest.Monkey
         common, 'settings', Settings(home=tmp_path, uv_tool_dir=tmp_path / 'uv-tools', plugins={'cas': cached})
     )
     run_cli(['store', 'status'])
-    assert out().splitlines()[0].startswith('cas: cached; 7 blob(s), 7 local (3.'), (
-        'the archives and the baseline inputs'
+    assert out().splitlines()[0].startswith('cas: cached; 11 blob(s), 11 local (4.'), (
+        'the archives, the baseline inputs and the logs of its evaluation'
     )
     run_cli(['store', 'evict'])
-    assert out().strip() == 'uploaded 7 blob(s), evicted 0 (0 bytes)'
+    assert out().strip() == 'uploaded 11 blob(s), evicted 0 (0 bytes)'
     run_cli(['store', 'status'])
-    assert out().splitlines()[0].endswith(f' kB), 7 on file://{tmp_path / "remote"}'), 'decimal units'
+    assert out().splitlines()[0].endswith(f' kB), 11 on file://{tmp_path / "remote"}'), 'decimal units'
     with db.session() as s:
         manifest = s.scalars(select(Archive.manifest).where(Archive.idea_id.is_not(None))).one()
     assert manifest is not None
@@ -134,6 +137,7 @@ def test_store_status_evict_and_verify(archived, out, monkeypatch: pytest.Monkey
     db.close()
 
 
+@pytest.mark.usefixtures('api')
 def test_status_with_a_ready_idea_shows_nothing_archived(campaign_path: Path, out) -> None:
     run_cli(['init', str(campaign_path)])
     db = Database(common.settings.database_url, actor=common.settings.actor)

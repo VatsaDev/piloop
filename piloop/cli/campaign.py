@@ -1,4 +1,4 @@
-"""The commands about campaigns that open the database: ``init``, ``history``, ``watch``, ``campaign parent|tree``."""
+"""The commands about campaigns: ``init``, and those that open the database: ``history``, ``watch``, ``campaign parent|tree``."""
 
 import sys
 from pathlib import Path
@@ -8,6 +8,9 @@ import cyclopts
 from rich import box
 from rich.console import Group
 
+from piloop.api.client import Client, answers
+from piloop.api.contract import MAX_POLL_SECONDS, Checkout, EventsQuery, Selection
+from piloop.api.views import Registered
 from piloop.campaign import ops
 from piloop.campaign.campaigns import (
     BLANK,
@@ -15,21 +18,20 @@ from piloop.campaign.campaigns import (
     EVALUATE_STUB,
     EXAMPLE_DATA,
     TEMPLATES,
-    CampaignError,
     create_campaign_repo,
-    register,
-    registered,
     stub_untouched,
-    sync,
     tree as campaign_tree,
     workspace_dir,
 )
-from piloop.campaign.memory import sync_documents
-from piloop.cli import common, local
+from piloop.cli import common, daemon, local
+from piloop.cli.client import daemon_http
 from piloop.cli.common import CampaignRef
+from piloop.db.models import EVENT
 from piloop.db.session import Database
+from piloop.db.triggers.changelog import CampaignPausedChanged, CampaignStatusChanged
 from piloop.ids import CampaignStatus
 from piloop.reports.pack import renderables as pack_renderables
+from piloop.scoring.ledger import MeasurementRecorded
 from piloop.text import metric
 from piloop.watch.app import Watch
 
@@ -47,9 +49,10 @@ def init(
 
     It is safe to run again. When needed, it runs `git init` and makes a baseline commit. When there is no
     piloop.toml, it writes piloop.toml, brief.md and evaluate.py from the template, and keeps the files that exist.
-    While evaluate.py is still the template stub, it stops and says what to edit. Then it measures HEAD as the
-    baseline candidate and registers the campaign. For a campaign that is registered already, it reads piloop.toml
-    again.
+    While evaluate.py is still the template stub, it stops and says what to edit. Then it starts the daemon, unless
+    one runs, registers the campaign with HEAD as its baseline candidate, and waits while the daemon measures it. A
+    baseline that fails to evaluate pauses the campaign, and init exits with why. Ctrl-C stops only the wait: the
+    campaign stays registered. For a campaign that is registered already, it reads piloop.toml again.
     """
     if example is not None and example not in EXAMPLE_DATA:
         raise SystemExit(f'no example {example!r}; bundled: {", ".join(EXAMPLE_DATA)}')
@@ -64,34 +67,59 @@ def init(
             f' METRIC lines that piloop.toml names. Describe the goal in brief.md. Then run `piloop init {path}` again.'
         )
         return
-    with local.session(create=True) as s:
-        campaign = registered(s, path)
-        if campaign is None:
-            try:
-                campaign, measurement = register(s, path, common.settings.actor)
-            except CampaignError as e:
-                raise SystemExit(str(e)) from e
+    if common.settings.server is None and not answers(common.settings.socket_file):
+        daemon.detached()
+    with Client.connect(daemon_http()) as client:
+        found = next((c for c in client.status(Selection()).campaigns if c.path == str(path)), None)
+        if found is None:
+            added = client.register_campaign(Checkout(path=str(path)))
+            campaign, documents = added.campaign, added.documents
+            metrics = _measured(client, added)
             common.console.print(
-                f'campaign [bold]{campaign.name}[/] #{campaign.id} registered; baseline candidate#{measurement.candidate_id}:'
-                f' {", ".join(f"{name} {metric(value)}" for name, value in measurement.metrics.items())}'
+                f'campaign [bold]{campaign.name}[/] #{campaign.id} registered; baseline candidate#{added.baseline}:'
+                f' {", ".join(f"{name} {metric(value)}" for name, value in metrics.items())}'
             )
-            common.console.print(
-                f'next: add ideas: `piloop idea add {campaign.name} "<title>"`; start the daemon: `piloop serve`'
-            )
+            common.console.print(f'next: add ideas: `piloop idea add {campaign.name} "<title>"`')
         else:
-            stopped = campaign.status is CampaignStatus.STOPPED
-            sync(s, campaign)
-            s.commit()
+            synced = client.sync_campaign(found.name)
+            campaign, documents = synced.campaign, synced.documents
             resumed = (
-                '; resumed: stop conditions changed' if stopped and campaign.status is CampaignStatus.ACTIVE else ''
+                '; resumed: stop conditions changed'
+                if synced.was is CampaignStatus.STOPPED and campaign.status is CampaignStatus.ACTIVE
+                else ''
             )
             common.console.print(
                 f'campaign {campaign.name} #{campaign.id} already registered; config re-read from piloop.toml{resumed}'
             )
-        synced = sync_documents(s, campaign, campaign.config, common.settings.actor)
-        s.commit()
-        if synced.added or synced.unchanged or synced.skipped:
-            common.console.print(synced.line(), markup=False, highlight=False, soft_wrap=True)
+    if documents.added or documents.unchanged or documents.skipped:
+        common.console.print(documents.line(), markup=False, highlight=False, soft_wrap=True)
+
+
+FOLLOWED = (*MeasurementRecorded.kinds(), *CampaignPausedChanged.kinds(), *CampaignStatusChanged.kinds())
+"""What ``init`` follows on the feed after it registers a campaign: the baseline's measurement, the pause that a
+failed one makes, or a stop, after which the daemon measures nothing unasked."""
+
+
+def _measured(client: Client, added: Registered) -> dict[str, float]:
+    """Follow the feed after the registration until the daemon measures the baseline, and return its metrics.
+
+    Exit with the reason when the campaign is paused or stopped first: a baseline that fails to evaluate pauses it.
+    """
+    cursor = added.cursor
+    while True:
+        query = EventsQuery(after=cursor, campaign=added.campaign.name, kind=FOLLOWED, wait=MAX_POLL_SECONDS)
+        batch = client.events(query)
+        for event in batch.events:
+            match EVENT.validate_python(event.payload):
+                case MeasurementRecorded(candidate=added.baseline, error=None, metrics=metrics):
+                    return metrics
+                case CampaignPausedChanged(paused_reason=str(reason)):
+                    raise SystemExit(reason)
+                case CampaignStatusChanged(new=CampaignStatus.STOPPED, stopped_reason=reason):
+                    raise SystemExit(reason or f'campaign {added.campaign.name} stopped')
+                case _:
+                    pass  # a failed measurement: its pause follows
+        cursor = batch.next
 
 
 def history(ref: CampaignRef | None = None, /) -> None:

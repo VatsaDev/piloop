@@ -47,7 +47,7 @@ from piloop.plugins.executor.contract import (
     RepoId,
     Sample,
 )
-from piloop.plugins.executor.kit.clones import Clones, Fetch, of_record, own_clone
+from piloop.plugins.executor.kit.clones import Clones, Fetch, of_record, own_replica
 from piloop.plugins.executor.kit.relay import RELAY_ARGV
 from piloop.plugins.executor.kit.sessions import POLL_SECONDS, SessionFile
 from piloop.plugins.executor.kit.transfers import send_of_record
@@ -165,7 +165,7 @@ def remote_site(home: Path, cas: Cas, fetch: Fetch, reserve: int) -> Site:
 
     Its agents' ``piloop`` is the relay to the server (``door.main``).
     """
-    return Site(home, cas, Clones(cas, partial(clone_of, home), own_clone, fetch, home), reserve, RELAY_ARGV)
+    return Site(home, cas, Clones(cas, partial(clone_of, home), own_replica, fetch, home), reserve, RELAY_ARGV)
 
 
 def clone_of(home: Path, repo: RepoId) -> Path:

@@ -6,17 +6,18 @@ lookups as dependencies (``Selected``, ``Narrowed``) over one session per reques
 """
 
 import os
+import shutil
 import time
 from collections.abc import Generator
 from dataclasses import dataclass
 from http import HTTPStatus
 from pathlib import Path as FilePath
-from typing import Annotated
+from typing import Annotated, assert_never
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Path, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
-from pydantic import TypeAdapter, ValidationError
+from pydantic import SecretStr, TypeAdapter, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -27,31 +28,30 @@ from piloop.api.contract import (
     AckBody,
     BaseBody,
     CancelBody,
+    Checkout,
+    Clone,
     DevelopBody,
     EventsQuery,
     IdeaBody,
-    ImportBody,
     InboxQuery,
     JournalBody,
     LaunchBody,
     LimitBody,
     Located,
     NewsQuery,
-    NoteBody,
     PauseBody,
     Problem,
     PromptBody,
     Reasoned,
-    RemeasureBody,
+    Registration,
     ReplyBody,
-    Report,
+    SecretBody,
     SeedBody,
     Selection,
     StatusBody,
     StopBody,
     TokenBody,
     TrackBody,
-    VerdictBody,
 )
 from piloop.api.views import (
     Acked,
@@ -59,29 +59,28 @@ from piloop.api.views import (
     Batch,
     CampaignAnswer,
     CampaignOverview,
-    CandidateAnswer,
+    CampaignSynced,
     DaemonState,
     Defined,
     Delivered,
     Delivery,
-    EvaluationQueue,
     IdeaAnswer,
     Inbox,
     InvalidConfig,
     Journaled,
     LiveKeys,
-    MeasurementAdded,
-    Merge,
     News,
-    Noted,
     Overview,
     Pending,
     ProblemDetail,
     Prompted,
     Queued,
-    Remeasured,
+    Registered,
     Replied,
     RunAnswer,
+    SecretChanged,
+    SecretList,
+    SecretView,
     Status,
     StatusChanged,
     Thread,
@@ -89,15 +88,37 @@ from piloop.api.views import (
     TokenMade,
     TrackChanged,
     Undelivered,
-    VerdictChanged,
 )
 from piloop.campaign import inbox as inbox_module, ops
-from piloop.campaign.campaigns import UnknownCampaign, named, repository, selected, workspace_dir
+from piloop.campaign.campaigns import (
+    CampaignError,
+    UnknownCampaign,
+    clone,
+    named,
+    register,
+    repository,
+    selected,
+    sync,
+    workspace_dir,
+)
 from piloop.campaign.ideas import Definition, idea_view
+from piloop.campaign.memory import sync_documents
 from piloop.campaign.stop import CANCELLABLE, request_cancel
+from piloop.config import ConfigError
 from piloop.db import feed as db_feed
 from piloop.db.events import has, latest
-from piloop.db.models import OPEN_RUNS, AgentSession, Campaign, Candidate, Comment, Event, Idea, Journal, Run, utcnow
+from piloop.db.models import (
+    OPEN_RUNS,
+    AgentSession,
+    Campaign,
+    Candidate,
+    Comment,
+    Event,
+    Idea,
+    Journal,
+    Run,
+    utcnow,
+)
 from piloop.db.session import Database
 from piloop.ids import (
     AgentSessionId,
@@ -111,15 +132,32 @@ from piloop.ids import (
     TargetKind,
     TargetRef,
 )
+from piloop.mcp import EnvName
 from piloop.net import Refusal, tokens
 from piloop.net.server import OWNER, App, asked, authorized, changed
 from piloop.net.tokens import Caller
 from piloop.plugins import limits as limits_module
 from piloop.plugins.cas.contract import Cas
 from piloop.plugins.limits import live_keys
+from piloop.plugins.secrets import contract as secrets
 from piloop.plugins.section.contract import Rendering, rendered
+from piloop.plugins.vcs.contract import VCS, CloneFailed
 from piloop.reports import feed
 from piloop.scoring import queue
+from piloop.scoring.api import (
+    CandidateAnswer,
+    EvaluationQueue,
+    ImportBody,
+    MeasurementAdded,
+    Merge,
+    NoteBody,
+    Noted,
+    RemeasureBody,
+    Remeasured,
+    Report,
+    VerdictBody,
+    VerdictChanged,
+)
 from piloop.scoring.ledger import ImportRefused, RemeasureRefused, bar_of, import_reference, request_remeasure
 from piloop.scoring.verdict import candidate_view, rejudgeable
 from piloop.settings import Settings
@@ -292,6 +330,9 @@ AddressedIdea = Annotated[Idea, Depends(idea_addressed)]
 Target = Annotated[Idea, Depends(target_addressed)]
 
 
+FORBIDDEN_RESPONSE: dict[int | str, dict[str, object]] = {HTTPStatus.FORBIDDEN: {'model': ProblemDetail}}
+"""What a route answers to an actor that may not make its change (``forbidden``), which another actor may."""
+
 REFUSALS_DOCUMENTED: dict[int | str, dict[str, object]] = {
     HTTPStatus.NOT_FOUND: {'model': ProblemDetail},
     HTTPStatus.CONFLICT: {'model': ProblemDetail},
@@ -386,6 +427,64 @@ def thread(s: Reading, comment: CommentId) -> Thread:
     if (found := s.get(Comment, comment)) is None:
         raise Refusal(HTTPStatus.NOT_FOUND, Problem.UNKNOWN_COMMENT, f'no comment#{comment}')
     return inbox_module.thread_of(s, found)
+
+
+@router.post('/campaigns', operation_id='register_campaign', dependencies=[Depends(actor_access)])
+def register_campaign(api: Api, s: Writing, me: Acting, body: Registration) -> Registered:
+    """Register a campaign: a checkout where it is, or a repository that the daemon clones under its home first.
+
+    It adds the campaign with its head version as the baseline candidate, and syncs the ``[memory]`` documents. The
+    daemon then measures the baseline: its ``measurement.recorded`` event comes after the answer's cursor, and a
+    baseline that fails pauses the campaign. A clone that does not register is deleted.
+    """
+    campaign, baseline = _registered(api, s, me, body)
+    documents = sync_documents(s, campaign, campaign.config, me)
+    s.flush()
+    cursor = db_feed.newest(s)  # read in the write: no event of the baseline's measurement can come before it
+    view = feed.status_view(s, [campaign])[0]
+    s.commit()
+    return Registered(cursor=cursor, campaign=view, baseline=baseline.id, documents=documents)
+
+
+def _registered(api: Handlers, s: Session, me: Actor, body: Registration) -> tuple[Campaign, Candidate]:
+    match body:
+        case Checkout():
+            return register(s, FilePath(body.path), me)
+        case Clone(clone=remote):
+            path = clone(api.cfg.home, VCS.selected(api.cfg.providers), remote.url, _credential(api, remote.secret))
+            try:
+                return register(s, path, me)
+            except Exception:
+                shutil.rmtree(path)
+                raise
+        case _:
+            assert_never(body)
+
+
+def _credential(api: Handlers, secret: EnvName | None) -> SecretStr | None:
+    """The value of the home's secret ``secret``. Refuses a name that the home has no secret of."""
+    if secret is None:
+        return None
+    if (value := secrets.HomeSecrets(api.db, _secrets(api)).get(secret)) is None:
+        raise Refusal(
+            HTTPStatus.CONFLICT, Problem.REFUSED, f'the home has no secret {secret}: see `piloop secret list`'
+        )
+    return value
+
+
+@router.post('/campaigns/{campaign}/sync', operation_id='sync_campaign', dependencies=[Depends(actor_access)])
+def sync_campaign(s: Writing, me: Acting, campaign: Addressed) -> CampaignSynced:
+    """Read the campaign's ``piloop.toml`` again, and sync its ``[memory]`` documents.
+
+    A changed evaluate command, metric set or link makes a new evaluator. A stopped campaign whose stop conditions
+    changed is active again.
+    """
+    was = campaign.status
+    sync(s, campaign)
+    documents = sync_documents(s, campaign, campaign.config, me)
+    s.commit()
+    with db_feed.snapshot(s) as cursor:
+        return CampaignSynced(cursor=cursor, campaign=feed.status_view(s, [campaign])[0], was=was, documents=documents)
 
 
 @router.post('/campaigns/{campaign}/pause', operation_id='pause', dependencies=[Depends(actor_access)])
@@ -585,13 +684,17 @@ def evaluations(s: Reading) -> EvaluationQueue:
     dependencies=[Depends(actor_access)],
 )
 def cancel_evaluation(s: Writing, me: Acting, candidate: AddressedCandidate) -> CandidateAnswer:
-    """Cancel a candidate's evaluation, waiting or running, or its requested remeasure: it measures a crash at once."""
+    """Cancel a candidate's evaluation, waiting or running, or its requested remeasure: it measures a crash at once.
+
+    A baseline that never measured pauses its campaign, as when it fails (``ops.hold_on_failed_baseline``).
+    """
     if not queue.cancel(s, candidate.id, me):
         raise Refusal(
             HTTPStatus.CONFLICT,
             Problem.REFUSED,
             f'candidate#{candidate.id} has no evaluation that waits or runs: see `piloop eval queue`',
         )
+    ops.hold_on_failed_baseline(s, candidate, None)
     s.commit()
     with db_feed.snapshot(s) as cursor:
         return CandidateAnswer(cursor=cursor, candidate=candidate_view(candidate))
@@ -648,6 +751,65 @@ def revoke_token(s: Writing, name: str) -> TokenList:
         raise Refusal(HTTPStatus.NOT_FOUND, Problem.UNKNOWN_TOKEN, str(e)) from e
     s.commit()
     return tokens.listing(s)
+
+
+@router.get('/secrets', operation_id='list_secrets', dependencies=[Depends(admin_access)])
+def list_secrets(api: Api, s: Reading) -> SecretList:
+    """The secrets: the name, whose it is, and who set it last and when. Never a value."""
+    names = {row.id: row.name for row in s.execute(select(Campaign.id, Campaign.name))}
+    return SecretList(
+        secrets=[
+            SecretView(
+                name=found.secret.name,
+                campaign=None if found.secret.owner is None else names[found.secret.owner],
+                set_at=found.set_at,
+                set_by=None if found.set_by is None else found.set_by.signature,
+            )
+            for found in secrets.listed(s, _secrets(api))
+        ]
+    )
+
+
+@router.put(
+    '/secrets/{name}', operation_id='set_secret', dependencies=[Depends(admin_access)], responses=FORBIDDEN_RESPONSE
+)
+def set_secret(api: Api, s: Writing, me: Acting, name: EnvName, campaign: Narrowed, body: SecretBody) -> SecretChanged:
+    """Set a secret of the home, or of the campaign named, in place of any. Agents get it from their next start.
+
+    An agent sets only its own campaign's secrets.
+    """
+    secrets.set_secret(s, _secrets(api), me, campaign, name, body.value)
+    s.commit()
+    return _secret_changed(s, name, campaign)
+
+
+@router.delete(
+    '/secrets/{name}', operation_id='remove_secret', dependencies=[Depends(admin_access)], responses=FORBIDDEN_RESPONSE
+)
+def remove_secret(api: Api, s: Writing, me: Acting, name: EnvName, campaign: Narrowed) -> SecretChanged:
+    """Delete a secret of the home, or of the campaign named. An agent that starts after it no longer gets it."""
+    if not secrets.remove_secret(s, _secrets(api), me, campaign, name):
+        raise Refusal(
+            HTTPStatus.NOT_FOUND,
+            Problem.UNKNOWN_SECRET,
+            f'{_whose(s, campaign)} has no secret {name}: see `piloop secret list`',
+        )
+    s.commit()
+    return _secret_changed(s, name, campaign)
+
+
+def _secrets(api: Handlers) -> secrets.SecretsProvider:
+    return secrets.SECRETS.selected(api.cfg.providers)
+
+
+def _secret_changed(s: Session, name: str, owner: secrets.Owner) -> SecretChanged:
+    campaign = None if owner is None else s.get_one(Campaign, owner).name
+    with db_feed.snapshot(s) as cursor:
+        return SecretChanged(cursor=cursor, name=name, campaign=campaign)
+
+
+def _whose(s: Session, owner: secrets.Owner) -> str:
+    return 'the home' if owner is None else f'campaign {s.get_one(Campaign, owner).name}'
 
 
 @router.post('/campaigns/{campaign}/agents', operation_id='launch', dependencies=[Depends(actor_access)])
@@ -786,6 +948,7 @@ def with_api(server: App, api: Handlers) -> App:
         server.mount_router(routes)
     for refused in REFUSALS:
         server.add_exception_handler(refused, _refused)
+    server.add_exception_handler(secrets.Denied, _forbidden)
     server.state.handlers = api
     return server
 
@@ -796,12 +959,19 @@ REFUSALS: tuple[type[Exception], ...] = (
     RemeasureRefused,
     limits_module.Refused,
     tokens.NameTaken,
+    CampaignError,
+    ConfigError,
+    CloneFailed,
 )
 """What an operation raises when it refuses its input and changes nothing: each answers 409, ``refused``."""
 
 
 def _refused(_request: Request, e: Exception) -> Response:
     return JSONResponse({'error': Problem.REFUSED, 'detail': str(e)}, status_code=HTTPStatus.CONFLICT)
+
+
+def _forbidden(_request: Request, e: Exception) -> Response:
+    return JSONResponse({'error': Problem.FORBIDDEN, 'detail': str(e)}, status_code=HTTPStatus.FORBIDDEN)
 
 
 def daemon_state(started: str, listen: str | None) -> DaemonState:

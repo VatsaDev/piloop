@@ -1,4 +1,7 @@
-"""``piloop secret set|list|rm``: the secrets that agents get in their environment. No command shows a value."""
+"""``piloop secret set|list|rm``, clients of the API: the secrets that agents get in their environment.
+
+No command shows a value.
+"""
 
 import getpass
 import sys
@@ -8,13 +11,12 @@ import cyclopts
 from pydantic import SecretStr, TypeAdapter, ValidationError
 from rich import box
 from rich.table import Table
-from sqlalchemy import select
-from sqlalchemy.orm import Session
 
-from piloop.cli import common, local
-from piloop.db.models import Campaign
+from piloop.api.client import Client
+from piloop.api.contract import Located, SecretBody
+from piloop.cli import common
+from piloop.cli.client import cwd, daemon_http
 from piloop.mcp import EnvName
-from piloop.plugins.secrets import contract as secrets
 
 app = cyclopts.App(name='secret', help='The secrets that agents get in their environment. No command shows a value.')
 
@@ -37,32 +39,20 @@ def secret_set(name: Name, /, *, campaign: CampaignOption = None) -> None:
     value = getpass.getpass(f'{variable}: ') if sys.stdin.isatty() else sys.stdin.read().removesuffix('\n')
     if not value:
         raise SystemExit(f'{variable}: the value is empty')
-    with local.session() as s:
-        owner = _owner(s, campaign)
-        try:
-            secrets.set_secret(s, _provider(), common.settings.actor, owner, variable, SecretStr(value))
-        except secrets.Denied as e:
-            raise SystemExit(str(e)) from e
-        s.commit()
-        whose = _whose(s, owner)
-    common.console.print(f'{variable} set for {whose}', markup=False, highlight=False)
+    with Client.connect(daemon_http()) as client:
+        changed = client.set_secret(variable, _owner(campaign), SecretBody(value=SecretStr(value)))
+    common.console.print(f'{variable} set for {_whose(changed.campaign)}', markup=False, highlight=False)
 
 
 @app.command(name='list')
 def secret_list() -> None:
     """The secrets: the name, whose it is, and who set it last and when. Never a value."""
+    with Client.connect(daemon_http()) as client:
+        listed = client.list_secrets().secrets
     table = Table('name', 'of', 'set', 'by', box=box.SIMPLE)
-    with local.session() as s:
-        names = {row.id: row.name for row in s.execute(select(Campaign.id, Campaign.name))}
-        for found in secrets.listed(s, _provider()):
-            owner = found.secret.owner
-            at = f'{found.set_at:%Y-%m-%d %H:%M}' if found.set_at else ''
-            table.add_row(
-                found.secret.name,
-                'home' if owner is None else names[owner],
-                at,
-                found.set_by.signature if found.set_by else '',
-            )
+    for found in listed:
+        at = f'{found.set_at:%Y-%m-%d %H:%M}' if found.set_at else ''
+        table.add_row(found.name, found.campaign or 'home', at, found.set_by or '')
     common.console.print(table)
 
 
@@ -70,20 +60,13 @@ def secret_list() -> None:
 def secret_rm(name: Name, /, *, campaign: CampaignOption = None) -> None:
     """Delete a secret. An agent that starts after it no longer gets it."""
     variable = _name(name)
-    with local.session() as s:
-        owner = _owner(s, campaign)
-        whose = _whose(s, owner)
-        try:
-            gone = secrets.remove_secret(s, _provider(), common.settings.actor, owner, variable)
-        except secrets.Denied as e:
-            raise SystemExit(str(e)) from e
-        if not gone:
-            raise SystemExit(f'{whose} has no secret {variable}: see `piloop secret list`')
-        s.commit()
-    common.console.print(f'{variable} of {whose} deleted', markup=False, highlight=False)
+    with Client.connect(daemon_http()) as client:
+        changed = client.remove_secret(variable, _owner(campaign))
+    common.console.print(f'{variable} of {_whose(changed.campaign)} deleted', markup=False, highlight=False)
 
 
 def _name(name: str) -> str:
+    """``name``, checked as the route checks it before a value is read."""
     try:
         return ENV_NAME.validate_python(name)
     except ValidationError as e:
@@ -92,13 +75,9 @@ def _name(name: str) -> str:
         ) from e
 
 
-def _provider() -> secrets.SecretsProvider:
-    return secrets.SECRETS.selected(common.settings.providers)
+def _owner(campaign: str | None) -> Located:
+    return Located(campaign=campaign, cwd=None if campaign is None else cwd())
 
 
-def _owner(s: Session, campaign: str | None) -> secrets.Owner:
-    return None if campaign is None else local.campaign(s, campaign).id
-
-
-def _whose(s: Session, owner: secrets.Owner) -> str:
-    return 'the home' if owner is None else f'campaign {s.get_one(Campaign, owner).name}'
+def _whose(campaign: str | None) -> str:
+    return 'the home' if campaign is None else f'campaign {campaign}'

@@ -51,9 +51,9 @@ The agent follows the `piloop-setup` skill:
 2. It reads your repo and interviews you. It asks only what the repo does not answer.
 3. It writes `brief.md` for the implementers, `piloop.toml` with the metrics and limits, and the evaluate command. It
    shows you the files before it continues.
-4. It measures the baseline with `piloop init .`. A baseline that surprises you usually means that the evaluate
-   command is wrong.
-5. It starts the daemon with `piloop serve --detach` and adds the first ideas.
+4. It starts the daemon and measures the baseline with `piloop init .`. A baseline that surprises you usually means
+   that the evaluate command is wrong.
+5. It adds the first ideas.
 6. It becomes the [orchestrator](/concepts/orchestrator), in this session or in a background subagent.
 
 The interview covers these topics:

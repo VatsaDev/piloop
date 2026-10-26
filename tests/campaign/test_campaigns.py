@@ -1,4 +1,3 @@
-import json
 import re
 from pathlib import Path
 from typing import get_args, get_origin
@@ -9,14 +8,10 @@ from pydantic import BaseModel, RootModel, ValidationError
 from pytest_mock import MockerFixture
 from sqlalchemy import select
 
-from piloop.actor import System
-from piloop.campaign import campaigns as campaign_module
 from piloop.campaign.campaigns import (
     BLANK,
     TEMPLATES,
     create_campaign_repo,
-    register,
-    registered,
     stub_untouched,
     sync,
 )
@@ -26,7 +21,7 @@ from piloop.db.session import Database
 from piloop.ids import CampaignStatus
 from piloop.plugins.host import Scope, declared
 from piloop.plugins.role.contract import ROLES
-from tests.conftest import HARNESS_APPEND, store_config, write_toml
+from tests.conftest import store_config
 
 
 def test_create_campaign_repo(tmp_path: Path, mocker: MockerFixture) -> None:
@@ -179,42 +174,6 @@ def test_the_campaign_template_names_every_key_of_the_config() -> None:
     ], 'the check finds a key missing from a table, from a keys: comment, and from a nested table without a header'
 
 
-def test_the_baseline_keeps_its_per_unit_results_under_the_daemon_home(db: Database, campaign_path: Path) -> None:
-    script = campaign_path.parent / 'evaluate.sh'
-    script.write_text(
-        'echo METRIC score=1\necho METRIC size=5\nprintf \'{"score": {"only": 1}}\' > "$PILOOP_UNITS_FILE"\n'
-    )
-    write_toml(campaign_path, HARNESS_APPEND, evaluate=['sh', str(script)])
-    with db.session() as s:
-        _, measurement = register(s, campaign_path, System.HUMAN)
-    units_dir = campaign_module.settings.units_dir
-    assert units_dir == campaign_module.settings.home / 'units'
-    assert [p.name for p in units_dir.iterdir()] == [f'{measurement.id}.json']
-    assert json.loads((units_dir / f'{measurement.id}.json').read_text()) == {'score': {'only': 1}}
-
-
-def test_the_baseline_is_scored_without_locking_the_database(db: Database, campaign_path: Path, tmp_path: Path) -> None:
-    script = campaign_path.parent / 'evaluate.py'
-    script.write_text(
-        'import sqlite3\n'
-        f'con = sqlite3.connect({str(tmp_path / "piloop.db")!r}, timeout=0)\n'
-        "con.execute('BEGIN IMMEDIATE')\n"
-        'con.rollback()\n'
-        "print('METRIC score=1')\n"
-        "print('METRIC size=5')\n"
-    )
-    write_toml(campaign_path, HARNESS_APPEND, evaluate=['python3', str(script)])
-    with db.session() as s:
-        assert registered(s, campaign_path) is None, 'the CLI reads first, in the same session'
-        campaign, measurement = register(s, campaign_path, System.HUMAN)
-        assert measurement.metrics == {'score': 1.0, 'size': 5.0}, 'another client could write meanwhile'
-    campaigns_dir = campaign_module.campaigns_dir(campaign_module.settings.home)
-    assert [p.name for p in campaigns_dir.iterdir()] == [str(campaign.id)], 'the staging directory became the campaign'
-    assert (
-        campaigns_dir / str(campaign.id) / 'baseline' / 'eval.stdout'
-    ).read_text() == 'METRIC score=1\nMETRIC size=5\n'
-
-
 def test_init_commits_only_the_files_it_owns_never_another_agents_work(tmp_path: Path) -> None:
     """A finding on the campaign build: in a shared checkout, init committed another agent's uncommitted evaluator
     work as "piloop init: …". It commits only the template's files and the ones it wrote; the rest stays as it was."""
@@ -273,21 +232,6 @@ def test_init_takes_a_staged_rename_between_owned_files(tmp_path: Path) -> None:
     assert create_campaign_repo(dest, BLANK, {}) == []
     assert repo.head.commit.summary == 'piloop init: brief.md, evaluate.py'
     assert not repo.is_dirty()
-
-
-def test_a_baseline_whose_tree_tracks_workspace_is_scored_on_its_own_file(db: Database, campaign_path: Path) -> None:
-    """The shared workspace is linked into the baseline's checkout only where its tree has no ``workspace``."""
-    (campaign_path / 'workspace').write_text('a file of the tree\n')
-    script = campaign_path.parent / 'evaluate.sh'
-    script.write_text('test -f workspace && echo METRIC score=1 && echo METRIC size=5\n')
-    write_toml(campaign_path, HARNESS_APPEND, evaluate=['sh', str(script)])
-    repo = Repo(campaign_path)
-    repo.git.add('-A')
-    repo.git.add('-f', 'workspace')
-    repo.git.commit('-qm', 'a tracked workspace file')
-    with db.session() as s:
-        _, measurement = register(s, campaign_path, System.HUMAN)
-    assert measurement.metrics == {'score': 1.0, 'size': 5.0}
 
 
 def test_a_stored_config_loads_typed_and_one_that_no_longer_validates_fails_only_its_read(

@@ -8,7 +8,7 @@ import subprocess
 import sys
 import threading
 from collections.abc import Callable
-from contextlib import closing
+from contextlib import ExitStack, closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -22,7 +22,7 @@ from git import Repo
 from pytest_mock import MockerFixture
 from rich.console import Console
 from rich.table import Table
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, update
 from sqlalchemy.orm import Session
 
 from piloop.actor import Actor, Agent, System
@@ -37,6 +37,7 @@ from piloop.cli import (
     agents as agents_cli,
     campaign as campaign_cli,
     common,
+    daemon as daemon_cli,
     install,
     local,
     main as cli,
@@ -89,7 +90,7 @@ from piloop.scoring.ledger import CandidateImported, RemeasureRequested
 from piloop.settings import Settings
 from piloop.store.chunks import Chunked
 from piloop.version import direct_url, installed
-from tests.conftest import RESEARCH, WATCHDOG, at_head, disk, example, hold_lock, wait_until
+from tests.conftest import RESEARCH, WATCHDOG, at_head, disk, example, hold_lock, measuring, serving_api, wait_until
 from tests.daemon.test_serve import alive
 from tests.db.test_migrations import TOO_OLD, alembic
 from tests.test_lease import Recorder
@@ -100,7 +101,8 @@ HEAD = ScriptDirectory.from_config(alembic(Path('unused.db'))).get_current_head(
 
 
 def run_cli(tokens: list[str]) -> None:
-    cli.app(tokens, result_action='return_value', exit_on_error=False)
+    with cli.answered():
+        cli.app(tokens, result_action='return_value', exit_on_error=False)
 
 
 @pytest.fixture(autouse=True)
@@ -474,6 +476,7 @@ def test_init_blank_then_register_then_reread(tmp_path: Path, out) -> None:
     assert 'campaign fresh #1 already registered; config re-read' in out()
 
 
+@pytest.mark.usefixtures('api')
 def test_init_example(tmp_path: Path, out, monkeypatch: pytest.MonkeyPatch) -> None:
     template = tmp_path / 'templates' / 'demo'
     template.mkdir(parents=True)
@@ -485,15 +488,14 @@ def test_init_example(tmp_path: Path, out, monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(campaign_cli, 'EXAMPLE_DATA', {'demo': {}})
     with pytest.raises(SystemExit, match='no example'):
         run_cli(['init', '--example', 'missing', str(tmp_path / 'x')])
-    toml = template / 'piloop.toml'
-    toml.write_text(toml.read_text().replace('"sh"', '"false"'))
-    with pytest.raises(SystemExit, match='baseline failed to evaluate'):
-        run_cli(['init', '--example', 'demo', str(tmp_path / 'broken')])
-    toml.write_text(toml.read_text().replace('"false"', '"sh"'))
     run_cli(['init', '--example', 'demo', str(tmp_path / 'd')])
     assert 'campaign demo #1 registered; baseline candidate#1: score 3\n' in out()
     with pytest.raises(SystemExit, match="name 'demo' is already used by"):
         run_cli(['init', '--example', 'demo', str(tmp_path / 'e')])
+    toml = template / 'piloop.toml'
+    toml.write_text(toml.read_text().replace('"sh"', '"false"').replace('"demo"', '"broken"'))
+    with pytest.raises(SystemExit, match='^the baseline failed to evaluate'):
+        run_cli(['init', '--example', 'demo', str(tmp_path / 'broken')])
 
 
 @pytest.mark.usefixtures('api')
@@ -510,6 +512,7 @@ def test_sql_and_status_while_another_client_holds_the_write_lock(
         run_cli(['sql', "UPDATE campaigns SET name = 'x'"])
 
 
+@pytest.mark.usefixtures('api')
 def test_sql(campaign_path: Path, out) -> None:
     run_cli(['init', str(campaign_path)])
     out()
@@ -586,6 +589,7 @@ def test_sql_dash_reads_the_statement_from_stdin_and_never_waits_on_a_terminal(
         run_cli(['sql', '-'])
 
 
+@pytest.mark.usefixtures('api')
 def test_init_syncs_the_memory_documents_and_names_the_repo(campaign_path: Path, out) -> None:
     Repo(campaign_path).create_remote('origin', 'https://github.com/hiloopai/demo.git')
     run_cli(['init', str(campaign_path)])
@@ -743,6 +747,7 @@ def test_inbox_wait_blocks_until_an_item_lands_and_hands_over_a_cursor_that_miss
     assert out().splitlines()[0].startswith('comment#1 escalation'), 'from an old cursor: what landed in between'
 
 
+@pytest.mark.usefixtures('api')
 def test_cli_writes_as_the_actor_from_the_environment(
     campaign_path: Path, tmp_path: Path, out, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -855,9 +860,8 @@ def test_candidate_remeasure_asks_the_daemon_to_measure_a_candidate_again_and_re
         run_cli(['candidate', 'remeasure', '99'])
 
 
-def test_worker_list_shows_each_worker_its_sample_its_jobs_and_why_it_got_no_lease(campaign_path: Path, out) -> None:
-    run_cli(['init', str(campaign_path)])
-    out()
+@pytest.mark.usefixtures('api')
+def test_worker_list_shows_each_worker_its_sample_its_jobs_and_why_it_got_no_lease(out) -> None:
     run_cli(['worker', 'list'])
     assert out().strip() == 'no worker yet: `piloop serve` starts one'
     with closing(Database(common.settings.database_url, actor=System.HUMAN)) as db:
@@ -890,6 +894,7 @@ def test_worker_list_shows_each_worker_its_sample_its_jobs_and_why_it_got_no_lea
     assert len(started) == 2, 'an ended one is not listed'
 
 
+@pytest.mark.usefixtures('api')
 def test_worker_list_says_when_another_executor_is_selected(
     campaign_path: Path, out, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1039,12 +1044,41 @@ def test_candidate_note_keeps_a_regressed_result_in_view_with_follow_ups_pinned_
         run_cli(['candidate', 'note', '2', 'worth a look', '--follow-up', 'a hunch'])
 
 
-def test_baseline_must_evaluate(campaign_path: Path) -> None:
+@pytest.mark.usefixtures('api')
+def test_a_baseline_that_fails_to_evaluate_pauses_the_campaign_and_init_exits_with_why(campaign_path: Path) -> None:
     (campaign_path / 'piloop.toml').write_text(
         (campaign_path / 'piloop.toml').read_text().replace('"sh", "-c"', '"false", "-c"')
     )
-    with pytest.raises(SystemExit, match='baseline failed to evaluate'):
+    logs = common.settings.home / 'projects' / '1' / 'measure' / '1-e1'
+    with pytest.raises(
+        SystemExit,
+        match=rf'^the baseline failed to evaluate: evaluate exit 1: ; its logs are in {logs}; fix it, then'
+        r' `piloop candidate remeasure 1` and `piloop resume demo`$',
+    ):
         run_cli(['init', str(campaign_path)])
+    with local.session() as s:
+        assert [c.name for c in s.scalars(select(Campaign))] == ['demo'], 'it stays registered'
+
+
+def test_init_waits_for_the_baseline_until_the_campaign_stops(
+    campaign_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stop that no request asked for, such as the stop rule's, ends the wait too."""
+    monkeypatch.setattr(campaign_cli, 'MAX_POLL_SECONDS', 0)
+    polls = mocker.spy(Client, 'events')
+
+    def stop() -> None:
+        wait_until(lambda: polls.call_count >= 2)  # one read found nothing yet
+        with local.session() as s:
+            s.execute(update(Campaign).values(status=CampaignStatus.STOPPED, stopped_reason='max_hours reached'))
+            s.commit()
+
+    stopping = threading.Thread(target=stop)
+    with serving_api(common.settings):
+        stopping.start()
+        with pytest.raises(SystemExit, match='^max_hours reached$'):
+            run_cli(['init', str(campaign_path)])
+    stopping.join()
 
 
 @pytest.mark.usefixtures('api')
@@ -1651,6 +1685,7 @@ def test_upgrade_of_a_checkout_install_without_a_daemon_creates_the_schema(fake_
         run_cli(['upgrade'])
 
 
+@pytest.mark.usefixtures('api')
 def test_upgrade_fails_on_what_doctor_finds_after_it(fake_bins, out, campaign_path: Path) -> None:
     run_cli(['init', str(campaign_path)])
     shutil.rmtree(campaign_path)
@@ -1725,6 +1760,7 @@ def test_main_turns_a_bad_config_and_any_unexpected_error_into_one_message(
         cli.main()
 
 
+@pytest.mark.usefixtures('api')
 def test_watch_needs_a_terminal_and_runs_the_app_as_the_actor(campaign_path: Path, out, mocker: MockerFixture) -> None:
     run_cli(['init', str(campaign_path)])
     out()
@@ -1872,7 +1908,6 @@ READERS = (
     ['history'],
     ['sql', 'SELECT 1'],
     ['watch'],
-    ['secret', 'list'],
     ['campaign', 'tree'],
     ['wake'],
 )
@@ -1889,16 +1924,13 @@ def refuse_each(argv_list: tuple[list[str], ...], database: Path, match: str) ->
 
 
 def test_the_commands_that_read_refuse_a_database_behind_this_piloop_and_change_nothing(
-    campaign_path: Path, out, mocker: MockerFixture
+    out, mocker: MockerFixture
 ) -> None:
-    run_cli(['init', str(campaign_path)])
     database = common.settings.home / 'piloop.db'
     command.downgrade(alembic(database), '0018')
     mocker.patch('piloop.cli.campaign.sys.stdin').isatty.return_value = True
     behind = rf'^{re.escape(str(database))} is at schema revision 0018, and this piloop .* knows {HEAD}'
-    refuse_each(
-        (*READERS, ['init', str(campaign_path)]), database, rf'{behind}: run `piloop migrate`, which backs it up first$'
-    )
+    refuse_each(READERS, database, rf'{behind}: run `piloop migrate`, which backs it up first$')
     for daemon in hold_lock(common.settings.pid_file):  # a daemon of the older piloop, however it was started
         refuse_each(
             READERS,
@@ -1910,10 +1942,9 @@ def test_the_commands_that_read_refuse_a_database_behind_this_piloop_and_change_
 
 
 def test_an_agent_is_told_to_retry_while_the_daemon_upgrades_and_never_migrates_or_upgrades(
-    campaign_path: Path, monkeypatch: pytest.MonkeyPatch, fake_bins
+    monkeypatch: pytest.MonkeyPatch, fake_bins
 ) -> None:
     """An agent acts on what a refusal says to run, so the refusal tells it to wait, and the commands refuse it."""
-    run_cli(['init', str(campaign_path)])
     database = common.settings.home / 'piloop.db'
     command.downgrade(alembic(database), '0018')
     home, tools = common.settings.home, common.settings.uv_tool_dir
@@ -1934,15 +1965,14 @@ def test_an_agent_is_told_to_retry_while_the_daemon_upgrades_and_never_migrates_
     assert revision_of(database) == HEAD, 'the orchestrator is not a launched agent: it migrates'
 
 
-def test_the_commands_that_read_refuse_a_database_that_a_newer_piloop_migrated(campaign_path: Path, mocker) -> None:
-    run_cli(['init', str(campaign_path)])
+def test_the_commands_that_read_refuse_a_database_that_a_newer_piloop_migrated(mocker) -> None:
     database = common.settings.home / 'piloop.db'
     with closing(sqlite3.connect(database)) as con:
         con.execute("UPDATE alembic_version SET version_num = '9999_from_the_future'")
         con.commit()
     mocker.patch('piloop.cli.campaign.sys.stdin').isatty.return_value = True
     refuse_each(
-        (*READERS, ['init', str(campaign_path)], ['migrate'], ['serve']),
+        (*READERS, ['migrate'], ['serve']),
         database,
         rf'was migrated by a different piloop build \(revision 9999_from_the_future is not in the history of this'
         rf' piloop .*, which knows up to {HEAD}\): install the piloop that migrated it',
@@ -1966,9 +1996,8 @@ def too_old(monkeypatch: pytest.MonkeyPatch, database: Path) -> str:
 
 
 def test_every_command_refuses_a_database_older_than_the_previous_release_and_changes_nothing(
-    campaign_path: Path, out, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    out, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
 ) -> None:
-    run_cli(['init', str(campaign_path)])
     database = common.settings.home / 'piloop.db'
     found = too_old(monkeypatch, database)
     fix = (
@@ -1976,7 +2005,7 @@ def test_every_command_refuses_a_database_older_than_the_previous_release_and_ch
         r' `piloop upgrade`'
     )
     mocker.patch('piloop.cli.campaign.sys.stdin').isatty.return_value = True
-    commands = (*READERS, ['init', str(campaign_path)], ['migrate'], ['serve'])
+    commands = (*READERS, ['migrate'], ['serve'])
     refuse_each(commands, database, rf'^{found}.*: {fix}$')
     refuse_each((['serve', '--check'],), database, rf'^the daemon cannot start: {found}.*: {fix}$')
     for daemon in hold_lock(common.settings.pid_file):  # an older daemon: the database is still too old for this one
@@ -2015,15 +2044,34 @@ def test_upgrade_keeps_the_old_daemon_and_the_database_when_the_database_is_olde
 
 
 @pytest.mark.usefixtures('no_database')
-def test_only_init_creates_a_missing_database_and_the_readers_say_so(campaign_path: Path, out) -> None:
+def test_init_starts_the_daemon_which_creates_a_missing_database_and_the_readers_say_so(
+    campaign_path: Path, out, mocker: MockerFixture
+) -> None:
     database = common.settings.home / 'piloop.db'
     for argv in READERS:
         if argv != ['watch']:  # watch first needs a terminal
             with pytest.raises(SystemExit, match=rf'^{re.escape(str(database))} does not exist: `piloop init <repo>`'):
                 run_cli(argv)
-    assert not database.exists(), 'no command but init, serve and migrate creates it'
-    run_cli(['init', str(campaign_path)])
+    assert not database.exists(), 'no command but serve and migrate creates it'
+    with ExitStack() as daemon:
+
+        def spawned(cfg: Settings, _listen: object = None) -> int:
+            """What `piloop serve --detach` starts: it migrates the database, serves the API and measures."""
+            with closing(Database(cfg.database_url, actor=System.HUMAN)) as db:
+                migrate(db.engine, cas=disk(cfg.home), backups=0, daemon=None)
+            daemon.enter_context(serving_api(cfg))
+            daemon.enter_context(measuring(cfg))
+            return 4242
+
+        mocker.patch.object(daemon_cli, 'spawn_detached', side_effect=spawned)
+        run_cli(['init', str(campaign_path)])
+        run_cli(['init', str(campaign_path)])
     assert revision_of(database) == HEAD
+    lines = out().splitlines()
+    assert lines[0] == f'daemon started: pid 4242, log {common.settings.log_file}'
+    assert lines[1].startswith('campaign demo #1 registered') and 'daemon started' not in ''.join(lines[2:]), (
+        'the second init finds the daemon running'
+    )
 
 
 def test_serve_and_migrate_refuse_under_a_daemon_that_a_service_manager_started(out) -> None:
@@ -2049,6 +2097,7 @@ def test_serve_and_migrate_refuse_under_a_daemon_that_a_service_manager_started(
         run_cli(['campaign', 'tree'])  # at head: a daemon of the same piloop is no reason to refuse
 
 
+@pytest.mark.usefixtures('api')
 def test_attach_prints_what_an_agent_on_another_machine_wrote_from_its_stored_session(
     campaign_path: Path, out, mocker: MockerFixture
 ) -> None:

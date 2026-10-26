@@ -26,16 +26,19 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from piloop.actor import System
-from piloop.campaign import archive as archive_module, campaigns as campaign_module
+from piloop.campaign import archive as archive_module
+from piloop.campaign.campaigns import CampaignAdded
 from piloop.config import CampaignConfig, load_campaign_config
 from piloop.daemon.api import Handlers, daemon_state, with_api
 from piloop.daemon.main import ACTOR
 from piloop.daemon.run_controller import RunController
+from piloop.db.events import in_order
 from piloop.db.models import (
     AgentSession,
     AgentSessionState,
     Campaign,
     Candidate,
+    Event,
     Measurement,
     Origin,
     RunEnd,
@@ -60,7 +63,7 @@ from piloop.plugins.runtime.subprocess import SubprocessRuntime
 from piloop.plugins.secrets.contract import HomeSecrets
 from piloop.plugins.secrets.local import LocalSecrets
 from piloop.plugins.verdict_rule.contract import Outcome
-from piloop.runtime.factory import RuntimeFactory
+from piloop.runtime.factory import RuntimeFactory, make_runtime
 from piloop.scoring.evaluate import Measured, run_evaluate
 from piloop.scoring.ledger import current_evaluator
 from piloop.settings import Settings, env_names
@@ -564,12 +567,6 @@ def plenty_of_disk(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def isolated_campaigns_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """``register`` measures the baseline under the global ``settings.home``: give each test a home of its own."""
-    monkeypatch.setattr(campaign_module, 'settings', Settings(home=tmp_path / 'home'))
-
-
-@pytest.fixture(autouse=True)
 def git_identity(monkeypatch: pytest.MonkeyPatch) -> None:
     for key, value in {
         'GIT_AUTHOR_NAME': 'piloop-test',
@@ -610,4 +607,40 @@ def serving_api(
     finally:
         for server in servers:
             server.close()
+        db.close()
+
+
+@contextmanager
+def measuring(cfg: Settings) -> Generator[None]:
+    """Measure the baseline of each campaign that registers in ``cfg``'s home, as the daemon's next pass does.
+
+    That is ``RunController.remeasure``, on an in-process worker: ``ledger.due`` puts an unmeasured head first. The
+    worker starts with the first registration, so a test that registers nothing finds no worker and no event of one.
+    """
+    db = Database(cfg.database_url, actor=ACTOR)
+    controllers: list[RunController] = []
+    done = threading.Event()
+
+    def follow() -> None:
+        cursor = 0
+        while not done.wait(0.01):
+            with db.session() as s:
+                added = in_order(s, CampaignAdded, Event.id > cursor)
+            for event, payload in added:
+                if not controllers:
+                    controllers.append(
+                        serving(RunController(db, Tracer(None), cfg.home, make_runtime, executor=Workers()))
+                    )
+                cursor = event.id
+                controllers[0].remeasure(payload.baseline)
+
+    follower = threading.Thread(target=follow, name='measuring')
+    follower.start()
+    try:
+        yield
+    finally:
+        done.set()
+        follower.join()
+        for controller in controllers:
+            controller.stop(5)
         db.close()

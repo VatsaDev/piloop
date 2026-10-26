@@ -28,15 +28,10 @@ from piloop.plugins.cas.contract import CAS, Cas
 
 
 @contextmanager
-def database(*, create: bool = False) -> Generator[Database]:
-    """Open the database, which must be at the schema of this piloop (``refuse_other_schema``), until the block ends.
-
-    With ``create`` (``piloop init``), a database that does not exist yet is created at head first.
-    """
+def database() -> Generator[Database]:
+    """Open the database, which must be at the schema of this piloop (``refuse_other_schema``), until the block ends."""
     db = Database(common.settings.database_url, actor=common.settings.actor)
     try:
-        if create and not (common.settings.home / 'piloop.db').is_file():
-            migrate(db)
         refuse_other_schema()
         yield db
     finally:
@@ -44,9 +39,9 @@ def database(*, create: bool = False) -> Generator[Database]:
 
 
 @contextmanager
-def session(*, create: bool = False) -> Generator[Session]:
+def session() -> Generator[Session]:
     """One session on ``database``."""
-    with database(create=create) as db, db.session() as s:
+    with database() as db, db.session() as s:
         yield s
 
 
@@ -86,9 +81,9 @@ def cas() -> Cas:
 def refuse_other_schema() -> None:
     """Exit, without a change, unless the database exists and is at the schema of this piloop.
 
-    Only ``piloop serve``, ``piloop migrate`` and ``piloop upgrade`` migrate (``migrate``), and only ``piloop init``
-    creates a missing database. Every other command calls this before it opens the database. The message names the
-    revision found, the one this piloop knows, and what to run.
+    Only ``piloop serve``, which ``piloop init`` starts, ``piloop migrate`` and ``piloop upgrade`` migrate
+    (``migrate``). Every other command calls this before it opens the database. The message names the revision found,
+    the one this piloop knows, and what to run.
     """
     if (
         e := schema_mismatch(common.settings.home / 'piloop.db', running_pid(common.settings), common.settings.actor)

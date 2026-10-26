@@ -15,7 +15,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from piloop.actor import Agent, System
-from piloop.campaign.memory import Synced
+from piloop.api.views import Synced
 from piloop.campaign.ops import pause
 from piloop.campaign.stop import (
     StopRequested,
@@ -720,7 +720,7 @@ def test_closing_review_skip_ends_the_stop_at_once_with_an_escalation(
 
     def sync(_s: Session, c: Campaign, *_: object) -> Synced:
         synced.append(c.name)
-        return Synced()
+        return Synced(added=[], unchanged=[], skipped={})
 
     monkeypatch.setattr('piloop.daemon.scheduler.sync_documents', sync)
     sched = make_scheduler(db, runtime, tmp_path)

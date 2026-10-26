@@ -20,10 +20,11 @@ Commands that write sign their writes with `PILOOP_ACTOR` (`human` by default). 
 piloop init [PATH] [--example enwik8|titanic-tracks]
 ```
 
-Makes `PATH` (default `.`) a piloop campaign, measures `HEAD` as the baseline and registers the campaign. Without a
-`piloop.toml`, it writes one from the template, with `brief.md` and `evaluate.py`, and stops while `evaluate.py` is the
-stub. Run it again after each edit of `piloop.toml`. `--example` creates a bundled example instead. See
-[Run a campaign by hand](/by-hand).
+Makes `PATH` (default `.`) a piloop campaign, starts the daemon unless one runs, registers the campaign, and waits
+while the daemon measures `HEAD` as the baseline. A baseline that fails to evaluate pauses the campaign, and `init`
+exits with why. Ctrl-C ends only the wait. Without a `piloop.toml`, it writes one from the template, with `brief.md`
+and `evaluate.py`, and stops while `evaluate.py` is the stub. Run it again after each edit of `piloop.toml`.
+`--example` creates a bundled example instead. See [Run a campaign by hand](/by-hand).
 
 ### piloop install-skills
 

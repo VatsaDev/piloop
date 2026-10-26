@@ -1,10 +1,25 @@
+import base64
+import contextlib
+import logging
+import socket
+import subprocess
+import threading
+from collections.abc import Iterator
+from datetime import timedelta
+from functools import partial
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import ClassVar
 
+import psutil
 import pytest
 from git import Repo
 from git.exc import GitCommandError
+from pydantic import SecretStr
 
-from piloop.plugins.vcs.git import GitRepository, commands as git
+from piloop.api.client import CLONE_WAIT
+from piloop.plugins.vcs.contract import CloneFailed
+from piloop.plugins.vcs.git import Git, GitRepository, commands as git
 
 
 def test_merge_and_contains_raise_on_a_commit_the_repo_does_not_have(campaign_path: Path) -> None:
@@ -144,3 +159,113 @@ def test_a_checkout_changed_by_an_edit_a_new_file_or_a_commit_not_by_what_was_li
     git.commit_all(wt, 'add a file', ignore)
     assert git.changed(wt_path, ignore) and not git.is_dirty(wt, ignore), 'HEAD moved'
     assert not git.changed(tmp_path / 'gone', []), 'no checkout'
+
+
+SECRET = SecretStr('s3cret-token')
+
+
+@pytest.fixture
+def bare(campaign_path: Path, tmp_path: Path) -> Path:
+    """A bare clone of the campaign repo, which a dumb HTTP server can serve as files."""
+    path = tmp_path / 'origin.git'
+    subprocess.run(['git', 'clone', '-q', '--bare', str(campaign_path), str(path)], check=True)
+    subprocess.run(['git', 'update-server-info'], cwd=path, check=True)
+    return path
+
+
+@pytest.mark.parametrize('credential', [None, SECRET])
+def test_a_clone_of_a_bare_repo_by_file_url_has_its_head(
+    bare: Path, tmp_path: Path, credential: SecretStr | None
+) -> None:
+    clone = Git().clone(bare.as_uri(), tmp_path / 'clone', credential)
+    assert clone.head().revision == Repo(bare).head.commit.hexsha
+
+
+def test_a_failed_clone_says_why_without_the_credential(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """git's error names the URL, and a URL may hold the credential's text: it is redacted wherever it appears."""
+    url = (tmp_path / 'gone' / SECRET.get_secret_value()).as_uri()
+    caplog.set_level(logging.DEBUG)
+    with pytest.raises(CloneFailed, match='not appear to be a git repository') as failed:
+        Git().clone(url, tmp_path / 'clone', SECRET)
+    assert SECRET.get_secret_value() not in str(failed.value)
+    assert SECRET.get_secret_value() not in caplog.text
+
+
+class Basic(SimpleHTTPRequestHandler):
+    """Serves the files of a bare repo, as git's dumb HTTP protocol reads them, to whoever sends ``password``.
+
+    It notes the argv of each process of the test while git waits for it: what ``ps`` shows every user.
+    """
+
+    password = SECRET.get_secret_value()
+    sent: ClassVar[list[str]] = []
+    argv: ClassVar[list[str]] = []
+
+    def do_GET(self) -> None:
+        sent = self.headers.get('Authorization', '')
+        self.sent.append(sent)
+        for child in psutil.Process().children(recursive=True):
+            with contextlib.suppress(psutil.NoSuchProcess):
+                self.argv.append(' '.join(child.cmdline()))
+        if sent != 'Basic ' + base64.b64encode(f'x-access-token:{self.password}'.encode()).decode():
+            self.send_response(401)
+            self.send_header('WWW-Authenticate', 'Basic realm="repo"')
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return
+        super().do_GET()
+
+    def log_message(self, format: str, *args: object) -> None:
+        pass
+
+
+@pytest.fixture
+def served(bare: Path) -> Iterator[str]:
+    """The URL of ``bare`` over HTTP, behind basic authentication."""
+    Basic.sent.clear()
+    Basic.argv.clear()
+    server = ThreadingHTTPServer(('127.0.0.1', 0), partial(Basic, directory=str(bare.parent)))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield f'http://127.0.0.1:{server.server_address[1]}/{bare.name}'
+    server.shutdown()
+    server.server_close()
+    thread.join()
+
+
+def test_a_clone_over_http_answers_the_servers_challenge_with_the_credential(served: str, tmp_path: Path) -> None:
+    clone = Git().clone(served, tmp_path / 'clone', SECRET)
+    assert clone.head().summary == 'baseline'
+    assert [sent for sent in Basic.sent if sent], 'the credential went in a header'
+    assert [argv for argv in Basic.argv if 'clone' in argv], 'git was running'
+    assert not [argv for argv in Basic.argv if SECRET.get_secret_value() in argv]
+
+
+@pytest.mark.parametrize('credential', [None, SecretStr('wrong-token')])
+def test_a_clone_that_the_server_refuses_fails_without_a_prompt(
+    served: str, tmp_path: Path, credential: SecretStr | None
+) -> None:
+    """No terminal prompt waits for a user that a daemon does not have."""
+    with pytest.raises(CloneFailed, match='clone of http') as failed:
+        Git().clone(served, tmp_path / 'clone', credential)
+    assert 'wrong-token' not in str(failed.value)
+    assert not (tmp_path / 'clone').exists()
+
+
+def test_a_clone_from_a_remote_that_stalls_is_stopped_at_its_bound_and_leaves_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A remote that accepts the connection and never answers holds no thread past ``CLONE_TIMEOUT``."""
+    monkeypatch.setattr(git, 'CLONE_TIMEOUT', timedelta(seconds=1))
+    with socket.create_server(('127.0.0.1', 0)) as silent:
+        url = f'http://127.0.0.1:{silent.getsockname()[1]}/repo.git'
+        with pytest.raises(CloneFailed, match=rf'^git clone of {url} took longer than 0:00:01: it was stopped$'):
+            Git().clone(url, tmp_path / 'clone', SecretStr('the-token'))
+    assert not (tmp_path / 'clone').exists(), 'the partial directory is deleted'
+    assert not [p for p in psutil.process_iter(['cmdline']) if url in ' '.join(p.info['cmdline'] or [])], (
+        'git and the helpers that it started are gone'
+    )
+
+
+def test_a_registration_that_clones_waits_longer_than_a_clone_may_take() -> None:
+    assert CLONE_WAIT > git.CLONE_TIMEOUT

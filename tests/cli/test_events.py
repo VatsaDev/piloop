@@ -33,7 +33,8 @@ HUGE = EVENT.format('{"kind": "acme.huge", "v": 1e400}')
 
 
 def run_cli(tokens: list[str]) -> None:
-    cli.app(tokens, result_action='return_value', exit_on_error=False)
+    with cli.answered():
+        cli.app(tokens, result_action='return_value', exit_on_error=False)
 
 
 @pytest.fixture(autouse=True)

@@ -7,10 +7,10 @@ import cyclopts
 from rich.table import Table
 from rich.text import Text
 
-from piloop.api.views import CancelledBy, EvaluationState, RunningSince, WaitingSince
 from piloop.cli import common
-from piloop.cli.client import api
+from piloop.cli.client import daemon_http
 from piloop.ids import CandidateId
+from piloop.scoring.api import CancelledBy, EvaluationState, RunningSince, ScoringClient, WaitingSince
 from piloop.text import age, cell
 
 app = cyclopts.App(name='eval', help='List or cancel the evaluations that the daemon runs or that wait for a slot.')
@@ -23,7 +23,7 @@ def eval_queue() -> None:
     The last line counts them. A free slot of the executor goes to the campaign with the fewest running evaluations,
     and in that campaign to its head first, then to the oldest request. A requested remeasure shows as waiting at once.
     """
-    with api() as client:
+    with ScoringClient.connect(daemon_http()) as client:
         evaluations = client.evaluations().evaluations
     now = datetime.now(UTC)
     table = Table('candidate', 'campaign', 'state', 'summary', box=None)
@@ -59,8 +59,8 @@ def eval_cancel(
 
     It also cancels a requested remeasure. The candidate gets a crashed measurement that names you, at once, so a run's
     candidate is judged a `crash`, and a daemon restart does not run it again. It is evaluated again only when someone
-    asks (`piloop candidate remeasure`).
+    asks (`piloop candidate remeasure`). A baseline that never measured pauses its campaign, as a failed one does.
     """
-    with api() as client:
+    with ScoringClient.connect(daemon_http()) as client:
         client.cancel_evaluation(candidate_id)
     common.console.print(f'candidate#{candidate_id}: its evaluation is cancelled', markup=False)

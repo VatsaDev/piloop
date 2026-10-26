@@ -64,7 +64,6 @@ agent to read `~/.piloop-canary/skills/piloop-operate/SKILL.md` and to run `pilo
 
 ```bash
 piloop-canary init <clone>
-piloop-canary serve --detach
 ```
 
 To keep its daemon running, write its service unit under a name of its own. The unit carries the wrapper's variables.

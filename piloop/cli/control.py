@@ -4,10 +4,11 @@ from typing import Annotated, assert_never
 
 import cyclopts
 
+from piloop.api.client import Client
 from piloop.api.contract import PauseBody, StopBody
 from piloop.api.views import CampaignState, InvalidConfig
 from piloop.cli import common
-from piloop.cli.client import api, campaign_name
+from piloop.cli.client import campaign_name, daemon_http
 from piloop.cli.common import CampaignRef
 from piloop.ids import Ending
 
@@ -29,7 +30,7 @@ def pause(
     measures again what a new evaluator or `piloop candidate remeasure` needs, so the pause can end on a measured head.
     `--evals` holds those measurements too. The pause is in the database: it holds wherever you run the command.
     """
-    with api() as client:
+    with Client.connect(daemon_http()) as client:
         state = client.pause(campaign_name(client, ref), PauseBody(reason=reason, evals=evals)).campaign
     match state:
         case CampaignState():
@@ -43,7 +44,7 @@ def pause(
 
 def resume(ref: CampaignRef, /) -> None:
     """Resume a paused campaign. The daemon queues runs and requests roles again at once."""
-    with api() as client:
+    with Client.connect(daemon_http()) as client:
         state = client.resume(campaign_name(client, ref)).campaign
     common.console.print(f'campaign {state.name} resumed', markup=False)
 
@@ -67,7 +68,7 @@ def stop(
     `--kill` ends the implementers that are still winding down. The campaign's `piloop.toml` is not changed.
     """
     body = StopBody(reason=reason, ending=Ending.NOW if kill else Ending.WRAP_UP)
-    with api() as client:
+    with Client.connect(daemon_http()) as client:
         state = client.stop(campaign_name(client, ref), body).campaign
     how = 'ends its implementers now' if kill else 'tells its implementers to save their work and stop'
     common.console.print(f'stop requested for {state.name}: the daemon {how}', markup=False)

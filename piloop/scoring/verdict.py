@@ -11,10 +11,10 @@ from typing import Final, Literal
 from sqlalchemy import ColumnElement
 
 from piloop.actor import Actor, System
-from piloop.api.views import CandidateView
 from piloop.db.models import JUDGED, Candidate, Origin
 from piloop.ids import Cause
 from piloop.plugins.verdict_rule.contract import Outcome
+from piloop.scoring.api import CandidateView
 
 REJUDGED: Final = frozenset({Outcome.CRASH, Outcome.DISCARD, Outcome.INTERESTING})
 """The daemon's verdicts that a measurement by hand has judged again. A keep stays: runs started from it as a bar."""

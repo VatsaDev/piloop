@@ -11,22 +11,20 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Literal, assert_never
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, PlainSerializer, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
-from piloop.api.contract import Access
+from piloop.api.contract import Access, Revealed
 from piloop.ids import (
     AgentSessionId,
     CampaignId,
     CampaignStatus,
     CandidateId,
-    Cause,
     CommentId,
     EvaluatorId,
     IdeaId,
     IdeaStatus,
     JournalId,
     KeyOrigin,
-    MeasurementId,
     RoleName,
     RunId,
     TrackName,
@@ -36,10 +34,6 @@ from piloop.text import CELL_CHARS, NONE, age, block, cell, metric
 PROTOCOL = 1
 """The version of the documents and of the event envelope. A field may be added within a version, and readers ignore
 fields they do not know. Removing or changing a field is a new version."""
-
-
-type Revealed = Annotated[SecretStr, PlainSerializer(SecretStr.get_secret_value, when_used='json')]
-"""A secret in an answer: its JSON carries the value, which pydantic writes as stars otherwise. Its repr hides it."""
 
 
 class View(BaseModel):
@@ -510,6 +504,35 @@ class CampaignAnswer(View):
     campaign: CampaignEntry
 
 
+class Synced(View):
+    """What one sync of the ``[memory]`` documents did: the files that it added, those already in, those it skipped."""
+
+    added: list[str]
+    unchanged: list[str]
+    skipped: dict[str, str]
+    """Repo-relative path → why the sync did not read it (not UTF-8 text, unreadable, outside the repo)."""
+
+    def line(self) -> str:
+        """One line for the console or a span event."""
+        skipped = ''.join(f'; skipped {path}: {why}' for path, why in self.skipped.items())
+        return f'documents: {len(self.added)} added, {len(self.unchanged)} unchanged{skipped}'
+
+
+class Registered(CampaignAnswer):
+    """A campaign that registering added, read at ``cursor``, with its baseline candidate, which the daemon measures."""
+
+    baseline: CandidateId
+    documents: Synced
+
+
+class CampaignSynced(CampaignAnswer):
+    """A campaign whose ``piloop.toml`` was read again, read at ``cursor``."""
+
+    was: CampaignStatus
+    """Its status before: a stopped campaign whose stop conditions changed is active again."""
+    documents: Synced
+
+
 class IdeaView(View):
     """An idea, as the change that wrote it left it."""
 
@@ -548,110 +571,6 @@ class TrackChanged(IdeaAnswer):
     was: TrackName
 
 
-class CandidateView(View):
-    """A candidate, as the change that wrote it left it."""
-
-    id: CandidateId
-    summary: str | None
-    label: str
-    """The verdict as a person reads it: the verdict, ``pending``, or the origin of a candidate that is never judged."""
-    cause: Cause | None
-    verdict_reason: str | None
-
-
-class CandidateAnswer(View):
-    """A candidate that a change wrote, read at ``cursor``."""
-
-    cursor: int
-    candidate: CandidateView
-
-
-class Remeasured(CandidateAnswer):
-    """A candidate that the daemon measures again."""
-
-    bar: CandidateId | None
-    """The bar that it is measured next to. Null: alone."""
-    held: str | None
-    """What the daemon waits for before it measures, such as a resume. Null: it measures soon."""
-    rejudged: bool
-    """Whether the daemon judges the candidate again after the measurements. Else its verdict stays."""
-
-
-class Noted(CandidateAnswer):
-    """A regressed candidate kept in view as a lead."""
-
-    seeds: list[IdeaView]
-    """The follow-ups: seeds pinned to the candidate."""
-
-
-class Merge(View):
-    """A keep off the head, merged onto it: a candidate that the daemon measures and judges against that head."""
-
-    candidate: CandidateId
-    head: CandidateId
-
-
-class VerdictChanged(CandidateAnswer):
-    """A candidate whose verdict was set by hand."""
-
-    was: str
-    """The verdict that it had, as ``label`` reads it."""
-    merge: Merge | None
-
-
-class MeasurementAdded(View):
-    """A measurement recorded by hand, read at ``cursor``."""
-
-    cursor: int
-    measurement: MeasurementId
-    rejudged: bool
-    """Whether the daemon judges the candidate again (``RejudgeRequested``)."""
-    effect: str
-    """What happens to the verdict, in one line: when the daemon judges it again, or why the verdict stays."""
-
-
-class RunningSince(View):
-    """An evaluation that has a slot of the executor."""
-
-    kind: Literal['running'] = 'running'
-    since: datetime
-
-
-class WaitingSince(View):
-    """An evaluation that waits for a slot, or a remeasure that someone asked for and that is not queued yet."""
-
-    kind: Literal['waiting'] = 'waiting'
-    since: datetime
-    """When it was asked for."""
-
-
-class CancelledBy(View):
-    """A running evaluation that someone cancelled: the daemon stops its evaluator."""
-
-    kind: Literal['cancelled'] = 'cancelled'
-    by: str
-    """Who cancelled it, as the actor signs."""
-
-
-type EvaluationState = Annotated[RunningSince | WaitingSince | CancelledBy, Field(discriminator='kind')]
-
-
-class QueuedEvaluation(View):
-    """One evaluation of the queue."""
-
-    candidate: CandidateId
-    campaign: str
-    """The name of the candidate's campaign."""
-    summary: str | None
-    state: EvaluationState
-
-
-class EvaluationQueue(View):
-    """The running evaluations, oldest start first, then the waiting ones in the order in which they get a slot."""
-
-    evaluations: list[QueuedEvaluation]
-
-
 class TokenView(View):
     """A bearer token of the server, never its secret."""
 
@@ -671,6 +590,33 @@ class TokenMade(TokenView):
     """A new token, with its secret: the only answer that carries it, since the home keeps its hash only."""
 
     secret: Revealed
+
+
+class SecretView(View):
+    """A secret of the home or of a campaign: who set it last and when, never its value."""
+
+    name: str
+    campaign: str | None
+    """The name of the campaign whose secret it is. None: the home's, for every campaign."""
+    set_at: datetime | None
+    """None for a value that piloop did not set: a provider elsewhere."""
+    set_by: str | None
+    """The actor that set it last."""
+
+
+class SecretList(View):
+    """The secrets, the home's first, by name."""
+
+    secrets: list[SecretView]
+
+
+class SecretChanged(View):
+    """A secret that a change set or deleted, read at ``cursor``: never its value."""
+
+    cursor: int
+    name: str
+    campaign: str | None
+    """The name of the campaign whose secret it is. None: the home's."""
 
 
 class AgentAnswer(View):

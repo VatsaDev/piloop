@@ -7,7 +7,8 @@ fast.
 
 import os
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
 
 import cyclopts
 from pydantic import TypeAdapter
@@ -71,6 +72,21 @@ def load_for_help(argv: list[str]) -> None:
         listed[name]
 
 
+@contextmanager
+def answered() -> Generator[None]:
+    """Exit with the message of an error that says what to do: no daemon, a refusal of the daemon, a configuration."""
+    try:
+        yield
+    except Exception as e:
+        # only now: a view never loads the configuration, and a local command no client
+        from piloop.api.client import NoDaemon, Refused
+        from piloop.config import ConfigError
+
+        if isinstance(e, NoDaemon | Refused | ConfigError):
+            raise SystemExit(str(e)) from e
+        raise
+
+
 def main() -> None:
     """Run the CLI. An error prints one message. PILOOP_DEBUG=1 shows the traceback of an unexpected error."""
     deprecated.show_in_cli()
@@ -79,12 +95,9 @@ def main() -> None:
     # does: a process's environment as the OS shows it, which the runtime's kill reads, is the one it started with.
     os.environ.pop(TAG_ENV, None)
     try:
-        app()
+        with answered():
+            app()
     except Exception as e:
-        from piloop.config import ConfigError  # only now: a view never loads the configuration
-
-        if isinstance(e, ConfigError):
-            raise SystemExit(str(e)) from e
         if common.settings.debug:
             raise
         raise SystemExit(
