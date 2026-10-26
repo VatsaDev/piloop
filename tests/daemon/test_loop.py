@@ -407,9 +407,8 @@ def recorded(consumer: Consumer, ran: list[str]) -> Callable[[Turn], datetime | 
 
 
 def test_a_served_loop_reads_a_long_feed_in_pages_and_runs_an_overdue_consumer_without_waiting(
-    db: Database, served: Callable[[Loop], None], monkeypatch: pytest.MonkeyPatch
+    db: Database, served: Callable[[Loop], None]
 ) -> None:
-    monkeypatch.setattr('piloop.daemon.loop.PAGE', 1)
     late: list[Turn] = []
 
     def overdue(turn: Turn) -> datetime | None:
@@ -427,16 +426,12 @@ def test_a_served_loop_reads_a_long_feed_in_pages_and_runs_an_overdue_consumer_w
             add(other, IdeaCreated())
             add(other, IdeaCreated())
 
-    served(
-        Loop(
-            db,
-            [
-                Consumer('held', frozenset(), held, Phase.PLAN),
-                Consumer('late', frozenset(), overdue, Phase.PLAN),
-                ideas.consumer(),
-            ],
-        )
-    )
+    consumers = [
+        Consumer('held', frozenset(), held, Phase.PLAN),
+        Consumer('late', frozenset(), overdue, Phase.PLAN),
+        ideas.consumer(),
+    ]
+    served(Loop(db, consumers, page=1))
     deadline = time.monotonic() + 10
     while len(ideas.turns) < 3 and time.monotonic() < deadline:
         time.sleep(0.01)

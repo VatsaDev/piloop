@@ -94,6 +94,49 @@ class TracingSettings(BaseModel):
     write. 0 exports every write. Seconds, or an ISO 8601 duration such as ``PT0.001S``."""
 
 
+class DaemonSettings(BaseModel):
+    """``[daemon]``: the timings of the daemon's loop and of its launches on this home."""
+
+    model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
+
+    feed_page: int = Field(default=1000, gt=0)
+    """How many events a turn of the daemon's loop reads at most. A turn with more reads again at once."""
+    prompt_retry: timedelta = Field(default=timedelta(seconds=2), gt=timedelta(0))
+    """How soon a comment that the executor did not take, because its database was locked, goes to its agent again."""
+    kill_retry: timedelta = Field(default=timedelta(seconds=10), gt=timedelta(0))
+    """How soon the kill of an agent that the daemon ended goes again while the agent has not ended: a kill can fail."""
+    startup_breaker: int = Field(default=3, gt=0)
+    """How many of a campaign's agents can fail at startup within ``startup_window`` before its launches pause. A host
+    that is too loaded to start agents makes every new agent fail, and each failure costs a start window."""
+    startup_window: timedelta = Field(default=timedelta(minutes=10), gt=timedelta(0))
+    """How far back ``startup_breaker`` counts. Launches resume when fewer failures are that recent."""
+    startup_relaunches: int = Field(default=2, ge=0)
+    """How many times a run is queued again with a new implementer after its implementer failed to start. Then the run
+    fails. A failure at startup is a fault of the host or the harness, not an attempt at the idea: it does not count
+    toward ``max_runs``."""
+
+
+class AgentSettings(BaseModel):
+    """``[agents]``: how the daemon steers and ends the agents of this home.
+
+    A campaign's ``[agents]`` in its ``piloop.toml`` can set ``wrap_up_grace`` and ``finding_grace`` for its own agents.
+    """
+
+    model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
+
+    wrap_up_grace: timedelta = Field(default=timedelta(minutes=10), ge=timedelta(0))
+    """How long an agent that was told to wrap up, because its campaign stopped or someone cancelled it, has to save
+    its work before the daemon ends it."""
+    finding_grace: timedelta = Field(default=timedelta(seconds=60), ge=timedelta(0))
+    """How long after its finding the daemon ends an implementer, and every process that it left: a last commit takes
+    seconds."""
+    wrap_up_lead: timedelta = Field(default=timedelta(minutes=10), ge=timedelta(0))
+    """How long before its role timeout the daemon tells an implementer to wrap up, at most a quarter of the timeout."""
+    steer_line_chars: int = Field(default=200, gt=1)
+    """How many characters of a comment's first line a running agent gets, in the one line that the daemon sends it
+    for the comment. The agent can read the rest with SQL."""
+
+
 SUN_PATH = 104 if sys.platform == 'darwin' else 108
 """The bytes of a Unix socket's path, its NUL included (``sockaddr_un.sun_path``): 104 on macOS, 108 on Linux."""
 SHORT_SOCKETS = Path('/tmp')
@@ -215,6 +258,12 @@ class Settings(BaseSettings):
 
     evaluation: EvaluationSettings = EvaluationSettings()
     """``[evaluation]`` in ``config.toml``: what the daemon allows the evaluate command of its campaigns."""
+
+    daemon: DaemonSettings = DaemonSettings()
+    """``[daemon]`` in ``config.toml``: the timings of the daemon's loop and launches."""
+
+    agents: AgentSettings = AgentSettings()
+    """``[agents]`` in ``config.toml``: how the daemon steers and ends agents."""
 
     runtimes: dict[str, dict[str, JsonValue]] = {}
     """``[runtimes.<name>]`` in ``config.toml``: the settings of each runtime on this machine, by its name.

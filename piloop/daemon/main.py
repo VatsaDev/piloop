@@ -152,6 +152,8 @@ class Daemon:
             cas=self._cas,
             reserve=cfg.storage.reserve,
             evaluation=cfg.evaluation,
+            daemon=cfg.daemon,
+            agents=cfg.agents,
             runtime_factory=opened,
             network=self.network,
             secrets=SECRETS.selected(cfg.providers),
@@ -160,7 +162,14 @@ class Daemon:
             ArchiveHost(self.db, self._cas, cfg.home, cfg.storage.reserve, self.tracer, self._wake_archiver)
         )
         self.scheduler = Scheduler(
-            self.db, self.controller, self.tracer, cfg.home, archiver=archiver, runtime_factory=opened
+            self.db,
+            self.controller,
+            self.tracer,
+            cfg.home,
+            archiver=archiver,
+            runtime_factory=opened,
+            daemon=cfg.daemon,
+            agents=cfg.agents,
         )
         self._restart = False
 

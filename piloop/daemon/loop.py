@@ -24,11 +24,10 @@ from sqlalchemy.orm import Session
 from piloop.db.feed import newest
 from piloop.db.models import Event, EventModel, UnknownEvent, utcnow
 from piloop.db.session import Database
+from piloop.settings import settings
 
 type Kinds = frozenset[type[EventModel]]
 """Event models. A consumer that names one wakes on its kinds and on those of its subclasses, so ``EventModel`` is all."""
-PAGE = 1000
-"""How many events one turn reads at most. A turn with more reads again at once."""
 
 
 @dataclass(frozen=True)
@@ -93,10 +92,17 @@ class Loop:
         db: The daemon's database.
         consumers: Within a phase, in the order that a turn runs them (``in_turn_order``).
         now: The clock. A test passes its own.
+        page: How many events one turn reads at most (``[daemon] feed_page``).
     """
 
-    def __init__(self, db: Database, consumers: Sequence[Consumer], now: Callable[[], datetime] = utcnow) -> None:
-        self._db, self._consumers, self._now = db, in_turn_order(consumers), now
+    def __init__(
+        self,
+        db: Database,
+        consumers: Sequence[Consumer],
+        now: Callable[[], datetime] = utcnow,
+        page: int = settings.daemon.feed_page,
+    ) -> None:
+        self._db, self._consumers, self._now, self._page = db, in_turn_order(consumers), now, page
         self._routes: dict[str, tuple[Consumer, ...]] = {}
         """The consumers of each event kind, found on its first event."""
         self._due: dict[str, datetime | None] = {}
@@ -131,7 +137,9 @@ class Loop:
         """
         now = self._now()
         with self._db.session() as s:
-            page = s.execute(select(Event.id, Event.kind).where(Event.id > self._cursor).order_by(Event.id).limit(PAGE))
+            page = s.execute(
+                select(Event.id, Event.kind).where(Event.id > self._cursor).order_by(Event.id).limit(self._page)
+            )
             rows = page.all()
         with self._lock:
             woken, self._woken = self._woken, set()
@@ -142,7 +150,7 @@ class Loop:
         ran = [c for c in self._consumers if c.name in routed | woken | due]
         if ran:
             self._run(ran, Turn(now, absent))
-        return len(rows) == PAGE
+        return len(rows) == self._page
 
     def next_due(self) -> datetime | None:
         """The earliest due of the consumers, or None when only events wake them."""

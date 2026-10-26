@@ -28,7 +28,7 @@ rule, `limits`:
 ## What a stop does
 
 The daemon tells the running implementers to commit and stop, ends them 10 minutes later, and scores what they
-committed. It drops the queued runs. Then the watchdog's closing review writes the closing report.
+committed. `wrap_up_grace` in `[agents]` of `piloop.toml` or of the home's `config.toml` changes the 10 minutes. It drops the queued runs. Then the watchdog's closing review writes the closing report.
 
 | Command | What it stops |
 |---|---|

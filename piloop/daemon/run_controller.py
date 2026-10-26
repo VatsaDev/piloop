@@ -8,7 +8,7 @@ import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import partial
 from pathlib import Path
 from typing import ClassVar, Final, Literal, assert_never
@@ -132,7 +132,7 @@ from piloop.scoring.ledger import (
     verdict_rule,
 )
 from piloop.scoring.verdict import UNMEASURED, judgeable, label, override, pending, refusal, rejudgeable, write
-from piloop.settings import EvaluationSettings, StorageSettings
+from piloop.settings import AgentSettings, DaemonSettings, EvaluationSettings, StorageSettings
 
 RECOVERED_REASON = 'recovered: what the implementer of run#{run} left unsaved, never declared ready; not measured'
 CUT_REASON = 'recovered: where run#{run} was when a daemon stop cut it, never declared ready; not measured'
@@ -196,15 +196,6 @@ class RunFinished(EventModel):
     error: str | None
 
 
-WRAP_UP_LEAD_SECONDS = 600
-"""The most seconds before its role timeout that the daemon tells an implementer to wrap up (``wrap_up_lead``)."""
-STARTUP_RELAUNCHES = 2
-"""How many times a run is queued again with a new implementer after its implementer failed to start. Then the run fails.
-
-A failure at startup is a fault of the host or the harness, not an attempt at the idea. So it does not count as an
-attempt or toward ``max_runs``."""
-
-
 class RunController:
     """Run one ``Run`` to completion on the calling thread. ``Launcher.launch`` runs the agent.
 
@@ -223,6 +214,8 @@ class RunController:
         cas: Cas | None = None,
         reserve: int = StorageSettings().reserve,
         evaluation: EvaluationSettings | None = None,
+        daemon: DaemonSettings | None = None,
+        agents: AgentSettings | None = None,
         network: Network | None = None,
         secrets: SecretsProvider | None = None,
     ) -> None:
@@ -232,6 +225,8 @@ class RunController:
         self._home = home
         self._units_dir = home / 'units'
         self._evaluation = evaluation if evaluation is not None else EvaluationSettings()
+        self._daemon = daemon if daemon is not None else DaemonSettings()
+        self._agents = agents if agents is not None else AgentSettings()
         self.cas = cas if cas is not None else CAS.selected({}).open(home)
         self.sources = Sources(self.cas, home, db)
         """The artifacts of jobs: a campaign's repo of record, and its linked inputs in the CAS."""
@@ -560,7 +555,7 @@ class RunController:
         self._settle(span, run_id, idea_id, end, startup_failed=False, last=last)
 
     def _relaunch(self, span: Span, run_id: RunId, agent_session_id: AgentSessionId, log_dir: Path) -> bool:
-        """Queue the run again with a new implementer, up to ``STARTUP_RELAUNCHES`` times, after its implementer failed to start.
+        """Queue the run again with a new implementer, up to ``startup_relaunches`` times, after its implementer failed to start.
 
         The run stays open, so it keeps its slot, attempt number and brief. The ``implementer#<id>`` in the brief becomes the
         new implementer's id. The new implementer signs its notes and finding with its own id, and only its own finding counts
@@ -574,7 +569,7 @@ class RunController:
                 launches = (
                     s.scalar(select(func.count()).select_from(AgentSession).where(AgentSession.run_id == run_id)) or 0
                 )
-                if launches > STARTUP_RELAUNCHES or run_cancel(s, run_id) is not None:
+                if launches > self._daemon.startup_relaunches or run_cancel(s, run_id) is not None:
                     return False
                 run.status = RunStatus.QUEUED
                 agent_session = AgentSession(
@@ -1205,7 +1200,7 @@ class RunController:
             f' Only its versions are scored. The campaign repo, {idea.campaign.path}, is read-only for you: read'
             ' its history and candidates, never edit, run or save in it.',
             f'- Your session ends {round(timeout / 60, 1):g} minutes after it starts, at `${DEADLINE_ENV}` (Unix time).'
-            f' The daemon tells you to wrap up {round(wrap_up_lead(timeout) / 60, 1):g} minutes before, but a message'
+            f' The daemon tells you to wrap up {round(wrap_up_lead(timeout, self._agents.wrap_up_lead) / 60, 1):g} minutes before, but a message'
             ' reaches you only between two tool calls: start no command that can run past the deadline. Save each'
             ' step that runs, and leave your finding before the end.',
             f'- Starting from candidate#{base.id}: {at_base} — {base.summary}',
@@ -1277,9 +1272,9 @@ class Judged:
     """The candidate of its merge onto the head, if it was rebased and the merge is a new tree."""
 
 
-def wrap_up_lead(timeout: float) -> float:
-    """How many seconds before its role ``timeout`` an implementer is told to wrap up: a quarter, at most 10 minutes."""
-    return min(WRAP_UP_LEAD_SECONDS, timeout / 4)
+def wrap_up_lead(timeout: float, most: timedelta) -> float:
+    """How many seconds before its role ``timeout`` an implementer is told to wrap up: a quarter, at most ``most``."""
+    return min(most.total_seconds(), timeout / 4)
 
 
 def _comment_line(c: Comment) -> str:

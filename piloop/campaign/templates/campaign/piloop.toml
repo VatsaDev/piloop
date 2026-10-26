@@ -146,6 +146,10 @@ max_concurrent = 1                        # at most 1: two orchestrators would a
 # timeout = 300
 # max_concurrent = 2
 
+# [agents]                                # how long the agents get to finish; if not set: the home's [agents]
+# wrap_up_grace = 600                     # seconds to save their work after a stop or a cancel with --wrap-up
+# finding_grace = 60                      # seconds after its finding before an implementer is ended
+
 # [status]                                # what `piloop status`, the API and a UI show
 # sections = [{ provider = "headline" }, { provider = "goal" }, …]  # if not set: the installed sections of status; see the sections
 

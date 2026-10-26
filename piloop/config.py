@@ -14,6 +14,7 @@ import os
 import re
 import tomllib
 from dataclasses import dataclass
+from datetime import timedelta
 from enum import StrEnum
 from operator import attrgetter
 from pathlib import Path
@@ -45,6 +46,7 @@ from piloop.plugins.role.contract import ROLES, ImplementerRole, RoleConfig, Swe
 from piloop.plugins.runtime.contract import RuntimeName
 from piloop.plugins.section.contract import Section, SectionEntry, Surface, chosen
 from piloop.plugins.stop_rule.contract import STOP_RULES, Shape
+from piloop.settings import AgentSettings
 
 CONFIG_FILE = 'piloop.toml'
 BRIEF_FILE = 'brief.md'
@@ -241,6 +243,22 @@ RESERVED_NAMES = frozenset({'run', 'orchestrator', 'human', 'daemon'})
 """Names that already sign writes: a run, and the actors that are not roles."""
 
 
+class AgentTimings(BaseModel):
+    """``[agents]``: how long the campaign's agents get to finish, over the home's ``[agents]`` in its ``config.toml``."""
+
+    model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
+
+    wrap_up_grace: timedelta | None = Field(default=None, ge=timedelta(0))
+    """How long an agent that was told to wrap up, because the campaign stopped or someone cancelled it, has to save
+    its work before the daemon ends it. Unset: the home's. Seconds, or an ISO 8601 duration such as ``PT20M``."""
+    finding_grace: timedelta | None = Field(default=None, ge=timedelta(0))
+    """How long after its finding the daemon ends an implementer, and every process that it left. Unset: the home's."""
+
+    def over(self, home: AgentSettings) -> AgentSettings:
+        """The home's settings, with the timings that the campaign sets."""
+        return home.model_copy(update=self.model_dump(exclude_none=True))
+
+
 class StatusConfig(BaseModel):
     """``[status]``: what ``piloop status``, the API and a UI show of the campaign."""
 
@@ -356,6 +374,8 @@ class CampaignConfig(BaseModel):
     """``[mcp.<name>]``: the MCP servers that a role can list in ``[roles.<name>] mcp``."""
     status: StatusConfig = StatusConfig()
     """``[status]``: the sections that ``piloop status``, the API and a UI show."""
+    agents: AgentTimings = AgentTimings()
+    """``[agents]``: how long the campaign's agents get to wrap up and to leave after their finding."""
     facts: list[FactSourceEntry] | None = None
     """``[[facts]]``: where the campaign's facts come from, which its stop rule and its sections read: a list of
     ``{ provider = "<source>", ... }`` entries. When unset, every installed source that is on by default: ``campaign``,

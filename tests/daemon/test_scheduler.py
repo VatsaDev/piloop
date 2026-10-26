@@ -42,7 +42,7 @@ from piloop.campaign.stop import left, request_cancel, request_stop, runs
 from piloop.config import CampaignConfig, load_campaign_config
 from piloop.daemon.loop import Turn
 from piloop.daemon.run_controller import RunController, wrap_up_lead
-from piloop.daemon.scheduler import STARTUP_BREAKER, STARTUP_WINDOW, RunQueued, RunRerouted, Scheduler
+from piloop.daemon.scheduler import RunQueued, RunRerouted, Scheduler
 from piloop.db import sql
 from piloop.db.events import has, in_order, payload_of
 from piloop.db.models import (
@@ -103,6 +103,7 @@ from piloop.plugins.trigger.stopped import StoppedTrigger
 from piloop.plugins.vcs.git import UNCOMMITTED, GitRepository, commands as git
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring.ledger import current_evaluator, due, head, import_reference, request_remeasure
+from piloop.settings import AgentSettings, DaemonSettings
 from tests.conftest import (
     EVALUATE,
     HARNESS_APPEND,
@@ -116,6 +117,7 @@ from tests.conftest import (
     events,
     factory,
     home_cas,
+    reconfigured,
     register,
     role_of,
     serving,
@@ -183,6 +185,14 @@ def add_ideas(
 def statuses(db: Database) -> list[IdeaStatus]:
     with db.session() as s:
         return [i.status for i in s.scalars(select(Idea).order_by(Idea.id))]
+
+
+def timings(db: Database, campaign: Campaign, **seconds: float) -> None:
+    """Set the campaign's ``[agents]`` timings, in seconds, over its stored config."""
+    with db.session() as s:
+        stored = s.get_one(Campaign, campaign.id)
+        stored.config = reconfigured(stored.config, agents=seconds)
+        s.commit()
 
 
 def set_config(db: Database, campaign: Campaign, **overrides: object) -> None:
@@ -2129,7 +2139,7 @@ def test_implementers_of_a_stopped_campaign_are_told_to_wrap_up_then_ended_after
     scheduler.run_all()
     assert (len(fake.prompts), revoked(db)) == (1, []), 'told once; ended only when the grace is over'
 
-    monkeypatch.setattr('piloop.daemon.scheduler.STOP_GRACE_SECONDS', 0)
+    timings(db, campaign, wrap_up_grace=0)
     scheduler.run_all()
     assert revoked(db) == ['implementer-1']
 
@@ -2159,7 +2169,7 @@ def test_an_implementer_that_the_stop_ends_mid_turn_closes_its_run_as_cut_by_the
     stop_campaign(db, campaign, 'plateau: 5 runs without a keep')
     scheduler.run_all()
     assert [kind for kind, _ in settled(db, 'agent_session.wrap_up')] == [1], 'told, but the turn goes on'
-    monkeypatch.setattr('piloop.daemon.scheduler.STOP_GRACE_SECONDS', 0)
+    timings(db, campaign, wrap_up_grace=0)
     scheduler.run_all()
     scheduler.wait()
     scheduler.stop(timeout=5)
@@ -2246,13 +2256,39 @@ def test_a_cancelled_run_is_told_to_wrap_up_and_ended_after_the_grace(
     ), 'only the cancelled run and the cancelled sweep are told'
     scheduler.run_all()
     assert revoked(db) == []
-    monkeypatch.setattr('piloop.daemon.scheduler.STOP_GRACE_SECONDS', 0)
+    timings(db, campaign, wrap_up_grace=0)
     scheduler.run_all()
     assert revoked(db) == ['implementer-1', 'research-3']
     assert settled(db, 'agent_session.stop_ended') == [
         (1, AgentEnded(reason='cancelled by human', end=RunEnd.CANCELLED)),
         (3, AgentEnded(reason='cancelled by orchestrator', end=RunEnd.CANCELLED)),
     ]
+    scheduler.stop(timeout=5)
+
+
+def test_an_agent_of_no_campaign_winds_down_on_the_home_s_grace(
+    db: Database, campaign: Campaign, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    with db.session() as s:
+        orphan = AgentSession(
+            kind=RESEARCH,
+            runtime='subprocess',
+            handle={'agent': 'research-1', 'pid': 4243},
+            state=AgentSessionState.RUNNING,
+            started_at=utcnow(),
+            reason='by hand',
+        )
+        s.add(orphan)
+        s.flush()
+        request_cancel(s, orphan, System.HUMAN, ending=Ending.WRAP_UP)
+        s.commit()
+    lease_running(db)
+    controller = serving(RunController(db, Tracer(None), tmp_path, executor=Workers()))
+    scheduler = Scheduler(db, controller, Tracer(None), tmp_path, agents=AgentSettings(wrap_up_grace=timedelta(0)))
+    prompted(db, scheduler, mocker)
+    scheduler.run_all()
+    scheduler.run_all()
+    assert revoked(db) == ['research-1'], 'told, then ended at once: the grace of the home is 0'
     scheduler.stop(timeout=5)
 
 
@@ -2460,12 +2496,12 @@ def test_startup_deaths_pause_launches_and_escalate_until_they_age_out(
 
     with db.session() as s:
         for event in s.scalars(select(Event).where(has(StartupAnomaly))):
-            event.at -= STARTUP_WINDOW
+            event.at -= DaemonSettings().startup_window
         s.commit()
     assert scheduler.run_all() != [], 'the deaths aged out of the window: launches resume'
     scheduler.wait()
 
-    for _ in range(STARTUP_BREAKER):
+    for _ in range(DaemonSettings().startup_breaker):
         died_at_startup(db, campaign, WATCHDOG)
     request_watchdog(db, campaign)
     assert scheduler.run_all() == [] and len(pause_escalations(db)) == 2, 'a new pause: a new escalation'
@@ -2671,7 +2707,7 @@ def test_an_implementer_is_told_once_to_wrap_up_before_its_timeout(
     fake = prompted(db, scheduler, mocker)
     with db.session() as s:
         timeout = s.get_one(Campaign, campaign.id).config.role(IMPLEMENTER).timeout
-    lead = wrap_up_lead(timeout)
+    lead = wrap_up_lead(timeout, AgentSettings().wrap_up_lead)
 
     def started(ago: float) -> None:
         with db.session() as s:
@@ -2683,7 +2719,7 @@ def test_an_implementer_is_told_once_to_wrap_up_before_its_timeout(
     scheduler.run_all()
     assert fake.prompts == [], 'not yet'
     started(timeout - lead)
-    monkeypatch.setattr('piloop.daemon.scheduler.STOP_GRACE_SECONDS', 0)
+    timings(db, campaign, wrap_up_grace=0)
     for _ in range(3):
         scheduler.run_all()
     [(agent, prompt)] = fake.prompts  # once
@@ -2721,7 +2757,7 @@ def test_an_implementer_is_told_to_wrap_up_before_the_campaign_stops_when_that_c
     scheduler.run_all()
     assert fake.prompts == [], 'not yet'
     started(12)
-    monkeypatch.setattr('piloop.daemon.scheduler.STOP_GRACE_SECONDS', 0)
+    timings(db, campaign, wrap_up_grace=0)
     for _ in range(2):  # the wrap-up is a note, which the next tick hands to the executor
         scheduler.run_all()
     [(agent, prompt)] = fake.prompts
@@ -2734,7 +2770,7 @@ def test_an_implementer_is_told_to_wrap_up_before_the_campaign_stops_when_that_c
 def test_an_implementer_is_ended_a_minute_after_its_finding(db: Database, campaign: Campaign, tmp_path: Path) -> None:
     """The finding is the implementer's report that it is done. A job that it left running must not hold its slot.
 
-    The daemon ends it ``FINDING_GRACE_SECONDS`` after the finding, with no prompt: a commit after the finding takes
+    The daemon ends it ``finding_grace`` after the finding, with no prompt: a commit after the finding takes
     seconds. The run closes as finished (``run_outcome``).
     """
     runtime = PromptingRuntime()
@@ -2769,7 +2805,7 @@ def test_an_implementer_that_left_a_job_running_after_its_finding_succeeds_and_t
     write_toml(Path(campaign.path), harness, implementer_timeout=300)
     set_config(db, campaign)
     (idea,) = add_ideas(db, campaign, 'long')
-    monkeypatch.setattr('piloop.daemon.scheduler.FINDING_GRACE_SECONDS', 0)
+    timings(db, campaign, finding_grace=0)
     scheduler = make_scheduler(db, runtime, tmp_path)
     assert scheduler.run_all() == [1]
     pid_file = tmp_path / 'runs' / '1' / 'child.pid'

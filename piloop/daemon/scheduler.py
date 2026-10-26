@@ -180,6 +180,7 @@ from piloop.scoring.ledger import (
     rejudges,
     score,
 )
+from piloop.settings import AgentSettings, DaemonSettings
 from piloop.usage import Usage
 
 AGENT_SESSIONS = 'agent_sessions'
@@ -188,10 +189,6 @@ NO_RUN_ERROR = 'an implementer needs a run; the scheduler requests them from rea
 PUSHED_KINDS = (CommentKind.NOTE, CommentKind.FINDING, CommentKind.DECISION)
 """Comment kinds that are sent to a running implementer. Escalations are for the human, and messages for the
 orchestrator."""
-STEER_LINE_CHARS = 200
-"""The number of characters of a comment's first line that a ``[piloop]`` line quotes. The implementer can query the rest."""
-STOP_GRACE_SECONDS = 600
-"""The seconds that an implementer that was told to wrap up has to save its work before the daemon ends it."""
 WAIT_SECONDS = 120.0
 """How long ``Scheduler.wait`` waits by default before it fails: generous for a loaded host, since it returns as soon
 as nothing is in flight."""
@@ -200,21 +197,10 @@ WRAP_UP_PROMPT = (
     ' Leave your finding and stop. This session ends in {minutes:g} minutes.'
 )
 EventModel.retire('agent_session.jobs_left')  # 0.2.0 listed the jobs of an idle implementer; its finding ends it now
-FINDING_GRACE_SECONDS = 60
-"""The seconds after its finding that the daemon ends an implementer, and every process it left: a last commit takes seconds."""
-PROMPT_RETRY = timedelta(seconds=2)
-"""How soon a comment that the executor did not take (a locked database) is pushed again."""
-KILL_RETRY = timedelta(seconds=10)
-"""How soon the kill of an agent that the daemon ended goes again while the agent has not ended: a kill can fail."""
 FOUND = 'left its finding'
 """The ``reason`` of the ``AgentEnded`` of an implementer that the daemon ended after its finding."""
 TIMEOUT = 'role timeout'
 """The ``reason`` of the ``WrapUp`` of an implementer whose role timeout is ``wrap_up_lead`` away."""
-STARTUP_BREAKER = 3
-"""The number of a campaign's agents that can fail at startup within ``STARTUP_WINDOW`` before its launches pause.
-
-A host that is too loaded to start agents makes every new agent fail, and each failure costs a start window."""
-STARTUP_WINDOW = timedelta(minutes=10)
 
 
 class LaunchPaused(EventModel):
@@ -343,13 +329,19 @@ class Scheduler:
         runtime_factory: RuntimeFactory = make_runtime,
         archiver: Archiver | None = None,
         now: Callable[[], datetime] = utcnow,
+        daemon: DaemonSettings | None = None,
+        agents: AgentSettings | None = None,
     ) -> None:
-        """``archiver``: the home's archive provider, opened, which the daemon always passes. ``now``: the clock.
+        """Make the daemon's jobs.
 
-        A test without an archiver archives nothing.
+        ``archiver``: the home's archive provider, opened, which the daemon always passes. A test without one archives
+        nothing. ``now``: the clock. ``daemon`` and ``agents``: the home's timings, ``[daemon]`` and ``[agents]`` in its
+        ``config.toml``, by default their defaults.
         """
         self._db = db
         self._now = now
+        self._daemon = daemon if daemon is not None else DaemonSettings()
+        self._agents = agents if agents is not None else AgentSettings()
         self._controller = controller
         self._tracer = tracer
         self._home = home
@@ -378,7 +370,7 @@ class Scheduler:
         self.contributions = collect((*opened, *installed()), [c.name for c in self._own()])
         """What the providers add: the executor and the archiver that the daemon opened, then each installed one that a
         campaign may choose."""
-        self.loop = Loop(db, self.consumers(), now)
+        self.loop = Loop(db, self.consumers(), now, self._daemon.feed_page)
 
     def reap(self) -> None:
         """Hand the jobs that a previous daemon process left to the executor (``Executor.adopt``). Fail the rest.
@@ -738,7 +730,7 @@ class Scheduler:
 
     def _prompts(self, turn: Turn) -> datetime | None:
         """Push the new comments (``_push_comments``). One that the executor did not take is tried again soon."""
-        return turn.now + PROMPT_RETRY if self._push_comments() else None
+        return turn.now + self._daemon.prompt_retry if self._push_comments() else None
 
     def _push_comments(self) -> list[int]:
         """Hand each running agent's executor the comments that the agent has no outcome for (``Executor.prompt``).
@@ -755,7 +747,7 @@ class Scheduler:
                 select(AgentSession).where(AgentSession.state == AgentSessionState.RUNNING).order_by(AgentSession.id)
             ).all()
             pending = [
-                (w.id, Prompt(c.id, steer_line(c)))
+                (w.id, Prompt(c.id, steer_line(c, self._agents.steer_line_chars)))
                 for w in running
                 for c in self._unseen(s, w)
                 if c.id not in self._prompted
@@ -804,7 +796,7 @@ class Scheduler:
     def _wind_down(self, turn: Turn) -> datetime | None:
         """End the implementers that left their finding, and wind down those of stopped campaigns and cancelled agents.
 
-        An implementer is ended ``FINDING_GRACE_SECONDS`` after its finding, with every process that it left running: it
+        An implementer is ended ``finding_grace`` (``[agents]``) after its finding, with every process that it left running: it
         reported that it is done, and a job that it forgot must not hold its slot to the role timeout. Its run is
         finished (``run_outcome``).
 
@@ -812,7 +804,7 @@ class Scheduler:
         timeout is ``wrap_up_lead`` away is told to save its work and stop. Its timeout ends it.
 
         An implementer of a stopped campaign is told to save its work and stop, and ended after the grace period
-        (``STOP_GRACE_SECONDS``), or at once when the stop request asked to end it ``now``. The runs then close and their
+        (``wrap_up_grace``), or at once when the stop request asked to end it ``now``. The runs then close and their
         commits are scored. An implementer that the daemon ends (``AgentEnded``) without its finding closes its run as
         cut by the stop (``RunEnd.CAMPAIGN_STOPPED``), not as a failed attempt. Sweeps of a stopped campaign are not
         changed, because their timeouts limit them and the closing review is one of them.
@@ -821,7 +813,7 @@ class Scheduler:
         and the grace period when the cancel asked for it. Its run ends ``RunEnd.CANCELLED``. A cancelled request never
         starts, and its queued run fails. Both park the run's idea. A starting agent is left for a later pass, once it
         runs; if its start fails, the run is not launched again (``RunController._relaunch``). An ``ending`` agent gets
-        its kill again every ``KILL_RETRY`` until it ends: a kill can fail. Then the stops and cancels that are carried
+        its kill again every ``[daemon] kill_retry`` until it ends: a kill can fail. Then the stops and cancels that are carried
         out are answered (``stop.answer_done``).
 
         Returns when a grace period or a wrap-up lead ends, or when to send an ending agent's kill again.
@@ -865,7 +857,7 @@ class Scheduler:
                     continue
                 if agent_session.state is AgentSessionState.ENDING:
                     self._kill(s, agent_session)
-                    soonest.add(now + KILL_RETRY)
+                    soonest.add(now + self._daemon.kill_retry)
                     continue
                 if (cancel := cancels.get(agent_session.id)) is not None:
                     request, asked = cancel
@@ -889,11 +881,11 @@ class Scheduler:
                         Event.target == TargetRef(TargetKind.AGENT_SESSION, agent_session.id), has(WrapUp)
                     )
                 )
-                grace = timedelta(seconds=STOP_GRACE_SECONDS)
+                grace = self._timings(s, agent_session).wrap_up_grace
                 if ending is Ending.NOW:
                     self._end(s, agent_session, reason, end)
                 elif told is None:
-                    text = WRAP_UP_PROMPT.format(what=what, cause=cause, minutes=STOP_GRACE_SECONDS / 60)
+                    text = WRAP_UP_PROMPT.format(what=what, cause=cause, minutes=grace.total_seconds() / 60)
                     self._wrap_up(s, agent_session, reason, text)
                     soonest.add(now + grace)
                 elif now - told >= grace:
@@ -912,15 +904,19 @@ class Scheduler:
             s.commit()
         return soonest.at
 
-    @staticmethod
-    def _finding_grace(s: Session, implementer: AgentSession) -> datetime | None:
-        """When the grace after the implementer's finding ends (``FINDING_GRACE_SECONDS``), or None without one."""
+    def _timings(self, s: Session, agent_session: AgentSession) -> AgentSettings:
+        """The home's ``[agents]``, with what the agent's campaign sets in its own."""
+        if agent_session.campaign_id is None:
+            return self._agents
+        return s.get_one(Campaign, agent_session.campaign_id).config.agents.over(self._agents)
+
+    def _finding_grace(self, s: Session, implementer: AgentSession) -> datetime | None:
+        """When the grace after the implementer's finding ends (``finding_grace``), or None without one."""
         assert implementer.run_id is not None
         finding = finding_of(s, s.get_one(Run, implementer.run_id), implementer)
-        return None if finding is None else finding.created_at + timedelta(seconds=FINDING_GRACE_SECONDS)
+        return None if finding is None else finding.created_at + self._timings(s, implementer).finding_grace
 
-    @staticmethod
-    def _time_left(s: Session, implementer: AgentSession, now: datetime) -> TimeLeft | datetime | None:
+    def _time_left(self, s: Session, implementer: AgentSession, now: datetime) -> TimeLeft | datetime | None:
         """What an implementer that was not told to wrap up has left, once it is ``wrap_up_lead`` or less.
 
         Its timeout is its role's, cut at the campaign's stop (``stop.timeout``), as when it started. Before the lead,
@@ -934,7 +930,7 @@ class Scheduler:
             return None
         timeout = seconds(agent_timeout(s, campaign, cfg, role.timeout, implementer.started_at))
         left = timeout - (now - implementer.started_at).total_seconds()
-        lead = wrap_up_lead(timeout)
+        lead = wrap_up_lead(timeout, self._agents.wrap_up_lead)
         if left > lead:
             return now + timedelta(seconds=left - lead)
         cut = TimeCut.ROLE if timeout == role.timeout else TimeCut.STOP
@@ -1543,7 +1539,7 @@ class Scheduler:
         return True
 
     def _paused(self, s: Session, campaign: Campaign, now: datetime) -> datetime | None:
-        """Return when launches resume if ``STARTUP_BREAKER`` agents failed at startup in ``STARTUP_WINDOW``, else None.
+        """Return when launches resume if ``startup_breaker`` agents failed at startup in ``startup_window``, else None.
 
         Requested rows wait, and launch when those failures are older than the window. The window is the back-off.
         Each pause posts one escalation (priority 1) with the load average and the failures' errors, which end with
@@ -1556,7 +1552,7 @@ class Scheduler:
             StartupAnomaly,
             Event.target_kind == TargetKind.AGENT_SESSION,
             Event.target_id.in_(agent_sessions),
-            Event.at >= now - STARTUP_WINDOW,
+            Event.at >= now - self._daemon.startup_window,
         )
         on_campaign = TargetRef(TargetKind.CAMPAIGN, campaign.id)
         latest = s.scalars(
@@ -1566,7 +1562,7 @@ class Scheduler:
             .limit(1)
         ).first()
         pause = latest.payload if latest is not None and isinstance(latest.payload, LaunchPaused) else None
-        if len(deaths) < STARTUP_BREAKER:
+        if len(deaths) < self._daemon.startup_breaker:
             if pause is not None:
                 emit(s, LaunchResumed(comment=pause.comment), on_campaign, System.DAEMON)
             return None
@@ -1574,8 +1570,8 @@ class Scheduler:
         if pause is None or escalation is None:
             self._escalate_pause(s, campaign, deaths)
         else:
-            escalation.body = pause_body(deaths, pause.load)
-        return deaths[-STARTUP_BREAKER][0].at + STARTUP_WINDOW
+            escalation.body = pause_body(deaths, pause.load, self._daemon)
+        return deaths[-self._daemon.startup_breaker][0].at + self._daemon.startup_window
 
     def _escalate_pause(self, s: Session, campaign: Campaign, deaths: Sequence[tuple[Event, StartupAnomaly]]) -> None:
         load = ' / '.join(f'{x:.1f}' for x in os.getloadavg())
@@ -1584,7 +1580,7 @@ class Scheduler:
             author=DAEMON_ACTOR,
             kind=CommentKind.ESCALATION,
             priority=1,
-            body=pause_body(deaths, load),
+            body=pause_body(deaths, load, self._daemon),
         )
         s.add(comment)
         s.flush()
@@ -1832,34 +1828,37 @@ def done_by(role: RoleName) -> ColumnElement[bool]:
     return func.likely(Run.role == role, type_=Boolean)
 
 
-def steer_line(comment: Comment) -> str:
+def steer_line(comment: Comment, chars: int) -> str:
     """Format what a running agent gets for a comment. A comment on the agent itself is its text, as written.
 
     Any other is one line: who wrote what, and how to read the rest. The line quotes the first line of the body, cut at
-    ``STEER_LINE_CHARS``. The implementer can read the full text with the SQL tool that its brief names, so a long
+    ``chars`` (``[agents] steer_line_chars``). The implementer can read the full text with the SQL tool that its brief names, so a long
     decision does not fill its turn.
     """
     if comment.target_kind is TargetKind.AGENT_SESSION:
         return comment.body
     body = comment.body.strip()
     first = body.splitlines()[0] if body else ''
-    if len(first) > STEER_LINE_CHARS:
-        first = first[: STEER_LINE_CHARS - 1] + '…'
+    if len(first) > chars:
+        first = first[: chars - 1] + '…'
     return (
         f'[piloop] {comment.kind} on {comment.target} by {comment.author}: {first}'
         f' — full text: SELECT body FROM comments WHERE id={comment.id}'
     )
 
 
-def pause_body(deaths: Sequence[tuple[Event, StartupAnomaly]], load: str) -> str:
+def pause_body(deaths: Sequence[tuple[Event, StartupAnomaly]], load: str, daemon: DaemonSettings) -> str:
     """Format the pause escalation: the number of failures, the load average and the latest failures' errors."""
-    minutes = STARTUP_WINDOW.total_seconds() / 60
+    minutes = daemon.startup_window.total_seconds() / 60
     lines = [
         f'Launches paused: {len(deaths)} agents died at startup in the last {minutes:g} minutes. Load average'
         f' {load} on {os.cpu_count()} CPUs when launches paused. Launches resume automatically when fewer than'
-        f' {STARTUP_BREAKER} deaths are that recent. If the host is overloaded, stop what overloads it. The latest'
+        f' {daemon.startup_breaker} deaths are that recent. If the host is overloaded, stop what overloads it. The latest'
         ' deaths:',
-        *(f'- {e.target} ({death.role} on {death.harness}): {death.error}' for e, death in deaths[-STARTUP_BREAKER:]),
+        *(
+            f'- {e.target} ({death.role} on {death.harness}): {death.error}'
+            for e, death in deaths[-daemon.startup_breaker :]
+        ),
     ]
     return '\n'.join(lines)
 

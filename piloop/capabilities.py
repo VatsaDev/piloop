@@ -18,6 +18,7 @@ from piloop.plugins.runtime.subprocess import Subprocess, SubprocessRuntime
 
 from piloop.plugins.harness.contract import HARNESSES, Harness, SecretRef, UsageReader
 from piloop.settings import Settings, StorageSettings, TracingSettings, EvaluationSettings
+from piloop.settings import DaemonSettings, AgentSettings
 from piloop.plugins.harness.contract import McpLaunch, McpArgs, McpError, McpRenderer
 from piloop.plugins.harness.kit.jsonl import JsonlSessions, Counts, Record, Tally, Said
 from piloop.plugins.harness.pi import Pi
