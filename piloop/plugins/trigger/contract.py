@@ -219,6 +219,20 @@ class Fire:
     """The events to emit on the first requested row."""
 
 
+@dataclass(frozen=True)
+class Steer:
+    """A trigger that hands its news to the role's live agent (``Pass.live``) instead of requesting a row.
+
+    The daemon writes ``text`` as a note on the role's newest live agent, which gets it as any note: in its turn
+    through its harness's hook, or else when its turn ends. The note makes another pass, so a trigger steers only for
+    what its earlier notes did not take.
+    """
+
+    text: str
+    events: tuple[EventModel, ...] = ()
+    """The events to emit on the note. Whether the agent read it is its ``comment.delivered`` on the agent."""
+
+
 class Trigger(Parameters, ABC):
     """One entry of ``[roles.<name>] triggers``: ``{ provider = "<trigger>", <parameter> = <value> }``.
 
@@ -240,8 +254,8 @@ class Trigger(Parameters, ABC):
     dies at startup is then no incident: the agent that it would request could die the same way, and so on."""
 
     @abstractmethod
-    def fire(self, p: Pass) -> Fire | None:
-        """Return the request that the trigger makes now, or None."""
+    def fire(self, p: Pass) -> Fire | Steer | None:
+        """Return the request that the trigger makes now, or None. Only while the role is live, a ``Steer``."""
 
     @abstractmethod
     def due_in(self, p: Pass) -> timedelta | None:

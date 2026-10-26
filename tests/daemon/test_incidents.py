@@ -28,7 +28,7 @@ from piloop.db.session import Database
 from piloop.ids import TargetKind, TargetRef
 from piloop.plugins.section.contract import SECTIONS, Rendering, markdown
 from piloop.plugins.section.reported import REPORTED_SHOWN
-from piloop.plugins.trigger.contract import Fire, Trigger
+from piloop.plugins.trigger.contract import Fire
 from piloop.plugins.trigger.dead_at_startup import DeadAtStartup
 from piloop.plugins.trigger.leaking_funnel import LeakingFunnel
 from piloop.plugins.trigger.run_failed import RunFailed
@@ -37,7 +37,7 @@ from tests.conftest import RESEARCH, WATCHDOG, cas_of
 from tests.reports.test_overview import NOW, agent, at, candidate, idea, live_campaign, run
 
 
-def fired(s: Session, campaign: Campaign, trigger: Trigger) -> Fire | None:
+def fired(s: Session, campaign: Campaign, trigger: RunFailed | DeadAtStartup | LeakingFunnel) -> Fire | None:
     """What ``trigger`` of the watchdog fires on a pass now."""
 
     def unread(_: object) -> Never:

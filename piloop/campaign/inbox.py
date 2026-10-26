@@ -129,7 +129,7 @@ WAKES: Final = tuple(
 PAGE = 500
 
 
-def news(s: Session, after: int, *, campaign_id: CampaignId | None = None, party: str) -> News:
+def news(s: Session, after: int, *, campaign_id: CampaignId | None = None, party: str, upto: int | None = None) -> News:
     """Return the events after event#``after`` that the orchestrator must look at, and the next cursor.
 
     The news reports:
@@ -142,11 +142,12 @@ def news(s: Session, after: int, *, campaign_id: CampaignId | None = None, party
     - the verdicts that another party gave: the daemon's, or a person's.
 
     It reads the ``WAKES`` events from the feed (``piloop.db.feed``), a page at a time until a page gives a line.
-    ``campaign_id`` filters all of them. The returned cursor passes every event that it read, so no event is missed.
+    ``campaign_id`` filters all of them, and ``upto`` ends them at that event. The returned cursor passes every event
+    that it read, so no event is missed.
     """
     cursor, found, more = after, list[NewsItem](), True
     while more and not found:
-        page = db_feed.after(s, cursor, WAKES, limit=PAGE)
+        page = db_feed.after(s, cursor, WAKES, limit=PAGE, where=() if upto is None else (Event.id <= upto,))
         cursor, more = page.next, page.more
         events = s.scalars(select(Event).where(Event.id.in_(page.ids)).order_by(Event.id)).all()
         found = _news(s, events, campaign_id, party)

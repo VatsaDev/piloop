@@ -329,10 +329,11 @@ New inbox items for the role's party, seeds, anomalies, verdicts and the stop: `
 
 Messages, escalations and the stop wake the role `quiet_seconds` after the first news, also while the campaign is
 paused, held or stopped. The rest wakes it at most once in `routine_every`, and only while the campaign runs.
+While an agent of the role is live, the news goes to it in a note instead.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `quiet_seconds` | number | `30` | How long the role waits after the first news, so that one agent takes a burst of it. |
+| `quiet_seconds` | number | `30` | How long the role waits after the first news to launch an agent, so that one agent takes a burst of it. |
 | `routine_every` | number | `900` | The fewest seconds between two agents that only routine news wakes: verdicts, seeds and anomalies. |
 
 ## RunFailed

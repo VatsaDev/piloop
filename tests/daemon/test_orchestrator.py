@@ -1,14 +1,20 @@
 """The orchestrator role: piloop launches it on news, and each agent resumes the last one's session."""
 
+import sys
+import threading
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+from sqlalchemy import select
 
 from piloop.actor import Agent, Person, System
-from piloop.agents.results import SessionNotResumed, Unresumed
+from piloop.agents.results import PromptOutcome, SessionNotResumed, Unresumed
 from piloop.api.views import CommentNews, CommentView, StoppedNews, VerdictNews
 from piloop.campaign import inbox, ops
 from piloop.config import load_campaign_config
+from piloop.daemon.scheduler import Scheduler
 from piloop.db.events import emit, in_order
 from piloop.db.models import AgentSession, AgentSessionState, Campaign, Comment, Event
 from piloop.db.session import Database
@@ -17,7 +23,7 @@ from piloop.plugins.trigger.news import NewsTaken, Urgency, urgency
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring.ledger import CandidateJudged
 from tests.agents.test_resume import HARNESS, SESSION
-from tests.conftest import ScriptRuntime, write_toml
+from tests.conftest import ScriptRuntime, wait_until, write_toml
 from tests.daemon.test_roles import configure, recording, scheduler
 from tests.daemon.test_triggers import agent_sessions
 
@@ -25,8 +31,12 @@ ORCHESTRATOR = 'orchestrator'
 ANA = Person(name='ana')
 
 
-def harness(tmp_path: Path) -> str:
-    """Keeps each agent's brief by its actor, and starts or resumes its session as ``test_resume`` does."""
+def harness(tmp_path: Path, turn: str = '') -> str:
+    """Keeps each agent's brief by its actor, and starts or resumes its session as ``test_resume`` does.
+
+    ``turn`` runs in the first turn, after the session starts. Each resumed turn appends its prompt to
+    ``prompts-<actor>``.
+    """
     lines = SESSION.read_bytes().splitlines(keepends=True)
     (tmp_path / 'head.jsonl').write_bytes(b''.join(lines[:5]))
     (tmp_path / 'rest.jsonl').write_bytes(b''.join(lines[5:]))
@@ -36,8 +46,8 @@ def harness(tmp_path: Path) -> str:
         'mkdir -p "$D"\n'
         f'cp ../brief.md "{tmp_path}/brief-$PILOOP_ACTOR.md"\n'
         'case "$1" in\n'
-        f'  --session-id) cp {tmp_path / "head.jsonl"} "$D/$2.jsonl" ;;\n'
-        f'  --resume) cat {tmp_path / "rest.jsonl"} >> "$D/$2.jsonl" ;;\n'
+        f'  --session-id) cp {tmp_path / "head.jsonl"} "$D/$2.jsonl"; {turn} ;;\n'
+        f'  --resume) cat {tmp_path / "rest.jsonl"} >> "$D/$2.jsonl"; printf \'%s\\n\' "$3" >> "{tmp_path}/prompts-$PILOOP_ACTOR" ;;\n'
         'esac\n'
     )
 
@@ -46,7 +56,11 @@ def harness(tmp_path: Path) -> str:
 def on(db: Database, campaign: Campaign, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The orchestrator role on, woken at once by urgent news and at most hourly by the rest."""
     monkeypatch.setenv('HOME', str(tmp_path / 'home'))
-    write_toml(Path(campaign.path), harness(tmp_path))
+    turn_on(db, campaign, harness(tmp_path))
+
+
+def turn_on(db: Database, campaign: Campaign, body: str) -> None:
+    write_toml(Path(campaign.path), body)
     path = Path(campaign.path)
     script = {**load_campaign_config(path).harness['script'].model_dump(mode='json', exclude_unset=True), **HARNESS}
     news = {'triggers': [{'provider': 'news', 'quiet_seconds': 0, 'routine_every': 3600}]}
@@ -120,6 +134,92 @@ def test_news_launches_the_orchestrator_which_resumes_its_session_and_never_wake
         assert in_order(s, SessionNotResumed, on_second) == []
 
 
+HOOK = (
+    'import os, pathlib, sys\n'
+    'from piloop.plugins.runtime.contract import take\n'
+    "with open(sys.argv[1], 'a') as out:\n"
+    "    out.writelines(f'{m}\\n' for m in take(pathlib.Path(os.environ['PILOOP_MESSAGES'])))\n"
+)
+"""Claude Code's ``PostToolUse`` hook, as ``piloop agent messages`` runs it: it takes the queue into the turn."""
+
+
+@contextmanager
+def serving(db: Database, runtime: ScriptRuntime, tmp_path: Path) -> Generator[Scheduler]:
+    """The daemon's loop, in a thread: it reacts to the feed as ``piloop serve`` does."""
+    sched = scheduler(db, recording(runtime, []), tmp_path)
+    thread = threading.Thread(target=sched.serve)
+    thread.start()
+    yield sched
+    sched.stop(timeout=10)
+    thread.join(timeout=10)
+
+
+def outcomes(db: Database, agent: AgentSessionId) -> list[str]:
+    with db.session() as s:
+        return [
+            o.kind for _, o in in_order(s, PromptOutcome, Event.target == TargetRef(TargetKind.AGENT_SESSION, agent))
+        ]
+
+
+def notes(db: Database, agent: AgentSessionId) -> list[str]:
+    with db.session() as s:
+        on_it = Comment.target == TargetRef(TargetKind.AGENT_SESSION, agent)
+        return list(s.scalars(select(Comment.body).where(on_it, Comment.kind == CommentKind.NOTE)))
+
+
+@pytest.mark.parametrize('hook', [True, False], ids=['in its turn, through the hook', 'when its turn ends'])
+def test_news_that_comes_while_a_wake_runs_reaches_that_wake_once(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, on: None, hook: bool
+) -> None:
+    hold, started, prompts = tmp_path / 'hold', tmp_path / 'started', tmp_path / 'prompts-orchestrator#1'
+    hold.touch()
+    (tmp_path / 'hook.py').write_text(HOOK)
+    take = f'[ -s "$PILOOP_MESSAGES" ] && "{sys.executable}" {tmp_path / "hook.py"} "{prompts}"; ' if hook else ''
+    turn_on(db, campaign, harness(tmp_path, f'touch {started}; while [ -e {hold} ]; do {take}sleep 0.05; done'))
+    message(db, campaign, 'how is it going?')
+    with serving(db, runtime, tmp_path):
+        wait_until(started.exists, 'the wake')
+        first = AgentSessionId(agent_sessions(db, ORCHESTRATOR)[0][0])
+        message(db, campaign, 'stop the lzma runs')
+        wait_until(lambda: outcomes(db, first) == ['comment.queued'], 'the note in its queue')
+        if hook:
+            wait_until(lambda: prompts.is_file() and 'stop the lzma runs' in prompts.read_text(), 'the hook')
+        hold.unlink()
+        wait_until(lambda: agent_sessions(db, ORCHESTRATOR)[0][1] is AgentSessionState.EXITED, 'its end')
+    [note] = notes(db, first)
+    assert note.startswith('# News\nThis came while you work:\n- ') and 'by human:ana: stop the lzma runs' in note
+    assert prompts.read_text().count('stop the lzma runs') == 1
+    assert outcomes(db, first) == ['comment.queued', 'comment.delivered']
+    assert wake(db, runtime, tmp_path) == [], 'the wake took it: the next one does not take it again'
+
+
+def test_news_that_comes_while_a_wake_is_requested_reaches_it_in_its_first_note_and_not_in_its_news_too(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, on: None
+) -> None:
+    hold, started, prompts = tmp_path / 'hold', tmp_path / 'started', tmp_path / 'prompts-orchestrator#1'
+    hold.touch()
+    turn_on(db, campaign, harness(tmp_path, f'touch {started}; while [ -e {hold} ]; do sleep 0.05; done'))
+    message(db, campaign, 'how is it going?')
+    with db.session() as s:
+        upto = inbox.news(s, 0, campaign_id=campaign.id, party=ORCHESTRATOR).next
+    with db.session() as s:  # what the trigger requests: the news so far
+        requested = AgentSession(kind=ORCHESTRATOR, campaign_id=campaign.id, reason='news')
+        s.add(requested)
+        s.flush()
+        emit(s, NewsTaken(after=0, upto=upto), TargetRef(TargetKind.AGENT_SESSION, requested.id), System.DAEMON)
+        s.commit()
+        first = requested.id
+    message(db, campaign, 'stop the lzma runs')
+    with serving(db, runtime, tmp_path):
+        wait_until(lambda: outcomes(db, first) == ['comment.queued'], 'the note in its queue')
+        hold.unlink()
+        wait_until(lambda: agent_sessions(db, ORCHESTRATOR)[0][1] is AgentSessionState.EXITED, 'its end')
+    news = brief(tmp_path, first).split('\n# News\n')[1].split('- Sweep started at:')[0]
+    assert 'how is it going?' in news and 'stop the lzma runs' not in news, 'its brief has the news of its request'
+    assert prompts.read_text().count('stop the lzma runs') == 1, 'in its first note, once'
+    assert wake(db, runtime, tmp_path) == []
+
+
 def test_routine_news_waits_for_its_interval_and_only_urgent_news_wakes_a_paused_campaign(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, on: None
 ) -> None:
@@ -165,7 +265,7 @@ def test_a_failed_orchestrator_leaves_its_news_to_the_next_and_off_is_the_defaul
     assert wake(db, runtime, tmp_path) == [], 'without triggers, piloop launches no orchestrator'
 
 
-def test_one_launched_by_hand_reads_the_inbox_none_starts_beside_a_live_one_and_the_stop_wakes_it(
+def test_one_launched_by_hand_reads_the_inbox_a_live_one_that_ends_before_it_reads_its_note_leaves_the_news_to_the_next(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, on: None
 ) -> None:
     with db.session() as s:
@@ -181,9 +281,15 @@ def test_one_launched_by_hand_reads_the_inbox_none_starts_beside_a_live_one_and_
         s.commit()
         live_id = live.id
     message(db, campaign, 'one at a time')
-    assert wake(db, runtime, tmp_path) == [], 'the live one takes it when it ends, not a second one'
+    assert wake(db, runtime, tmp_path) == [], 'not a second one: the live one gets a note'
+    [note] = notes(db, live_id)
+    assert 'one at a time' in note
     with db.session() as s:
         s.get_one(AgentSession, live_id).state = AgentSessionState.EXITED
+        s.commit()
+    [after] = wake(db, runtime, tmp_path)
+    assert 'one at a time' in brief(tmp_path, after), 'it ended before it read the note'
+    with db.session() as s:
         ops.stop(s, campaign.id, System.HUMAN, reason='done', ending=Ending.WRAP_UP)
         s.commit()
     woken = wake(db, runtime, tmp_path) + wake(db, runtime, tmp_path)

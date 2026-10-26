@@ -386,6 +386,7 @@ ENTRY_POINTS = [
     EntryPoint('every_pass', f'{PLUGIN}:EveryPass', TRIGGER_GROUP),
     EntryPoint('awake', f'{PLUGIN}:Awake', TRIGGER_GROUP),
     EntryPoint('broken', f'{PLUGIN}:Broken', TRIGGER_GROUP),
+    EntryPoint('steering', f'{PLUGIN}:Steering', TRIGGER_GROUP),
     EntryPoint('auditor', f'{PLUGIN}:Auditor', ROLE_GROUP),
     EntryPoint('quick', f'{PLUGIN}:Quick', ROLE_GROUP),
     EntryPoint('typed', f'{PLUGIN}:Typed', RUNTIME_GROUP),
@@ -431,7 +432,8 @@ def test_a_package_adds_a_role_and_triggers_through_entry_points(
 ) -> None:
     """``piloop init`` stores the package's role with its defaults, under the table of ``piloop.toml``.
 
-    The daemon runs it on the package's trigger. A trigger that raises is traced, and the role's other triggers fire.
+    The daemon runs it on the package's trigger. A trigger that raises, or steers while no agent of its role is live,
+    is traced, and the role's other triggers fire.
     """
     cfg = load_campaign_config(Path(campaign.path))
     auditor = cfg.roles.sweeping()[RoleName('auditor')]
@@ -442,7 +444,10 @@ def test_a_package_adds_a_role_and_triggers_through_entry_points(
         'the table goes over'
     )
     configure(
-        db, campaign, '#!/bin/sh\ntrue\n', auditor={'triggers': [{'provider': 'broken'}, {'provider': 'every_pass'}]}
+        db,
+        campaign,
+        '#!/bin/sh\ntrue\n',
+        auditor={'triggers': [{'provider': 'broken'}, {'provider': 'steering'}, {'provider': 'every_pass'}]},
     )
     sched = scheduler(db, recording(runtime, []), tmp_path)
     assert sched.run_all() == [1]
@@ -451,8 +456,11 @@ def test_a_package_adds_a_role_and_triggers_through_entry_points(
     assert agent_sessions(db, 'auditor') == [(1, AgentSessionState.EXITED, 'every pass for auditor')]
     brief = (tmp_path / 'agent_sessions' / '1' / 'brief.md').read_text()
     assert brief.startswith('# Audit\n')
-    assert 'trigger.failed Ns campaign=demo role=auditor trigger=broken error=the probe is down' in console_lines(
-        capsys.readouterr().err
+    lines = console_lines(capsys.readouterr().err)
+    assert 'trigger.failed Ns campaign=demo role=auditor trigger=broken error=the probe is down' in lines
+    assert (
+        'trigger.failed Ns campaign=demo role=auditor trigger=steering'
+        ' error=it steers [roles.auditor], but no agent of the role is live' in lines
     )
 
 

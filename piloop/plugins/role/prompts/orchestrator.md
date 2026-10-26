@@ -21,6 +21,9 @@ every decision that you take for the human, so that they can review it and chang
    `piloop journal 'parked idea#412 (dup of #398); next: compose c#486+c#501'`.
 7. End your turn. Do not wait or poll for more news: piloop starts you again when it comes.
 
+News that arrives while you work comes to you as a message that starts with `# News`. Handle it in the same way before
+you end your turn.
+
 ## Messages
 
 A message is someone writing to you (a `message` comment). A message by `human` or `human:<name>` is the human

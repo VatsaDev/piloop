@@ -174,7 +174,7 @@ from piloop.plugins.memory.contract import MEMORY
 from piloop.plugins.role.contract import Continuity, ImplementerRole, SweepRole, ideas_taken
 from piloop.plugins.section.contract import Rendering, markdown
 from piloop.plugins.stop_rule.contract import GO, STOP_RULES, Go, Hold, Stop, WhileHeld
-from piloop.plugins.trigger.contract import TRIGGERS, Backlog, Fire, Quiet, TrackBacklog
+from piloop.plugins.trigger.contract import TRIGGERS, Backlog, Fire, Quiet, Steer, TrackBacklog
 from piloop.plugins.vcs.contract import NotARepository
 from piloop.runtime.factory import RuntimeFactory, handle_for, make_runtime, runtime_for
 from piloop.scoring.ledger import (
@@ -1102,6 +1102,7 @@ class Scheduler:
         (``Trigger.WHILE``). A fire that needs a row of its
         own (``Fire.alone``) shares its row only with the other such fires, when one comes first, and otherwise waits
         for a later pass. The others share one batch: the largest count of rows, with every reason. The first row gets the events of the fires. A
+        trigger that steers (``Steer``) writes its note at once (``_steer``). A
         trigger that raises is traced and does not fire. The ``due_in`` of each trigger that did not fire goes into the
         pass's due.
         """
@@ -1119,15 +1120,19 @@ class Scheduler:
             try:
                 fire = trigger.fire(p)
                 due = trigger.due_in(p) if fire is None else None
+                match fire:
+                    case Steer():
+                        self._steer(s, p, fire)
+                    case Fire():
+                        fires.append(fire)
+                    case None:
+                        self._soonest.add(None if due is None else now + due)
+                    case _:
+                        assert_never(fire)
             except Exception as e:  # A trigger of a package, or a query that the schema no longer runs.
                 self._tracer.event(
                     'trigger.failed', campaign=campaign.name, role=name, trigger=TRIGGERS.name_of(trigger), error=str(e)
                 )
-                continue
-            if fire is not None:
-                fires.append(fire)
-            elif due is not None:
-                self._soonest.add(now + due)
         if not fires:
             return
         fires = [f for f in fires if f.alone is fires[0].alone]
@@ -1140,6 +1145,27 @@ class Scheduler:
             for event in fire.events:
                 emit(s, event, TargetRef(TargetKind.AGENT_SESSION, rows[0].id), System.DAEMON)
         self._tracer.event('agent_session.requested', campaign=campaign.name, kind=name, reason=reason, count=count)
+
+    def _steer(self, s: Session, p: RolePass, steer: Steer) -> None:
+        """Write ``steer`` as a note on the role's newest live agent, and its events on the note.
+
+        Raises:
+            LookupError: no agent of the role is live: the trigger steers only while ``Pass.live``.
+        """
+        live = s.scalars(p.mine().where(AgentSession.state.in_(LIVE)).order_by(AgentSession.id.desc()).limit(1)).first()
+        if live is None:
+            raise LookupError(f'it steers [roles.{p.role}], but no agent of the role is live')
+        note = Comment(
+            target=TargetRef(TargetKind.AGENT_SESSION, live.id),
+            author=DAEMON_ACTOR,
+            kind=CommentKind.NOTE,
+            body=steer.text,
+        )
+        s.add(note)
+        s.flush()
+        for event in steer.events:
+            emit(s, event, TargetRef(TargetKind.COMMENT, note.id), System.DAEMON)
+        self._tracer.event('agent_session.steered', campaign=p.campaign.name, agent_session=live.id, comment=note.id)
 
     def _pass(
         self,
@@ -1773,14 +1799,15 @@ class RolePass:
     backlog: Callable[[int], Backlog]
     without_keep: Callable[[datetime | None], int]
 
-    def _mine(self) -> Select[AgentSession]:
+    def mine(self) -> Select[AgentSession]:
+        """The role's rows in the campaign."""
         return select(AgentSession).where(AgentSession.campaign_id == self.campaign.id, AgentSession.kind == self.role)
 
     def live(self) -> int:
-        return count(self.s, self._mine().where(AgentSession.state.in_(LIVE)))
+        return count(self.s, self.mine().where(AgentSession.state.in_(LIVE)))
 
     def killed_streak(self) -> int:
-        states = self.s.scalars(self._mine().with_only_columns(AgentSession.state).order_by(AgentSession.id.desc()))
+        states = self.s.scalars(self.mine().with_only_columns(AgentSession.state).order_by(AgentSession.id.desc()))
         return len(list(itertools.takewhile(lambda state: state is AgentSessionState.KILLED, states)))
 
     def cancel(self, agent_session: AgentSession, /) -> CancelRequested | None:
@@ -1795,14 +1822,14 @@ class RolePass:
         that dies every time would be launched again on every pass.
         """
         signed = defined_by(self.s, self.campaign.id)
-        ended = self.s.scalars(self._mine().where(AgentSession.state.in_(states)).order_by(AgentSession.id.desc()))
+        ended = self.s.scalars(self.mine().where(AgentSession.state.in_(states)).order_by(AgentSession.id.desc()))
         return list(itertools.takewhile(lambda agent_session: f'{self.role}#{agent_session.id}' not in signed, ended))
 
     def routine(self) -> AgentSession | None:
         given = exists().where(
             has(AnomalyReported), Event.target_kind == TargetKind.AGENT_SESSION, Event.target_id == AgentSession.id
         )
-        return self.s.scalars(self._mine().where(~given).order_by(AgentSession.id.desc()).limit(1)).first()
+        return self.s.scalars(self.mine().where(~given).order_by(AgentSession.id.desc()).limit(1)).first()
 
 
 @dataclass(frozen=True)

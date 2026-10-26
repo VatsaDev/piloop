@@ -35,6 +35,8 @@ triggers = [{ provider = "news" }]
 
 - A message, an escalation or the stop launches it within `quiet_seconds` (30). Other news, such as a verdict, launches
   it at most once in `routine_every` seconds (900).
+- While an orchestrator works, new news goes to it as a note, at once. Claude Code reads it after its current tool
+  call. Codex and pi read it when their turn ends.
 - While the campaign is paused or held, only a message or an escalation launches it.
 - Each orchestrator resumes the session of the one before, so it remembers what it decided. When it cannot, it starts
   from its whole brief, and `agent_session.not_resumed` says why.

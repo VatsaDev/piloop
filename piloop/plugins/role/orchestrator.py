@@ -90,12 +90,15 @@ class OrchestratorRole(SweepRole):
     """The status that each brief shows after the news: lean, because each one stays in the resumed session."""
 
     def context(self, sweep: Sweep) -> list[str]:
-        """The news that this agent's row took (``NewsTaken``), newest last, as ``piloop inbox wait`` prints it."""
+        """The news that this agent's row took when it was requested (``NewsTaken``), as ``piloop inbox wait`` prints it.
+
+        News that came after the request goes to the agent in notes once it is live (``Steer``).
+        """
         s, row = sweep.s, sweep.agent_session
         took = latest(s, NewsTaken, Event.target == TargetRef(TargetKind.AGENT_SESSION, row.id))
         if took is None:
             return ['- News: none; this agent was asked for by hand. Read the inbox and the status.']
-        found = inbox.news(s, took[1].after, campaign_id=row.campaign_id, party=row.kind).items
+        found = inbox.news(s, took[1].after, campaign_id=row.campaign_id, party=row.kind, upto=took[1].upto).items
         shown = found[-SHOWN:]
         more = f' ({len(found) - len(shown)} older items left out)' if len(found) > len(shown) else ''
         return ['# News', f'{len(found)} items since the last orchestrator{more}:', *(f'- {i.text()}' for i in shown)]

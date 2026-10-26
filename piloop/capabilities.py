@@ -35,7 +35,7 @@ from piloop.plugins.cas.s3 import S3
 from piloop.plugins.cas.gcs import Gcs
 from piloop.plugins.cas.http import Http
 
-from piloop.plugins.trigger.contract import TRIGGERS, Trigger, TriggerEntry, Pass, Fire, Quiet
+from piloop.plugins.trigger.contract import TRIGGERS, Trigger, TriggerEntry, Pass, Fire, Steer, Quiet
 from piloop.plugins.trigger.contract import Backlog, TrackBacklog
 from piloop.plugins.trigger.run_failed import RunFailed
 from piloop.plugins.trigger.dead_at_startup import DeadAtStartup
