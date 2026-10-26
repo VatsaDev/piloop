@@ -1899,18 +1899,18 @@ def test_0057_a_built_in_harness_table_that_inherits_an_argv_with_mcp_inherits_i
         assert con.execute('SELECT config FROM campaigns').fetchall() == [(stored,)]
 
 
-def test_0063_admits_retired_campaigns_whose_names_are_free_again_and_downgrades_them_to_stopped(
+def test_0064_admits_retired_campaigns_whose_names_are_free_again_and_downgrades_them_to_stopped(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / 'piloop.db'
     cfg = alembic(path)
-    command.upgrade(cfg, '0062')
+    command.upgrade(cfg, '0063')
     insert = "INSERT INTO campaigns (name, path, config, status) VALUES ('p', '/p', '{}', "
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
         con.execute(f"{insert}'stopped')")
         con.execute('UPDATE campaigns SET config = \'{"roles": {"research": {}}}\'')
         con.execute("INSERT INTO agent_sessions (kind, campaign_id) VALUES ('research', 1)")
-    command.upgrade(cfg, '0063')
+    command.upgrade(cfg, '0064')
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
         con.execute("UPDATE campaigns SET status = 'retired' WHERE id = 1")
         con.execute(f"{insert}'retired')")
@@ -1923,7 +1923,7 @@ def test_0063_admits_retired_campaigns_whose_names_are_free_again_and_downgrades
         assert con.execute('SELECT count(*) FROM agent_sessions').fetchone() == (2,), (
             'the rebuild keeps the rows, and the triggers that read campaigns'
         )
-    command.downgrade(cfg, '0062')
+    command.downgrade(cfg, '0063')
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
         assert con.execute('SELECT id, name, status FROM campaigns ORDER BY id').fetchall() == [
             (1, 'p.1', 'stopped'),

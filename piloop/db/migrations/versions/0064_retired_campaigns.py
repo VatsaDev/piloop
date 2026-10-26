@@ -6,8 +6,8 @@ and drops its triggers, so ``recreate`` puts them back.
 
 The downgrade makes each retired campaign ``stopped``. One whose name another campaign has too gets ``<name>.<id>``.
 
-Revision ID: 0063
-Revises: 0062
+Revision ID: 0064
+Revises: 0063
 """
 
 from collections.abc import Iterator, Sequence
@@ -18,8 +18,8 @@ from alembic import op
 
 from piloop.db.triggers import recreate
 
-revision: str = '0063'
-down_revision: str | None = '0062'
+revision: str = '0064'
+down_revision: str | None = '0063'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
