@@ -39,6 +39,7 @@ campaign = cyclopts.App(name='campaign', help='Act on a campaign as a whole.')
 campaign.command('piloop.cli.campaign:parent', name='parent')
 campaign.command('piloop.cli.campaign:tree', name='tree')
 campaign.command('piloop.cli.control:stop', name='stop')
+campaign.command('piloop.cli.control:retire', name='retire')
 app.command(campaign)
 
 

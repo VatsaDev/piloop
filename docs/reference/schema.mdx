@@ -35,11 +35,11 @@ CREATE TABLE campaigns (
 	PRIMARY KEY (id),
 	CONSTRAINT "campaigns.paused and campaigns.paused_reason go together" CHECK ((paused IS NULL) = (paused_reason IS NULL)),
 	CONSTRAINT "campaigns.paused_reason must be a text value" CHECK (typeof(paused_reason) IN ('text', 'null')),
-	UNIQUE (name),
-	CONSTRAINT campaignstatus CHECK (status IN ('active', 'stopped')),
+	CONSTRAINT campaignstatus CHECK (status IN ('active', 'stopped', 'retired')),
 	CONSTRAINT pause CHECK (paused IN ('launches', 'all')),
 	FOREIGN KEY(parent_id) REFERENCES campaigns (id)
 );
+CREATE UNIQUE INDEX ix_campaigns_name ON campaigns (name) WHERE status != 'retired';
 CREATE TABLE comments (
 	id INTEGER NOT NULL,
 	target_kind VARCHAR(16) NOT NULL,

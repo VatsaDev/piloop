@@ -47,6 +47,7 @@ from piloop.api.contract import (
     Reasoned,
     Remote,
     ReplyBody,
+    RetireBody,
     SecretBody,
     Selection,
     StatusBody,
@@ -55,6 +56,8 @@ from piloop.api.contract import (
     defaulted,
 )
 from piloop.api.views import AckOutcome, CampaignState, InvalidConfig, Pending, Queued, Relation, Status, thread_lines
+from piloop.campaign import ops
+from piloop.campaign.stop import CampaignClosed
 from piloop.cli import common, main as cli
 from piloop.daemon.api import ROUTERS, Handlers, daemon_state, openapi, with_api
 from piloop.db.events import emit
@@ -73,7 +76,7 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database
-from piloop.db.triggers.changelog import CampaignPausedChanged
+from piloop.db.triggers.changelog import CampaignPausedChanged, CampaignStatusChanged
 from piloop.ids import (
     AgentSessionId,
     CampaignStatus,
@@ -101,7 +104,7 @@ from piloop.plugins.network.proxy import Proxy, Rule
 from piloop.plugins.secrets.contract import HomeSecrets
 from piloop.plugins.secrets.local import LocalSecrets
 from piloop.plugins.vcs.git import Git
-from piloop.scoring.api import CancelledBy, RemeasureBody, RunningSince, ScoringClient
+from piloop.scoring.api import CancelledBy, ImportBody, RemeasureBody, RunningSince, ScoringClient
 from piloop.scoring.ledger import MeasurementRecorded
 from piloop.settings import Settings
 from piloop.watch.panels import Context, InboxPanel
@@ -749,8 +752,8 @@ def test_a_checkout_registers_at_once_the_daemon_measures_its_baseline_and_its_p
         assert recorded == MeasurementRecorded(
             candidate=added.baseline, metrics={'score': 1.0, 'size': 5.0}, error=None, run=None
         )
-        with pytest.raises(Refused, match=f"^campaign name 'demo' is already used by {campaign_path};") as taken:
-            client.register_campaign(Checkout(path=str(campaign_path)))
+        with pytest.raises(Refused, match=f'^{campaign_path} is the checkout of campaign demo #1 already$') as taken:
+            client.register_campaign(Checkout(path=str(campaign_path), name='other'))
         assert taken.value.error == Problem.REFUSED
         with pytest.raises(Refused, match='^path: an absolute path, not campaign$'):
             client.register_campaign(Checkout.model_construct(path='campaign'))
@@ -772,6 +775,91 @@ def test_a_checkout_registers_at_once_the_daemon_measures_its_baseline_and_its_p
         )
 
 
+def test_a_registration_names_the_campaign_and_its_git_refs_carry_that_name(
+    db: Database, campaign_path: Path, cfg: Settings
+) -> None:
+    toml = campaign_path / 'piloop.toml'
+    toml.write_text(toml.read_text().replace('name = "demo"', 'name = "42"'))
+    subprocess.run(['git', 'commit', '-qam', 'a name of digits'], cwd=campaign_path, check=True)
+    with serving_api(cfg), ScoringClient.on(cfg.socket_file, System.HUMAN) as client:
+        with pytest.raises(
+            Refused, match="^'42' is no campaign name: a reference of digits names a campaign by its"
+        ) as e:
+            client.register_campaign(Checkout(path=str(campaign_path)))
+        assert e.value.error == Problem.REFUSED
+        added = client.register_campaign(Checkout(path=str(campaign_path), name='chosen'))
+        assert added.campaign.name == 'chosen'
+        (campaign_path / 'solve.txt').write_text('another\n')
+        subprocess.run(['git', 'commit', '-qam', 'another tree'], cwd=campaign_path, check=True)
+        imported = client.import_candidate('chosen', ImportBody(version='HEAD')).candidate
+    refs = subprocess.run(
+        ['git', 'for-each-ref', '--format=%(refname)'], cwd=campaign_path, capture_output=True, text=True
+    )
+    assert f'refs/piloop/chosen/reference/{imported.id}' in refs.stdout.split(), 'not the name of piloop.toml'
+
+
+def test_a_stopped_campaign_retires_once_its_stop_is_over_and_its_name_registers_again(
+    db: Database, campaign: Campaign, campaign_path: Path, cfg: Settings
+) -> None:
+    with serving_api(cfg), Client.on(cfg.socket_file, System.HUMAN) as client:
+        with pytest.raises(Refused, match=r'^demo is active: stop it first, with `piloop campaign stop demo`$') as e:
+            client.retire('demo', RetireBody(reason='done'))
+        assert e.value.error == Problem.REFUSED
+        with db.session() as s:
+            s.get_one(Campaign, campaign.id).status = CampaignStatus.STOPPED
+            s.add(AgentSession(kind='research', campaign_id=campaign.id, state=AgentSessionState.RUNNING))
+            s.add(
+                Comment(
+                    target=TargetRef(TargetKind.CAMPAIGN, campaign.id),
+                    author='w',
+                    kind='escalation',
+                    body='?',
+                    priority=1,
+                )
+            )
+            s.commit()
+        with pytest.raises(Refused, match=r'^demo is still stopping; agents #1 are not over: retire it once its'):
+            client.retire('demo', RetireBody(reason='done'))
+        with db.session() as s:
+            s.execute(update(AgentSession).values(state=AgentSessionState.EXITED))
+            s.commit()
+        with pytest.raises(
+            Refused, match=r'^demo is still stopping: retire it once its closing review and runs are over'
+        ):
+            client.retire('demo', RetireBody(reason='done'))
+        with db.session() as s:
+            emit(s, CampaignClosed(), TargetRef(TargetKind.CAMPAIGN, campaign.id), System.DAEMON)
+            s.commit()
+        with pytest.raises(Refused, match='^a reason is required'):
+            client.retire('demo', RetireBody(reason=' '))
+        assert client.inbox(InboxQuery()).items, 'the escalation waits'
+        retired = client.retire('demo', RetireBody(reason='the e2e ended')).campaign
+        assert (retired.id, retired.status) == (campaign.id, CampaignStatus.RETIRED)
+        assert client.inbox(InboxQuery()).items == [], 'a retired campaign asks nothing more'
+        assert client.status(Selection()).campaigns == []
+        [listed] = client.status(Selection(status=(CampaignStatus.RETIRED,))).campaigns
+        [by_id] = client.status(Selection(campaign=str(campaign.id))).campaigns
+        assert listed.name == by_id.name == 'demo'
+        with pytest.raises(Refused, match=f'^campaign #{campaign.id} \\(demo\\) is retired$') as changed:
+            client.pause(str(campaign.id), PauseBody(reason='no'))
+        assert changed.value.error == Problem.REFUSED
+        with pytest.raises(Refused, match='^no campaign .demo.') as gone:
+            client.pause('demo', PauseBody(reason='no'))
+        assert gone.value.error == Problem.UNKNOWN_CAMPAIGN
+        again = client.register_campaign(Checkout(path=str(campaign_path))).campaign
+        assert (again.name, again.path, again.status) == ('demo', str(campaign_path), CampaignStatus.ACTIVE)
+        assert again.id != campaign.id
+        [here] = client.status(Selection(cwd=str(campaign_path))).campaigns
+        assert here.id == again.id, 'the retired campaign holds no path'
+    with db.session() as s:
+        notes = s.scalars(select(Comment.body).where(Comment.kind == CommentKind.NOTE)).all()
+        retirements = s.scalars(select(Event.payload).where(Event.kind == 'campaign.status')).all()
+        assert notes == ['retired: the e2e ended']
+        assert [p.new for p in retirements if isinstance(p, CampaignStatusChanged)][-1] is CampaignStatus.RETIRED
+        with pytest.raises(ops.Refused, match=f'^campaign #{campaign.id} \\(demo\\) is retired already$'):
+            ops.retire(s, campaign.id, System.HUMAN, reason='twice')
+
+
 def test_a_baseline_that_fails_to_evaluate_registers_and_then_pauses_its_campaign(
     db: Database, campaign_path: Path, cfg: Settings
 ) -> None:
@@ -790,7 +878,7 @@ def test_a_baseline_that_fails_to_evaluate_registers_and_then_pauses_its_campaig
         assert s.get_one(Campaign, added.campaign.id).name == 'demo', 'it stays registered'
 
 
-def test_a_git_url_is_cloned_under_the_home_with_the_home_s_secret_and_then_registered(
+def test_a_git_url_is_cloned_under_the_home_with_the_home_s_secret_and_then_registered_as_often_as_asked(
     db: Database, campaign_path: Path, cfg: Settings, tmp_path: Path, mocker: MockerFixture
 ) -> None:
     url = bare(campaign_path, tmp_path / 'demo.git')
@@ -801,13 +889,18 @@ def test_a_git_url_is_cloned_under_the_home_with_the_home_s_secret_and_then_regi
         assert unknown.value.error == Problem.REFUSED and not (cfg.home / 'repos').exists()
         client.set_secret('TOKEN', Located(), SecretBody(value=SecretStr('tok')))
         added = client.register_campaign(Clone(clone=Remote(url=url, secret='TOKEN')))
-        checkout = cfg.home / 'repos' / 'demo'
-        assert added.campaign.path == str(checkout)
+        assert added.campaign.path == str(cfg.home / 'repos' / str(added.campaign.id))
         [(_, _, path, credential)] = [c.args for c in cloned.call_args_list]
-        assert (path, credential.get_secret_value()) == (checkout, 'tok')
-        with pytest.raises(Refused, match=f'^{checkout} exists: register that checkout by its path') as exists:
-            client.register_campaign(Clone(clone=Remote(url=url)))
-        assert exists.value.error == Problem.REFUSED
+        assert (path.parent, credential.get_secret_value()) == (cfg.home / 'repos', 'tok')
+        again = client.register_campaign(Clone(clone=Remote(url=url), name='again'))
+        assert (again.campaign.name, again.campaign.path) == ('again', str(cfg.home / 'repos' / str(again.campaign.id)))
+        (cfg.home / 'repos' / str(again.campaign.id + 1)).mkdir()
+        with pytest.raises(
+            Refused, match=f'^{cfg.home / "repos" / str(again.campaign.id + 1)} exists: move it away'
+        ) as e:
+            client.register_campaign(Clone(clone=Remote(url=url), name='third'))
+        assert e.value.error == Problem.REFUSED
+    assert sorted(p.name for p in (cfg.home / 'repos').iterdir()) == ['1', '2', '3'], 'the refused clone is gone'
 
 
 def test_a_clone_that_fails_or_does_not_register_leaves_nothing_under_the_home(

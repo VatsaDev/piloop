@@ -40,7 +40,7 @@ def heading(title: str) -> None:
 
 console = output_console()
 
-CampaignRef = Annotated[str, cyclopts.Parameter(help='The campaign name, or a path inside its repo.')]
+CampaignRef = Annotated[str, cyclopts.Parameter(help='The campaign name, its id, or a path inside its repo.')]
 HARNESS_HELP = 'Use this harness instead of the rotation.'
 JsonFlag = Annotated[
     bool,

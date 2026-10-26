@@ -1,11 +1,11 @@
-"""The commands that steer a campaign as a whole, clients of the API: ``pause``, ``resume`` and ``campaign stop``."""
+"""The commands that steer a campaign as a whole, clients of the API: pause, resume, and stop and retire it."""
 
 from typing import Annotated, assert_never
 
 import cyclopts
 
 from piloop.api.client import Client
-from piloop.api.contract import PauseBody, StopBody
+from piloop.api.contract import PauseBody, RetireBody, StopBody
 from piloop.api.views import CampaignState, InvalidConfig
 from piloop.cli import common
 from piloop.cli.client import campaign_name, daemon_http
@@ -72,3 +72,15 @@ def stop(
         state = client.stop(campaign_name(client, ref), body).campaign
     how = 'ends its implementers now' if kill else 'tells its implementers to save their work and stop'
     common.console.print(f'stop requested for {state.name}: the daemon {how}', markup=False)
+
+
+def retire(ref: CampaignRef, /, *, reason: Annotated[str, cyclopts.Parameter(help='Why, with ids.')]) -> None:
+    """Retire a stopped campaign for good, once its closing review and its runs are over.
+
+    It changes no more, `piloop status` leaves it out unless `--status retired` asks for it, and a new campaign may
+    take its name. Its rows, events and archived files stay, and its id still names it. The reason goes into a note on
+    the campaign.
+    """
+    with Client.connect(daemon_http()) as client:
+        state = client.retire(campaign_name(client, ref), RetireBody(reason=reason)).campaign
+    common.console.print(f'campaign {state.name} #{state.id} retired: its name is free', markup=False)

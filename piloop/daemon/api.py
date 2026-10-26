@@ -6,7 +6,6 @@ lookups as dependencies (``Selected``, ``Narrowed``) over one session per reques
 """
 
 import os
-import shutil
 import time
 from collections.abc import Generator
 from dataclasses import dataclass
@@ -45,6 +44,7 @@ from piloop.api.contract import (
     Reasoned,
     Registration,
     ReplyBody,
+    RetireBody,
     SecretBody,
     SeedBody,
     Selection,
@@ -93,9 +93,10 @@ from piloop.campaign import inbox as inbox_module, ops
 from piloop.campaign.campaigns import (
     CampaignError,
     UnknownCampaign,
-    clone,
     named,
+    referenced,
     register,
+    register_clone,
     repository,
     selected,
     sync,
@@ -111,6 +112,7 @@ from piloop.db.session import Database
 from piloop.ids import (
     AgentSessionId,
     CampaignId,
+    CampaignStatus,
     CandidateId,
     CommentId,
     IdeaId,
@@ -186,7 +188,7 @@ Reading = Annotated[Session, Depends(session)]
 def campaigns_selected(s: Reading, query: Annotated[Selection, Query()]) -> list[Campaign]:
     """The campaigns that the query selects. Refuses a campaign that it names and the home does not have."""
     try:
-        return selected(s, query.campaign, _cwd(query))
+        return selected(s, query.campaign, _cwd(query), query.status)
     except UnknownCampaign as e:
         raise Refusal(HTTPStatus.NOT_FOUND, Problem.UNKNOWN_CAMPAIGN, str(e)) from e
 
@@ -238,10 +240,14 @@ def writing(api: Api, me: Acting) -> Generator[Session]:
 Writing = Annotated[Session, Depends(writing)]
 
 
-def campaign_addressed(s: Writing, campaign: Annotated[str, Path(description="The campaign's name.")]) -> Campaign:
-    """The campaign that the path names. Refuses one that the home does not have."""
-    if (found := s.scalars(select(Campaign).where(Campaign.name == campaign)).first()) is None:
+def campaign_addressed(
+    s: Writing, campaign: Annotated[str, Path(description="The campaign's name, or its id.")]
+) -> Campaign:
+    """The campaign that the path names, to change. Refuses one that the home does not have, and a retired one."""
+    if (found := referenced(s, campaign)) is None:
         raise Refusal(HTTPStatus.NOT_FOUND, Problem.UNKNOWN_CAMPAIGN, str(UnknownCampaign(campaign)))
+    if found.status is CampaignStatus.RETIRED:
+        raise Refusal(HTTPStatus.CONFLICT, Problem.REFUSED, f'campaign #{found.id} ({found.name}) is retired')
     return found
 
 
@@ -402,6 +408,8 @@ def thread(s: Reading, comment: CommentId) -> Thread:
 def register_campaign(api: Api, s: Writing, me: Acting, body: Registration) -> Registered:
     """Register a campaign: a checkout where it is, or a repository that the daemon clones under its home first.
 
+    Each registration of a URL clones it again, into a directory named after the new campaign's id.
+
     It adds the campaign with its head version as the baseline candidate, and syncs its documents into its memory. The
     daemon then measures the baseline: its ``measurement.recorded`` event comes after the answer's cursor, and a
     baseline that fails pauses the campaign. A clone that does not register is deleted.
@@ -418,14 +426,10 @@ def register_campaign(api: Api, s: Writing, me: Acting, body: Registration) -> R
 def _registered(api: Handlers, s: Session, me: Actor, body: Registration) -> tuple[Campaign, Candidate]:
     match body:
         case Checkout():
-            return register(s, FilePath(body.path), me)
+            return register(s, FilePath(body.path), me, body.name)
         case Clone(clone=remote):
-            path = clone(api.cfg.home, VCS.selected(api.cfg.providers), remote.url, _credential(api, remote.secret))
-            try:
-                return register(s, path, me)
-            except Exception:
-                shutil.rmtree(path)
-                raise
+            vcs, credential = VCS.selected(api.cfg.providers), _credential(api, remote.secret)
+            return register_clone(s, api.cfg.home, vcs, remote.url, credential, me, body.name)
         case _:
             assert_never(body)
 
@@ -486,6 +490,17 @@ def resume(s: Writing, me: Acting, campaign: Addressed) -> CampaignAnswer:
 def stop(s: Writing, me: Acting, campaign: Addressed, body: StopBody) -> CampaignAnswer:
     """Stop a campaign at once, as when a ``[stop]`` condition holds. The daemon ends its agents as ``ending`` says."""
     ops.stop(s, campaign.id, me, reason=body.reason, ending=body.ending)
+    s.commit()
+    return _campaign_answer(s, campaign, me)
+
+
+@router.post('/campaigns/{campaign}/retire', operation_id='retire', dependencies=[Depends(actor_access)])
+def retire(s: Writing, me: Acting, campaign: Addressed, body: RetireBody) -> CampaignAnswer:
+    """Retire a stopped campaign for good, once its stop is over.
+
+    It changes no more, and another campaign may take its name. Its history stays, and its id still finds it.
+    """
+    ops.retire(s, campaign.id, me, reason=body.reason)
     s.commit()
     return _campaign_answer(s, campaign, me)
 
@@ -596,9 +611,7 @@ def _idea_answer(s: Session, idea: Idea) -> IdeaAnswer:
 )
 def import_candidate(s: Writing, me: Acting, campaign: Addressed, body: ImportBody) -> CandidateAnswer:
     """Register the files of a version as a reference candidate: a starting point for an idea."""
-    candidate = import_reference(
-        s, campaign, campaign.config, repository(campaign), body.version, summary=body.summary, actor=me
-    )
+    candidate = import_reference(s, campaign, repository(campaign), body.version, summary=body.summary, actor=me)
     s.commit()
     with db_feed.snapshot(s) as cursor:
         return CandidateAnswer(cursor=cursor, candidate=candidate_view(candidate))

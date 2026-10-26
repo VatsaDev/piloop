@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from piloop.actor import Actor
-from piloop.db.models import Campaign, Candidate, Evaluation
+from piloop.db.models import NOT_RETIRED, Campaign, Candidate, Evaluation
 from piloop.ids import CampaignId, CandidateId, EvaluatorId
 from piloop.scoring import ledger
 from piloop.scoring.api import (
@@ -94,7 +94,7 @@ def requested(s: Session) -> list[tuple[Candidate, datetime]]:
     )
     return [
         (candidate, asked.at)
-        for campaign in s.scalars(select(Campaign).order_by(Campaign.id))
+        for campaign in s.scalars(select(Campaign).where(NOT_RETIRED).order_by(Campaign.id))
         for candidate, asked in ledger.requested(s, campaign)
         if (candidate.id, campaign.evaluator_id) not in queued
     ]

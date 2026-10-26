@@ -4,9 +4,10 @@ import os
 import re
 import shutil
 import subprocess
-from pathlib import Path, PurePosixPath
+from collections.abc import Collection
+from pathlib import Path
 from typing import Literal
-from urllib.parse import urlsplit
+from uuid import uuid4
 
 import httpx2 as httpx
 from covalence import Cid
@@ -19,10 +20,20 @@ from piloop import deprecated
 from piloop.actor import Actor, System
 from piloop.config import CONFIG_FILE, CampaignConfig, ConfigError, load_campaign_config
 from piloop.db.events import emit
-from piloop.db.models import Campaign, Candidate, EventModel, Origin
+from piloop.db.models import NOT_RETIRED, Campaign, Candidate, EventModel, Origin
 from piloop.db.session import Database
 from piloop.db.sql import sql_error
-from piloop.ids import CampaignId, CampaignStatus, CandidateId, Revision, TargetKind, TargetRef
+from piloop.ids import (
+    LISTED,
+    CampaignId,
+    CampaignName,
+    CampaignStatus,
+    CandidateId,
+    Revision,
+    TargetKind,
+    TargetRef,
+    checked_campaign_name,
+)
 from piloop.plugins.cas.contract import Cas
 from piloop.plugins.executor.contract import RepoId, Source, Workspace
 from piloop.plugins.role.contract import ideas_taken
@@ -50,7 +61,8 @@ deprecated.until('0.4.0', 'campaign directories keep their 0.1.0 name: move proj
 PROJECTS = 'projects'
 """The directory under the piloop home that holds each campaign's directory."""
 REPOS = 'repos'
-"""The directory under the piloop home that holds the checkout of each campaign that the daemon cloned (``clone``)."""
+"""The directory under the piloop home that holds the checkout of each campaign that the daemon cloned, by its id
+(``register_clone``)."""
 IGNORED = ('data', '.venv', WORKSPACE, '__pycache__')
 """What no version of a new campaign holds (``Vcs.init``)."""
 TEMPLATES = Path(__file__).parent / 'templates'
@@ -143,23 +155,45 @@ def _template_files(template: Path) -> list[str]:
 
 
 def _slug(name: str) -> str:
-    """Make a directory's name safe to use as a campaign name, which git refs use."""
-    return re.sub(r'[^A-Za-z0-9._-]+', '-', name).strip('-') or NAME_PLACEHOLDER
+    """Make a directory's name a campaign name (``CampaignName``)."""
+    slug = re.sub(r'[^A-Za-z0-9._-]+', '-', name).strip('-') or NAME_PLACEHOLDER
+    return f'campaign-{slug}' if slug.isdigit() else slug
 
 
-def clone(home: Path, vcs: Vcs, url: str, credential: SecretStr | None) -> Path:
-    """Clone ``url`` into a new directory of the home's ``REPOS``, named after the repository, and return it.
+def register_clone(
+    s: Session,
+    home: Path,
+    vcs: Vcs,
+    url: str,
+    credential: SecretStr | None,
+    actor: Actor,
+    name: CampaignName | None = None,
+) -> tuple[Campaign, Candidate]:
+    """Clone ``url`` into the home's ``REPOS``, register the clone (``register``), and return what that returns.
+
+    The checkout is ``REPOS/<campaign id>``, so a repository registers as many campaigns as asked. It is cloned under
+    a new name first, because the id comes with the row. A clone that does not register is deleted. The caller
+    commits.
 
     Raises:
-        CampaignError: The directory exists: a campaign of that name was cloned there.
+        CampaignError: The campaign's directory exists, or ``register`` refuses the clone.
         CloneFailed: The clone failed.
     """
-    path = home / REPOS / _slug(PurePosixPath(urlsplit(url).path).name.removesuffix('.git'))
-    if path.exists():
-        raise CampaignError(f'{path} exists: register that checkout by its path, or delete it')
-    path.parent.mkdir(parents=True, exist_ok=True)
-    vcs.clone(url, path, credential)
-    return path
+    (home / REPOS).mkdir(parents=True, exist_ok=True)
+    cloning = home / REPOS / f'.cloning-{uuid4().hex}'
+    try:
+        vcs.clone(url, cloning, credential)
+        campaign, baseline = register(s, cloning, actor, name)
+        checkout = home / REPOS / str(campaign.id)
+        if checkout.exists():
+            raise CampaignError(f'{checkout} exists: move it away, then register again')
+        cloning.rename(checkout)
+    except Exception:
+        if cloning.exists():
+            shutil.rmtree(cloning)
+        raise
+    campaign.path = str(checkout.resolve())
+    return campaign, baseline
 
 
 def stub_untouched(path: Path) -> bool:
@@ -192,23 +226,35 @@ def check_takes(path: Path, cfg: CampaignConfig) -> None:
         )
 
 
-def register(s: Session, path: Path, actor: Actor) -> tuple[Campaign, Candidate]:
+def register(s: Session, path: Path, actor: Actor, name: CampaignName | None = None) -> tuple[Campaign, Candidate]:
     """Insert the campaign of the checkout at ``path``, its evaluator and the baseline candidate of its head version.
 
-    The baseline is a keep by the daemon, which measures it next (``ledger.due``: the head first). ``actor`` signs the
-    ``campaign.added`` event. The caller commits.
+    The campaign is called ``name``, else the ``name`` of its ``piloop.toml``. The baseline is a keep by the daemon,
+    which measures it next (``ledger.due``: the head first). ``actor`` signs the ``campaign.added`` event. The caller
+    commits.
 
     Raises:
-        CampaignError: Another repo uses the name.
+        CampaignError: The name is no ``CampaignName``, or another campaign has it or the checkout.
     """
     cfg = load_campaign_config(path)
     check_takes(path, cfg)
-    other = s.scalars(select(Campaign).where(Campaign.name == cfg.name)).first()
+    if name is None:
+        try:
+            name = checked_campaign_name(cfg.name)
+        except ValueError as e:
+            raise CampaignError(f'{e}; change `name` in piloop.toml, or name the campaign') from e
+    held = s.scalars(select(Campaign).where(Campaign.path == str(path.resolve()), NOT_RETIRED)).first()
+    if held is not None:
+        raise CampaignError(f'{path} is the checkout of campaign {held.name} #{held.id} already')
+    other = s.scalars(select(Campaign).where(Campaign.name == name, NOT_RETIRED)).first()
     if other is not None:
-        raise CampaignError(f'campaign name {cfg.name!r} is already used by {other.path}; change `name` in piloop.toml')
+        raise CampaignError(
+            f'campaign name {name!r} is already used by {other.path}; name the campaign another way, or retire'
+            f' campaign #{other.id}'
+        )
     vcs = VCS.selected(cfg.plugins)
     version = vcs.open(path).head()
-    campaign = Campaign(name=cfg.name, path=str(path.resolve()), repo=vcs.identity(path), config=cfg)
+    campaign = Campaign(name=name, path=str(path.resolve()), repo=vcs.identity(path), config=cfg)
     s.add(campaign)
     s.flush()
     current_evaluator(s, campaign, cfg)
@@ -218,12 +264,23 @@ def register(s: Session, path: Path, actor: Actor) -> tuple[Campaign, Candidate]
     return campaign, baseline
 
 
-def find(s: Session, ref: str, cwd: Path | None = None) -> Campaign | None:
-    """Find a campaign by name, else by a path inside its repo, relative to ``cwd`` (default: this process's).
+def referenced(s: Session, ref: str) -> Campaign | None:
+    """The campaign that ``ref`` names: any campaign by its id, else one that is not retired by its name.
 
-    The name is tried first, because a bare name can also be a directory in the current directory.
+    A name is never all digits (``CampaignName``), so ``ref`` of digits is an id.
     """
-    campaign = s.scalars(select(Campaign).where(Campaign.name == ref)).first()
+    if ref.isdigit():
+        return s.get(Campaign, CampaignId(int(ref)))
+    return s.scalars(select(Campaign).where(Campaign.name == ref, NOT_RETIRED)).one_or_none()
+
+
+def find(s: Session, ref: str, cwd: Path | None = None) -> Campaign | None:
+    """Find a campaign by id or name (``referenced``), else by a path inside its repo, relative to ``cwd``.
+
+    ``cwd`` is this process's by default. The id and the name are tried first, because they can also be directories in
+    the current directory.
+    """
+    campaign = referenced(s, ref)
     if campaign is None and (path := _path(ref, cwd)).exists():
         campaign = checked_out(s, path)
     return campaign
@@ -250,8 +307,10 @@ def named(s: Session, ref: str, cwd: Path | None = None) -> Campaign:
     return found
 
 
-def selected(s: Session, ref: str | None, cwd: Path | None) -> list[Campaign]:
-    """The campaign that ``ref`` names, else the one ``cwd`` is in, else every campaign.
+def selected(
+    s: Session, ref: str | None, cwd: Path | None, statuses: Collection[CampaignStatus] = LISTED
+) -> list[Campaign]:
+    """The campaign that ``ref`` names, else the one ``cwd`` is in, else every campaign of one of ``statuses``.
 
     Raises:
         UnknownCampaign: ``ref`` names none.
@@ -260,21 +319,21 @@ def selected(s: Session, ref: str | None, cwd: Path | None) -> list[Campaign]:
         return [named(s, ref, cwd)]
     if cwd is not None and (here := checked_out(s, cwd)):
         return [here]
-    return list(s.scalars(select(Campaign)).all())
+    return list(s.scalars(select(Campaign).where(Campaign.status.in_(statuses))).all())
 
 
 def checked_out(s: Session, path: Path) -> Campaign | None:
     """Return the campaign whose repo contains ``path``: the repo, a subdirectory or a checkout that it made.
 
-    The nearest registered ancestor wins. The main checkout that contains ``path``, as each vcs provider finds it
-    (``Vcs.root``), is tried last.
+    A retired campaign holds no path. The nearest registered ancestor wins. The main checkout that contains ``path``,
+    as each vcs provider finds it (``Vcs.root``), is tried last.
     """
     path = path.resolve()
     roots = [str(p) for p in (path, *path.parents)]
     for provider in VCS.providers().values():
         if (root := provider.model.root(path)) is not None:
             roots.append(str(root))
-    by_path = {p.path: p for p in s.scalars(select(Campaign).where(Campaign.path.in_(roots)))}
+    by_path = {p.path: p for p in s.scalars(select(Campaign).where(Campaign.path.in_(roots), NOT_RETIRED))}
     return next((by_path[root] for root in roots if root in by_path), None)
 
 

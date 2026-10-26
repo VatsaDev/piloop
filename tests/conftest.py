@@ -234,7 +234,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         action='append',
         help="a secret of the server that the remote scenario's harness gets in its environment. Repeatable.",
     )
-    group.addoption('--e2e-campaign', help="the name of the remote scenario's campaign (default: e2e-<UTC time>)")
+    group.addoption('--e2e-campaign', help="the name of the remote scenario's campaign (default: e2e-remote)")
 
 
 @pytest.fixture(autouse=True)

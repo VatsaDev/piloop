@@ -15,7 +15,7 @@ from piloop.daemon.serve import (
     spawn_detached,
     terminate,
 )
-from piloop.db.models import Campaign
+from piloop.db.models import NOT_RETIRED, Campaign
 from piloop.db.session import BackupFailed, OlderDaemon, SchemaMismatch, unmigratable
 from piloop.plugins.harness.contract import each_provider
 from piloop.plugins.host import PluginError
@@ -137,7 +137,7 @@ def service_unit_cmd() -> None:
     """
     harnesses = list(each_provider().values())
     with local.session() as s:
-        for campaign in s.scalars(select(Campaign)):
+        for campaign in s.scalars(select(Campaign).where(NOT_RETIRED)):
             harnesses += campaign.config.harness.values()
     unit = service_unit(common.settings, harnesses)
     common.console.print(unit, end='', markup=False, highlight=False, soft_wrap=True)

@@ -8,7 +8,7 @@ import re
 from enum import StrEnum
 from typing import Annotated, Final, NewType
 
-from pydantic import BeforeValidator, PlainSerializer, PositiveInt
+from pydantic import AfterValidator, BeforeValidator, PlainSerializer, PositiveInt
 from pydantic.dataclasses import dataclass
 
 CampaignId = NewType('CampaignId', int)
@@ -29,6 +29,22 @@ RoleName = NewType('RoleName', str)
 """A role's name: a role of a package, piloop's included, or a ``[roles.<name>]`` table. It matches ``ROLE_NAME``."""
 IMPLEMENTER: Final = RoleName('implementer')
 """The role that run slots fill last, and the role of a run whose row predates its role (``runs.role``)."""
+
+CAMPAIGN_NAME = re.compile(r'[A-Za-z0-9._-]+')
+"""The characters of a campaign's name, which git refs carry."""
+
+
+def checked_campaign_name(name: str) -> str:
+    """Return ``name`` if it is a campaign's name. Raises ``ValueError`` saying why not."""
+    if CAMPAIGN_NAME.fullmatch(name) is None:
+        raise ValueError(f'{name!r} is no campaign name: use letters, digits, ".", "_" and "-"')
+    if name.isdigit():
+        raise ValueError(f'{name!r} is no campaign name: a reference of digits names a campaign by its id')
+    return name
+
+
+type CampaignName = Annotated[str, AfterValidator(checked_campaign_name)]
+"""A campaign's name: ``CAMPAIGN_NAME``, and not all digits."""
 
 TrackName = NewType('TrackName', str)
 """A track's name: its primary's ``track``, or else the primary's name."""
@@ -99,6 +115,13 @@ class CampaignStatus(StrEnum):
 
     ACTIVE = 'active'
     STOPPED = 'stopped'
+    RETIRED = 'retired'
+    """Stopped for good (``piloop campaign retire``): it changes no more, lists leave it out unless asked, and another
+    campaign may take its name. Its rows and events stay."""
+
+
+LISTED: Final = (CampaignStatus.ACTIVE, CampaignStatus.STOPPED)
+"""The statuses of the campaigns that a listing shows unless asked: all but ``retired``."""
 
 
 class Ending(StrEnum):

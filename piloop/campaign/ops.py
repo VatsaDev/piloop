@@ -23,10 +23,11 @@ from piloop.actor import Actor
 from piloop.agents.roles import files_of
 from piloop.campaign.campaigns import repository
 from piloop.campaign.ideas import Definition, NotASeed, develop
-from piloop.campaign.stop import held, request_stop
+from piloop.campaign.stop import held, request_stop, settled, unclosed
 from piloop.config import CampaignConfig
 from piloop.db.events import emit
 from piloop.db.models import (
+    ENDED,
     OPEN_RUNS,
     AgentSession,
     Base,
@@ -157,6 +158,39 @@ def stop(s: Session, campaign_id: CampaignId, actor: Actor, *, reason: str, endi
             ' `piloop campaign stop --kill` ends its implementers at once'
         )
     request_stop(s, campaign, actor, reason=reason, ending=ending)
+    return campaign
+
+
+def retire(s: Session, campaign_id: CampaignId, actor: Actor, *, reason: str) -> Campaign:
+    """Retire a stopped campaign for good: it changes no more, and another campaign may take its name.
+
+    Its rows, events and archives stay, and it is found by its id. Listings leave it out unless asked. The reason goes
+    into a note on the campaign.
+
+    Raises:
+        Refused: the reason is blank; the campaign is not stopped, or is retired already; or its stop is not over: the
+            closing review has not started, or an agent or a scoring of it is not over.
+    """
+    campaign = _get(s, Campaign, campaign_id, 'campaign')
+    why = _reason(reason)
+    match campaign.status:
+        case CampaignStatus.ACTIVE:
+            raise Refused(f'{campaign.name} is active: stop it first, with `piloop campaign stop {campaign.name}`')
+        case CampaignStatus.RETIRED:
+            raise Refused(f'campaign #{campaign.id} ({campaign.name}) is retired already')
+        case CampaignStatus.STOPPED:
+            pass
+        case never:
+            assert_never(never)
+    live = s.scalars(
+        select(AgentSession.id).where(AgentSession.campaign_id == campaign.id, AgentSession.state.not_in(ENDED))
+    ).all()
+    if unclosed(s, campaign) or not settled(s, campaign) or live:
+        agents = f'; agents {", ".join(f"#{i}" for i in live)} are not over' if live else ''
+        raise Refused(f'{campaign.name} is still stopping{agents}: retire it once its closing review and runs are over')
+    campaign.status = CampaignStatus.RETIRED
+    target = TargetRef(TargetKind.CAMPAIGN, campaign.id)
+    s.add(Comment(target=target, author=actor.signature, kind=CommentKind.NOTE, body=f'retired: {why}'))
     return campaign
 
 

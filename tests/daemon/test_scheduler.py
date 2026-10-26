@@ -1695,9 +1695,8 @@ def test_an_imported_reference_is_measured_by_the_daemon_and_stays_a_reference(
     repo.git.checkout('-q', 'main')
     with db.session() as s:
         proj = s.get_one(Campaign, campaign.id)
-        cfg = load_campaign_config(Path(campaign.path))
         reference = import_reference(
-            s, proj, cfg, GitRepository(repo), 'elsewhere', summary=None, actor=System.ORCHESTRATOR
+            s, proj, GitRepository(repo), 'elsewhere', summary=None, actor=System.ORCHESTRATOR
         ).id
         evaluator = proj.evaluator_id
         s.commit()

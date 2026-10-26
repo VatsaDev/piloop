@@ -9,7 +9,6 @@ from sqlalchemy import select
 
 from piloop.actor import System
 from piloop.campaign import ops
-from piloop.config import load_campaign_config
 from piloop.daemon.run_controller import RunController
 from piloop.db.events import in_order
 from piloop.db.models import AgentSession, AgentSessionState, Campaign, Candidate, Comment, Origin
@@ -62,9 +61,8 @@ def test_a_pause_still_measures_what_the_evaluator_needs_unless_it_holds_the_eva
     repo.git.checkout('-q', 'main')
     with db.session() as s:
         proj = s.get_one(Campaign, campaign.id)
-        cfg = load_campaign_config(Path(campaign.path))
         reference = import_reference(
-            s, proj, cfg, GitRepository(repo), 'elsewhere', summary=None, actor=System.ORCHESTRATOR
+            s, proj, GitRepository(repo), 'elsewhere', summary=None, actor=System.ORCHESTRATOR
         ).id
         s.commit()
     sched = make_scheduler(db, runtime, tmp_path)

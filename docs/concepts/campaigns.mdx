@@ -114,6 +114,24 @@ metric a guardrail or a primary, or the reverse, makes a new evaluator.
   writes or removes there goes into the shared workspace when it ends. When two agents change one file, the first
   one's stays, and the second one's goes beside it, as `NOTES.md.implementer-12`.
 
+## Retire a campaign
+
+A **retired** campaign is stopped for good. Retire a campaign that you do not want to resume, to free its name:
+
+```bash
+piloop campaign stop enwik8
+piloop campaign retire enwik8 --reason "tried every idea"
+```
+
+```text
+campaign enwik8 #3 retired: its name is free
+```
+
+`retire` waits until the closing review and the runs of the stop are over. Then the campaign changes no more, and
+`piloop status` leaves it out unless you ask with `--status retired`. Its rows, events and archived workspace stay, and
+its id still names it: `piloop status 3`. A new campaign may take its name, and `piloop init --name` names a new
+campaign of the same repo.
+
 ## Where the results are
 
 - Each commit of a run is a git ref under `refs/piloop/<campaign>/`, for example `refs/piloop/enwik8/r1/0`.

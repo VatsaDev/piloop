@@ -5,7 +5,7 @@ description: Every piloop command and its options.
 
 Run `piloop --help` for the list of commands, and `piloop <command> --help` for the options of one command.
 
-Many commands take a `REF`: a campaign name, or a path inside the campaign's repo. Without a `REF`, `piloop status`
+Many commands take a `REF`: a campaign name, its id, or a path inside the campaign's repo. Without a `REF`, `piloop status`
 and `piloop history` use the campaign of the current directory, else the only active campaign, else every campaign.
 `piloop inbox`, `piloop inbox wait` and `piloop watch` cover every campaign.
 
@@ -17,14 +17,15 @@ Commands that write sign their writes with `PILOOP_ACTOR` (`human` by default). 
 ### piloop init
 
 ```text
-piloop init [PATH] [--example enwik8|titanic-tracks]
+piloop init [PATH] [--example enwik8|titanic-tracks] [--name NAME]
 ```
 
 Makes `PATH` (default `.`) a piloop campaign, starts the daemon unless one runs, registers the campaign, and waits
 while the daemon measures `HEAD` as the baseline. A baseline that fails to evaluate pauses the campaign, and `init`
 exits with why. Ctrl-C ends only the wait. Without a `piloop.toml`, it writes one from the template, with `brief.md`
 and `evaluate.py`, and stops while `evaluate.py` is the stub. Run it again after each edit of `piloop.toml`.
-`--example` creates a bundled example instead. See [Run a campaign by hand](/by-hand).
+`--example` creates a bundled example instead. See [Run a campaign by hand](/by-hand). `--name` registers the
+campaign under `NAME` instead of the `name` of `piloop.toml`. A campaign keeps its name.
 
 ### piloop install-skills
 
@@ -226,6 +227,15 @@ paused or held one. With `--kill`, the implementers are ended at once, without t
 commits are still scored. On a stopped campaign, `--kill` ends the implementers that are still winding down.
 `--reason` goes into `stopped_reason`.
 
+### piloop campaign retire
+
+```text
+piloop campaign retire REF --reason TEXT
+```
+
+Retires a stopped campaign for good, once its closing review and its runs are over. See
+[Retire a campaign](/concepts/campaigns#retire-a-campaign).
+
 ### piloop campaign parent
 
 ```text
@@ -409,7 +419,7 @@ Records a measurement that you made yourself, under the campaign's current evalu
 ### piloop status
 
 ```text
-piloop status [REF] [--json]
+piloop status [REF] [--status active|stopped|retired] [--json]
 ```
 
 Prints the daemon's state, then for each campaign the sections of its `[status] sections`: by default the head, the
@@ -417,7 +427,8 @@ goal, the tracks, the trajectory, the open runs, the queue, the running agents w
 candidates, the incidents that agents got, the inbox and the recent events. The watchdog and research agents get the
 same sections in their brief.
 
-`--json` prints one JSON document instead: the daemon's pid and the main facts of each campaign, read at one cursor of
+Without `REF`, it lists the active and stopped campaigns. `--status` lists the campaigns of that status instead, and
+repeats. `--json` prints one JSON document instead: the daemon's pid and the main facts of each campaign, read at one cursor of
 the [event feed](/reference/event-feed).
 
 `status`, `inbox` (its list, `show` and `wait`) and `events` ask the daemon. Without one, they stop and say to run `piloop serve --detach`.

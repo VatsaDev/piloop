@@ -205,6 +205,23 @@ def test_the_toml_of_a_stopped_campaign_that_does_not_load_is_a_warning(
     )
 
 
+def test_a_retired_campaign_is_not_checked_and_a_name_of_digits_is_a_warning(
+    cfg: Settings, db: Database, campaign: Campaign
+) -> None:
+    (Path(campaign.path) / 'piloop.toml').unlink()
+    with db.session() as s:
+        s.get_one(Campaign, campaign.id).name = '2024'
+        s.commit()
+    found = [c for c in checks(cfg) if c.name == 'campaign 2024']
+    assert [(c.severity, c.found) for c in found if c.found.startswith('its name')] == [
+        (Severity.WARN, 'its name is all digits, so `2024` names campaign #2024, not this one')
+    ]
+    with db.session() as s:
+        s.get_one(Campaign, campaign.id).status = CampaignStatus.RETIRED
+        s.commit()
+    assert 'campaign 2024' not in by_name(cfg), 'its gone piloop.toml is no problem'
+
+
 def test_a_secret_that_a_stopped_campaign_lacks_is_a_warning(
     cfg: Settings, db: Database, campaign: Campaign, monkeypatch: pytest.MonkeyPatch
 ) -> None:

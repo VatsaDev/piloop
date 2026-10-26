@@ -84,6 +84,7 @@ def checks(cfg: Settings) -> list[Check]:
         found = [
             *first,
             *map(_campaign, campaigns),
+            *(_digits(c) for c in campaigns if c.name.isdigit()),
             *(_mcp(c.name, c.config) for c in campaigns if isinstance(c.config, CampaignConfig) and c.config.mcp),
             *(
                 _secrets_of(c, needed, held, env)
@@ -198,6 +199,16 @@ def _campaign(campaign: StoredCampaign) -> Check:
             f'`piloop init {path}`',
         )
     return Check(what, f'{path}/piloop.toml loads')
+
+
+def _digits(campaign: StoredCampaign) -> Check:
+    """Warn of a name of digits, from before names were checked: a reference of digits is a campaign's id."""
+    return Check(
+        f'campaign {campaign.name}',
+        f'its name is all digits, so `{campaign.name}` names campaign #{campaign.name}, not this one',
+        f'name it by its id, {campaign.id}, or by its path; `piloop init --name` names a new campaign of its repo',
+        Severity.WARN,
+    )
 
 
 def _daemon_env(cfg: Settings) -> tuple[str, set[str], str | None]:
@@ -318,12 +329,14 @@ def _harnesses(configs: list[CampaignConfig]) -> Check:
 
 
 def stored_campaigns(path: Path) -> list[StoredCampaign]:
-    """Return each registered campaign of the database at ``path``, oldest first."""
+    """Return each registered campaign of the database at ``path`` that is not retired, oldest first."""
     if not path.is_file():
         return []
     with closing(_read_only(path)) as con:
         try:
-            rows = con.execute('SELECT id, name, path, status, config FROM campaigns ORDER BY id').fetchall()
+            rows = con.execute(
+                "SELECT id, name, path, status, config FROM campaigns WHERE status != 'retired' ORDER BY id"
+            ).fetchall()
         except sqlite3.OperationalError:  # never migrated, so there is no campaigns table
             return []
     return [

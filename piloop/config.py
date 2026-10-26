@@ -237,7 +237,8 @@ class CampaignConfig(BaseModel):
     model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
 
     name: str
-    """A short name for the campaign. piloop names its git refs after it."""
+    """A short name for the campaign: letters, digits, ``.``, ``_`` and ``-``, not all digits. A campaign gets it when
+    it is registered, unless the registration names another, and piloop names its git refs after it."""
     metrics: list[Metric] = Field(min_length=1)
     """Every metric the evaluate command prints, each with its ``role``. Each track has one ``primary``, so a campaign
     with one track has exactly one."""

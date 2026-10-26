@@ -504,6 +504,24 @@ def test_init_blank_then_register_then_reread(tmp_path: Path, out) -> None:
 
 
 @pytest.mark.usefixtures('api')
+def test_init_names_the_campaign_once(tmp_path: Path, out) -> None:
+    path = tmp_path / '2024'
+    run_cli(['init', str(path)])
+    assert 'name = "campaign-2024"' in (path / 'piloop.toml').read_text(), 'a name of digits would be an id'
+    (path / 'evaluate.py').write_text('print("METRIC score=2")\n')
+    with pytest.raises(SystemExit, match="^'7' is no campaign name: a reference of digits names a campaign by its id$"):
+        run_cli(['init', '--name', '7', str(path)])
+    with pytest.raises(SystemExit, match=r"""^'a b' is no campaign name: use letters, digits, "\.", "_" and "-"$"""):
+        run_cli(['init', '--name', 'a b', str(path)])
+    run_cli(['init', '--name', 'chosen', str(path)])
+    assert 'campaign chosen #1 registered' in out()
+    with pytest.raises(SystemExit, match=f'^{path} is campaign chosen #1 already: a campaign keeps its name$'):
+        run_cli(['init', '--name', 'other', str(path)])
+    run_cli(['init', '--name', 'chosen', str(path)])
+    assert 'campaign chosen #1 already registered' in out()
+
+
+@pytest.mark.usefixtures('api')
 def test_init_example(tmp_path: Path, out, monkeypatch: pytest.MonkeyPatch) -> None:
     template = tmp_path / 'templates' / 'demo'
     template.mkdir(parents=True)
@@ -1376,6 +1394,25 @@ def test_campaign_stop_and_cancels_are_requests_that_the_daemon_acts_on(campaign
         run_cli(['campaign', 'stop', 'demo'])
     run_cli(['campaign', 'stop', 'demo', '--kill'])
     assert out().strip() == 'stop requested for demo: the daemon ends its implementers now'
+
+
+@pytest.mark.usefixtures('api')
+def test_campaign_retire_hides_a_stopped_campaign_which_changes_no_more(campaign_path: Path, out) -> None:
+    run_cli(['init', str(campaign_path)])
+    db = Database(common.settings.database_url, actor=common.settings.actor)
+    with db.session() as s:
+        s.get_one(Campaign, 1).status, s.get_one(Campaign, 1).stopped_reason = CampaignStatus.STOPPED, 'by hand'
+        s.commit()
+    db.close()
+    out()
+    run_cli(['campaign', 'retire', 'demo', '--reason', 'tried enough'])
+    assert out() == 'campaign demo #1 retired: its name is free\n'
+    run_cli(['status', '--json'])
+    assert json.loads(out())['campaigns'] == []
+    run_cli(['status', '--status', 'retired'])
+    assert ' demo #1 ' in out()
+    with pytest.raises(SystemExit, match=r'^campaign #1 \(demo\) is retired$'):
+        run_cli(['pause', '1', '--reason', 'no'])
 
 
 @pytest.mark.usefixtures('api')

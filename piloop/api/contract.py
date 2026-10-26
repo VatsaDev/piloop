@@ -24,6 +24,8 @@ from pydantic_core import PydanticCustomError
 
 from piloop.actor import CALLER_NAME
 from piloop.ids import (
+    LISTED,
+    CampaignName,
     CampaignStatus,
     CandidateId,
     CommentId,
@@ -87,13 +89,16 @@ class Located(Params):
     """A campaign by its name or a path, from where the client runs."""
 
     campaign: str | None = None
-    """The campaign's name, or a path inside its repo."""
+    """The campaign's name, its id, or a path inside its repo."""
     cwd: str | None = None
     """Where the client runs, as an absolute path: a relative path in ``campaign`` is from there."""
 
 
 class Selection(Located):
-    """Which campaigns: the one that ``campaign`` names, else the one that ``cwd`` is in, else every campaign."""
+    """Which campaigns: the one that ``campaign`` names, else the one that ``cwd`` is in, else those of ``status``."""
+
+    status: tuple[CampaignStatus, ...] = LISTED
+    """The statuses of the campaigns to list when no campaign is named. By default all but ``retired``."""
 
 
 class Stated(Protocol):
@@ -177,6 +182,13 @@ class StopBody(Params):
     """Why, for ``stopped_reason`` and the closing review."""
     ending: Ending = Ending.WRAP_UP
     """How the running implementers end. ``now`` also ends those of a stopped campaign that still wind down."""
+
+
+class RetireBody(Params):
+    """Why a campaign is retired."""
+
+    reason: str
+    """Why, with ids: it goes into a note on the campaign."""
 
 
 class IdeaBody(Params):
@@ -342,6 +354,8 @@ class Checkout(Params):
     model_config = ConfigDict(extra='forbid')
 
     path: Annotated[str, AfterValidator(_absolute)]
+    name: CampaignName | None = None
+    """The campaign's name. None: the ``name`` of its ``piloop.toml``."""
 
 
 class Remote(Params):
@@ -360,6 +374,8 @@ class Clone(Params):
     model_config = ConfigDict(extra='forbid')
 
     clone: Remote
+    name: CampaignName | None = None
+    """The campaign's name. None: the ``name`` of its ``piloop.toml``."""
 
 
 def _source(value: object) -> str | None:

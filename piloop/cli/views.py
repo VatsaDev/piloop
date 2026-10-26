@@ -35,7 +35,7 @@ from piloop.api.views import (
 from piloop.cli import common
 from piloop.cli.client import cwd, daemon_http
 from piloop.cli.common import CampaignRef, JsonFlag
-from piloop.ids import CommentId, CommentKind
+from piloop.ids import LISTED, CampaignStatus, CommentId, CommentKind
 from piloop.text import age, cell
 
 KindFilter = Annotated[
@@ -43,25 +43,37 @@ KindFilter = Annotated[
 ]
 
 
-def status(ref: CampaignRef | None = None, /, *, json_: JsonFlag = False) -> None:
+def status(
+    ref: CampaignRef | None = None,
+    /,
+    *,
+    status: Annotated[
+        tuple[CampaignStatus, ...],
+        cyclopts.Parameter(
+            name='--status', negative=(), help='Without a campaign, list those of this status. Repeatable.'
+        ),
+    ] = LISTED,
+    json_: JsonFlag = False,
+) -> None:
     """Print the state of the daemon and the live keys that `config.toml` or a limit sets, then each campaign.
 
     Each campaign shows the sections of its [status] sections: by default the head, the goal and the progress against
     the stop rule, the tracks, the trajectory, the open runs, the queue, the live agents with their last line, the
     evaluations, the recent candidates, the incidents that agents got, the inbox and the recent events. Without a campaign, it uses
-    the campaign that the current directory is in, else the only active campaign, else every campaign.
+    the campaign that the current directory is in, else the only active campaign, else every campaign but the retired
+    ones (`--status`).
 
     With --json, it prints the daemon's pid and the URL it listens on, and the main facts of each campaign, read at one
     cursor: follow them with `piloop events --after <cursor>`.
     """
     with Client.connect(daemon_http()) as client:
-        status = client.status(Selection(campaign=ref, cwd=cwd()))
-        status = status.model_copy(update={'campaigns': defaulted(status.campaigns)})
+        found = client.status(Selection(campaign=ref, cwd=cwd(), status=status))
+        found = found.model_copy(update={'campaigns': defaulted(found.campaigns)})
         if json_:
-            common.print_json(status.model_dump(mode='json'))
+            common.print_json(found.model_dump(mode='json'))
             return
-        names = [c.name for c in status.campaigns]
-        shown = client.overview(Selection(campaign=names[0] if len(names) == 1 else None))
+        ids = [str(c.id) for c in found.campaigns]
+        shown = client.overview(Selection(campaign=ids[0] if len(ids) == 1 else None, status=status))
     common.console.print(daemon_line(shown.daemon), markup=False)
     for key in shown.limits:
         common.console.print(f'limit: {limit_line(key)}', markup=False)

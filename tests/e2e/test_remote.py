@@ -10,9 +10,9 @@ resume and stop the campaign. Two implementers run on the server's workers, and 
 
 The toy is published as a secret gist (``gh``, logged in with the ``gist`` scope), which the server clones: the server
 needs to reach github.com. Its ``piloop.toml`` gives the harness each ``--e2e-secret`` from the server's secret of that
-name. Its campaign has a new name on each run (``--e2e-campaign`` sets it); a stopped campaign stays on the server, since
-no route removes one. The gist is deleted at the end. About 3 minutes and 0.2 USD on ``claude-haiku-4-5``, mostly cache
-reads.
+name. Its campaign has the same name on each run (``--e2e-campaign``, default ``e2e-remote``): the scenario retires a
+campaign of that name that an earlier run left, and retires its own at the end. The gist is deleted at the end. About
+3 minutes and 0.2 USD on ``claude-haiku-4-5``, mostly cache reads.
 """
 
 import os
@@ -21,7 +21,6 @@ import subprocess
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
 
@@ -30,7 +29,7 @@ import tomli_w
 from pydantic import JsonValue
 
 from piloop.actor import ORCHESTRATING, System
-from piloop.api.client import Client
+from piloop.api.client import Client, Refused
 from piloop.api.contract import (
     MAX_LIMIT,
     MAX_POLL_SECONDS,
@@ -39,10 +38,13 @@ from piloop.api.contract import (
     EventsQuery,
     MessageBody,
     Remote,
+    RetireBody,
     SeedBody,
     Selection,
+    StopBody,
 )
 from piloop.api.views import AckOutcome, CampaignState, Envelope
+from piloop.ids import CampaignId, Ending
 from piloop.plugins.network.https import TOKEN_ENV, Https
 from tests.e2e.campaign import CHEAPEST_MODEL, CommandFailed, needs
 from tests.e2e.conftest import Install
@@ -114,6 +116,8 @@ BASELINE_WAIT = 900
 """Seconds to wait for the baseline: a provisioned evaluation worker can take minutes to start."""
 RUNS_WAIT = 3 * ROLE_TIMEOUT + 600
 """Seconds to wait for both runs to end and be judged: their workers start, they work, then they are measured."""
+RETIRE_WAIT = ROLE_TIMEOUT + 300
+"""Seconds to wait for a stop to be over before a campaign retires: its closing review and runs end."""
 
 
 @dataclass
@@ -128,6 +132,10 @@ class Server:
     """The person's client of the API."""
     env: dict[str, str] = field(repr=False)
     """The environment of the CLI, as the orchestrator. Not in the repr: it holds the token."""
+    id: CampaignId | None = None
+    """The campaign's id, once it registered: its name may name another campaign once it is retired."""
+    again: CampaignId | None = None
+    """The id of the campaign that registers the URL again, under the same name."""
     cursor: int = 0
     """The feed is read after it."""
     events: list[Envelope] = field(default_factory=list)
@@ -146,7 +154,7 @@ class Server:
 
     def state(self) -> CampaignState:
         """The campaign as ``GET /v1/status`` shows it."""
-        [found] = self.api.status(Selection(campaign=self.name)).campaigns
+        [found] = self.api.status(Selection(campaign=str(self.id))).campaigns
         assert isinstance(found, CampaignState), found
         return found
 
@@ -161,7 +169,7 @@ class Server:
             left = deadline - time.monotonic()
             assert left > 0, f'timed out after {timeout:.0f}s waiting for {what}; last events: {self.tail()}'
             query = EventsQuery(
-                campaign=self.name, after=self.cursor, limit=MAX_LIMIT, wait=min(left, MAX_POLL_SECONDS)
+                campaign=str(self.id), after=self.cursor, limit=MAX_LIMIT, wait=min(left, MAX_POLL_SECONDS)
             )
             batch = self.api.events(query)
             self.events += batch.events
@@ -214,7 +222,7 @@ def server(request: pytest.FixtureRequest) -> Iterator[Server]:
     harness = request.config.getoption('e2e_harness')
     model = request.config.getoption('e2e_model') or CHEAPEST_MODEL[harness]
     secrets = request.config.getoption('e2e_secret') or []
-    name = request.config.getoption('e2e_campaign') or f'e2e-{datetime.now(UTC):%Y%m%d-%H%M%S}'
+    name = request.config.getoption('e2e_campaign') or 'e2e-remote'
     directory = piloop_install.root / name
     directory.mkdir()
     toml = CONFIG | {
@@ -240,21 +248,47 @@ def server(request: pytest.FixtureRequest) -> Iterator[Server]:
     }
     try:
         with Client.connect(http) as api:
+            for left in (c for c in api.status(Selection()).campaigns if c.name == name):
+                retire(api, str(left.id), 'e2e: an earlier run left it')
             found = Server(url, name, f'{gist}.git', api, env)
             yield found
-            if found.cursor and found.state().status != 'stopped':
-                found.piloop('campaign', 'stop', name, '--kill', '--reason', 'e2e: the scenario ended')
+            for campaign in (found.id, found.again):
+                if campaign and api.status(Selection(campaign=str(campaign))).campaigns[0].status != 'retired':
+                    retire(api, str(campaign), 'e2e: the scenario ended')
     finally:
         subprocess.run(['gh', 'gist', 'delete', gist.rpartition('/')[2], '--yes'], env=CALLER_ENV, check=True)
 
 
+def retire(api: Client, ref: str, reason: str) -> CampaignState:
+    """Stop the campaign that ``ref`` names unless it is stopped, and retire it once its stop is over.
+
+    Raises:
+        Refused: ``ref`` names no campaign, or the stop is not over within ``RETIRE_WAIT``.
+    """
+    found = api.status(Selection(campaign=ref))
+    [state] = found.campaigns
+    campaign, cursor, deadline = str(state.id), found.cursor, time.monotonic() + RETIRE_WAIT
+    if state.status == 'active':
+        api.stop(campaign, StopBody(reason=reason, ending=Ending.NOW))
+    while True:
+        try:
+            retired = api.retire(campaign, RetireBody(reason=reason)).campaign
+        except Refused as e:
+            if 'is still stopping' not in str(e) or time.monotonic() > deadline:
+                raise
+            cursor = api.events(EventsQuery(campaign=campaign, after=cursor, wait=MAX_POLL_SECONDS)).next
+            continue
+        assert isinstance(retired, CampaignState), retired
+        return retired
+
+
 def test_registers_a_repository_by_its_url(server: Server) -> None:
-    """``POST /v1/campaigns`` with ``{clone: {url}}``: the server clones the toy and adds its campaign."""
-    registered = server.api.register_campaign(Clone(clone=Remote(url=server.repo)))
+    """``POST /v1/campaigns`` with ``{clone: {url}, name}``: the server clones the toy and adds its campaign."""
+    registered = server.api.register_campaign(Clone(clone=Remote(url=server.repo), name=server.name))
     assert isinstance(registered.campaign, CampaignState), registered.campaign
     assert registered.campaign.name == server.name
     assert registered.campaign.status == 'active'
-    server.cursor, server.baseline = registered.cursor, registered.baseline
+    server.id, server.cursor, server.baseline = registered.campaign.id, registered.cursor, registered.baseline
     print(f'{server.name} from {server.repo}: baseline candidate#{server.baseline}, cursor {server.cursor}')
 
 
@@ -395,3 +429,21 @@ def test_stop(server: Server) -> None:
     assert state.status == 'stopped', state
     assert state.agents == [], state.agents
     print(f'{server.name}: {state.tokens} tokens, head {state.head}')
+
+
+@needs(test_stop)
+def test_retire_frees_the_name_and_the_url_registers_again(server: Server) -> None:
+    """``piloop campaign retire``: the stopped campaign leaves the listing and its name.
+
+    A second registration of the URL under that name is a new campaign, in a checkout of its own.
+    """
+    server.piloop('campaign', 'retire', server.name, '--reason', 'e2e: the scenario ends')
+    state = server.state()
+    assert state.status == 'retired', state
+    assert server.name not in [c.name for c in server.api.status(Selection()).campaigns]
+    again = server.api.register_campaign(Clone(clone=Remote(url=server.repo), name=server.name)).campaign
+    assert isinstance(again, CampaignState), again
+    server.again = again.id
+    assert (again.name, again.status) == (server.name, 'active'), again
+    assert again.id != server.id and again.path != state.path, again
+    print(f'{server.name}: retired #{server.id} at {state.path}; registered again as #{again.id} at {again.path}')

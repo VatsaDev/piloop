@@ -140,7 +140,11 @@ def _due_campaigns() -> Select[CampaignId]:
     )
     return (
         select(Campaign.id)
-        .where(Campaign.status == CampaignStatus.STOPPED, ~live, swept.is_(None) | (last_end > swept))
+        .where(
+            Campaign.status.in_((CampaignStatus.STOPPED, CampaignStatus.RETIRED)),
+            ~live,
+            swept.is_(None) | (last_end > swept),
+        )
         .order_by(Campaign.id)
     )
 

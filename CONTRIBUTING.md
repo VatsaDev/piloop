@@ -140,7 +140,8 @@ daemon. Then it kills every process that carries the campaign's home or the toke
 The remote scenario (`tests/e2e/test_remote.py`) runs a campaign on a server that runs elsewhere, through its API and
 the CLI alone. It runs only with `--e2e-server`, and needs a token of the server with `act` access, and `gh` logged in:
 the toy repository is a secret gist that the server clones, and deletes at the end. `--e2e-secret` gives the harness a
-secret of the server, such as its API key. The stopped campaign stays on the server.
+secret of the server, such as its API key. The campaign has one name on each run: the scenario retires the campaign
+that an earlier run left, and its own at the end.
 
 ```bash
 PILOOP_HTTPS_TOKEN=<token> uv run pytest -m e2e tests/e2e/test_remote.py -rA \

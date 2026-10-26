@@ -29,7 +29,7 @@ from piloop.cli.common import CampaignRef
 from piloop.db.models import EVENT
 from piloop.db.session import Database
 from piloop.db.triggers.changelog import CampaignPausedChanged, CampaignStatusChanged
-from piloop.ids import CampaignStatus
+from piloop.ids import CampaignStatus, checked_campaign_name
 from piloop.reports.pack import renderables as pack_renderables
 from piloop.scoring.ledger import MeasurementRecorded
 from piloop.text import metric
@@ -44,6 +44,9 @@ def init(
         str | None,
         cyclopts.Parameter(help=f'Write a bundled example instead of the blank template: {", ".join(EXAMPLE_DATA)}.'),
     ] = None,
+    name: Annotated[
+        str | None, cyclopts.Parameter(help='Register the campaign under this name, not the `name` of piloop.toml.')
+    ] = None,
 ) -> None:
     """Make a directory a piloop campaign and register it.
 
@@ -56,6 +59,10 @@ def init(
     """
     if example is not None and example not in EXAMPLE_DATA:
         raise SystemExit(f'no example {example!r}; bundled: {", ".join(EXAMPLE_DATA)}')
+    try:
+        named = None if name is None else checked_campaign_name(name)
+    except ValueError as e:
+        raise SystemExit(str(e)) from e
     written = create_campaign_repo(path, TEMPLATES / example if example else BLANK, EXAMPLE_DATA.get(example or '', {}))
     path = path.resolve()
     for rel in written:
@@ -72,7 +79,7 @@ def init(
     with Client.connect(daemon_http()) as client:
         found = next((c for c in client.status(Selection()).campaigns if c.path == str(path)), None)
         if found is None:
-            added = client.register_campaign(Checkout(path=str(path)))
+            added = client.register_campaign(Checkout(path=str(path), name=named))
             campaign, documents = added.campaign, added.documents
             # the measurement waits for a free evaluation slot, which can be on a worker that has not connected yet
             common.console.print(
@@ -85,6 +92,8 @@ def init(
                 f' {", ".join(f"{name} {metric(value)}" for name, value in metrics.items())}'
             )
             common.console.print(f'next: add ideas: `piloop idea add {campaign.name} "<title>"`')
+        elif named not in (None, found.name):
+            raise SystemExit(f'{path} is campaign {found.name} #{found.id} already: a campaign keeps its name')
         else:
             synced = client.sync_campaign(found.name)
             campaign, documents = synced.campaign, synced.documents

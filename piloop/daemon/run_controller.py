@@ -434,7 +434,7 @@ class RunController:
             base_revision = s.get_one(Candidate, run.base_candidate_id).revision
             timeout = agent_timeout(s, campaign, cfg, cfg.role(run.role).timeout, utcnow())
             harness, model, idea_id, campaign_id = run.harness, run.model, run.idea_id, campaign.id
-            vcs, campaign_path = vcs_of(campaign), Path(campaign.path)
+            name, vcs, campaign_path = campaign.name, vcs_of(campaign), Path(campaign.path)
         log_dir = self._runs_dir / str(run_id)
         repo = vcs.open(campaign_path)
         span.set(idea=idea_id, agent_session=agent_session_id, harness=harness, model=model)
@@ -455,11 +455,11 @@ class RunController:
             case HandedOver():  # the next daemon waits for the agent again
                 span.set(status='handed_over')
             case DaemonStopped(work=work):
-                self._cut(span, run_id, idea_id, agent_session_id, cfg.name, repo, base_revision, work)
+                self._cut(span, run_id, idea_id, agent_session_id, name, repo, base_revision, work)
             case Ran(work=work) if stopping:
-                self._cut(span, run_id, idea_id, agent_session_id, cfg.name, repo, base_revision, work)
+                self._cut(span, run_id, idea_id, agent_session_id, name, repo, base_revision, work)
             case NotStarted() | Lost() if stopping:
-                self._cut(span, run_id, idea_id, agent_session_id, cfg.name, repo, base_revision, None)
+                self._cut(span, run_id, idea_id, agent_session_id, name, repo, base_revision, None)
             case Lost(reason=reason):
                 self._close(span, run_id, RunEnd.WORKER_LOST, reason)
                 self._settle(span, run_id, idea_id, RunEnd.WORKER_LOST, startup_failed=False, last=None)
@@ -647,7 +647,7 @@ class RunController:
                 run = s.get_one(Run, run_id)
                 campaign = run.idea.campaign
                 end, idea_id, campaign_id = run.end, run.idea_id, campaign.id
-                name, vcs, campaign_path = campaign.config.name, vcs_of(campaign), Path(campaign.path)
+                name, vcs, campaign_path = campaign.name, vcs_of(campaign), Path(campaign.path)
                 received = latest(s, RunReceived, Event.target == TargetRef(TargetKind.RUN, run_id))
             last = None
             try:
@@ -792,7 +792,7 @@ class RunController:
         """
         with self._db.session() as s:
             run = s.get_one(Run, run_id)
-            cfg = run.idea.campaign.config
+            name, cfg = run.idea.campaign.name, run.idea.campaign.config
             scope = Scope(
                 run_id,
                 campaign_id,
@@ -810,7 +810,7 @@ class RunController:
                 ids.append(candidate.id)
             s.commit()
         for i, version in enumerate(versions):
-            repo.keep(version.revision, RunVersion(cfg.name, run_id, i))
+            repo.keep(version.revision, RunVersion(name, run_id, i))
         for i, (version, candidate_id) in enumerate(zip(versions, ids, strict=True)):
             revision, unmeasured = version.revision, unmeasured_of(version)
             with self._db.session() as s:

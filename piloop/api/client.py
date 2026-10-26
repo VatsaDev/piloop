@@ -41,6 +41,7 @@ from piloop.api.contract import (
     Reasoned,
     Registration,
     ReplyBody,
+    RetireBody,
     SecretBody,
     SeedBody,
     Selection,
@@ -157,6 +158,9 @@ class Client:
 
     def stop(self, campaign: str, body: StopBody) -> CampaignAnswer:
         return self.post(f'/v1/campaigns/{segment(campaign)}/stop', body, CampaignAnswer)
+
+    def retire(self, campaign: str, body: RetireBody) -> CampaignAnswer:
+        return self.post(f'/v1/campaigns/{segment(campaign)}/retire', body, CampaignAnswer)
 
     def add_idea(self, campaign: str, body: IdeaBody) -> Defined:
         return self.post(f'/v1/campaigns/{segment(campaign)}/ideas', body, Defined)

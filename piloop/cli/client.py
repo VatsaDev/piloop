@@ -13,6 +13,7 @@ import httpx2 as httpx
 from piloop.api.client import Client, socket_http
 from piloop.api.contract import Selection
 from piloop.cli import common
+from piloop.ids import CampaignStatus
 
 
 def daemon_http() -> httpx.Client:
@@ -37,6 +38,14 @@ def cwd() -> str | None:
 
 
 def campaign_name(client: Client, ref: str) -> str:
-    """The name of the campaign that ``ref`` names: a name, or a path that the daemon resolves from ``cwd``."""
+    """The name of the campaign that ``ref`` names, to change it: a name, an id, or a path resolved from ``cwd``.
+
+    A retired campaign changes no more, and another campaign may have its name.
+
+    Raises:
+        SystemExit: The campaign is retired.
+    """
     [found] = client.status(Selection(campaign=ref, cwd=cwd())).campaigns
+    if found.status is CampaignStatus.RETIRED:
+        raise SystemExit(f'campaign #{found.id} ({found.name}) is retired')
     return found.name

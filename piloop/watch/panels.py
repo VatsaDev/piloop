@@ -21,7 +21,7 @@ from piloop.api.views import thread_lines
 from piloop.campaign import inbox
 from piloop.campaign.ideas import links, superseded_by
 from piloop.config import CampaignConfig
-from piloop.db.models import AgentSession, Campaign, Candidate, Comment, Idea, Origin
+from piloop.db.models import NOT_RETIRED, AgentSession, Campaign, Candidate, Comment, Idea, Origin
 from piloop.ids import CampaignStatus, IdeaStatus, TargetKind, TargetRef
 from piloop.plugins.cas.contract import Cas
 from piloop.reports.overview import (
@@ -104,7 +104,10 @@ def header(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime) -
 def campaigns(s: Session, now: datetime, me: Actor) -> list[Item]:
     """Return one row per campaign, active ones first: status, head, delta to baseline, agents, queue, inbox, tokens."""
     rows = []
-    every = sorted(s.scalars(select(Campaign)).all(), key=lambda p: (p.status is not CampaignStatus.ACTIVE, p.id))
+    every = sorted(
+        s.scalars(select(Campaign).where(NOT_RETIRED)).all(),
+        key=lambda p: (p.status is not CampaignStatus.ACTIVE, p.id),
+    )
     for p in every:
         cfg = p.config
         at = head_scores(s, p, cfg)

@@ -38,7 +38,18 @@ from piloop.api.views import (
 )
 from piloop.campaign.anomaly import AnomalyReported
 from piloop.db import feed as db_feed
-from piloop.db.models import AgentSession, Campaign, Candidate, Comment, Event, Idea, Measurement, Run, utcnow
+from piloop.db.models import (
+    NOT_RETIRED,
+    AgentSession,
+    Campaign,
+    Candidate,
+    Comment,
+    Event,
+    Idea,
+    Measurement,
+    Run,
+    utcnow,
+)
 from piloop.db.triggers.changelog import CampaignStatusChanged, Commented, IdeaCreated
 from piloop.ids import CampaignId, CampaignStatus, CommentId, CommentKind, IdeaStatus, TargetKind, TargetRef
 from piloop.scoring.ledger import CandidateJudged
@@ -53,14 +64,15 @@ def items(
 ) -> list[tuple[Comment, Campaign | None]]:
     """Return the inbox items with their campaigns, most urgent first, then oldest first.
 
-    Only unacknowledged items are returned, unless ``acked`` is True. ``campaign_id`` and ``kinds`` filter the items.
+    Only unacknowledged items are returned, unless ``acked`` is True, and none of a retired campaign. ``campaign_id``
+    and ``kinds`` filter the items.
     An item whose target has no campaign (``campaign_of``) appears only when ``campaign_id`` is None.
     """
     owner = campaign_of(Comment.target_kind, Comment.target_id)
     query = (
         select(Comment, Campaign)
         .outerjoin(Campaign, Campaign.id == owner)
-        .where(Comment.priority.is_not(None))
+        .where(Comment.priority.is_not(None), Campaign.id.is_(None) | NOT_RETIRED)
         .order_by(Comment.priority, Comment.id)
     )
     if not acked:

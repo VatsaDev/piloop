@@ -100,6 +100,7 @@ from piloop.daemon.run_controller import (
 from piloop.db.events import emit, has, in_order
 from piloop.db.models import (
     LIVE,
+    NOT_RETIRED,
     OPEN_RUNS,
     AgentSession,
     AgentSessionState,
@@ -652,7 +653,7 @@ class Scheduler:
         self._soonest.add(self._facts_due)
         launching: list[tuple[Campaign, CampaignConfig]] = []
         with self._db.session() as s:
-            for campaign in s.scalars(select(Campaign)).all():
+            for campaign in s.scalars(select(Campaign).where(NOT_RETIRED)).all():
                 try:
                     cfg = campaign.config
                 except ValidationError as e:
@@ -713,7 +714,7 @@ class Scheduler:
         with self._db.session() as s:
             todo: list[tuple[int, Path, FactSource]] = []
             later = Soonest()
-            for campaign in s.scalars(select(Campaign)):
+            for campaign in s.scalars(select(Campaign).where(NOT_RETIRED)):
                 try:
                     cfg = campaign.config
                 except ValidationError:

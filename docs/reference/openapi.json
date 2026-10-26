@@ -24,10 +24,10 @@
                   "type": "null"
                 }
               ],
-              "description": "The campaign's name, or a path inside its repo.",
+              "description": "The campaign's name, its id, or a path inside its repo.",
               "title": "Campaign"
             },
-            "description": "The campaign's name, or a path inside its repo."
+            "description": "The campaign's name, its id, or a path inside its repo."
           },
           {
             "name": "cwd",
@@ -46,6 +46,24 @@
               "title": "Cwd"
             },
             "description": "Where the client runs, as an absolute path: a relative path in ``campaign`` is from there."
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/CampaignStatus"
+              },
+              "description": "The statuses of the campaigns to list when no campaign is named. By default all but ``retired``.",
+              "default": [
+                "active",
+                "stopped"
+              ],
+              "title": "Status"
+            },
+            "description": "The statuses of the campaigns to list when no campaign is named. By default all but ``retired``."
           }
         ],
         "responses": {
@@ -111,10 +129,10 @@
                   "type": "null"
                 }
               ],
-              "description": "The campaign's name, or a path inside its repo.",
+              "description": "The campaign's name, its id, or a path inside its repo.",
               "title": "Campaign"
             },
-            "description": "The campaign's name, or a path inside its repo."
+            "description": "The campaign's name, its id, or a path inside its repo."
           },
           {
             "name": "cwd",
@@ -133,6 +151,24 @@
               "title": "Cwd"
             },
             "description": "Where the client runs, as an absolute path: a relative path in ``campaign`` is from there."
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/CampaignStatus"
+              },
+              "description": "The statuses of the campaigns to list when no campaign is named. By default all but ``retired``.",
+              "default": [
+                "active",
+                "stopped"
+              ],
+              "title": "Status"
+            },
+            "description": "The statuses of the campaigns to list when no campaign is named. By default all but ``retired``."
           }
         ],
         "responses": {
@@ -198,10 +234,10 @@
                   "type": "null"
                 }
               ],
-              "description": "The campaign's name, or a path inside its repo.",
+              "description": "The campaign's name, its id, or a path inside its repo.",
               "title": "Campaign"
             },
-            "description": "The campaign's name, or a path inside its repo."
+            "description": "The campaign's name, its id, or a path inside its repo."
           },
           {
             "name": "cwd",
@@ -312,10 +348,10 @@
                   "type": "null"
                 }
               ],
-              "description": "The campaign's name, or a path inside its repo.",
+              "description": "The campaign's name, its id, or a path inside its repo.",
               "title": "Campaign"
             },
-            "description": "The campaign's name, or a path inside its repo."
+            "description": "The campaign's name, its id, or a path inside its repo."
           },
           {
             "name": "cwd",
@@ -455,10 +491,10 @@
                   "type": "null"
                 }
               ],
-              "description": "The campaign's name, or a path inside its repo.",
+              "description": "The campaign's name, its id, or a path inside its repo.",
               "title": "Campaign"
             },
-            "description": "The campaign's name, or a path inside its repo."
+            "description": "The campaign's name, its id, or a path inside its repo."
           },
           {
             "name": "cwd",
@@ -619,7 +655,7 @@
     "/v1/campaigns": {
       "post": {
         "summary": "Register Campaign",
-        "description": "Register a campaign: a checkout where it is, or a repository that the daemon clones under its home first.\n\nIt adds the campaign with its head version as the baseline candidate, and syncs its documents into its memory. The\ndaemon then measures the baseline: its ``measurement.recorded`` event comes after the answer's cursor, and a\nbaseline that fails pauses the campaign. A clone that does not register is deleted.",
+        "description": "Register a campaign: a checkout where it is, or a repository that the daemon clones under its home first.\n\nEach registration of a URL clones it again, into a directory named after the new campaign's id.\n\nIt adds the campaign with its head version as the baseline candidate, and syncs its documents into its memory. The\ndaemon then measures the baseline: its ``measurement.recorded`` event comes after the answer's cursor, and a\nbaseline that fails pauses the campaign. A clone that does not register is deleted.",
         "operationId": "register_campaign",
         "requestBody": {
           "content": {
@@ -695,10 +731,10 @@
             "required": true,
             "schema": {
               "type": "string",
-              "description": "The campaign's name.",
+              "description": "The campaign's name, or its id.",
               "title": "Campaign"
             },
-            "description": "The campaign's name."
+            "description": "The campaign's name, or its id."
           }
         ],
         "responses": {
@@ -757,10 +793,10 @@
             "required": true,
             "schema": {
               "type": "string",
-              "description": "The campaign's name.",
+              "description": "The campaign's name, or its id.",
               "title": "Campaign"
             },
-            "description": "The campaign's name."
+            "description": "The campaign's name, or its id."
           }
         ],
         "requestBody": {
@@ -829,10 +865,10 @@
             "required": true,
             "schema": {
               "type": "string",
-              "description": "The campaign's name.",
+              "description": "The campaign's name, or its id.",
               "title": "Campaign"
             },
-            "description": "The campaign's name."
+            "description": "The campaign's name, or its id."
           }
         ],
         "requestBody": {
@@ -901,10 +937,10 @@
             "required": true,
             "schema": {
               "type": "string",
-              "description": "The campaign's name.",
+              "description": "The campaign's name, or its id.",
               "title": "Campaign"
             },
-            "description": "The campaign's name."
+            "description": "The campaign's name, or its id."
           }
         ],
         "responses": {
@@ -963,10 +999,10 @@
             "required": true,
             "schema": {
               "type": "string",
-              "description": "The campaign's name.",
+              "description": "The campaign's name, or its id.",
               "title": "Campaign"
             },
-            "description": "The campaign's name."
+            "description": "The campaign's name, or its id."
           }
         ],
         "requestBody": {
@@ -975,6 +1011,78 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/StopBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignAnswer"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/campaigns/{campaign}/retire": {
+      "post": {
+        "summary": "Retire",
+        "description": "Retire a stopped campaign for good, once its stop is over.\n\nIt changes no more, and another campaign may take its name. Its history stays, and its id still finds it.",
+        "operationId": "retire",
+        "parameters": [
+          {
+            "name": "campaign",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "The campaign's name, or its id.",
+              "title": "Campaign"
+            },
+            "description": "The campaign's name, or its id."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RetireBody"
               }
             }
           }
@@ -1414,10 +1522,10 @@
                   "type": "null"
                 }
               ],
-              "description": "The campaign's name, or a path inside its repo.",
+              "description": "The campaign's name, its id, or a path inside its repo.",
               "title": "Campaign"
             },
-            "description": "The campaign's name, or a path inside its repo."
+            "description": "The campaign's name, its id, or a path inside its repo."
           },
           {
             "name": "cwd",
@@ -1519,10 +1627,10 @@
                   "type": "null"
                 }
               ],
-              "description": "The campaign's name, or a path inside its repo.",
+              "description": "The campaign's name, its id, or a path inside its repo.",
               "title": "Campaign"
             },
-            "description": "The campaign's name, or a path inside its repo."
+            "description": "The campaign's name, its id, or a path inside its repo."
           },
           {
             "name": "cwd",
@@ -1599,10 +1707,10 @@
             "required": true,
             "schema": {
               "type": "string",
-              "description": "The campaign's name.",
+              "description": "The campaign's name, or its id.",
               "title": "Campaign"
             },
-            "description": "The campaign's name."
+            "description": "The campaign's name, or its id."
           }
         ],
         "requestBody": {
@@ -1940,10 +2048,10 @@
             "required": true,
             "schema": {
               "type": "string",
-              "description": "The campaign's name.",
+              "description": "The campaign's name, or its id.",
               "title": "Campaign"
             },
-            "description": "The campaign's name."
+            "description": "The campaign's name, or its id."
           }
         ],
         "requestBody": {
@@ -2012,10 +2120,10 @@
             "required": true,
             "schema": {
               "type": "string",
-              "description": "The campaign's name.",
+              "description": "The campaign's name, or its id.",
               "title": "Campaign"
             },
-            "description": "The campaign's name."
+            "description": "The campaign's name, or its id."
           }
         ],
         "requestBody": {
@@ -2536,10 +2644,10 @@
             "required": true,
             "schema": {
               "type": "string",
-              "description": "The campaign's name.",
+              "description": "The campaign's name, or its id.",
               "title": "Campaign"
             },
-            "description": "The campaign's name."
+            "description": "The campaign's name, or its id."
           }
         ],
         "requestBody": {
@@ -3057,10 +3165,10 @@
             "required": true,
             "schema": {
               "type": "string",
-              "description": "The campaign's name.",
+              "description": "The campaign's name, or its id.",
               "title": "Campaign"
             },
-            "description": "The campaign's name."
+            "description": "The campaign's name, or its id."
           }
         ],
         "requestBody": {
@@ -3381,6 +3489,9 @@
           }
         }
       },
+      "CampaignName": {
+        "type": "string"
+      },
       "CampaignOverview": {
         "properties": {
           "kind": {
@@ -3595,7 +3706,8 @@
         "type": "string",
         "enum": [
           "active",
-          "stopped"
+          "stopped",
+          "retired"
         ],
         "title": "CampaignStatus",
         "description": "Whether the daemon still requests work for a campaign. ``stopped`` after a ``[stop]`` condition held."
@@ -3747,6 +3859,17 @@
           "path": {
             "type": "string",
             "title": "Path"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CampaignName"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The campaign's name. None: the ``name`` of its ``piloop.toml``."
           }
         },
         "additionalProperties": false,
@@ -3761,6 +3884,17 @@
         "properties": {
           "clone": {
             "$ref": "#/components/schemas/Remote"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CampaignName"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The campaign's name. None: the ``name`` of its ``piloop.toml``."
           }
         },
         "additionalProperties": false,
@@ -5821,6 +5955,21 @@
         ],
         "title": "Report",
         "description": "A measurement made outside the daemon, for example by running the evaluate command by hand."
+      },
+      "RetireBody": {
+        "properties": {
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": "Why, with ids: it goes into a note on the campaign."
+          }
+        },
+        "type": "object",
+        "required": [
+          "reason"
+        ],
+        "title": "RetireBody",
+        "description": "Why a campaign is retired."
       },
       "Revealed": {
         "type": "string",

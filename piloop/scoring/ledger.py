@@ -643,16 +643,14 @@ def on_moved(
     """
     match verdict_rule(cfg).on_moved(Moved(node(s, candidate), node(s, onto))):
         case Rebase(conflicts=conflicts):
-            return rebase(s, cfg, repo, candidate, onto, conflicts)
+            return rebase(s, repo, candidate, onto, conflicts)
         case Leave():
             return None
         case never:
             assert_never(never)
 
 
-def rebase(
-    s: Session, cfg: CampaignConfig, repo: Repository, candidate: Candidate, onto: Candidate, conflicts: Seed | Leave
-) -> Rebased:
+def rebase(s: Session, repo: Repository, candidate: Candidate, onto: Candidate, conflicts: Seed | Leave) -> Rebased:
     """Merge ``candidate``'s version onto the head ``onto``. Return how: the merged candidate to measure and judge, if any.
 
     ``candidate`` kept against its own bar after the head moved on. So it is ``interesting`` (``Cause.MOVED``), and its
@@ -665,6 +663,7 @@ def rebase(
     candidate. Emits ``Rebased``. The ideas that wait for the run's idea wait for the seed instead
     (``wait_for_compose``).
     """
+    campaign = s.get_one(Campaign, candidate.campaign_id)
     subject = REBASED_SUFFIX.sub('', candidate.summary or '')
     message = f'{subject} (rebased onto candidate#{onto.id})'
     merged = repo.merge(onto.revision, candidate.revision, message)
@@ -675,7 +674,7 @@ def rebase(
             f' from the head, merge candidate#{candidate.id} ({candidate.revision}) and resolve the conflicts'
         )
         assert candidate.run is not None  # only a run's candidate is rebased
-        stopped = s.get_one(Campaign, candidate.campaign_id).status is CampaignStatus.STOPPED
+        stopped = campaign.status is CampaignStatus.STOPPED
         match conflicts:
             case Seed() if not stopped:
                 title = f'Compose candidate#{candidate.id} onto the head'
@@ -691,7 +690,7 @@ def rebase(
         candidate.verdict_reason = f'{candidate.verdict_reason}; its merge onto the head conflicts in {paths}{filed}'
         rebased = Rebased(head=onto.id, conflicts=list(merged.paths))
     else:
-        repo.keep(merged.revision, RebaseVersion(cfg.name, candidate.id))
+        repo.keep(merged.revision, RebaseVersion(campaign.name, candidate.id))
         found, created = resolve(
             s, candidate.campaign_id, merged, parent=onto, run_id=candidate.run_id, origin=Origin.RUN
         )
@@ -804,7 +803,6 @@ class ImportRefused(Exception):
 def import_reference(
     s: Session,
     campaign: Campaign,
-    cfg: CampaignConfig,
     repo: Repository,
     ref: str,
     *,
@@ -829,7 +827,7 @@ def import_reference(
         raise ImportRefused(f'the tree of {ref!r} already is candidate#{candidate.id} ({label(candidate)})')
     candidate.summary = summary or candidate.summary
     candidate.verdict_reason = f'imported from {ref} ({revision[:7]})'
-    repo.keep(revision, ReferenceVersion(cfg.name, candidate.id))
+    repo.keep(revision, ReferenceVersion(campaign.name, candidate.id))
     imported = CandidateImported(ref=ref, revision=revision)
     emit(s, imported, TargetRef(TargetKind.CANDIDATE, candidate.id), actor)
     return candidate

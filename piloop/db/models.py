@@ -538,10 +538,12 @@ class Campaign(Tracked, Base):
     __table_args__ = (
         CheckConstraint('(paused IS NULL) = (paused_reason IS NULL)', name=PAUSE_CHECK),
         *text_checks('campaigns', nullable=('paused_reason',)),
+        Index('ix_campaigns_name', 'name', unique=True, sqlite_where=text(f"status != '{CampaignStatus.RETIRED}'")),
     )
 
     id: Mapped[CampaignId] = mapped_column(primary_key=True)
-    name: Mapped[str] = mapped_column(unique=True)
+    name: Mapped[str]
+    """Unique among the campaigns that are not retired: a retired campaign's name is free again."""
     path: Mapped[str]
     """The absolute path of the repository. ``piloop.toml`` is at its root."""
     config: Mapped[CampaignConfig] = mapped_column(deferred=True)
@@ -556,7 +558,7 @@ class Campaign(Tracked, Base):
     )
     """``stopped`` after a ``[stop]`` condition held: running work finishes and nothing new is requested. To resume,
     set it back to ``active`` and clear ``stopped_reason``. ``piloop init`` does this when the ``[stop]`` table
-    changed."""
+    changed. ``retired`` after ``piloop campaign retire``, for good."""
     stopped_reason: Mapped[str | None]
     """The condition that ended the campaign, for example ``target: accuracy 0.8531 ≥ 0.85``."""
     paused: Mapped[Pause | None]
@@ -582,6 +584,10 @@ class Campaign(Tracked, Base):
     evaluator: Mapped[Evaluator | None] = relationship(
         primaryjoin='foreign(Campaign.evaluator_id) == Evaluator.id', viewonly=True
     )
+
+
+NOT_RETIRED = Campaign.status != CampaignStatus.RETIRED
+"""The campaigns that hold their names, that the daemon schedules, and that a listing shows unless asked."""
 
 
 class Evaluator(Base):

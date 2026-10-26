@@ -19,7 +19,7 @@ section.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `name` | string | required | A short name for the campaign. piloop names its git refs after it. |
+| `name` | string | required | A short name for the campaign: letters, digits, `.`, `_` and `-`, not all digits. A campaign gets it when it is registered, unless the registration names another, and piloop names its git refs after it. |
 | `metrics` | list\[[Metric](#metric)\] | required | Every metric the evaluate command prints, each with its `role`. Each track has one `primary`, so a campaign with one track has exactly one. |
 | `tracks` | dict\[string, [TrackConfig](#trackconfig)\] | `{}` | `[tracks.<name>]`: the share and addendum of each track. Needed only with several primaries. |
 | `evaluate` | list\[string\] | required | The command (argv) that scores a commit. It runs in a clean worktree of the commit and must print `METRIC <name>=<value>` lines. |
