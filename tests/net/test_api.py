@@ -488,13 +488,23 @@ def test_behind_the_proxy_an_agent_s_token_signs_on_the_socket_and_no_piloop_tok
         httpx.Client(transport=uds, base_url='http://piloop') as socket,
         httpx.Client(base_url=tcp.url, headers=stamped) as network,
     ):
-        signed = socket.post('/v1/journal', json={'line': 'relayed'}, headers={'Authorization': f'Bearer {secret}'})
+        signed = socket.post(
+            f'/v1/campaigns/{campaign.name}/journal',
+            json={'line': 'relayed'},
+            headers={'Authorization': f'Bearer {secret}'},
+        )
         assert signed.status_code == 200, signed.text
-        late = socket.post('/v1/journal', json={'line': 'late'}, headers={'Authorization': f'Bearer {stale}'})
+        late = socket.post(
+            f'/v1/campaigns/{campaign.name}/journal',
+            json={'line': 'late'},
+            headers={'Authorization': f'Bearer {stale}'},
+        )
         assert (late.status_code, late.json()) == (401, {'detail': 'the token is unknown or revoked'})
         for bearer in (person, secret):
             refused = network.post(
-                '/v1/journal', json={'line': 'around'}, headers={'Authorization': f'Bearer {bearer}'}
+                f'/v1/campaigns/{campaign.name}/journal',
+                json={'line': 'around'},
+                headers={'Authorization': f'Bearer {bearer}'},
             )
             assert refused.status_code == 401 and 'takes no piloop token' in refused.json()['detail']
     with db.session() as s:
