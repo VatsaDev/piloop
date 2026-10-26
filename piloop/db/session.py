@@ -780,7 +780,11 @@ class Database:
             self._doorbell.start()
 
     def _ring(self) -> None:
-        """Wake the waiters when the newest event id moves, until ``close``. Then give the connection back to the pool."""
+        """Wake the waiters at its first read, then whenever the newest event id moves, until ``close``.
+
+        The first wake is for the waiters that read before that first read: an event that landed in between is already
+        in the head that it compares with. At ``close`` it gives its connection back to the pool.
+        """
         conn: PoolProxiedConnection | None = None
         try:
             conn = self.engine.raw_connection()
@@ -795,6 +799,7 @@ class Database:
                 self._committed.notify_all()
         with closing(conn):
             head = _newest_event(conn)
+            self._wake()
             while True:
                 with self._committed:
                     if self._committed.wait_for(lambda: self._closed, DOORBELL_SECONDS):

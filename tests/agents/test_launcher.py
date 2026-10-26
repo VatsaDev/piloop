@@ -771,10 +771,18 @@ def test_a_snapshot_that_fails_is_tried_again_and_a_late_session_id_is_asked_for
 ) -> None:
     monkeypatch.setattr(jobs, 'POLL_SECONDS', 0.05)
     codex = each_provider()['codex']
-    use_harness(db, campaign, CODEX_LIKE, **NO_USAGE_FILE, session_id_pattern=codex.session_id_pattern)
+    hold = tmp_path / 'hold'
+    hold.touch()
+    held = f'#!/bin/sh\necho \'{{"type":"thread.started","thread_id":"{CODEX_ID}"}}\'\nwhile [ -f {hold} ]; do sleep 0.05; done\n'
+    use_harness(db, campaign, held, **NO_USAGE_FILE, session_id_pattern=codex.session_id_pattern)
     asked = mocker.patch.object(runtime, 'session_id', side_effect=[None, CODEX_ID])
     mocker.patch.object(SessionFile, 'due', return_value=True)
-    mocker.patch.object(SessionFile, 'snapshot', side_effect=OSError('the file went'))
+
+    def fails(now: float) -> None:
+        hold.unlink(missing_ok=True)  # the agent ends after the first timed snapshot, however late that comes
+        raise OSError('the file went')
+
+    mocker.patch.object(SessionFile, 'snapshot', side_effect=fails)
     late = request(db, campaign)
     launch(db, runtime, tmp_path, late, tracer)
     w = agent_session(db, late)

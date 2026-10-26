@@ -14,6 +14,7 @@ from piloop.plugins.metric import Direction
 from piloop.proc import Channel
 from piloop.scoring.evaluate import (
     BadResult,
+    Checks,
     EvalResult,
     Exited,
     Failed,
@@ -24,6 +25,7 @@ from piloop.scoring.evaluate import (
     StoppedAt,
     TimedOut,
     Track,
+    _Lines,
     no_track,
     parse_metrics,
     printed,
@@ -392,6 +394,22 @@ def test_a_climb_that_breaks_the_order_or_lacks_a_stops_metric_fails(
     *_, last = climb(tmp_path, script, Step(rungs=(SCREEN,)))
     assert isinstance(last, Failed) and last.rung == rung_of_failure
     assert last.why == (BadResult(error) if error is not None else MissingMetrics(('a',)))
+
+
+def test_a_bad_line_ends_the_command_and_is_why_it_failed(tmp_path: Path) -> None:
+    """The bad line, not the SIGTERM that it brought, is the failure: the command was still running."""
+    *_, last = climb(tmp_path, f'{rung("wide", {"b": 1})}; sleep 30', Step(rungs=(SCREEN,)))
+    assert isinstance(last, Failed) and last.why == BadResult("it reported rung 'wide' where 'screen' comes")
+
+
+def test_a_line_that_ends_the_run_before_its_process_is_known_stops_the_process_once_it_is(tmp_path: Path) -> None:
+    """The pipe's reader can take a line before the run's process is tracked: ``track`` then sends the SIGTERM."""
+    lines = _Lines(Step(rungs=(SCREEN,)), Checks({'a'}, set(KNOWN), tmp_path, tmp_path / 'evidence', 1000), GATE, 5)
+    lines.take(json.dumps({'rung': 'wide', 'metrics': {'b': 1}}))
+    proc = subprocess.Popen(['sleep', '30'], start_new_session=True)
+    lines.track(proc)
+    assert proc.wait(10) == -signal.SIGTERM
+    lines.track(None)  # reaped: the SIGKILL after the grace is called off
 
 
 def test_a_crash_after_a_rung_keeps_the_rung_and_fails_the_next(tmp_path: Path) -> None:

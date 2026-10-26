@@ -16,6 +16,7 @@ import threading
 import time
 from collections.abc import Callable, Generator, Iterator
 from contextlib import closing, contextmanager
+from datetime import timedelta
 from pathlib import Path
 
 import psutil
@@ -44,6 +45,7 @@ from piloop.db.models import (
     Run,
     RunEnd,
     RunStatus,
+    utcnow,
 )
 from piloop.db.session import Database
 from piloop.ids import IdeaStatus, Revision, RunId, TargetKind
@@ -84,10 +86,10 @@ COMMIT_THEN_HOLD = (
 )
 
 
-def control_plane(db: Database, runtime: ScriptRuntime, tmp_path: Path) -> RunController:
+def control_plane(db: Database, runtime: ScriptRuntime, tmp_path: Path, timing: Timing = FAST) -> RunController:
     """The daemon's control plane, without its in-process worker, which never starts: the jobs go to the worker
     process."""
-    return RunController(db, Tracer(None), tmp_path, factory(runtime), executor=timed(FAST))
+    return RunController(db, Tracer(None), tmp_path, factory(runtime), executor=timed(timing))
 
 
 def next_daemon(db: Database, tmp_path: Path) -> Scheduler:
@@ -214,7 +216,9 @@ def test_a_worker_killed_during_an_evaluation_is_measured_again_on_a_newer_lease
     measured once, by a live worker."""
     (tmp_path / 'hold').touch()
     set_config(db, campaign, evaluate=held_evaluate(tmp_path))
-    ex = control_plane(db, runtime, tmp_path)
+    # the live worker that measures again stops its job after a silence of ``self_stop``, which a loaded host can reach
+    # with FAST's; the test expires the dead worker's lease with its own clock instead
+    ex = control_plane(db, runtime, tmp_path, Timing(FAST.renew, FAST.grace, toleration=300))
     candidate = baseline(db, campaign.id).id
     measuring = in_thread(ex.remeasure, candidate)
     with worker_process(tmp_path, 'w2') as proc:
@@ -224,7 +228,9 @@ def test_a_worker_killed_during_an_evaluation_is_measured_again_on_a_newer_lease
         os.kill(proc.pid, signal.SIGKILL)
         proc.wait()
     os.killpg(pgid, signal.SIGKILL)  # the dead worker's evaluator; a restarted worker kills it (``Worker._recover``)
-    expire_until(ex, db, 1, LeaseState.EXPIRED)
+    leases = workers_of(ex).leases
+    leases.expire(utcnow() + timedelta(seconds=leases.timing.toleration + 1))
+    assert lease_of(db, 1).state is LeaseState.EXPIRED
     (tmp_path / 'hold').unlink()
     # a live worker: its slots count, so core submits the evaluation again, with a larger token, and the worker takes it
     workers_of(ex).worker.start()

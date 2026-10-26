@@ -7,13 +7,13 @@ from datetime import timedelta
 import pytest
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from sqlalchemy import event, select, update
+from sqlalchemy import select, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from piloop.daemon.main import ACTOR
 from piloop.db.models import Campaign
-from piloop.db.session import WRITE_SPAN, Database, WriteSpans, write_transaction
+from piloop.db.session import WRITE_SPAN, Database, MeasuredConnection, WriteSpans, write_transaction
 from piloop.otel import Tracer
 from piloop.settings import TracingSettings
 
@@ -75,13 +75,21 @@ def test_a_contended_write_records_its_wait_for_the_lock(
     holder: sqlite3.Connection,
     spans: InMemorySpanExporter,
     write: Callable[[Session, Campaign], None],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def release_once_asked(*_: object) -> None:
-        threading.Timer(RELEASE_SECONDS, holder.commit).start()
+    run = MeasuredConnection.run
+
+    def release_once_asked(con: MeasuredConnection, sql: str, statement: Callable[[], object]) -> object:
+        def asked() -> object:  # the wait started before this: the release comes later however late this runs
+            threading.Timer(RELEASE_SECONDS, holder.commit).start()
+            return statement()
+
+        monkeypatch.setattr(MeasuredConnection, 'run', run)
+        return run(con, sql, asked)
 
     with measured.session() as s:
         s.get(Campaign, campaign.id)  # a read asks for no lock
-        event.listen(measured.engine, 'before_cursor_execute', release_once_asked, once=True)
+        monkeypatch.setattr(MeasuredConnection, 'run', release_once_asked)
         write(s, campaign)
         s.commit()
 

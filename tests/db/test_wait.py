@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import PoolProxiedConnection, QueuePool
 
 from piloop.actor import System
+from piloop.db import session as session_module
 from piloop.db.models import Campaign, Pause
 from piloop.db.session import Database, DatabaseClosed
 from tests.conftest import wait_until
@@ -63,8 +64,36 @@ def test_a_waiter_wakes_on_an_event_of_another_process(db: Database, campaign: C
     assert time.monotonic() - began < 5, 'the doorbell rang'
 
 
+async def ringing(db: Database) -> int:
+    """Start the doorbell and wait for its first read, which wakes the waiters: the count of wakes from then on."""
+    seen = await db.changed(0, 0)
+    return await db.changed(seen, 30)
+
+
+def test_an_event_before_the_doorbells_first_read_wakes_the_waiters(
+    db: Database, campaign: Campaign, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A waiter reads, then waits: the doorbell that its wait starts reads the feed's head after that read."""
+    other = Database(str(db.engine.url), actor=System.HUMAN)
+    newest = session_module._newest_event
+
+    def late(conn: PoolProxiedConnection) -> int:
+        monkeypatch.setattr(session_module, '_newest_event', newest)
+        pause(other, campaign)  # after the waiter read, before the doorbell's first read
+        return newest(conn)
+
+    async def waits() -> None:
+        seen = await db.changed(0, 0)
+        assert await db.changed(seen, 10) != seen, 'the event woke it'
+
+    monkeypatch.setattr(session_module, '_newest_event', late)
+    asyncio.run(waits())
+    other.close()
+
+
 def test_a_commit_of_another_process_without_an_event_wakes_no_waiter(db: Database, campaign: Campaign) -> None:
     """A heartbeat or a renewal of another process must not wake every waiter: only the feed's head rings."""
+    asyncio.run(ringing(db))
     other = Database(str(db.engine.url), actor=System.HUMAN)
     waiting = threading.Thread(target=lambda: db.wait_until(renamed(campaign), timeout=1))
     began = time.monotonic()
@@ -195,7 +224,7 @@ def test_a_waiter_gives_up_at_its_timeout(db: Database) -> None:
 
 def test_changed_returns_on_a_commit_of_this_process_and_holds_no_thread(db: Database, campaign: Campaign) -> None:
     async def waits() -> None:
-        seen = await db.changed(0, 0)
+        seen = await ringing(db)
         assert await db.changed(seen, 0.01) == seen, 'nothing committed: it returns at its timeout'
         threading.Timer(0.1, rename, [db, campaign]).start()  # another thread, as the daemon's writers are
         began = time.monotonic()
@@ -207,7 +236,7 @@ def test_changed_returns_on_a_commit_of_this_process_and_holds_no_thread(db: Dat
 
 def test_changed_waits_to_its_timeout_and_returns_at_once_once_closed(db: Database) -> None:
     async def waits() -> None:
-        seen = await db.changed(0, 0)
+        seen = await ringing(db)
         began = time.monotonic()
         assert await db.changed(seen, 0.5) == seen
         assert time.monotonic() - began >= 0.4, 'nothing committed: the doorbell does not wake it'
