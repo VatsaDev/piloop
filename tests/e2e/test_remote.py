@@ -29,7 +29,7 @@ import pytest
 import tomli_w
 from pydantic import JsonValue
 
-from piloop.actor import ORCHESTRATING, System
+from piloop.actor import ORCHESTRATING, PERSON, SERVICE, System
 from piloop.api.client import Client, Refused
 from piloop.api.contract import (
     MAX_LIMIT,
@@ -85,7 +85,7 @@ BRIEF = """# Make primes.py smaller
 exactly the same output. Edit only `primes.py`. `python3 evaluate.py` checks the output and prints the size. Keep it plain
 Python 3 with no imports.
 """
-EVALUATE = """import pathlib, subprocess, sys
+EVALUATE = """import json, os, pathlib, subprocess, sys
 
 def primes(n):
     out, k = [], 2
@@ -98,7 +98,12 @@ def primes(n):
 run = subprocess.run([sys.executable, 'primes.py'], capture_output=True, text=True, timeout=60)
 if run.returncode != 0 or [int(line) for line in run.stdout.split()] != primes(50):
     sys.exit('primes.py does not print the first 50 primes')
-print(f'METRIC bytes={len(pathlib.Path("primes.py").read_bytes())}')
+line = json.dumps({'metrics': {'bytes': len(pathlib.Path('primes.py').read_bytes())}})
+if path := os.environ.get('PILOOP_RESULT_FILE'):
+    with open(path, 'a') as result:
+        result.write(line + '\\n')
+else:
+    print(line)
 """
 PRIMES = """# Prints the first 50 prime numbers, one per line.
 def is_prime(candidate_number):
@@ -294,13 +299,15 @@ def retire(api: Client, ref: str, reason: str) -> CampaignState:
     found = api.status(Selection(campaign=ref))
     [state] = found.campaigns
     campaign, cursor, deadline = str(state.id), found.cursor, time.monotonic() + RETIRE_WAIT
+    pending = ['is still stopping']
     if state.status == 'active':
         api.stop(campaign, StopBody(reason=reason, ending=Ending.NOW))
+        pending.append('is active')  # until the daemon acts on the stop that it was asked for
     while True:
         try:
             retired = api.retire(campaign, RetireBody(reason=reason)).campaign
         except Refused as e:
-            if 'is still stopping' not in str(e) or time.monotonic() > deadline:
+            if not any(p in str(e) for p in pending) or time.monotonic() > deadline:
                 raise
             cursor = api.events(EventsQuery(campaign=campaign, after=cursor, wait=MAX_POLL_SECONDS)).next
             continue
@@ -349,7 +356,7 @@ def test_a_person_files_a_seed_that_the_orchestrator_develops(server: Server) ->
     hunch = 'A sieve in a list comprehension is shorter than the trial division loop'
     seed = server.api.file_seed(server.name, SeedBody(hunch=hunch, provenance=f'candidate#{server.baseline}'))
     assert seed.idea.status == 'seed', seed.idea
-    assert seed.idea.created_by.startswith('human:'), seed.idea
+    assert seed.idea.created_by.startswith((PERSON, SERVICE)), seed.idea  # the token's caller: a person or a service
     woke = server.piloop('inbox', 'wait', server.name, '--after', str(after), '--timeout', str(WAIT))
     assert f'idea#{seed.idea.id}' in woke, woke
     server.piloop(
@@ -371,26 +378,21 @@ def test_a_person_files_a_seed_that_the_orchestrator_develops(server: Server) ->
 
 @needs(test_measures_the_baseline)
 def test_a_message_wakes_the_orchestrator_that_piloop_launches_and_it_answers(server: Server) -> None:
-    """``POST /v1/campaigns/{campaign}/messages`` launches the orchestrator on a worker, whose reply reaches the person.
+    """``POST /v1/campaigns/{campaign}/messages`` reaches an orchestrator on a worker, whose reply reaches the person.
 
-    Each acknowledges what the other wrote: the author of a comment cannot.
+    piloop launches one for the message, or the news reaches one that already works. Each acknowledges what the other
+    wrote: the author of a comment cannot.
     """
     assert server.state().roles[RoleName('orchestrator')].triggered
-    after = server.cursor
     sent = server.api.message(
         server.name, MessageBody(body='e2e: how many bytes is primes.py now? Reply with the number.')
     )
 
-    def launched(e: Envelope) -> bool:
-        return e.id > after and e.kind == 'agent_session.started' and payload(e)['role'] == 'orchestrator'
-
-    agent = server.seen(launched, 'an orchestrator for the message', 600).subject.id
-    server.seen(kind_on('agent_session.running', 'agent_session', agent), f'orchestrator#{agent} running', 900)
-
     def answered(e: Envelope) -> bool:
         return e.kind == 'comment.decision' and e.actor.startswith('orchestrator#')
 
-    server.seen(answered, "the orchestrator's reply", ROLE_TIMEOUT + 300)
+    agent = int(server.seen(answered, "the orchestrator's reply", 600 + ROLE_TIMEOUT).actor.partition('#')[2])
+    running = server.seen(kind_on('agent_session.running', 'agent_session', agent), f'orchestrator#{agent} ran', 60)
     thread = server.api.thread(sent.comment.id)
     [reply, *_] = [c for c in thread.linked if c.author.startswith('orchestrator#')]
     assert reply.in_reply_to == sent.comment.id, thread
@@ -400,7 +402,10 @@ def test_a_message_wakes_the_orchestrator_that_piloop_launches_and_it_answers(se
     assert server.api.thread(sent.comment.id).comment.acked_by == reply.author
     [acked] = server.api.ack(AckBody(ids=(reply.id,))).results
     assert acked.outcome is AckOutcome.ACKED, acked
-    print(f'comment#{sent.comment.id} by {sent.comment.author}, answered by {reply.author}: {reply.body[:200]}')
+    print(
+        f'comment#{sent.comment.id} by {sent.comment.author}, answered on {payload(running)["machine"]} by {reply.author}:'
+        f' {reply.body[:200]}'
+    )
 
 
 @needs(test_the_orchestrator_adds_an_idea, test_a_person_files_a_seed_that_the_orchestrator_develops)
