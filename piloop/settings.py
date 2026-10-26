@@ -13,6 +13,7 @@ import re
 import stat
 import sys
 import tomllib
+from datetime import timedelta
 from functools import cached_property
 from pathlib import Path
 from typing import Annotated, Self
@@ -61,6 +62,17 @@ class StorageSettings(BaseModel):
     def reserve(self) -> int:
         """``min_free_gb`` in bytes."""
         return int(self.min_free_gb * GB)
+
+
+class TracingSettings(BaseModel):
+    """``[tracing]``: what this home measures for the spans that it exports (``OTEL_EXPORTER_OTLP_ENDPOINT``)."""
+
+    model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
+
+    slow_write: timedelta = Field(default=timedelta(milliseconds=1), ge=timedelta(0))
+    """A write transaction that lasts this long or longer, waiting for the database's write lock and holding it,
+    exports a ``piloop.db.write`` span. A faster one exports nothing: its span costs about 35 µs, a fifth of a small
+    write. 0 exports every write. Seconds, or an ISO 8601 duration such as ``PT0.001S``."""
 
 
 SUN_PATH = 104 if sys.platform == 'darwin' else 108
@@ -178,6 +190,9 @@ class Settings(BaseSettings):
 
     storage: StorageSettings = StorageSettings()
     """``[storage]`` in ``config.toml``: how archiving uses the disk of this home."""
+
+    tracing: TracingSettings = TracingSettings()
+    """``[tracing]`` in ``config.toml``: what this home measures for its exported spans."""
 
     runtimes: dict[str, dict[str, JsonValue]] = {}
     """``[runtimes.<name>]`` in ``config.toml``: the settings of each runtime on this machine, by its name.

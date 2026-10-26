@@ -10,7 +10,7 @@ from piloop.deprecated import BRIDGES, CONFIG_BRIDGES
 from piloop.plugins.host import Parameters, Scope, declared
 from piloop.plugins.role.contract import ROLES
 from piloop.plugins.trigger.contract import TRIGGERS
-from piloop.settings import StorageSettings
+from piloop.settings import Settings
 from scripts.generate import ROOT, header
 from scripts.generate.markdown import JsonSchema, json_schema, mdx, table
 
@@ -94,14 +94,16 @@ def generate() -> str:
 
 
 def global_section() -> str:
-    """Return the tables of the global settings file, ``$PILOOP_HOME/config.toml``: ``[storage]``, ``[plugins]``, ``[runtimes]``."""
-    storage = json_schema(StorageSettings)
+    """Return the tables of ``$PILOOP_HOME/config.toml``: each model table of ``Settings``, then the plugins and runtimes."""
     out = (
         '\n## Global settings: `config.toml`\n\n`$PILOOP_HOME/config.toml` holds the settings that every campaign of'
         ' one `PILOOP_HOME` shares. To override a key, set `PILOOP_<TABLE>__<KEY>`, for example'
-        ' `PILOOP_STORAGE__MIN_FREE_GB`.\n\n### `[storage]`\n\n'
-        f'{mdx(storage.get("description", ""))}\n\n{table(storage, {})}'
+        ' `PILOOP_STORAGE__MIN_FREE_GB`.\n'
     )
+    for name, field in Settings.model_fields.items():
+        for model in _models_in(field.annotation):
+            schema = json_schema(model)
+            out += f'\n### `[{name}]`\n\n{mdx(schema.get("description", ""))}\n\n{table(schema, {})}'
     out += home_plugins()
     out += (
         '\n### `[runtimes.<name>]`\n\nThe settings of the runtime `<name>` on this machine: the fields of its'

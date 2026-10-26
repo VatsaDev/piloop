@@ -1,5 +1,6 @@
 import os
 import sys
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -9,7 +10,7 @@ from piloop import settings as settings_module
 from piloop.actor import Agent, System
 from piloop.deprecated import PiloopDeprecationWarning
 from piloop.harnesses import DEFAULT_HARNESSES, SESSION_ENV
-from piloop.settings import UNDER_TEST_ENV, Settings, StorageSettings, env_names, expand_env
+from piloop.settings import UNDER_TEST_ENV, Settings, StorageSettings, TracingSettings, env_names, expand_env
 
 
 def test_the_test_session_runs_in_a_temporary_home() -> None:
@@ -184,3 +185,16 @@ def test_max_evaluations_changes_nothing_for_an_executor_without_slots(tmp_path:
     )
     with pytest.warns(PiloopDeprecationWarning):
         assert Settings(home=tmp_path).plugins['executor']['pools'] == 1, 'the executor refuses it when it starts'
+
+
+def test_slow_write_is_one_ms_read_from_config_toml_and_the_environment_wins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert Settings(home=tmp_path).tracing.slow_write == timedelta(milliseconds=1)
+    (tmp_path / 'config.toml').write_text('[tracing]\nslow_write = 0\n')
+    assert Settings(home=tmp_path).tracing.slow_write == timedelta(0)
+
+    monkeypatch.setenv('PILOOP_TRACING__SLOW_WRITE', 'PT0.25S')
+    assert Settings(home=tmp_path).tracing.slow_write == timedelta(milliseconds=250)
+    with pytest.raises(ValidationError, match='greater than or equal'):
+        TracingSettings(slow_write=timedelta(seconds=-1))

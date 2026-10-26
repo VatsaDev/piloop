@@ -1,7 +1,7 @@
 """Tracing is the daemon's only output. piloop does not use ``logging``.
 
 ``ConsoleProcessor`` prints one line on stderr for every span end and every span event. When
-``OTEL_EXPORTER_OTLP_ENDPOINT`` is set, the same spans are also exported over OTLP.
+``OTEL_EXPORTER_OTLP_ENDPOINT`` is set, the same spans are also exported over OTLP, with the spans of ``Measures``.
 """
 
 import contextlib
@@ -20,6 +20,9 @@ from piloop.settings import settings
 Attr = str | int | float | bool
 Attrs = dict[str, Attr]
 
+MEASURES = 'piloop.measures'
+"""The instrumentation scope of the spans of ``Measures``, which the console does not print."""
+
 
 def _clean(attrs: dict[str, Attr | None]) -> Attrs:
     return {k: v for k, v in attrs.items() if v is not None}
@@ -32,6 +35,8 @@ class ConsoleProcessor(SpanProcessor):
         self._console = Console(stderr=True, markup=False, highlight=False)
 
     def on_end(self, span: ReadableSpan) -> None:
+        if span.instrumentation_scope is not None and span.instrumentation_scope.name == MEASURES:
+            return
         attrs: dict[str, object] = dict(span.attributes or {})
         if span.status.status_code is trace.StatusCode.ERROR:
             attrs['error'] = span.status.description or 'error'
@@ -71,6 +76,20 @@ class Span:
         self._span.set_status(trace.StatusCode.ERROR, f'{type(exc).__name__}: {exc}')
 
 
+class Measures:
+    """Records measured intervals as spans that are exported, never printed: a database write is too frequent to log.
+
+    Each span is a child of the current span.
+    """
+
+    def __init__(self, tracer: trace.Tracer) -> None:
+        self._tracer = tracer
+
+    def record(self, name: str, start_ns: int, end_ns: int, **attrs: Attr) -> None:
+        """Record the span ``name`` from ``start_ns`` to ``end_ns``, in nanoseconds since the epoch."""
+        self._tracer.start_span(name, start_time=start_ns, attributes=attrs).end(end_time=end_ns)
+
+
 class Tracer:
     """Sends spans to the console, and over OTLP when an endpoint is set. Tests pass an ``exporter`` instead of OTLP."""
 
@@ -78,11 +97,17 @@ class Tracer:
         self._console = ConsoleProcessor()
         self._provider = TracerProvider(resource=Resource.create({'service.name': 'piloop'}))
         self._provider.add_span_processor(self._console)
+        exported: SpanProcessor | None = None
         if exporter is not None:
-            self._provider.add_span_processor(SimpleSpanProcessor(exporter))
+            exported = SimpleSpanProcessor(exporter)
         elif endpoint is not None:
-            self._provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=f'{endpoint}/v1/traces')))
+            exported = BatchSpanProcessor(OTLPSpanExporter(endpoint=f'{endpoint}/v1/traces'))
         self._tracer = self._provider.get_tracer('piloop')
+        self.measures: Measures | None = None
+        """None when nothing exports: then nothing measures, at no cost."""
+        if exported is not None:
+            self._provider.add_span_processor(exported)
+            self.measures = Measures(self._provider.get_tracer(MEASURES))
 
     @contextlib.contextmanager
     def span(self, name: str, **attrs: Attr | None) -> Generator[Span]:

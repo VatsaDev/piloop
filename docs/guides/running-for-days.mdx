@@ -87,6 +87,9 @@ Under a service manager:
 
 The daemon writes one line for each span and span event to stderr. With `--detach`, stderr goes to
 `~/.piloop/serve.log`. Set `OTEL_EXPORTER_OTLP_ENDPOINT` to also send the spans to an OpenTelemetry collector.
+The collector also gets a `piloop.db.write` span, not printed, for each write that takes 1 ms or more
+([`[tracing] slow_write`](/reference/configuration#tracing)): `wait_ms` is its wait for the database's write lock,
+and `hold_ms` is how long it held the lock.
 
 The `events` table holds what happened to each row, and is the easiest record to query:
 

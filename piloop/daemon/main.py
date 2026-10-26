@@ -22,7 +22,7 @@ from piloop.daemon.serve import (
 )
 from piloop.db.models import TARGET_KINDS, utcnow
 from piloop.db.schema import schemas
-from piloop.db.session import BackupFailed, Database, OlderDaemon, SchemaMismatch, migrate
+from piloop.db.session import BackupFailed, Database, OlderDaemon, SchemaMismatch, WriteSpans, migrate
 from piloop.net.server import Server, app, local_listener, url
 from piloop.net.tokens import Tokens
 from piloop.otel import Span, tracer
@@ -111,7 +111,13 @@ class Daemon:
             raise SystemExit(f'the daemon does not start: {e}') from e
         self._inherited = inherited or Inherited(set())
         """The children an in-place restart handed over (``piloop.proc.Inherited``): reaped as each one exits."""
-        self.db = Database(cfg.database_url, actor=ACTOR)
+        self.tracer = tracer()
+        measures = self.tracer.measures
+        self.db = Database(
+            cfg.database_url,
+            actor=ACTOR,
+            writes=None if measures is None else WriteSpans(measures, cfg.tracing.slow_write),
+        )
         self._cfg = cfg
         self._argv = serve_argv(listen)
         """What an in-place restart execs."""
@@ -137,7 +143,6 @@ class Daemon:
         except OlderDaemon, SchemaMismatch, BackupFailed:
             self.db.close()
             raise
-        self.tracer = tracer()
         opened = partial(make_runtime, cfg=cfg)
         self.controller = RunController(
             self.db,

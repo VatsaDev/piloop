@@ -26,12 +26,13 @@ import re
 import sqlite3
 import threading
 import time
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Iterable
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
+from functools import partial
 from pathlib import Path
-from typing import NewType
+from typing import TYPE_CHECKING, NewType, Self
 
 from alembic import command, context
 from alembic.config import Config as AlembicConfig
@@ -55,9 +56,13 @@ from piloop.db.sql import (
     optimize,
     sign,
 )
+from piloop.otel import Measures
 from piloop.plugins.cas.contract import Cas
 from piloop.plugins.host import BUILT_IN
 from piloop.version import Version, installed
+
+if TYPE_CHECKING:
+    from sqlite3 import _Parameters
 
 MIGRATIONS = Path(__file__).parent / 'migrations'
 CAS_ATTRIBUTE = 'cas'
@@ -104,8 +109,88 @@ def _pragmas(conn: sqlite3.Connection) -> None:
     cur.close()
 
 
-def make_engine(url: str, actor: Actor) -> Engine:
+WRITE_SPAN = 'piloop.db.write'
+_WRITE = re.compile(r'\s*(INSERT|UPDATE|DELETE|REPLACE|BEGIN\s+IMMEDIATE)\b', re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class WriteSpans:
+    """Where each write transaction that lasts ``slow`` or longer records a ``WRITE_SPAN`` (``MeasuredConnection``)."""
+
+    measures: Measures
+    slow: timedelta
+    """``[tracing] slow_write`` of the settings."""
+
+
+class MeasuredConnection(sqlite3.Connection):
+    """A connection that records each slow write transaction (``WriteSpans``) as a ``WRITE_SPAN``.
+
+    A transaction asks for the write lock at its first write statement, or at ``BEGIN IMMEDIATE``, and waits for it up
+    to the busy timeout. ``wait_ms`` lasts until that statement ends, with the lock or with ``database is locked``, and
+    ``hold_ms`` from then until the commit or the rollback ends. The span carries no SQL and no values.
+
+    It hooks the driver, not SQLAlchemy's events: one listener for each statement makes SQLAlchemy dispatch all of its
+    connection events, which costs about 25 µs a transaction.
+    """
+
+    def __init__(self, database: str, *, check_same_thread: bool, factory: object, writes: WriteSpans) -> None:
+        # sqlite3.connect passes on its own arguments: make_engine's connect_args, this factory among them
+        super().__init__(database, check_same_thread=check_same_thread)
+        self._measures = writes.measures
+        self._slow_ns = writes.slow // timedelta(microseconds=1) * 1000
+        self._write: tuple[int, int] | None = None
+        """When the open write transaction asked for the lock, and when it got it, in ns since the epoch."""
+
+    def cursor(self, factory: Callable[[sqlite3.Connection], sqlite3.Cursor] | None = None) -> sqlite3.Cursor:
+        return _MeasuredCursor(self) if factory is None else super().cursor(factory)
+
+    def run[T](self, sql: str, statement: Callable[[], T]) -> T:
+        """Run ``statement``, and time it when it asks for the write lock."""
+        if self._write is not None or not _WRITE.match(sql):
+            return statement()
+        start = time.time_ns()
+        try:
+            return statement()
+        finally:
+            self._write = (start, time.time_ns())
+
+    def commit(self) -> None:
+        try:
+            super().commit()
+        finally:
+            self._release()
+
+    def rollback(self) -> None:
+        try:
+            super().rollback()
+        finally:
+            self._release()
+
+    def _release(self) -> None:
+        if self._write is None:
+            return
+        (start, held), self._write = self._write, None
+        end = time.time_ns()
+        if end - start >= self._slow_ns:
+            self._measures.record(WRITE_SPAN, start, end, wait_ms=(held - start) / 1e6, hold_ms=(end - held) / 1e6)
+
+
+class _MeasuredCursor(sqlite3.Cursor):
+    def __init__(self, con: MeasuredConnection) -> None:
+        super().__init__(con)
+        self._con = con
+
+    def execute(self, sql: str, parameters: _Parameters = (), /) -> Self:
+        return self._con.run(sql, partial(super().execute, sql, parameters))
+
+    def executemany(self, sql: str, seq_of_parameters: Iterable[_Parameters], /) -> Self:
+        return self._con.run(sql, partial(super().executemany, sql, seq_of_parameters))
+
+
+def make_engine(url: str, actor: Actor, writes: WriteSpans | None = None) -> Engine:
     """An engine whose connections apply the SQLite pragmas and record ``actor`` in ``updated_by``.
+
+    With ``writes``, each connection records its slow write transactions (``MeasuredConnection``).
 
     ``PRAGMA optimize`` runs when a pooled connection is closed (``Database.close`` closes them), as SQLite
     recommends. It updates the query planner's statistics for the tables that the connection queried, at a low cost.
@@ -128,7 +213,10 @@ def make_engine(url: str, actor: Actor) -> Engine:
         if e is not None and (holder := lock_holder(e.orig, database)) is not None:
             e.add_detail(holder)
 
-    engine = create_engine(url, connect_args={'check_same_thread': False})
+    connect_args: dict[str, object] = {'check_same_thread': False}
+    if writes is not None:
+        connect_args['factory'] = partial(MeasuredConnection, writes=writes)
+    engine = create_engine(url, connect_args=connect_args)
     event.listen(engine, 'connect', on_connect)
     event.listen(engine, 'close', on_close)
     event.listen(engine, 'handle_error', on_error)
@@ -600,10 +688,12 @@ class Database:
     Args:
         url: The SQLAlchemy URL of the database.
         actor: The value that every UPDATE through this database records in ``updated_by``.
+        writes: Where each slow write transaction records how long it waited for the write lock and held it
+            (``MeasuredConnection``). None records nothing.
     """
 
-    def __init__(self, url: str, *, actor: Actor) -> None:
-        self.engine = make_engine(url, actor)
+    def __init__(self, url: str, *, actor: Actor, writes: WriteSpans | None = None) -> None:
+        self.engine = make_engine(url, actor, writes)
         self.actor = actor
         self._sessions = sessionmaker(self.engine, expire_on_commit=False)
         self._committed = threading.Condition()

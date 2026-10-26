@@ -73,6 +73,8 @@ def _type(prop: JsonSchema, defs: JsonSchema) -> str:
     if 'enum' in prop:
         return ' \\| '.join(f'`{v}`' for v in prop['enum'])
     t = str(prop.get('type', 'object'))
+    if prop.get('format') == 'duration':  # a timedelta
+        return 'duration'
     if t == 'array' and 'prefixItems' in prop:  # a fixed-shape tuple
         return f'tuple\\[{", ".join(_type(p, defs) for p in prop["prefixItems"])}\\]'
     if t == 'array':

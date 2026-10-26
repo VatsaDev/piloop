@@ -398,6 +398,14 @@ stopped: <the condition>``.
 |---|---|---|---|
 | `min_free_gb` | number | `20` | Free space, in GB, that archiving keeps on the disk of PILOOP_HOME. Storing a file writes its compressed copy first, so the daemon removes the copies of linked inputs that no job uses, then the workspace copies of archived files, oldest first, while the disk has less than this free, and it archives in batches that fit above it. A worker removes the copies of linked inputs that no job uses after each job, under the same rule. |
 
+### `[tracing]`
+
+`[tracing]`: what this home measures for the spans that it exports (`OTEL_EXPORTER_OTLP_ENDPOINT`).
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `slow_write` | duration | `"PT0.001S"` | A write transaction that lasts this long or longer, waiting for the database's write lock and holding it, exports a `piloop.db.write` span. A faster one exports nothing: its span costs about 35 µs, a fifth of a small write. 0 exports every write. Seconds, or an ISO 8601 duration such as `PT0.001S`. |
+
 ### `[plugins]`
 
 `[plugins.<capability>]` selects the provider of a capability of the home: `provider`, the name of its entry point (the default without it), and the provider's own keys, which the daemon checks before it starts.
