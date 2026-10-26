@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from piloop.actor import Actor, Agent, Orchestrating, Person, System
+from piloop.actor import Actor, Agent, Orchestrating, Person, Service, System
 from piloop.db import sql
 from piloop.db.events import emit
 from piloop.db.models import Event
@@ -25,7 +25,9 @@ ACTORS: TypeAdapter[Actor] = TypeAdapter(Actor)
         ('human', System.HUMAN),
         ('orchestrator', System.ORCHESTRATOR),
         ('human:ana@example.com', Person(name='ana@example.com')),
-        ('orchestrator via human:ana@example.com', Orchestrating(person=Person(name='ana@example.com'))),
+        ('orchestrator via human:ana@example.com', Orchestrating(by=Person(name='ana@example.com'))),
+        ('service:key-2', Service(name='key-2')),
+        ('orchestrator via service:key-2', Orchestrating(by=Service(name='key-2'))),
         ('daemon', System.DAEMON),
     ],
 )
@@ -50,6 +52,9 @@ def test_a_signature_parses_into_its_actor_and_dumps_back(signed: str, actor: Ac
         'Human',
         'orchestrator via ana',
         'orchestrator via human:a b',
+        'service:',
+        'service:a b',
+        'orchestrator via service:',
         'daemon via human:ana',
     ],
 )

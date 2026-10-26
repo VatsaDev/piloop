@@ -1,13 +1,13 @@
-"""Who writes: an agent that the daemon launched, a person whom the network named, or one of piloop's own actors.
+"""Who writes: an agent that the daemon launched, a person or a service whom the network named, or piloop's own actors.
 
 ``PILOOP_ACTOR``, ``updated_by``, ``events.actor`` and the ``*_by`` and ``author`` columns hold the actor's signature:
 ``<role>#<agent_session_id>`` for an agent, such as ``implementer#12``, ``human:<name>`` for a person,
-``orchestrator via human:<name>`` for a person whom the network named acting as the orchestrator, else ``human``,
-``orchestrator`` or ``daemon``.
+``service:<name>`` for a service, ``orchestrator via <its signature>`` for either acting as the orchestrator, else
+``human``, ``orchestrator`` or ``daemon``.
 """
 
 from enum import StrEnum
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, PlainSerializer
 
@@ -15,22 +15,26 @@ from piloop.ids import ROLE_NAME, AgentSessionId, RoleName
 
 PERSON = 'human:'
 """What a person's signature starts with."""
-PERSON_NAME = r'^[^\s#]{1,128}$'
-"""A person's name, as the network names the caller: the proxy's ``name_claim``, or a token's name."""
+SERVICE = 'service:'
+"""What a service's signature starts with."""
+CALLER_NAME = r'^[^\s#]{1,128}$'
+"""A caller's name, as the network names it: the proxy's ``name_claims``, or a token's name."""
 ORCHESTRATING = 'orchestrator via '
-"""What the signature of a person acting as the orchestrator starts with, before the person's own."""
+"""What the signature of a person or a service acting as the orchestrator starts with, before its own."""
 
 
 def _fields(value: object) -> object:
-    """Split a signature into its fields: ``<role>#<id>``, ``orchestrator via <person>``, or ``human:<name>``."""
+    """Split a signature into its fields: ``<role>#<id>``, ``orchestrator via <its>``, ``human:<…>``, ``service:<…>``."""
     match value:
         case str() if '#' in value:
             role, _, session = value.partition('#')
             return {'role': role, 'session': session}
         case str() if value.startswith(ORCHESTRATING):
-            return {'person': value.removeprefix(ORCHESTRATING)}
+            return {'by': value.removeprefix(ORCHESTRATING)}
         case str() if value.startswith(PERSON):
-            return {'name': value.removeprefix(PERSON)}
+            return {'kind': CallerKind.PERSON, 'name': value.removeprefix(PERSON)}
+        case str() if value.startswith(SERVICE):
+            return {'kind': CallerKind.SERVICE, 'name': value.removeprefix(SERVICE)}
         case _:
             return value
 
@@ -59,12 +63,20 @@ class Agent(BaseModel):
         return self.signature
 
 
+class CallerKind(StrEnum):
+    """What a caller whom the network named is, which sets how it signs: a ``Person`` or a ``Service``."""
+
+    PERSON = 'person'
+    SERVICE = 'service'
+
+
 class Person(BaseModel):
     """A person whom the network named, who calls the API from elsewhere, such as a web console's user."""
 
     model_config = ConfigDict(frozen=True)
 
-    name: Annotated[str, Field(pattern=PERSON_NAME)]
+    kind: Literal[CallerKind.PERSON] = CallerKind.PERSON
+    name: Annotated[str, Field(pattern=CALLER_NAME)]
 
     @property
     def signature(self) -> str:
@@ -78,16 +90,43 @@ class Person(BaseModel):
         return self.signature
 
 
-class Orchestrating(BaseModel):
-    """A person whom the network named, acting as the orchestrator: the write is the orchestrator's, and says whose."""
+class Service(BaseModel):
+    """A machine whom the network named, such as a service account's key: it signs as itself, never as a person."""
 
     model_config = ConfigDict(frozen=True)
 
-    person: Annotated[Person, BeforeValidator(_fields)]
+    kind: Literal[CallerKind.SERVICE] = CallerKind.SERVICE
+    name: Annotated[str, Field(pattern=CALLER_NAME)]
 
     @property
     def signature(self) -> str:
-        return f'{ORCHESTRATING}{self.person.signature}'
+        return f'{SERVICE}{self.name}'
+
+    @property
+    def launched(self) -> None:
+        return None
+
+    def __str__(self) -> str:
+        return self.signature
+
+
+type Named = Annotated[Person | Service, Field(discriminator='kind')]
+"""A caller whom the network named: a person or a service, told apart by its ``kind``."""
+
+
+class Orchestrating(BaseModel):
+    """A person or a service whom the network named, acting as the orchestrator: the write is the orchestrator's.
+
+    Its signature says whose.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    by: Annotated[Named, BeforeValidator(_fields)]
+
+    @property
+    def signature(self) -> str:
+        return f'{ORCHESTRATING}{self.by.signature}'
 
     @property
     def launched(self) -> None:
@@ -118,7 +157,9 @@ def _signed(actor: Actor) -> str:
 
 
 type Actor = Annotated[
-    Agent | Person | Orchestrating | System, BeforeValidator(_fields), PlainSerializer(_signed, return_type=str)
+    Agent | Person | Service | Orchestrating | System,
+    BeforeValidator(_fields),
+    PlainSerializer(_signed, return_type=str),
 ]
 type SignedAgent = Annotated[Agent, BeforeValidator(_fields), PlainSerializer(_signed, return_type=str)]
 """An ``Agent`` that is read from and written as its signature, as an ``Actor`` is."""

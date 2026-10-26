@@ -164,7 +164,8 @@ piloop keeps each agent's session, the harness's own file, in the CAS: `agent_se
 
 A network plugin implements `actor(headers)`: whom a request asks to act as. Its `client(server, actor)` sends that
 ask. A person whom the network names signs as `human:<name>`, not `human`, and as the orchestrator as
-`orchestrator via human:<name>`. `piloop pause` prints `paused (all)`.
+`orchestrator via human:<name>`. A service, such as a service account's key, signs as `service:<name>`.
+`piloop pause` prints `paused (all)`.
 
 ### Agents sign with their own token
 

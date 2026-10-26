@@ -92,7 +92,7 @@ class Runner:
         with self.db.session() as s:
             caller = tokens.verify(s, token)
         match caller:
-            case Caller(agent=Agent(session=session) as agent) if session == job.agent_session:
+            case Caller(identity=Agent(session=session) as agent) if session == job.agent_session:
                 pass
             case _:
                 return Relayed(

@@ -19,7 +19,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from piloop import deprecated
-from piloop.actor import Agent
+from piloop.actor import Agent, CallerKind
 from piloop.api.contract import Access
 from piloop.api.views import TokenList, TokenMade, TokenView
 from piloop.db.models import LIVE, AgentSession, Token
@@ -32,12 +32,13 @@ AGENT_ACCESS = Access.ACT
 
 @dataclass(frozen=True)
 class Caller:
-    """Who calls the server: the name of the token's caller, what it may call, and the agent that it is bound to."""
+    """Who calls the server: the name of the token's caller, what it may call, and who it is."""
 
     name: str
     access: Access
-    agent: Agent | None = None
-    """The launched agent whose token this is: the caller acts as that agent, and as nobody else."""
+    identity: Agent | CallerKind = CallerKind.PERSON
+    """The launched agent whose token this is, which acts as that agent and as nobody else, or what the network named:
+    a person, who signs as ``human:<name>``, or a service, which signs as ``service:<name>``."""
 
 
 class NameTaken(ValueError):

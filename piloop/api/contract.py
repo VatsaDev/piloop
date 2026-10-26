@@ -22,7 +22,7 @@ from pydantic import (
 )
 from pydantic_core import PydanticCustomError
 
-from piloop.actor import PERSON_NAME
+from piloop.actor import CALLER_NAME
 from piloop.ids import (
     CampaignStatus,
     CandidateId,
@@ -319,7 +319,7 @@ class CancelBody(Params):
 class TokenBody(Params):
     """A bearer token to make for a caller."""
 
-    name: Annotated[str, Field(pattern=PERSON_NAME)]
+    name: Annotated[str, Field(pattern=CALLER_NAME)]
     """The name of the caller that uses it, such as a worker. No ``#``: that names a launched agent's token."""
     access: Access
 

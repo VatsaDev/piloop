@@ -6,7 +6,7 @@ import httpx2 as httpx
 import pytest
 from pydantic import SecretStr, ValidationError
 
-from piloop.actor import System
+from piloop.actor import CallerKind, System
 from piloop.api.contract import Access
 from piloop.db.session import Database
 from piloop.net.server import Server, app, executor_router
@@ -25,17 +25,18 @@ from tests.net.test_server import ECHO, ECHOED, HI
 PEER = Peer(address=None, certificate=None)
 KEYS = {
     'url': 'https://piloop.test',
-    'claims': {'org': 'X-Org-Id', 'kind': 'x-subject-kind', 'principal': 'x-principal-id'},
-    'name_claim': 'principal',
+    'claims': {'org': 'X-Org-Id', 'kind': 'x-subject-kind', 'user': 'x-user-id', 'principal': 'x-principal'},
+    'name_claims': ['user', 'principal'],
     'rules': [
         {'when': {'org': 'acme', 'kind': 'service', 'principal': 'key-1'}, 'access': 'worker'},
-        {'when': {'org': 'acme', 'kind': ['user', 'service']}, 'access': 'act'},
+        {'when': {'org': 'acme', 'kind': 'service'}, 'access': 'act', 'caller': 'service'},
+        {'when': {'org': 'acme', 'kind': 'user'}, 'access': 'act'},
     ],
 }
 STAMPED = {
     'x-org-id': 'acme',
     'x-subject-kind': 'service',
-    'x-principal-id': 'key-1',
+    'x-principal': 'key-1',
     'x-piloop-worker': 'gpu-0123abcd',
 }
 
@@ -49,10 +50,29 @@ def opened(db: Database, **keys: object) -> ProxyNetwork:
 def test_the_first_rule_that_the_claims_match_gives_the_access(db: Database) -> None:
     network = opened(db)
     assert network.identify(STAMPED, PEER) == Caller('gpu-0123abcd', Access.WORKER), 'a worker, by its header'
-    person = STAMPED | {'x-subject-kind': 'user', 'x-principal-id': 'user-7'}
-    assert network.identify(person, PEER) == Caller('user-7', Access.ACT), 'anyone else, by its name claim'
-    another_key = STAMPED | {'x-principal-id': 'key-2'}
-    assert network.identify(another_key, PEER) == Caller('key-2', Access.ACT), 'the next rule that matches'
+    another_key = STAMPED | {'x-principal': 'key-2'}
+    assert network.identify(another_key, PEER) == Caller('key-2', Access.ACT, CallerKind.SERVICE), (
+        'the next rule that matches'
+    )
+
+
+@pytest.mark.parametrize(
+    ('stamped', 'caller'),
+    [
+        ({'x-subject-kind': 'user', 'x-user-id': 'user-7', 'x-principal': 'user-7'}, Caller('user-7', Access.ACT)),
+        ({'x-subject-kind': 'user', 'x-user-id': 'user-7', 'x-principal': 'key-2'}, Caller('user-7', Access.ACT)),
+        (
+            {'x-subject-kind': 'service', 'x-user-id': '', 'x-principal': 'key-2'},
+            Caller('key-2', Access.ACT, CallerKind.SERVICE),
+        ),
+        ({'x-subject-kind': 'service', 'x-principal': 'key-2'}, Caller('key-2', Access.ACT, CallerKind.SERVICE)),
+    ],
+    ids=['a session', "a person's key", 'a service key with an empty user', 'a service key without a user'],
+)
+def test_a_caller_is_named_by_its_first_name_claim_that_is_not_empty_and_its_rule_says_what_it_is(
+    db: Database, stamped: dict[str, str], caller: Caller
+) -> None:
+    assert opened(db).identify({'x-org-id': 'acme', **stamped}, PEER) == caller
 
 
 @pytest.mark.parametrize(
@@ -62,26 +82,27 @@ def test_the_first_rule_that_the_claims_match_gives_the_access(db: Database) -> 
         STAMPED | {'x-org-id': 'other'},
         STAMPED | {'x-subject-kind': 'robot'},
         {k: v for k, v in STAMPED.items() if k != 'x-piloop-worker'},
+        {'x-org-id': 'acme', 'x-subject-kind': 'user', 'x-user-id': '', 'x-principal': ''},
     ],
-    ids=['unstamped', 'another org', 'no rule for the kind', 'an unnamed worker'],
+    ids=['unstamped', 'another org', 'no rule for the kind', 'an unnamed worker', 'every name claim empty'],
 )
 def test_a_caller_that_no_rule_admits_is_refused(db: Database, headers: dict[str, str]) -> None:
     assert isinstance(opened(db).identify(headers, PEER), Refused)
 
 
-def test_workers_alone_need_no_name_claim(db: Database) -> None:
+def test_workers_alone_need_no_name_claims(db: Database) -> None:
     rules = [{'when': {'org': 'acme', 'principal': 'key-1'}, 'access': 'worker'}]
-    network = opened(db, rules=rules, name_claim=None)
+    network = opened(db, rules=rules, name_claims=[])
     assert network.identify(STAMPED, PEER) == Caller('gpu-0123abcd', Access.WORKER)
-    assert isinstance(network.identify(STAMPED | {'x-principal-id': 'user-7'}, PEER), Refused)
+    assert isinstance(network.identify(STAMPED | {'x-principal': 'user-7'}, PEER), Refused)
 
 
 @pytest.mark.parametrize(
     ('keys', 'error'),
     [
-        ({'claims': {}}, 'claims names no header for kind, org, principal'),
+        ({'claims': {}}, 'claims names no header for kind, org, principal, user'),
         ({'rules': []}, 'needs rules'),
-        ({'name_claim': None}, 'name_claim names them'),
+        ({'name_claims': []}, 'name_claims name them'),
     ],
 )
 def test_a_server_config_names_its_claims_rules_and_names(keys: dict[str, object], error: str) -> None:

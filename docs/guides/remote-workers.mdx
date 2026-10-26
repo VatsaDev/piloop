@@ -130,18 +130,21 @@ each caller its access by the values of its claims:
 provider = "proxy"
 listen = "0.0.0.0:8443"
 url = "https://piloop.example.com"
-claims = { org = "x-org-id", principal = "x-principal-id" }
-name_claim = "principal"
+claims = { org = "x-org-id", kind = "x-subject-kind", user = "x-user-id", principal = "x-principal" }
+name_claims = ["user", "principal"]
 rules = [
   { when = { org = "acme", principal = "key-0123" }, access = "worker" },
+  { when = { org = "acme", kind = "service_account" }, access = "act", caller = "service" },
   { when = { org = "acme" }, access = "act" },
 ]
 ```
 
 The first rule that matches wins, and a caller that no rule matches is refused. A worker names itself in
-`x-piloop-worker`; anyone else is named by `name_claim`. The proxy must remove any copy of these headers that a caller
-sends, and only the proxy may reach `listen`: whoever reaches it can claim anything. The server refuses piloop's own
-tokens (`plt_`) on this network: the proxy is the one authentication.
+`x-piloop-worker`; anyone else is named by the first of its `name_claims` that is not empty, here its user, else its
+principal. A caller signs its writes as `human:<name>`, or as `service:<name>` when its rule says `caller = "service"`.
+The proxy must remove any copy of these headers that a caller sends, and only the proxy may reach `listen`:
+whoever reaches it can claim anything. The server refuses piloop's own tokens (`plt_`) on this network: the proxy is
+the one authentication.
 
 Workers share one credential that the proxy accepts and that the `worker` rule matches. Store it as a secret, which
 each provisioned worker gets, with its name:

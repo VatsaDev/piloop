@@ -146,6 +146,21 @@ def test_tick_seconds_of_config_toml_is_dropped_with_a_warning(tmp_path: Path) -
         Settings(home=tmp_path)
 
 
+def test_name_claim_of_the_proxy_network_is_a_list_of_one_name_claims(tmp_path: Path) -> None:
+    """0.3 named a proxy's caller by one claim, ``name_claim``."""
+    network = '[plugins.network]\nprovider = "proxy"\nname_claim = "principal"\n'
+    (tmp_path / 'config.toml').write_text(network)
+    with pytest.warns(PiloopDeprecationWarning, match=r'name_claim is deprecated.*removed in piloop 0\.4\.0') as w:
+        settings = Settings(home=tmp_path)
+    assert w[0].lineno == 3
+    assert settings.plugins['network'] == {'provider': 'proxy', 'name_claims': ['principal']}
+    (tmp_path / 'config.toml').write_text(network + 'name_claims = ["user"]\n')
+    with pytest.warns(PiloopDeprecationWarning):
+        assert Settings(home=tmp_path).plugins['network']['name_claims'] == ['user'], 'name_claims wins'
+    (tmp_path / 'config.toml').write_text(network.replace('proxy', 'https'))
+    assert Settings(home=tmp_path).plugins['network']['name_claim'] == 'principal', 'only the proxy network'
+
+
 def test_max_evaluations_of_config_toml_or_the_environment_is_the_evaluations_of_the_executor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

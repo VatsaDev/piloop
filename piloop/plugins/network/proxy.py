@@ -5,10 +5,11 @@
 provider = "proxy"
 listen = "0.0.0.0:8443"
 url = "https://piloop.example.com"
-claims = { org = "x-org-id", principal = "x-principal-id" }
-name_claim = "principal"
+claims = { org = "x-org-id", kind = "x-subject-kind", user = "x-user-id", principal = "x-principal" }
+name_claims = ["user", "principal"]
 rules = [
   { when = { org = "acme", principal = "key-0123" }, access = "worker" },
+  { when = { org = "acme", kind = "service_account" }, access = "act", caller = "service" },
   { when = { org = "acme" }, access = "act" },
 ]
 ```
@@ -17,7 +18,8 @@ The proxy (Envoy's ext_authz, an oauth2-proxy, a cloud load balancer's authentic
 credential, removes any copy of its headers that the caller sent, and stamps its own. ``claims`` names those headers;
 ``rules`` give a caller its access by the values of its claims, the first rule that matches winning, as Envoy's RBAC and
 Envoy Gateway's authorization rules do; a caller that no rule matches is refused. A worker is named by the
-``worker_header`` that it sends, anyone else by its ``name_claim``.
+``worker_header`` that it sends, anyone else by the first of its ``name_claims`` that is not empty. That name signs a
+person's writes as ``human:<name>``, unless the rule's ``caller`` is ``service``: ``service:<name>``.
 
 This network checks no token of its own, and core refuses piloop's own tokens (``plt_``) on its listener, so
 ``listen`` must be reachable from the proxy alone, by a network policy or a firewall: whoever reaches it can claim
@@ -37,7 +39,7 @@ from typing import ClassVar, Final, Self
 import httpx2 as httpx
 from pydantic import BaseModel, ConfigDict, SecretStr, model_validator
 
-from piloop.actor import Actor
+from piloop.actor import Actor, CallerKind
 from piloop.api.contract import Access
 from piloop.mcp import EnvName
 from piloop.net.tokens import Caller
@@ -68,6 +70,9 @@ class Rule(BaseModel):
     """Each claim, by name, and the value that it must have, or one of several. Every claim must match."""
     access: Access
     """What the caller may do: ``read``, ``act``, ``admin``, or ``worker`` for the workers' credential."""
+    caller: CallerKind = CallerKind.PERSON
+    """What the caller is: a ``person``, who signs as ``human:<name>``, or a ``service``, such as a service account's
+    key, which signs as ``service:<name>``."""
 
     def matches(self, claims: Mapping[str, str | None]) -> bool:
         return all(
@@ -87,8 +92,9 @@ class Proxy(NetworkConfig):
     """Each claim, by name, and the header in which the proxy stamps it: ``{ org = "x-org-id" }``."""
     rules: list[Rule] = []
     """Who gets which access, by their claims: the first rule that matches wins, and no match is refused."""
-    name_claim: str | None = None
-    """The claim that names a caller who is not a worker, such as its principal. Needed by any rule but ``worker``."""
+    name_claims: list[str] = []
+    """The claims that name a caller who is not a worker, in order: the first that is not empty names it, such as its
+    user, else its principal. Needed by any rule but ``worker``."""
     worker_header: str = 'x-piloop-worker'
     """The header in which a worker names itself. The proxy passes it through."""
     actor_header: str = 'x-piloop-actor'
@@ -99,15 +105,13 @@ class Proxy(NetworkConfig):
 
     @model_validator(mode='after')
     def _claims_known(self) -> Self:
-        named = {claim for rule in self.rules for claim in rule.when}
-        if self.name_claim is not None:
-            named.add(self.name_claim)
+        named = {claim for rule in self.rules for claim in rule.when} | set(self.name_claims)
         if unknown := sorted(named - self.claims.keys()):
             raise ValueError(f'claims names no header for {", ".join(unknown)}')
         if self.listen is not None and not self.rules:
             raise ValueError('a server behind the proxy needs rules: who gets which access')
-        if self.name_claim is None and any(rule.access is not Access.WORKER for rule in self.rules):
-            raise ValueError('a rule gives access to callers who are not workers: name_claim names them')
+        if not self.name_claims and any(rule.access is not Access.WORKER for rule in self.rules):
+            raise ValueError('a rule gives access to callers who are not workers: name_claims name them')
         return self
 
     def open(self, host: NetworkHost) -> ProxyNetwork:
@@ -146,10 +150,11 @@ class ProxyNetwork:
         rule = next((rule for rule in config.rules if rule.matches(claims)), None)
         if rule is None:
             return Refused('no rule admits the claims that the proxy stamped')
-        header = config.worker_header if rule.access is Access.WORKER else config.claims[config.name_claim or '']
-        if not (name := headers.get(header.lower())):
-            return Refused(f'the caller is named in {header}, and it is empty')
-        return Caller(name, rule.access)
+        workers = rule.access is Access.WORKER
+        name_headers = [config.worker_header] if workers else [config.claims[claim] for claim in config.name_claims]
+        if (name := next((value for header in name_headers if (value := headers.get(header.lower()))), None)) is None:
+            return Refused(f'the caller is named in {" or ".join(name_headers)}, and each is empty')
+        return Caller(name, rule.access, rule.caller)
 
     def actor(self, headers: Mapping[str, str]) -> str | None:
         """The actor that ``actor_header`` names."""

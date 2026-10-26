@@ -97,7 +97,7 @@ from piloop.plugins.memory.local.api import JournalBody, Journaled
 from piloop.plugins.memory.local.tables import Journal
 from piloop.plugins.network.contract import NetworkHost
 from piloop.plugins.network.https import ACTOR_HEADER, TOKEN_ENV, Https
-from piloop.plugins.network.proxy import Proxy
+from piloop.plugins.network.proxy import Proxy, Rule
 from piloop.plugins.secrets.contract import HomeSecrets
 from piloop.plugins.secrets.local import LocalSecrets
 from piloop.plugins.vcs.git import Git
@@ -422,7 +422,7 @@ PROXY = Proxy.model_validate(
     {
         'listen': '127.0.0.1:0',
         'claims': {'principal': 'x-principal-id'},
-        'name_claim': 'principal',
+        'name_claims': ['principal'],
         'rules': [{'when': {}, 'access': 'act'}],
     }
 )
@@ -509,6 +509,21 @@ def test_behind_the_proxy_an_agent_s_token_signs_on_the_socket_and_no_piloop_tok
             assert refused.status_code == 401 and 'takes no piloop token' in refused.json()['detail']
     with db.session() as s:
         assert {(j.line, j.author) for j in s.scalars(select(Journal))} == {('relayed', str(agent))}
+
+
+def test_a_proxy_caller_that_its_rule_calls_a_service_never_signs_as_a_person(
+    db: Database, campaign: Campaign, cfg: Settings
+) -> None:
+    comment(db, 'watchdog#2', 'look at this')
+    rules = [{'when': {}, 'access': 'act', 'caller': 'service'}]
+    network = PROXY.model_copy(update={'rules': [Rule.model_validate(r) for r in rules]})
+    stamped = {'x-principal-id': 'key-2'}
+    with serving_api(cfg, network_config=network) as [_, tcp]:
+        with httpx.Client(base_url=tcp.url, headers=stamped) as http:
+            replied = Client(http).reply(CommentId(1), ReplyBody(body='go ahead')).comment
+        with httpx.Client(base_url=tcp.url, headers={**stamped, PROXY.actor_header: 'orchestrator'}) as http:
+            acted = Client(http).reply(CommentId(1), ReplyBody(body='mine')).comment
+    assert (replied.author, acted.author) == ('service:key-2', 'orchestrator via service:key-2')
 
 
 def test_a_message_signs_as_the_caller_wakes_the_orchestrator_and_its_reply_reaches_the_sender_s_inbox(

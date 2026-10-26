@@ -465,6 +465,24 @@ def tick_seconds(toml: Path, raw: dict[str, object], removed_in: Version) -> Non
     warn(toml, 'tick_seconds', 'tick_seconds is deprecated and does nothing; delete it', removed_in=removed_in)
 
 
+@bridge('0.4.0', 'name_claim of the proxy network is name_claims: delete the name_claim bridge', CONFIG_BRIDGES)
+def name_claim(toml: Path, raw: dict[str, object], removed_in: Version) -> None:
+    """In ``config.toml``, ``[plugins.network] name_claim`` of the ``proxy`` network is ``name_claims``, a list of one.
+
+    A ``name_claims`` that the table sets too wins.
+    """
+    network = _table(raw, 'plugins', 'network')
+    if network is None or network.get('provider') != 'proxy' or 'name_claim' not in network:
+        return
+    network.setdefault('name_claims', [network.pop('name_claim')])
+    warn(
+        toml,
+        'plugins.network.name_claim',
+        'name_claim is deprecated; write name_claims = ["<claim>"]',
+        removed_in=removed_in,
+    )
+
+
 OLD_MAX_EVALUATIONS_ENV = 'PILOOP_MAX_EVALUATIONS'
 
 
