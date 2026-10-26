@@ -26,6 +26,7 @@ from piloop.campaign.stop import (
     requested,
     runs,
     runs_without_keep,
+    seconds,
     timeout as agent_timeout,
 )
 from piloop.config import CampaignConfig, ConfigError, load_campaign_config
@@ -1111,16 +1112,20 @@ def test_an_agent_may_run_its_role_timeout_cut_at_the_time_that_the_campaign_sto
     with db.session() as s:
         row = s.get_one(Campaign, campaign.id)
         now = utcnow()
-        assert 290 < agent_timeout(s, row, cfg, 1800, now) <= 300, 'five minutes left'
+        assert 290 < seconds(agent_timeout(s, row, cfg, 1800, now)) <= 300, 'five minutes left'
         started = now - timedelta(minutes=2)
-        assert 410 < agent_timeout(s, row, cfg, 1800, started) <= 420, 'an agent that started 2 minutes ago'
+        assert 410 < seconds(agent_timeout(s, row, cfg, 1800, started)) <= 420, 'an agent that started 2 minutes ago'
         row.status = CampaignStatus.STOPPED
         assert agent_timeout(s, row, cfg, 1800, now) == 1800, 'a stopped campaign cuts nothing: its closing review'
         row.status = CampaignStatus.ACTIVE
     add_run(db, campaign, started_at=timedelta(hours=3, minutes=5))
     with db.session() as s:
         row = s.get_one(Campaign, campaign.id)
-        assert agent_timeout(s, row, cfg, 1800, utcnow()) == 0, 'past the stop: no time, never a negative one'
+        stop = Stop('max_hours: 3.1h since the first run')
+        assert agent_timeout(s, row, cfg, 1800, utcnow()) == stop, (
+            'past the stop: an agent that has not started never does'
+        )
+        assert seconds(stop) == 0, 'and one that runs has no time left'
         hold = {'max_hours': 3, 'hold_at': {'spend': 300}}
         held = load_campaign_config(Path(campaign.path), facts=[*OWN, SOURCE], plugins={'stop_rule': hold})
         assert agent_timeout(s, row, held, 1800, utcnow()) == 1800, 'a hold leaves no budget: nothing launches then'

@@ -669,6 +669,40 @@ def test_low_water_wants_no_more_ideas_than_max_runs_leaves_to_run(
     sched.stop(timeout=5)
 
 
+def test_a_sweep_whose_launch_the_stop_rule_stops_never_starts_and_the_stop_closes_its_row(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """The rule answers ``Stop`` between the pass that requested a sweep and its launch: the run that it waited on
+    settled. The sweep never starts, so it is not killed after 0 seconds; the pass that stops the campaign closes it,
+    as every requested row."""
+    cfg = load_campaign_config(Path(campaign.path), plugins={'stop_rule': {'max_runs': 1}})
+    with db.session() as s:
+        s.get_one(Campaign, campaign.id).config = cfg
+        row = AgentSession(kind=RESEARCH, campaign_id=campaign.id, reason='1 new seeds to develop')
+        s.add(row)
+        s.flush()
+        requested = (row.id, AgentSessionState.REQUESTED, '1 new seeds to develop')
+        row.state, row.harness = AgentSessionState.STARTING, 'script'  # the pass took it to launch
+        s.commit()
+    finish_a_run(db, campaign, 'one')
+    sched = scheduler(db, runtime, tmp_path)
+    sched._sweep(AgentSessionId(requested[0]))
+    assert agent_sessions(db, RESEARCH) == [requested], 'never started: requested again'
+    sched.run_all()
+    sched.wait()
+    sched.stop(timeout=5)
+    with db.session() as s:
+        stopped = s.get_one(Campaign, campaign.id).stopped_reason
+        w = s.get_one(AgentSession, requested[0])
+        assert (stopped, w.state, w.error, w.session_id, w.log_dir) == (
+            'max_runs: 1 runs',
+            AgentSessionState.KILLED,
+            'campaign_stopped',
+            None,
+            None,
+        ), 'closed as every requested row of a stopped campaign: no session, no place'
+
+
 def test_ideas_updated_at_is_bumped_by_raw_sql_and_orm_updates_alike(
     db: Database, campaign: Campaign, tmp_path: Path
 ) -> None:

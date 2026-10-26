@@ -77,6 +77,7 @@ from piloop.campaign.stop import (
     review_skipped,
     review_waits,
     runs_without_keep,
+    seconds,
     settled,
     timeout as agent_timeout,
     unclosed,
@@ -978,7 +979,7 @@ class Scheduler:
         told = select(Event.id).where(Event.target == TargetRef(TargetKind.AGENT_SESSION, implementer.id), has(WrapUp))
         if role is None or implementer.started_at is None or s.scalar(told.limit(1)) is not None:
             return None
-        timeout = agent_timeout(s, campaign, cfg, role.timeout, implementer.started_at)
+        timeout = seconds(agent_timeout(s, campaign, cfg, role.timeout, implementer.started_at))
         left = timeout - (now - implementer.started_at).total_seconds()
         lead = wrap_up_lead(timeout)
         if left > lead:
@@ -1646,6 +1647,11 @@ class Scheduler:
             role = role_of(s, agent_session)
             table = cfg.roles.sweeping()[agent_session.kind]
             timeout = agent_timeout(s, campaign, cfg, table.timeout, utcnow())
+            if isinstance(timeout, Stop):  # requested again: the pass that stops the campaign closes it
+                agent_session.state = AgentSessionState.REQUESTED
+                s.commit()
+                self._tracer.event('agent_session.not_started', agent_session=agent_session_id, reason=timeout.reason)
+                return
             base = checkout_candidate(s, campaign)
             values = ', '.join(
                 f'{t.primary.name}={"unmeasured" if (v := score(base, campaign.evaluator_id, t.primary)) is None else v}'

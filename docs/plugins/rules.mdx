@@ -110,7 +110,8 @@ piloop formats no fact itself.
 
 `Go.left` says how much of each fact is left before the rule stops the campaign. piloop starts no more runs than
 `RUNS` leaves, and cuts each agent's timeout where `HOURS` runs out, so a run that starts just before the stop ends
-with it. `check_config` refuses a campaign that the rule cannot serve when the file loads: `limits` refuses a
+with it. An agent whose start comes after the rule answers `Stop` never starts: the pass that stops the campaign
+closes its row. `check_config` refuses a campaign that the rule cannot serve when the file loads: `limits` refuses a
 `target` on a campaign of more than one track.
 
 A fact is a typed key, `Fact[T]`, that a [fact source](#fact-sources) of the campaign supplies.

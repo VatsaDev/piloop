@@ -43,7 +43,7 @@ from piloop.campaign.campaigns import (
     workspace_dir,
 )
 from piloop.campaign.ops import hold_on_failed_baseline
-from piloop.campaign.stop import attempts, park_cancelled, run_cancel, timeout as agent_timeout
+from piloop.campaign.stop import attempts, park_cancelled, run_cancel, seconds, timeout as agent_timeout
 from piloop.config import TRANSCRIPT, CampaignConfig, MetricRole, Track
 from piloop.db.events import emit, has, in_order, latest
 from piloop.db.models import (
@@ -102,6 +102,7 @@ from piloop.plugins.network.contract import NETWORKS, Network, NetworkHost
 from piloop.plugins.runtime.contract import ExitStatus
 from piloop.plugins.secrets.contract import SECRETS, HomeSecrets, SecretsProvider
 from piloop.plugins.section.contract import Rendering, markdown
+from piloop.plugins.stop_rule.contract import Stop
 from piloop.plugins.vcs.contract import Repository, RunVersion, Transfer, Version
 from piloop.plugins.verdict_rule.contract import Lineage, Outcome, Trunk
 from piloop.runtime.factory import RuntimeFactory, make_runtime
@@ -391,6 +392,14 @@ class RunController:
                 idea = run.idea
                 campaign = idea.campaign
                 cfg = campaign.config
+                timeout = agent_timeout(s, campaign, cfg, cfg.role(run.role).timeout, utcnow())
+                if isinstance(timeout, Stop):  # the run stays queued, its agent requested again: the stop closes both
+                    s.get_one(AgentSession, agent_session_id).state = AgentSessionState.REQUESTED
+                    s.commit()
+                    self._tracer.event(
+                        'agent_session.not_started', agent_session=agent_session_id, reason=timeout.reason
+                    )
+                    return
                 base = s.get_one(Candidate, run.base_candidate_id)
                 if run.brief_cid is None:
                     composed = compose_brief(
@@ -404,7 +413,7 @@ class RunController:
                             run,
                             base,
                             Agent(role=run.role, session=agent_session_id).signature,
-                            agent_timeout(s, campaign, cfg, cfg.role(run.role).timeout, utcnow()),
+                            timeout,
                         ),
                         track=cfg.track(idea.track),
                     )
@@ -434,7 +443,7 @@ class RunController:
             campaign = run.idea.campaign
             cfg = campaign.config
             base_revision = s.get_one(Candidate, run.base_candidate_id).revision
-            timeout = agent_timeout(s, campaign, cfg, cfg.role(run.role).timeout, utcnow())
+            timeout = seconds(agent_timeout(s, campaign, cfg, cfg.role(run.role).timeout, utcnow()))
             harness, model, idea_id, campaign_id = run.harness, run.model, run.idea_id, campaign.id
             name, vcs, campaign_path = campaign.name, vcs_of(campaign), Path(campaign.path)
         log_dir = self._runs_dir / str(run_id)

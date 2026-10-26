@@ -210,6 +210,30 @@ def controller(db: Database, runtime: ScriptRuntime, tmp_path: Path, tracer: Tra
     return serving(RunController(db, tracer or Tracer(None), tmp_path, factory(runtime), executor=Workers()))
 
 
+def test_an_implementer_whose_launch_the_stop_rule_stops_never_starts_and_its_run_stays_queued(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """The rule answers ``Stop`` (the head reached the target) after the pass took the run: nothing starts. The run
+    stays queued and its implementer is requested again, for the pass that stops the campaign to close both."""
+    run_id = make_run(db, campaign)
+    with db.session() as s:
+        s.get_one(Campaign, campaign.id).config = load_campaign_config(
+            Path(campaign.path), plugins={'stop_rule': {'target': -1e9}}
+        )
+        s.commit()
+    execute(controller(db, runtime, tmp_path), db, run_id)
+    with db.session() as s:
+        run = s.get_one(Run, run_id)
+        [agent] = s.scalars(select(AgentSession).where(AgentSession.run_id == run_id)).all()
+        assert (run.status, run.end, run.brief_cid, agent.state, agent.session_id) == (
+            RunStatus.QUEUED,
+            None,
+            None,
+            AgentSessionState.REQUESTED,
+            None,
+        )
+
+
 def reload_campaign(db: Database, campaign: Campaign) -> None:
 
     with db.session() as s:

@@ -315,12 +315,15 @@ def gather(
     return Facts(values)
 
 
-def timeout(s: Session, campaign: Campaign, cfg: CampaignConfig, role_timeout: float, started_at: datetime) -> float:
-    """Return the seconds that an agent of ``campaign`` that started at ``started_at`` may run.
+def timeout(
+    s: Session, campaign: Campaign, cfg: CampaignConfig, role_timeout: float, started_at: datetime
+) -> float | Stop:
+    """Return the seconds that an agent of ``campaign`` that started at ``started_at`` may run, or the rule's ``Stop``.
 
-    That is its ``role_timeout``, cut where the stop rule's ``hours`` run out (``Go.left``): a run that starts minutes
-    before the stop ends with it. When the rule stops the campaign, no time is left: the pass winds the agent down. A
-    stopped campaign cuts nothing, so its closing review has its whole timeout.
+    The seconds are its ``role_timeout``, cut where the stop rule's ``hours`` run out (``Go.left``): a run that starts
+    minutes before the stop ends with it. A stopped campaign cuts nothing, so its closing review has its whole timeout.
+    ``Stop``: the rule stops the active campaign now. An agent that has not started never starts: its row is requested
+    again, and the pass that stops the campaign closes it. One that runs is wound down by that pass.
     """
     if campaign.status is not CampaignStatus.ACTIVE:
         return role_timeout
@@ -329,7 +332,7 @@ def timeout(s: Session, campaign: Campaign, cfg: CampaignConfig, role_timeout: f
         case Go(left=facts):
             hours = facts.get(HOURS)
         case Stop():
-            return 0.0
+            return answer
         case Hold():
             hours = None
         case _:
@@ -338,6 +341,11 @@ def timeout(s: Session, campaign: Campaign, cfg: CampaignConfig, role_timeout: f
         return role_timeout
     elapsed = (now - started_at).total_seconds()
     return max(0.0, min(role_timeout, elapsed + hours * 3600))
+
+
+def seconds(timeout: float | Stop) -> float:
+    """The seconds of a ``timeout`` for an agent that already runs: none once the rule stops the campaign."""
+    return 0.0 if isinstance(timeout, Stop) else timeout
 
 
 def requested(s: Session, campaign: Campaign) -> Stop | None:
