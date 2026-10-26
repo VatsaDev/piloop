@@ -19,6 +19,7 @@ MeasurementId = NewType('MeasurementId', int)
 EvaluatorId = NewType('EvaluatorId', int)
 AgentSessionId = NewType('AgentSessionId', int)
 CommentId = NewType('CommentId', int)
+JournalId = NewType('JournalId', int)
 Revision = NewType('Revision', str)
 """The vcs provider's name for a version of a campaign's files: a commit SHA under ``git``."""
 
@@ -129,3 +130,22 @@ class LinkKind(StrEnum):
 
     AFTER = 'after'
     SUPERSEDES = 'supersedes'
+
+
+class Cause(StrEnum):
+    """Why an ``interesting`` verdict is not the verdict rule's own.
+
+    ``note``: an agent marked a regressed result as a lead (``piloop candidate note``, the ``Piloop-Note`` trailer).
+    ``moved``: it kept against its own bar, but the head moved on, so it was merged onto the head.
+    """
+
+    NOTE = 'note'
+    MOVED = 'moved'
+
+
+class KeyOrigin(StrEnum):
+    """Where the value of a live key of a provider comes from (``piloop limits``)."""
+
+    DEFAULT = 'default'
+    CONFIG = 'config.toml'
+    LIMIT = 'limit'

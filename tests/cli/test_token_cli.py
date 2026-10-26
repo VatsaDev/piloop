@@ -14,12 +14,17 @@ from tests.conftest import at_head
 
 
 @pytest.fixture
-def out(tmp_path: Path, schema: Path, monkeypatch: pytest.MonkeyPatch):
+def isolated_home(tmp_path: Path, schema: Path, monkeypatch: pytest.MonkeyPatch) -> Console:
     at_head(schema, tmp_path / 'piloop.db')
     monkeypatch.setattr(common, 'settings', Settings(home=tmp_path, uv_tool_dir=tmp_path / 'uv-tools'))
     console = Console(record=True, width=200, force_terminal=False)
     monkeypatch.setattr(common, 'console', console)
-    return lambda: console.export_text(clear=True)
+    return console
+
+
+@pytest.fixture
+def out(isolated_home: Console, api: object):
+    return lambda: isolated_home.export_text(clear=True)
 
 
 def test_create_prints_the_secret_once_list_never_shows_it_and_revoke_ends_it(out) -> None:

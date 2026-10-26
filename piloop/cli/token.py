@@ -1,16 +1,14 @@
-"""``piloop token create|list|revoke``: the bearer tokens that other machines call the server with."""
+"""``piloop token create|list|revoke``, clients of the API: the bearer tokens that other machines call the server with."""
 
 from typing import Annotated
 
 import cyclopts
 from rich import box
 from rich.table import Table
-from sqlalchemy import select
 
-from piloop.api.contract import Access
-from piloop.cli import common, local
-from piloop.db.models import Token
-from piloop.net import tokens
+from piloop.api.contract import Access, TokenBody
+from piloop.cli import common
+from piloop.cli.client import api
 
 app = cyclopts.App(name='token')  # its help is where piloop.cli.main registers it
 
@@ -23,32 +21,25 @@ def create(
     access: Annotated[Access, cyclopts.Parameter(help='What its caller may do.')] = Access.WORKER,
 ) -> None:
     """Make a token and print its secret. Only its hash is kept: copy the secret now."""
-    with local.session() as s:
-        try:
-            secret = tokens.create(s, name, access)
-        except tokens.NameTaken as e:
-            raise SystemExit(str(e)) from e
-        s.commit()
-    common.console.print(secret, markup=False, highlight=False, soft_wrap=True)
+    with api() as client:
+        made = client.create_token(TokenBody(name=name, access=access))
+    common.console.print(made.secret.get_secret_value(), markup=False, highlight=False, soft_wrap=True)
 
 
 @app.command(name='list')
 def list_tokens() -> None:
     """The tokens: name, access and when each was made. Never the secrets."""
+    with api() as client:
+        listed = client.list_tokens().tokens
     table = Table('name', 'access', 'created', box=box.SIMPLE)
-    with local.session() as s:
-        for token in s.scalars(select(Token).order_by(Token.name)):
-            table.add_row(token.name, token.access, f'{token.created_at:%Y-%m-%d %H:%M}')
+    for token in listed:
+        table.add_row(token.name, token.access, f'{token.created_at:%Y-%m-%d %H:%M}')
     common.console.print(table)
 
 
 @app.command
 def revoke(name: Annotated[str, cyclopts.Parameter(help='The token to revoke.')], /) -> None:
     """Delete a token: the next call with it gets 401."""
-    with local.session() as s:
-        try:
-            tokens.revoke(s, name)
-        except tokens.NoToken as e:
-            raise SystemExit(str(e)) from e
-        s.commit()
+    with api() as client:
+        client.revoke_token(name)
     common.console.print(f'token {name} revoked', markup=False, highlight=False)

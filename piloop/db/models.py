@@ -44,7 +44,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, composite, mapped_c
 from sqlalchemy.orm.attributes import set_committed_value
 from sqlalchemy.types import TypeDecorator
 
-from piloop.api.contract import Access
+from piloop.api.contract import JOURNAL_LINE_BYTES, Access
 from piloop.config import CampaignConfig
 from piloop.ids import (
     IMPLEMENTER,
@@ -52,11 +52,13 @@ from piloop.ids import (
     CampaignId,
     CampaignStatus,
     CandidateId,
+    Cause,
     CommentId,
     CommentKind,
     EvaluatorId,
     IdeaId,
     IdeaStatus,
+    JournalId,
     LinkKind,
     MeasurementId,
     Revision,
@@ -204,17 +206,6 @@ class Origin(StrEnum):
 
 JUDGED: Final = frozenset({Origin.BASELINE, Origin.RUN})
 """The origins of the candidates that get a verdict. ``verdict IS NULL`` on one of them means that it is pending."""
-
-
-class Cause(StrEnum):
-    """Why an ``interesting`` verdict is not the verdict rule's own.
-
-    ``note``: an agent marked a regressed result as a lead (``piloop candidate note``, the ``Piloop-Note`` trailer).
-    ``moved``: it kept against its own bar, but the head moved on, so it was merged onto the head.
-    """
-
-    NOTE = 'note'
-    MOVED = 'moved'
 
 
 class LessonStatus(StrEnum):
@@ -489,6 +480,7 @@ class Base(DeclarativeBase):
         EvaluatorId: Integer,
         AgentSessionId: Integer,
         CommentId: Integer,
+        JournalId: Integer,
         RoleName: String,
         TrackName: String,
         Revision: String,
@@ -1245,10 +1237,6 @@ class Document(Tracked, Base):
     created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=NOW)
 
 
-JOURNAL_LINE_BYTES = 280
-"""The longest journal line, in UTF-8 bytes: one decision, plan or result, with its ids."""
-
-
 class Journal(Base):
     """The orchestrator's journal: one line for each decision, plan or result, so a new session can pick up the work.
 
@@ -1266,7 +1254,7 @@ class Journal(Base):
         *text_checks('journal', 'author'),
     )
 
-    id: Mapped[int] = mapped_column(primary_key=True)
+    id: Mapped[JournalId] = mapped_column(primary_key=True)
     author: Mapped[str]
     """Who wrote it, for example ``orchestrator``."""
     line: Mapped[str]

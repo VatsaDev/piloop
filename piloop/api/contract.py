@@ -8,7 +8,8 @@ from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from typing import Annotated, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, JsonValue
+from pydantic_core import PydanticCustomError
 
 from piloop.ids import (
     CampaignStatus,
@@ -18,14 +19,20 @@ from piloop.ids import (
     Ending,
     IdeaId,
     IdeaStatus,
+    RoleName,
     TrackName,
 )
+from piloop.plugins.verdict_rule.contract import Outcome
 
 MAX_POLL_SECONDS = 25
 """The longest that the server holds a long-poll (``Polled.wait``), as the GitHub Actions runner's."""
 LIMIT = 100
 """How many events a read returns at most, by default."""
 MAX_LIMIT = 1000
+REPEATS = 3
+"""The pairs of a remeasure that asks for no number: the 95% bound of 3 pairs is near their worst pair."""
+JOURNAL_LINE_BYTES = 280
+"""The longest journal line, in UTF-8 bytes: one decision, plan or result, with its ids."""
 
 
 class Access(StrEnum):
@@ -124,6 +131,11 @@ class Problem(StrEnum):
     UNKNOWN_CAMPAIGN = 'unknown_campaign'
     UNKNOWN_COMMENT = 'unknown_comment'
     UNKNOWN_IDEA = 'unknown_idea'
+    UNKNOWN_CANDIDATE = 'unknown_candidate'
+    UNKNOWN_AGENT = 'unknown_agent'
+    UNKNOWN_RUN = 'unknown_run'
+    UNKNOWN_LIMIT = 'unknown_limit'
+    UNKNOWN_TOKEN = 'unknown_token'
     CURSOR_AHEAD = 'cursor_ahead'
     REFUSED = 'refused'
     """An operation refused its input and changed nothing. The detail says why."""
@@ -250,3 +262,103 @@ class ReplyBody(Params):
 
     body: str
     priority: Priority = 2
+
+
+class ImportBody(Params):
+    """A version of the campaign's repo to register as a reference candidate."""
+
+    version: str
+    """A version as the campaign's vcs names one: a revision, a branch, a tag."""
+    summary: str | None = None
+    """A summary of the candidate. Default: the version's own summary."""
+
+
+class RemeasureBody(Params):
+    """How to measure a candidate again."""
+
+    repeats: int = Field(REPEATS, ge=1)
+    """How many pairs of the candidate and its bar."""
+
+
+class NoteBody(Params):
+    """Why a regressed result is worth starting from, and the seeds to pin to it."""
+
+    reason: str
+    follow_ups: tuple[str, ...] = ()
+    """A seed pinned to the candidate for each, for research to develop."""
+    track: TrackName | None = None
+    """The track of the follow-ups. Default: the track of the candidate's run, else the first track."""
+
+
+class VerdictBody(Reasoned):
+    """A candidate's verdict, set by hand."""
+
+    verdict: Outcome
+
+
+class Report(Params):
+    """A measurement made outside the daemon, for example by running the evaluate command by hand."""
+
+    model_config = ConfigDict(extra='forbid')
+
+    metrics: dict[str, Annotated[float, Field(strict=True, allow_inf_nan=False)]]
+    """Each metric's value, as the evaluate command's ``METRIC`` lines would give it."""
+    seconds: Annotated[float, Field(ge=0, allow_inf_nan=False)] | None = None
+    """How long the evaluation took."""
+    error: str | None = None
+    """Why the evaluation failed. A failed measurement may lack metrics."""
+
+
+class LimitBody(Reasoned):
+    """A value for a live key, with why: it shows next to the value."""
+
+    value: JsonValue
+
+
+class LaunchBody(Reasoned):
+    """One more agent of a sweeping role (``[roles.<name>]``). The agent's brief includes the reason."""
+
+    role: RoleName
+    harness: str | None = None
+    """The harness to use instead of the role's."""
+    model: str | None = None
+    """The model id, as the harness names it."""
+
+
+class PromptBody(Polled):
+    """A message for the next turn of a running agent. With wait, the answer waits for what came of it."""
+
+    text: str
+
+
+class CancelBody(Params):
+    """How to cancel a run or an agent."""
+
+    ending: Ending = Ending.NOW
+    """How its running agents end: at once, or after they were told to save their work and stop."""
+
+
+class TokenBody(Params):
+    """A bearer token to make for a caller."""
+
+    name: str
+    """The name of the caller that uses it, such as a worker."""
+    access: Access
+
+
+def _journal_line(line: str) -> str:
+    """``line`` with each run of whitespace as one space. Refuses one of no byte or of more than ``JOURNAL_LINE_BYTES``."""
+    collapsed = ' '.join(line.split())
+    if not 0 < (size := len(collapsed.encode())) <= JOURNAL_LINE_BYTES:
+        raise PydanticCustomError(
+            'journal_line',
+            'a journal line is 1 to {most} bytes, not {size}: say less',
+            {'most': JOURNAL_LINE_BYTES, 'size': size},
+        )
+    return collapsed
+
+
+class JournalBody(Params):
+    """A line of the orchestrator's journal: a decision, a plan or a result, with its ids."""
+
+    line: Annotated[str, AfterValidator(_journal_line)]

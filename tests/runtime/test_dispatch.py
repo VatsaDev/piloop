@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from piloop.cli import agents, common
+from piloop.cli import agent_io, common
 from piloop.db.models import AgentSession, AgentSessionState, Campaign, utcnow
 from piloop.db.session import Database
 from piloop.plugins.runtime.contract import RUNTIMES
@@ -48,5 +48,5 @@ def test_attach_and_status_read_the_output_through_a_runtime_that_a_package_adds
     monkeypatch.setattr(common, 'settings', Settings(home=tmp_path))
     printed: list[object] = []
     monkeypatch.setattr(common.console, 'print', lambda line, **_: printed.append(line))
-    agents.attach(agent_session.id)
+    agent_io.attach(agent_session.id)
     assert printed == ['pane 7']

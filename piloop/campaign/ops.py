@@ -12,15 +12,15 @@ into a ``note`` on the row. An operation emits the events of the changes that no
 
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from typing import Annotated, Literal, assert_never
+from typing import Literal, assert_never
 
-from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from piloop.actor import Actor
 from piloop.agents.roles import files_of
+from piloop.api.contract import Report
 from piloop.campaign.campaigns import repository
 from piloop.campaign.ideas import Definition, NotASeed, develop
 from piloop.campaign.stop import held, request_stop
@@ -28,10 +28,10 @@ from piloop.config import CampaignConfig
 from piloop.db.events import emit
 from piloop.db.models import (
     OPEN_RUNS,
+    AgentSession,
     Base,
     Campaign,
     Candidate,
-    Cause,
     Comment,
     Idea,
     IdeaLink,
@@ -43,11 +43,13 @@ from piloop.ids import (
     CampaignId,
     CampaignStatus,
     CandidateId,
+    Cause,
     CommentKind,
     Ending,
     IdeaId,
     IdeaStatus,
     LinkKind,
+    RoleName,
     TargetKind,
     TargetRef,
     TrackName,
@@ -137,6 +139,30 @@ def stop(s: Session, campaign_id: CampaignId, actor: Actor, *, reason: str, endi
         )
     request_stop(s, campaign, actor, reason=reason, ending=ending)
     return campaign
+
+
+def request_agent(
+    s: Session, campaign_id: CampaignId, role: RoleName, *, harness: str | None, model: str | None, reason: str
+) -> AgentSession:
+    """Ask the daemon for one more agent of a sweeping role: it launches it at once, within ``max_concurrent``.
+
+    Raises:
+        Refused: the campaign has no sweeping role ``role``.
+    """
+    campaign = _get(s, Campaign, campaign_id, 'campaign')
+    roles = campaign.config.roles
+    sweeping = roles.sweeping()
+    if role not in sweeping:
+        by_itself = (
+            ' The daemon launches implementers by itself, one for each queued run.'
+            if role in roles.doing_runs()
+            else ''
+        )
+        raise Refused(f'{campaign.name} has no sweeping role {role!r}; it has {", ".join(sweeping)}.{by_itself}')
+    agent = AgentSession(kind=role, campaign_id=campaign.id, harness=harness, model=model, reason=reason)
+    s.add(agent)
+    s.flush()
+    return agent
 
 
 def set_parent(s: Session, campaign_id: CampaignId, parent_id: CampaignId | None) -> Campaign:
@@ -281,19 +307,6 @@ def missing_head(s: Session, candidate: Candidate) -> Candidate | None:
             f'the vcs cannot tell if candidate#{candidate.id} builds on the head candidate#{trunk.id}: {e}'
         ) from e
     return None if builds else trunk
-
-
-class Report(BaseModel):
-    """A measurement made outside the daemon, for example by running the evaluate command by hand."""
-
-    model_config = ConfigDict(extra='forbid')
-
-    metrics: dict[str, Annotated[float, Field(strict=True, allow_inf_nan=False)]]
-    """Each metric's value, as the evaluate command's ``METRIC`` lines would give it."""
-    seconds: Annotated[float, Field(ge=0, allow_inf_nan=False)] | None = None
-    """How long the evaluation took."""
-    error: str | None = None
-    """Why the evaluation failed. A failed measurement may lack metrics."""
 
 
 @dataclass(frozen=True)

@@ -11,7 +11,9 @@ from typing import Final, Literal
 from sqlalchemy import ColumnElement
 
 from piloop.actor import Actor, System
-from piloop.db.models import JUDGED, Candidate, Cause, Origin
+from piloop.api.views import CandidateView
+from piloop.db.models import JUDGED, Candidate, Origin
+from piloop.ids import Cause
 from piloop.plugins.verdict_rule.contract import Outcome
 
 REJUDGED: Final = frozenset({Outcome.CRASH, Outcome.DISCARD, Outcome.INTERESTING})
@@ -124,3 +126,8 @@ def write(c: Candidate, to: Outcome, *, cause: Cause | None, reason: str, by: Ac
     c.verdict, c.cause, c.verdict_reason, c.verdict_by = to, cause, reason, by.signature
     if c.origin in UNMEASURED:
         c.origin = Origin.RUN
+
+
+def candidate_view(c: Candidate) -> CandidateView:
+    """``c`` as the API answers it."""
+    return CandidateView(id=c.id, summary=c.summary, label=label(c), cause=c.cause, verdict_reason=c.verdict_reason)

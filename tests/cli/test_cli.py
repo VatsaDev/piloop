@@ -610,6 +610,7 @@ def test_init_syncs_the_memory_documents_and_names_the_repo(campaign_path: Path,
     assert 'hits: 1' in out()
 
 
+@pytest.mark.usefixtures('api')
 def test_journal_lines_come_back_in_wake(campaign_path: Path, out, monkeypatch: pytest.MonkeyPatch) -> None:
     run_cli(['init', str(campaign_path)])
     out()
@@ -703,7 +704,7 @@ def test_inbox_lists_what_waits_shows_one_with_its_thread_and_acknowledges(
     run_cli(['inbox', 'reply', '5', 'park it', '--priority', '1'])
     assert out().strip() == 'comment#6 decision on comment#2', 'the answer goes on the root of the thread'
     with pytest.raises(SystemExit, match="^no campaign 'nope'"):
-        run_cli(['candidate', 'import', 'nope', 'HEAD'])
+        run_cli(['campaign', 'parent', 'nope', '--clear'])
 
 
 @pytest.mark.usefixtures('api')
@@ -1114,6 +1115,7 @@ def test_agent_messages_takes_the_queue_in_the_format_that_the_hook_names(
         run_cli(['agent', 'messages'])
 
 
+@pytest.mark.usefixtures('api')
 def test_prompt_is_a_note_on_the_agent_and_says_whether_it_arrived(
     campaign_path: Path, out, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1172,8 +1174,12 @@ def test_prompt_is_a_note_on_the_agent_and_says_whether_it_arrived(
             'human',
             'no answer',
         )
-    with pytest.raises(SystemExit, match='agent_session#2 is not running'):
+        s.add(AgentSession(kind='research', campaign_id=1, state=AgentSessionState.EXITED))
+        s.commit()
+    with pytest.raises(SystemExit, match='^agent_session#2 is not running$'):
         run_cli(['prompt', '2', 'x'])
+    with pytest.raises(SystemExit, match='^no agent_session#3$'):
+        run_cli(['prompt', '3', 'x'])
 
 
 @pytest.mark.usefixtures('api')
@@ -1209,7 +1215,7 @@ def test_campaign_stop_and_cancels_are_requests_that_the_daemon_acts_on(campaign
         'cancel requested for agent_session#1: the daemon acts at once',
         'stop requested for demo: the daemon tells its implementers to save their work and stop',
     ]
-    with pytest.raises(SystemExit, match='run#9 is not queued or running'):
+    with pytest.raises(SystemExit, match='^no run#9$'):
         run_cli(['run', 'cancel', '9'])
     with pytest.raises(SystemExit, match='agent_session#2 is not requested, starting or running'):
         run_cli(['agent', 'cancel', '2'])
@@ -1866,9 +1872,9 @@ READERS = (
     ['history'],
     ['sql', 'SELECT 1'],
     ['watch'],
-    ['limits'],
+    ['secret', 'list'],
     ['campaign', 'tree'],
-    ['candidate', 'remeasure', '1'],
+    ['wake'],
 )
 """Commands that open the database and must never migrate it: only serve, migrate and upgrade do."""
 

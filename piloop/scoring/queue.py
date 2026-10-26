@@ -4,7 +4,7 @@ The daemon submits each evaluation to its executor when one of the executor's sl
 in this order (``waiting``), whichever the executor. A free slot goes to the
 campaign with the fewest running evaluations, and in that campaign to its head first, then to the oldest request. So a
 campaign with many requests never holds back the requests of another, and inside a campaign each request waits only
-for the ones before it. The queue is in the database, so ``piloop eval`` reads and cancels it without the daemon.
+for the ones before it. The queue is in the database: ``view`` answers it, and ``cancel`` takes from it.
 
 A remeasure that someone asked for (``ledger.request_remeasure``) enters the queue only when the daemon gets to it, one
 per campaign at a time. Until then ``requested`` lists its pending request, so ``piloop eval queue`` shows it from the
@@ -18,8 +18,16 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from piloop.actor import Actor
+from piloop.api.views import (
+    CancelledBy,
+    EvaluationQueue,
+    EvaluationState,
+    QueuedEvaluation,
+    RunningSince,
+    WaitingSince,
+)
 from piloop.db.models import Campaign, Candidate, Evaluation
-from piloop.ids import CandidateId, EvaluatorId
+from piloop.ids import CampaignId, CandidateId, EvaluatorId
 from piloop.scoring import ledger
 from piloop.scoring.ledger import head
 
@@ -90,6 +98,29 @@ def requested(s: Session) -> list[tuple[Candidate, datetime]]:
         for candidate, asked in ledger.requested(s, campaign)
         if (candidate.id, campaign.evaluator_id) not in queued
     ]
+
+
+def view(s: Session) -> EvaluationQueue:
+    """``listing``, then each remeasure of ``requested`` as waiting, as the API answers them."""
+    names: dict[CampaignId, str] = {i: n for i, n in s.execute(select(Campaign.id, Campaign.name))}
+    rows = [(e.candidate, _state(e)) for e in listing(s)]
+    rows += [(c, WaitingSince(since=asked)) for c, asked in requested(s)]
+    return EvaluationQueue(
+        evaluations=[
+            QueuedEvaluation(candidate=c.id, campaign=names[c.campaign_id], summary=c.summary, state=state)
+            for c, state in rows
+        ]
+    )
+
+
+def _state(e: Evaluation) -> EvaluationState:
+    match e.cancelled_by, e.started_at:
+        case str() as by, _:
+            return CancelledBy(by=by)
+        case None, datetime() as since:
+            return RunningSince(since=since)
+        case _:
+            return WaitingSince(since=e.created_at)
 
 
 def cancel(s: Session, candidate_id: CandidateId, actor: Actor) -> int:

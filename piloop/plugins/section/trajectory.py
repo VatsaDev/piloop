@@ -6,8 +6,8 @@ from sqlalchemy.orm import Session
 from piloop.api.views import Lines, Rendered
 from piloop.campaign.stop import attempt
 from piloop.config import CampaignConfig
-from piloop.db.models import FINISHED_RUNS, Campaign, Candidate, Cause, Run, campaign_runs, count
-from piloop.ids import EvaluatorId
+from piloop.db.models import FINISHED_RUNS, Campaign, Candidate, Run, campaign_runs, count
+from piloop.ids import Cause, EvaluatorId
 from piloop.plugins.section.contract import Rendering, Section, Surface
 from piloop.plugins.verdict_rule.contract import Branch, Trunk
 from piloop.reports.overview import known, num

@@ -1,15 +1,13 @@
-"""The orchestrator's memory: ``piloop journal`` appends a line, ``piloop wake`` prints what a new session needs."""
+"""The ``piloop journal`` command, a client of the API: append a line to the orchestrator's journal."""
 
 from typing import Annotated
 
 import cyclopts
+from pydantic import ValidationError
 
-from piloop.cli import common, local
-from piloop.db.models import JOURNAL_LINE_BYTES, Journal, utcnow
-from piloop.reports.wake import orchestrator_overview
-
-WAKE_BUDGET = 2000
-"""The tokens that `piloop wake` prints by default."""
+from piloop.api.contract import JOURNAL_LINE_BYTES, JournalBody
+from piloop.cli import common
+from piloop.cli.client import api
 
 
 def journal(line: Annotated[str, cyclopts.Parameter(help=f'At most {JOURNAL_LINE_BYTES} bytes.')], /) -> None:
@@ -17,28 +15,9 @@ def journal(line: Annotated[str, cyclopts.Parameter(help=f'At most {JOURNAL_LINE
 
     The journal is how a new orchestrator session picks up the work: `piloop wake` prints the latest lines first.
     """
-    line = ' '.join(line.split())
-    if not 0 < len(line.encode()) <= JOURNAL_LINE_BYTES:
-        raise SystemExit(f'a journal line is 1 to {JOURNAL_LINE_BYTES} bytes, not {len(line.encode())}: say less')
-    with local.session() as s:
-        entry = Journal(author=common.settings.actor.signature, line=line)
-        s.add(entry)
-        s.commit()
-        common.console.print(f'journal#{entry.id}', markup=False)
-
-
-def wake(
-    *,
-    budget: Annotated[
-        int, cyclopts.Parameter(help='Tokens to print, about 4 characters each. 0 prints nothing.')
-    ] = WAKE_BUDGET,
-) -> None:
-    """Print what an orchestrator session needs first, in a fixed budget.
-
-    The latest journal lines, the open inbox, the head of each active campaign and the current lessons on their repos.
-    Each section says how to read what did not fit. Run it at the start of every orchestrator session.
-    """
-    with local.session() as s:
-        text = orchestrator_overview(s, budget, utcnow())
-    if text:
-        common.console.print(text, markup=False, highlight=False, soft_wrap=True)
+    try:
+        body = JournalBody(line=line)
+    except ValidationError as e:
+        raise SystemExit(e.errors()[0]['msg']) from e
+    with api() as client:
+        common.console.print(f'journal#{client.journal(body).journal}', markup=False)

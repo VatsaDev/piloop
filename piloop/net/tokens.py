@@ -9,11 +9,13 @@ import hashlib
 import secrets
 from dataclasses import dataclass
 
+from pydantic import SecretStr
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from piloop.api.contract import Access
+from piloop.api.views import TokenList, TokenMade, TokenView
 from piloop.db.models import Token
 from piloop.db.session import Database
 
@@ -55,6 +57,22 @@ def revoke(s: Session, name: str) -> None:
     """Delete the token called ``name``: its next call gets 401. Raises ``NoToken``."""
     if s.execute(delete(Token).where(Token.name == name).returning(Token.id)).first() is None:
         raise NoToken(f'no token is called {name!r}')
+
+
+def listing(s: Session) -> TokenList:
+    """The tokens by name, as the API answers them: never their secrets, which nothing keeps."""
+    return TokenList(tokens=[_view(t) for t in s.scalars(select(Token).order_by(Token.name))])
+
+
+def made(s: Session, name: str, access: Access) -> TokenMade:
+    """``create``, as the API answers it: with the secret. Raises ``NameTaken``."""
+    secret = create(s, name, access)
+    token = s.scalars(select(Token).where(Token.name == name)).one()
+    return TokenMade(name=token.name, access=token.access, created_at=token.created_at, secret=SecretStr(secret))
+
+
+def _view(token: Token) -> TokenView:
+    return TokenView(name=token.name, access=token.access, created_at=token.created_at)
 
 
 def verify(s: Session, secret: str) -> Caller | None:

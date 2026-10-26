@@ -10,6 +10,7 @@ from sqlalchemy import select
 from piloop.daemon.run_controller import RunController
 from piloop.db.models import Campaign, Limit
 from piloop.db.session import Database
+from piloop.ids import KeyOrigin
 from piloop.otel import Tracer
 from piloop.plugins import limits
 from piloop.plugins.executor.contract import Capacity
@@ -55,11 +56,11 @@ def test_only_a_live_key_that_there_is_takes_a_limit_and_only_a_value_that_its_p
             (KEY, 1, 'human'),
         ], 'set again, a limit has its last value'
         sources = {k: (v, o, row.reason if row else None) for k, v, o, row in limits.sources(s, GPU)}
-        assert sources[KEY] == (1, limits.Origin.LIMIT, 'one on the server')
-        assert sources['executor.pools.gpu.agents'] == (None, limits.Origin.DEFAULT, None)
+        assert sources[KEY] == (1, KeyOrigin.LIMIT, 'one on the server')
+        assert sources['executor.pools.gpu.agents'] == (None, KeyOrigin.DEFAULT, None)
         assert limits.unset_limit(s, 'executor.pools.gpu.evaluations') and not limits.unset_limit(s, 'nope')
         s.flush()
-        assert {k: o for k, _, o, _ in limits.sources(s, GPU)}['executor.pools.gpu.evaluations'] is limits.Origin.CONFIG
+        assert {k: o for k, _, o, _ in limits.sources(s, GPU)}['executor.pools.gpu.evaluations'] is KeyOrigin.CONFIG
 
 
 def test_the_daemon_applies_a_changed_limit_on_its_next_tick_and_keeps_its_parameters_when_one_is_refused(

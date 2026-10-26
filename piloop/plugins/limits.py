@@ -9,7 +9,6 @@ Only a key that the provider marks ``Live`` takes a limit, and only a value that
 """
 
 from collections.abc import Collection, Iterator, Mapping, Sequence
-from enum import StrEnum
 
 from pydantic import BaseModel, JsonValue, ValidationError
 from pydantic_core import to_jsonable_python
@@ -18,19 +17,12 @@ from sqlalchemy.orm import Session
 
 from piloop.api.views import LiveKey
 from piloop.db.models import Limit, utcnow
+from piloop.ids import KeyOrigin
 from piloop.plugins.host import Choice, Live, Parameters, Scope, declared
 
 
 class Refused(ValueError):
     """A limit that is not set: its key is not ``Live``, or its parameters refuse the value. The message says why."""
-
-
-class Origin(StrEnum):
-    """Where the value of a ``Live`` key comes from."""
-
-    DEFAULT = 'default'
-    CONFIG = 'config.toml'
-    LIMIT = 'limit'
 
 
 def selected(plugins: Mapping[str, Parameters]) -> dict[str, Parameters]:
@@ -121,24 +113,24 @@ def unset_limit(s: Session, key: str) -> bool:
     return limit is not None
 
 
-def sources(s: Session, plugins: Mapping[str, Parameters]) -> list[tuple[str, object, Origin, Limit | None]]:
+def sources(s: Session, plugins: Mapping[str, Parameters]) -> list[tuple[str, object, KeyOrigin, Limit | None]]:
     """Each ``Live`` key of the home's providers: its value, where it comes from, and its limit if one sets it."""
     limits = {limit.key: limit for limit in s.scalars(select(Limit))}
-    out: list[tuple[str, object, Origin, Limit | None]] = []
+    out: list[tuple[str, object, KeyOrigin, Limit | None]] = []
     for capability, provider in selected(plugins).items():
         raw = provider.model_dump(exclude_unset=True)
         for key, value in live(applied(provider, list(limits.values()), capability), capability):
             match limits.get(key):
                 case Limit() as limit:
-                    out.append((key, value, Origin.LIMIT, limit))
+                    out.append((key, value, KeyOrigin.LIMIT, limit))
                 case None if _has(raw, key.split('.')[1:]):
-                    out.append((key, value, Origin.CONFIG, None))
+                    out.append((key, value, KeyOrigin.CONFIG, None))
                 case _:
-                    out.append((key, value, Origin.DEFAULT, None))
+                    out.append((key, value, KeyOrigin.DEFAULT, None))
     return out
 
 
-def live_keys(s: Session, plugins: Mapping[str, Parameters], origins: Collection[Origin]) -> list[LiveKey]:
+def live_keys(s: Session, plugins: Mapping[str, Parameters], origins: Collection[KeyOrigin]) -> list[LiveKey]:
     """``sources`` whose value comes from one of ``origins``, as the API answers them."""
     return [
         LiveKey(

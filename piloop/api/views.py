@@ -11,17 +11,22 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Literal, assert_never
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, PlainSerializer, SecretStr
 
+from piloop.api.contract import Access
 from piloop.ids import (
     AgentSessionId,
     CampaignId,
     CampaignStatus,
     CandidateId,
+    Cause,
     CommentId,
     EvaluatorId,
     IdeaId,
     IdeaStatus,
+    JournalId,
+    KeyOrigin,
+    MeasurementId,
     RoleName,
     RunId,
     TrackName,
@@ -31,6 +36,10 @@ from piloop.text import CELL_CHARS, NONE, age, block, cell, metric
 PROTOCOL = 1
 """The version of the documents and of the event envelope. A field may be added within a version, and readers ignore
 fields they do not know. Removing or changing a field is a new version."""
+
+
+type Revealed = Annotated[SecretStr, PlainSerializer(SecretStr.get_secret_value, when_used='json')]
+"""A secret in an answer: its JSON carries the value, which pydantic writes as stars otherwise. Its repr hides it."""
 
 
 class View(BaseModel):
@@ -236,11 +245,17 @@ class LiveKey(View):
 
     key: str
     value: JsonValue
-    origin: str
-    """``default``, ``config.toml`` or ``limit``."""
+    origin: KeyOrigin
     actor: str | None
     """Who set the limit. Null unless ``origin`` is ``limit``."""
     reason: str | None
+
+
+class LiveKeys(View):
+    """Each live key of the home's providers, read at ``cursor``."""
+
+    cursor: int
+    keys: list[LiveKey]
 
 
 class Text(View):
@@ -504,6 +519,189 @@ class TrackChanged(IdeaAnswer):
     """An idea that moved to another track."""
 
     was: TrackName
+
+
+class CandidateView(View):
+    """A candidate, as the change that wrote it left it."""
+
+    id: CandidateId
+    summary: str | None
+    label: str
+    """The verdict as a person reads it: the verdict, ``pending``, or the origin of a candidate that is never judged."""
+    cause: Cause | None
+    verdict_reason: str | None
+
+
+class CandidateAnswer(View):
+    """A candidate that a change wrote, read at ``cursor``."""
+
+    cursor: int
+    candidate: CandidateView
+
+
+class Remeasured(CandidateAnswer):
+    """A candidate that the daemon measures again."""
+
+    bar: CandidateId | None
+    """The bar that it is measured next to. Null: alone."""
+    held: str | None
+    """What the daemon waits for before it measures, such as a resume. Null: it measures soon."""
+    rejudged: bool
+    """Whether the daemon judges the candidate again after the measurements. Else its verdict stays."""
+
+
+class Noted(CandidateAnswer):
+    """A regressed candidate kept in view as a lead."""
+
+    seeds: list[IdeaView]
+    """The follow-ups: seeds pinned to the candidate."""
+
+
+class Merge(View):
+    """A keep off the head, merged onto it: a candidate that the daemon measures and judges against that head."""
+
+    candidate: CandidateId
+    head: CandidateId
+
+
+class VerdictChanged(CandidateAnswer):
+    """A candidate whose verdict was set by hand."""
+
+    was: str
+    """The verdict that it had, as ``label`` reads it."""
+    merge: Merge | None
+
+
+class MeasurementAdded(View):
+    """A measurement recorded by hand, read at ``cursor``."""
+
+    cursor: int
+    measurement: MeasurementId
+    rejudged: bool
+    """Whether the daemon judges the candidate again (``RejudgeRequested``)."""
+    effect: str
+    """What happens to the verdict, in one line: when the daemon judges it again, or why the verdict stays."""
+
+
+class RunningSince(View):
+    """An evaluation that has a slot of the executor."""
+
+    kind: Literal['running'] = 'running'
+    since: datetime
+
+
+class WaitingSince(View):
+    """An evaluation that waits for a slot, or a remeasure that someone asked for and that is not queued yet."""
+
+    kind: Literal['waiting'] = 'waiting'
+    since: datetime
+    """When it was asked for."""
+
+
+class CancelledBy(View):
+    """A running evaluation that someone cancelled: the daemon stops its evaluator."""
+
+    kind: Literal['cancelled'] = 'cancelled'
+    by: str
+    """Who cancelled it, as the actor signs."""
+
+
+type EvaluationState = Annotated[RunningSince | WaitingSince | CancelledBy, Field(discriminator='kind')]
+
+
+class QueuedEvaluation(View):
+    """One evaluation of the queue."""
+
+    candidate: CandidateId
+    campaign: str
+    """The name of the candidate's campaign."""
+    summary: str | None
+    state: EvaluationState
+
+
+class EvaluationQueue(View):
+    """The running evaluations, oldest start first, then the waiting ones in the order in which they get a slot."""
+
+    evaluations: list[QueuedEvaluation]
+
+
+class TokenView(View):
+    """A bearer token of the server, never its secret."""
+
+    name: str
+    """The name of its caller."""
+    access: Access
+    created_at: datetime
+
+
+class TokenList(View):
+    """The tokens, by name."""
+
+    tokens: list[TokenView]
+
+
+class TokenMade(TokenView):
+    """A new token, with its secret: the only answer that carries it, since the home keeps its hash only."""
+
+    secret: Revealed
+
+
+class AgentAnswer(View):
+    """An agent that a change requested or asked to cancel, read at ``cursor``."""
+
+    cursor: int
+    agent: AgentSessionId
+    role: RoleName
+
+
+class RunAnswer(View):
+    """A run that a change asked to cancel, read at ``cursor``."""
+
+    cursor: int
+    run: RunId
+
+
+class Pending(View):
+    """Nothing came of the note yet: the daemon queues it once the agent runs."""
+
+    kind: Literal['pending'] = 'pending'
+
+
+class Queued(View):
+    """The agent's runtime holds the note: the agent reads it at its next turn."""
+
+    kind: Literal['queued'] = 'queued'
+
+
+class Delivered(View):
+    """The agent read the note."""
+
+    kind: Literal['delivered'] = 'delivered'
+
+
+class Undelivered(View):
+    """The note never reached the agent: its runtime refused it, or the agent ended before it read it."""
+
+    kind: Literal['undelivered'] = 'undelivered'
+    error: str | None
+
+
+type Delivery = Annotated[Pending | Queued | Delivered | Undelivered, Field(discriminator='kind')]
+
+
+class Prompted(View):
+    """A note on an agent, which the daemon delivers, and what came of it, read at ``cursor``."""
+
+    cursor: int
+    comment: CommentId
+    delivery: Delivery
+
+
+class Journaled(View):
+    """A line appended to the orchestrator's journal, read at ``cursor``."""
+
+    cursor: int
+    journal: JournalId
 
 
 class AckOutcome(StrEnum):

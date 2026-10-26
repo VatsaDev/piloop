@@ -14,8 +14,8 @@ from sqlalchemy import Enum
 
 from piloop.actor import System
 from piloop.config import CampaignConfig, Metric, MetricRole, Track, TrackConfig
-from piloop.db.models import Candidate, Cause, Origin
-from piloop.ids import TrackName
+from piloop.db.models import Candidate, Origin
+from piloop.ids import Cause, TrackName
 from piloop.plugins.host import data_errors
 from piloop.plugins.metric import Direction
 from piloop.plugins.verdict_rule import bootstrap as verdict_module

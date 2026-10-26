@@ -29,7 +29,6 @@ GROUPS = (
         'The artifact store that archived workspace files live in: what it holds, eviction, checks.',
     ),
     ('token', 'token:app', 'The bearer tokens of `piloop serve` and `piloop cas serve`.'),
-    ('agent', 'agents:agent_app', 'Act on one agent.'),
     ('run', 'agents:run_app', 'Act on one run.'),
     ('worker', 'worker:app', 'The workers that run jobs on leases.'),
     ('limits', 'limits:app', 'Change a live key of a provider of the home while the daemon runs.'),
@@ -46,9 +45,9 @@ COMMANDS = (
     ('restore', 'store:restore'),
     ('launch', 'agents:launch'),
     ('prompt', 'agents:prompt'),
-    ('attach', 'agents:attach'),
+    ('attach', 'agent_io:attach'),
     ('journal', 'memory:journal'),
-    ('wake', 'memory:wake'),
+    ('wake', 'wake:wake'),
     ('serve', 'daemon:serve'),
     ('stop', 'daemon:stop'),
     ('restart', 'daemon:restart'),
@@ -80,6 +79,10 @@ campaign.command('piloop.cli.campaign:parent', name='parent')
 campaign.command('piloop.cli.campaign:tree', name='tree')
 campaign.command('piloop.cli.control:stop', name='stop')
 app.command(campaign)
+agent = cyclopts.App(name='agent', help='Act on one agent.')
+agent.command('piloop.cli.agents:agent_cancel', name='cancel')
+agent.command('piloop.cli.agent_io:messages', name='messages')
+app.command(agent)
 for name, path, help_ in GROUPS:
     app.command(f'piloop.cli.{path}', name=name, help=help_)
 for name, path in COMMANDS:

@@ -18,6 +18,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from piloop.actor import Actor, System
+from piloop.api.contract import REPEATS
 from piloop.config import CampaignConfig, Metric, Track
 from piloop.db import requests
 from piloop.db.events import emit
@@ -298,10 +299,6 @@ def head_unmeasured(s: Session, campaign: Campaign) -> bool:
     """Whether the head has no measurement from the current evaluator: the queue then holds the unpinned ideas."""
     trunk = head(s, campaign)
     return trunk is not None and not measured(trunk, campaign.evaluator_id)
-
-
-REPEATS = 3
-"""The pairs of a remeasure that asks for no number: the 95% bound of 3 pairs is near their worst pair."""
 
 
 class RemeasureRequested(EventModel):

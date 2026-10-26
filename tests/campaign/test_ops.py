@@ -19,7 +19,6 @@ from piloop.db.events import in_order
 from piloop.db.models import (
     Campaign,
     Candidate,
-    Cause,
     Comment,
     Event,
     EventModel,
@@ -47,6 +46,7 @@ from piloop.ids import (
     CampaignId,
     CampaignStatus,
     CandidateId,
+    Cause,
     CommentKind,
     IdeaId,
     IdeaStatus,

@@ -5,7 +5,7 @@ import os
 import threading
 import time
 from contextlib import closing
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, get_args, get_origin, get_type_hints
 
@@ -18,40 +18,62 @@ from rich.console import Console
 from sqlalchemy import select
 
 from piloop.actor import Agent, System
+from piloop.agents.results import PromptOutcome
 from piloop.api import client as client_module
 from piloop.api.client import Client, NoDaemon, Refused
 from piloop.api.contract import (
     Access,
     AckBody,
+    CancelBody,
     EventsQuery,
     IdeaBody,
     InboxQuery,
+    JournalBody,
+    LaunchBody,
+    LimitBody,
     NewsQuery,
     Params,
     PauseBody,
     Problem,
+    PromptBody,
     Reasoned,
+    RemeasureBody,
     ReplyBody,
     Selection,
     StatusBody,
     StopBody,
+    TokenBody,
     defaulted,
 )
-from piloop.api.views import Status, thread_lines
+from piloop.api.views import CancelledBy, Pending, Queued, RunningSince, Status, thread_lines
 from piloop.cli import common, main as cli
-from piloop.daemon.api import Handlers, daemon_state, openapi, router, with_api
+from piloop.daemon.api import ROUTERS, Handlers, daemon_state, openapi, with_api
 from piloop.db.events import emit
-from piloop.db.models import Campaign, Comment, Event, UnknownEvent, utcnow
+from piloop.db.models import (
+    AgentSession,
+    AgentSessionState,
+    Campaign,
+    Comment,
+    Evaluation,
+    Event,
+    Journal,
+    RunStatus,
+    UnknownEvent,
+    utcnow,
+)
 from piloop.db.session import Database
 from piloop.ids import (
     AgentSessionId,
     CampaignStatus,
+    CandidateId,
     CommentId,
     CommentKind,
+    Ending,
     IdeaId,
     IdeaStatus,
     LinkKind,
     RoleName,
+    RunId,
     TargetKind,
     TargetRef,
 )
@@ -65,6 +87,7 @@ from piloop.plugins.secrets.contract import HomeSecrets
 from piloop.plugins.secrets.local import LocalSecrets
 from piloop.settings import Settings
 from piloop.watch.panels import Context, InboxPanel
+from tests.campaign.test_stop import add_run
 from tests.conftest import disk, home_cas, serving_api
 
 
@@ -151,18 +174,23 @@ def test_the_events_long_poll_answers_the_first_event_that_matches_or_its_moved_
         assert [e.kind for e in woke.events] == ['wanted'], 'another session commits: the wait wakes on it'
 
 
-@pytest.mark.parametrize('poll', ['events', 'news'])
+@pytest.mark.parametrize('poll', ['events', 'news', 'prompt'])
 def test_a_long_poll_answers_its_moved_cursor_at_once_when_the_server_closes(
     db: Database, campaign: Campaign, cfg: Settings, poll: str
 ) -> None:
+    with db.session() as s:
+        s.add(AgentSession(kind='research', campaign_id=1, state=AgentSessionState.RUNNING))
+        s.commit()
     with serving_api(cfg) as [server], Client.on(cfg.socket_file, System.HUMAN) as client:
         threading.Timer(0.3, server.close).start()
         began = time.monotonic()
         match poll:
             case 'events':
                 assert client.events(EventsQuery(kind=('wanted',), limit=1000, wait=20)).more is False
-            case _:
+            case 'news':
                 assert client.news(NewsQuery(wait=20)).items == []
+            case _:
+                assert client.prompt(AgentSessionId(1), PromptBody(text='x', wait=20)).delivery == Pending()
     assert time.monotonic() - began < 15
 
 
@@ -171,7 +199,7 @@ def test_the_server_serves_the_openapi_document_of_its_routes(cfg: Settings, db:
         assert client._http.get(OPENAPI).json() == openapi()
     paths = openapi()['paths']
     assert isinstance(paths, dict) and sorted(paths) == sorted(
-        {r.path for r in router.routes if isinstance(r, APIRoute)}
+        {r.path for routes in ROUTERS for r in routes.routes if isinstance(r, APIRoute)}
     )
 
 
@@ -226,7 +254,7 @@ def test_each_method_of_the_client_calls_its_route_with_the_route_s_models() -> 
         return httpx.Response(500, text='only the request counts')
 
     client = Client(httpx.Client(transport=httpx.MockTransport(record), base_url='http://piloop'))
-    for route in router.routes:
+    for route in [r for routes in ROUTERS for r in routes.routes]:
         assert isinstance(route, APIRoute)
         hints = get_type_hints(getattr(client, route.name))
         answer, taken = hints.pop('return'), list(hints.items())
@@ -376,8 +404,173 @@ def test_a_write_answers_its_cursor_and_refuses_what_its_operation_refuses(
         with pytest.raises(Refused, match='^no idea#9$') as no_target:
             client.link(added.idea.id, LinkKind.AFTER, IdeaId(9), Reasoned(reason='hm'))
         assert no_idea.value.error == no_target.value.error == Problem.UNKNOWN_IDEA
+        with pytest.raises(Refused, match='^no candidate#9$') as no_candidate:
+            client.remeasure(CandidateId(9), RemeasureBody())
+        assert no_candidate.value.error == Problem.UNKNOWN_CANDIDATE
         [result] = client.ack(AckBody(ids=(CommentId(9),))).results
         assert result.line() == 'comment#9 is not in the inbox'
+
+
+def test_the_evaluation_queue_answers_each_state_and_a_cancel_refuses_a_candidate_that_waits_for_nothing(
+    db: Database, campaign: Campaign, cfg: Settings
+) -> None:
+    then = utcnow() - timedelta(hours=1)
+    with db.session() as s:
+        s.add(Evaluation(candidate_id=1, evaluator_id=campaign.evaluator_id, created_at=then, started_at=then))
+        s.commit()
+    with serving_api(cfg), Client.on(cfg.socket_file, System.ORCHESTRATOR) as client:
+        [running] = client.evaluations().evaluations
+        assert (running.candidate, running.campaign, running.summary) == (1, 'demo', 'baseline')
+        assert running.state == RunningSince(since=then)
+        assert client.cancel_evaluation(CandidateId(1)).candidate.id == 1
+        [stopping] = client.evaluations().evaluations
+        assert stopping.state == CancelledBy(by='orchestrator'), 'it runs until the daemon stops its evaluator'
+        with pytest.raises(
+            Refused, match='^candidate#1 has no evaluation that waits or runs: see `piloop eval queue`$'
+        ) as twice:
+            client.cancel_evaluation(CandidateId(1))
+        assert twice.value.error == Problem.REFUSED
+        with pytest.raises(Refused, match='^no candidate#9$') as unknown:
+            client.cancel_evaluation(CandidateId(9))
+        assert unknown.value.error == Problem.UNKNOWN_CANDIDATE
+
+
+def test_a_limit_is_set_and_unset_by_an_admin_and_refused_on_a_key_that_is_not_live(
+    db: Database, campaign: Campaign, cfg: Settings
+) -> None:
+    key = 'executor.pools.serve.evaluations'
+    with serving_api(cfg, listen='127.0.0.1:0') as [_, tcp], Client.on(cfg.socket_file, System.HUMAN) as client:
+        assert {k.key: k.origin for k in client.limits().keys}[key] == 'default'
+        set_ = client.set_limit(key, LimitBody(value=1, reason='the GPU is busy'))
+        [limit] = [k for k in set_.keys if k.key == key]
+        assert (limit.value, limit.origin, limit.actor, limit.reason) == (1, 'limit', 'human', 'the GPU is busy')
+        with pytest.raises(Refused, match='^executor.renew_seconds is not a live key') as not_live:
+            client.set_limit('executor.renew_seconds', LimitBody(value=5, reason='r'))
+        assert not_live.value.error == Problem.REFUSED
+        [config] = [k for k in client.unset_limit(key).keys if k.key == key]
+        assert (config.value, config.origin) == (2, 'default'), 'config.toml holds again'
+        with pytest.raises(Refused, match=f'^{key} has no limit: see `piloop limits`$') as unknown:
+            client.unset_limit(key)
+        assert unknown.value.error == Problem.UNKNOWN_LIMIT
+        actor = {'Authorization': f'Bearer {token(db, "ana", Access.ACT)}'}
+        refused = httpx.get(tcp.url + '/v1/limits', headers=actor)
+    assert refused.json() == {'detail': 'ana has act access, and this route needs admin'}
+
+
+def test_an_admin_makes_a_token_whose_secret_only_its_answer_carries_and_revokes_it(
+    db: Database, campaign: Campaign, cfg: Settings
+) -> None:
+    with serving_api(cfg, listen='127.0.0.1:0') as [_, tcp], Client.on(cfg.socket_file, System.HUMAN) as client:
+        made = client.create_token(TokenBody(name='gpu1', access=Access.WORKER))
+        secret = made.secret.get_secret_value()
+        assert secret not in repr(made), 'a log of the answer shows no secret'
+        assert Tokens(db).verify(secret) == tokens.Caller('gpu1', Access.WORKER)
+        with pytest.raises(Refused, match="^a token is called 'gpu1' already") as taken:
+            client.create_token(TokenBody(name='gpu1', access=Access.READ))
+        assert taken.value.error == Problem.REFUSED
+        [listed] = client.list_tokens().tokens
+        assert (listed.name, listed.access, listed.created_at) == ('gpu1', Access.WORKER, made.created_at)
+        assert client.revoke_token('gpu1').tokens == []
+        with pytest.raises(Refused, match="^no token is called 'gpu1'$") as unknown:
+            client.revoke_token('gpu1')
+        assert unknown.value.error == Problem.UNKNOWN_TOKEN
+        actor = {'Authorization': f'Bearer {token(db, "ana", Access.ACT)}'}
+        refused = httpx.post(tcp.url + '/v1/tokens', headers=actor, json={'name': 'mine', 'access': 'admin'})
+    assert refused.json() == {'detail': 'ana has act access, and this route needs admin'}
+
+
+def test_an_agent_is_requested_of_a_sweeping_role_only(db: Database, campaign: Campaign, cfg: Settings) -> None:
+    with serving_api(cfg), Client.on(cfg.socket_file, System.ORCHESTRATOR) as client:
+        asked = client.launch('demo', LaunchBody(role=RoleName('research'), model='opus', reason='look again'))
+        with pytest.raises(Refused, match="^demo has no sweeping role 'janitor'; it has research, ") as refused:
+            client.launch('demo', LaunchBody(role=RoleName('janitor'), reason='sweep'))
+    assert refused.value.error == Problem.REFUSED
+    with db.session() as s:
+        agent = s.get_one(AgentSession, asked.agent)
+        assert (asked.role, agent.kind, agent.model, agent.reason) == ('research', 'research', 'opus', 'look again')
+
+
+def outcome(db: Database, comment: CommentId) -> None:
+    with db.session() as s:
+        queued = PromptOutcome(kind='comment.queued', comment=comment)
+        emit(s, queued, TargetRef(TargetKind.AGENT_SESSION, 1), System.DAEMON)
+        s.commit()
+
+
+def test_a_prompt_waits_for_what_came_of_its_note_and_refuses_an_agent_that_does_not_run(
+    db: Database, campaign: Campaign, cfg: Settings
+) -> None:
+    with db.session() as s:
+        s.add_all(
+            [
+                AgentSession(kind='research', campaign_id=1, state=AgentSessionState.RUNNING),
+                AgentSession(kind='research', campaign_id=1, state=AgentSessionState.EXITED),
+            ]
+        )
+        s.commit()
+    with serving_api(cfg), Client.on(cfg.socket_file, System.ORCHESTRATOR) as client:
+        unanswered = client.prompt(AgentSessionId(1), PromptBody(text='look at #3'))
+        assert (unanswered.comment, unanswered.delivery) == (1, Pending()), 'no wait: it answers at once'
+        threading.Timer(0.2, outcome, [db, CommentId(2)]).start()
+        started = time.monotonic()
+        queued = client.prompt(AgentSessionId(1), PromptBody(text='and #4', wait=20))
+        assert (queued.comment, queued.delivery) == (2, Queued()) and time.monotonic() - started < 10
+        with pytest.raises(Refused, match='^agent_session#2 is not running$') as ended:
+            client.prompt(AgentSessionId(2), PromptBody(text='x'))
+        assert ended.value.error == Problem.REFUSED
+        with pytest.raises(Refused, match='^no agent_session#9$') as unknown:
+            client.prompt(AgentSessionId(9), PromptBody(text='x'))
+        assert unknown.value.error == Problem.UNKNOWN_AGENT
+    with db.session() as s:
+        assert s.get_one(Comment, 1).author == 'orchestrator'
+
+
+def test_a_cancel_asks_the_daemon_to_end_an_open_run_or_a_live_agent_and_refuses_a_closed_one(
+    db: Database, campaign: Campaign, cfg: Settings
+) -> None:
+    add_run(db, campaign, status=RunStatus.RUNNING, measured=False)
+    add_run(db, campaign, measured=False)
+    with db.session() as s:
+        s.add_all(
+            [
+                AgentSession(kind='research', campaign_id=1, state=AgentSessionState.REQUESTED),
+                AgentSession(kind='research', campaign_id=1, state=AgentSessionState.EXITED),
+            ]
+        )
+        s.commit()
+    with serving_api(cfg), Client.on(cfg.socket_file, System.ORCHESTRATOR) as client:
+        agent = client.cancel_agent(AgentSessionId(1), CancelBody())
+        run = client.cancel_run(RunId(1), CancelBody(ending=Ending.WRAP_UP))
+        assert (agent.agent, agent.role, run.run) == (1, 'research', 1)
+        with pytest.raises(Refused, match='^agent_session#2 is not requested, starting or running$') as ended:
+            client.cancel_agent(AgentSessionId(2), CancelBody())
+        with pytest.raises(Refused, match='^run#2 is not queued or running$') as closed:
+            client.cancel_run(RunId(2), CancelBody())
+        assert ended.value.error == closed.value.error == Problem.REFUSED
+        with pytest.raises(Refused, match='^no agent_session#9$') as no_agent:
+            client.cancel_agent(AgentSessionId(9), CancelBody())
+        assert no_agent.value.error == Problem.UNKNOWN_AGENT
+        with pytest.raises(Refused, match='^no run#9$') as no_run:
+            client.cancel_run(RunId(9), CancelBody())
+        assert no_run.value.error == Problem.UNKNOWN_RUN
+    with db.session() as s:
+        asked = [
+            (e.kind, e.target_id, e.actor) for e in s.scalars(select(Event)) if e.kind.endswith('cancel_requested')
+        ]
+    assert asked == [('agent_session.cancel_requested', 1, 'orchestrator'), ('run.cancel_requested', 1, 'orchestrator')]
+
+
+def test_a_journal_line_is_signed_by_the_caller_s_actor_and_the_server_refuses_one_too_long(
+    db: Database, campaign: Campaign, cfg: Settings
+) -> None:
+    with serving_api(cfg), Client.on(cfg.socket_file, System.ORCHESTRATOR) as client:
+        written = client.journal(JournalBody(line=' parked idea#4:\n dup of #2 '))
+        with pytest.raises(Refused, match='^line: a journal line is 1 to 280 bytes, not 281: say less$') as long:
+            client.journal(JournalBody.model_construct(line='x' * 281))
+    assert long.value.error is None
+    with db.session() as s:
+        entry = s.get_one(Journal, written.journal)
+        assert (entry.author, entry.line) == ('orchestrator', 'parked idea#4: dup of #2')
 
 
 def test_a_write_needs_act_access_and_a_caller_whose_name_signs(

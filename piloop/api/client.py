@@ -21,39 +21,63 @@ from piloop.api.contract import (
     MAX_POLL_SECONDS,
     AckBody,
     BaseBody,
+    CancelBody,
     DevelopBody,
     EventsQuery,
     IdeaBody,
+    ImportBody,
     InboxQuery,
+    JournalBody,
+    LaunchBody,
+    LimitBody,
     NewsQuery,
+    NoteBody,
     Params,
     PauseBody,
     Polled,
+    PromptBody,
     Reasoned,
+    RemeasureBody,
     ReplyBody,
+    Report,
     SeedBody,
     Selection,
     StatusBody,
     StopBody,
+    TokenBody,
     TrackBody,
+    VerdictBody,
 )
 from piloop.api.views import (
     Acked,
+    AgentAnswer,
     Batch,
     CampaignAnswer,
+    CandidateAnswer,
     Defined,
+    EvaluationQueue,
     IdeaAnswer,
     Inbox,
+    Journaled,
+    LiveKeys,
+    MeasurementAdded,
     News,
+    Noted,
     Overview,
     ProblemDetail,
+    Prompted,
+    Remeasured,
     Replied,
+    RunAnswer,
     Status,
     StatusChanged,
     Thread,
+    TokenList,
+    TokenMade,
     TrackChanged,
+    VerdictChanged,
 )
-from piloop.ids import CommentId, IdeaId, LinkKind
+from piloop.ids import AgentSessionId, CandidateId, CommentId, IdeaId, LinkKind, RunId
 
 TIMEOUT_SECONDS = 30
 """How long a call waits for its answer, beyond a long-poll's own wait."""
@@ -157,6 +181,60 @@ class Client:
     def set_track(self, idea: IdeaId, body: TrackBody) -> TrackChanged:
         return self._post(f'/v1/ideas/{idea}/track', body, TrackChanged)
 
+    def import_candidate(self, campaign: str, body: ImportBody) -> CandidateAnswer:
+        return self._post(f'/v1/campaigns/{_segment(campaign)}/candidates', body, CandidateAnswer)
+
+    def remeasure(self, candidate: CandidateId, body: RemeasureBody) -> Remeasured:
+        return self._post(f'/v1/candidates/{candidate}/remeasure', body, Remeasured)
+
+    def note(self, candidate: CandidateId, body: NoteBody) -> Noted:
+        return self._post(f'/v1/candidates/{candidate}/note', body, Noted)
+
+    def set_verdict(self, candidate: CandidateId, body: VerdictBody) -> VerdictChanged:
+        return self._post(f'/v1/candidates/{candidate}/verdict', body, VerdictChanged)
+
+    def add_measurement(self, candidate: CandidateId, body: Report) -> MeasurementAdded:
+        return self._post(f'/v1/candidates/{candidate}/measurements', body, MeasurementAdded)
+
+    def evaluations(self) -> EvaluationQueue:
+        return self._get('/v1/evaluations', Params(), EvaluationQueue)
+
+    def cancel_evaluation(self, candidate: CandidateId) -> CandidateAnswer:
+        return self._post(f'/v1/candidates/{candidate}/evaluation/cancel', None, CandidateAnswer)
+
+    def limits(self) -> LiveKeys:
+        return self._get('/v1/limits', Params(), LiveKeys)
+
+    def set_limit(self, key: str, body: LimitBody) -> LiveKeys:
+        return self._send('PUT', f'/v1/limits/{_segment(key)}', body, LiveKeys)
+
+    def unset_limit(self, key: str) -> LiveKeys:
+        return self._send('DELETE', f'/v1/limits/{_segment(key)}', None, LiveKeys)
+
+    def list_tokens(self) -> TokenList:
+        return self._get('/v1/tokens', Params(), TokenList)
+
+    def create_token(self, body: TokenBody) -> TokenMade:
+        return self._post('/v1/tokens', body, TokenMade)
+
+    def revoke_token(self, name: str) -> TokenList:
+        return self._send('DELETE', f'/v1/tokens/{_segment(name)}', None, TokenList)
+
+    def launch(self, campaign: str, body: LaunchBody) -> AgentAnswer:
+        return self._post(f'/v1/campaigns/{_segment(campaign)}/agents', body, AgentAnswer)
+
+    def prompt(self, agent: AgentSessionId, body: PromptBody) -> Prompted:
+        return self._post(f'/v1/agents/{agent}/prompt', body, Prompted)
+
+    def cancel_agent(self, agent: AgentSessionId, body: CancelBody) -> AgentAnswer:
+        return self._post(f'/v1/agents/{agent}/cancel', body, AgentAnswer)
+
+    def cancel_run(self, run: RunId, body: CancelBody) -> RunAnswer:
+        return self._post(f'/v1/runs/{run}/cancel', body, RunAnswer)
+
+    def journal(self, body: JournalBody) -> Journaled:
+        return self._post('/v1/journal', body, Journaled)
+
     def ack(self, body: AckBody) -> Acked:
         return self._post('/v1/inbox/ack', body, Acked)
 
@@ -169,9 +247,8 @@ class Client:
         Raises:
             Refused: The daemon refused the call.
         """
-        wait = query.wait if isinstance(query, Polled) else 0
         params = query.model_dump(mode='json', exclude_defaults=True)
-        response = self._http.get(path, params=params, timeout=TIMEOUT_SECONDS + min(wait, MAX_POLL_SECONDS))
+        response = self._http.get(path, params=params, timeout=_timeout(query))
         return _answer(response, answer)
 
     def _post[A: BaseModel](self, path: str, body: Params | None, answer: type[A]) -> A:
@@ -185,13 +262,18 @@ class Client:
         """
         content = None if body is None else body.model_dump_json()
         headers = None if body is None else {'content-type': 'application/json'}
-        response = self._http.request(method, path, content=content, headers=headers, timeout=TIMEOUT_SECONDS)
+        response = self._http.request(method, path, content=content, headers=headers, timeout=_timeout(body))
         return _answer(response, answer)
 
 
-def _segment(campaign: str) -> str:
-    """A campaign's name as one segment of a path."""
-    return quote(campaign, safe='')
+def _timeout(params: Params | None) -> float:
+    """How long a call waits for its answer: a long-poll's own wait, and ``TIMEOUT_SECONDS``."""
+    return TIMEOUT_SECONDS + (min(params.wait, MAX_POLL_SECONDS) if isinstance(params, Polled) else 0)
+
+
+def _segment(name: str) -> str:
+    """A name, such as a campaign's or a key, as one segment of a path."""
+    return quote(name, safe='')
 
 
 def _answer[A: BaseModel](response: httpx.Response, answer: type[A]) -> A:

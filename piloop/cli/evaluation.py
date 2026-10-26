@@ -1,15 +1,16 @@
-"""The ``piloop eval`` commands: list the evaluation queue, and cancel the evaluation of a candidate."""
+"""The ``piloop eval`` commands, clients of the API: list the evaluation queue, and cancel the evaluation of a candidate."""
 
-from typing import Annotated
+from datetime import UTC, datetime
+from typing import Annotated, assert_never
 
 import cyclopts
 from rich.table import Table
 from rich.text import Text
 
-from piloop.cli import common, local
-from piloop.db.models import Campaign, Candidate, utcnow
+from piloop.api.views import CancelledBy, EvaluationState, RunningSince, WaitingSince
+from piloop.cli import common
+from piloop.cli.client import api
 from piloop.ids import CandidateId
-from piloop.scoring import queue
 from piloop.text import age, cell
 
 app = cyclopts.App(name='eval')  # its help is where piloop.cli.main registers it
@@ -22,30 +23,31 @@ def eval_queue() -> None:
     The last line counts them. A free slot of the executor goes to the campaign with the fewest running evaluations,
     and in that campaign to its head first, then to the oldest request. A requested remeasure shows as waiting at once.
     """
-    with local.session() as s:
-        now = utcnow()
-        evaluations = queue.listing(s)
-        rows: list[tuple[Candidate, str]] = []
-        for e in evaluations:
-            if e.cancelled_by is not None:
-                state = f'cancelled by {e.cancelled_by}'
-            elif e.started_at is not None:
-                state = f'running {age(e.started_at, now)}'
-            else:
-                state = f'waiting {age(e.created_at, now)}'
-            rows.append((e.candidate, state))
-        rows += [(c, f'waiting {age(asked, now)}') for c, asked in queue.requested(s)]
-        table = Table('candidate', 'campaign', 'state', 'summary', box=None)
-        for candidate, state in rows:
-            campaign = s.get_one(Campaign, candidate.campaign_id).name
-            table.add_row(f'candidate#{candidate.id}', campaign, state, Text(cell(candidate.summary or '')))
-        running = sum(e.started_at is not None for e in evaluations)
-    if rows:
+    with api() as client:
+        evaluations = client.evaluations().evaluations
+    now = datetime.now(UTC)
+    table = Table('candidate', 'campaign', 'state', 'summary', box=None)
+    for e in evaluations:
+        table.add_row(f'candidate#{e.candidate}', e.campaign, _state(e.state, now), Text(cell(e.summary or '')))
+    waiting = sum(isinstance(e.state, WaitingSince) for e in evaluations)
+    if evaluations:
         common.console.print(table)
     common.console.print(
-        f'{running} running, {len(rows) - running} waiting; `piloop eval cancel <candidate>`',
+        f'{len(evaluations) - waiting} running, {waiting} waiting; `piloop eval cancel <candidate>`',
         markup=False,
     )
+
+
+def _state(state: EvaluationState, now: datetime) -> str:
+    match state:
+        case RunningSince(since=since):
+            return f'running {age(since, now)}'
+        case WaitingSince(since=since):
+            return f'waiting {age(since, now)}'
+        case CancelledBy(by=by):
+            return f'cancelled by {by}'
+        case _:
+            assert_never(state)
 
 
 @app.command(name='cancel')
@@ -59,8 +61,6 @@ def eval_cancel(
     candidate is judged a `crash`, and a daemon restart does not run it again. It is evaluated again only when someone
     asks (`piloop candidate remeasure`).
     """
-    with local.session() as s:
-        if not queue.cancel(s, candidate_id, common.settings.actor):
-            raise SystemExit(f'candidate#{candidate_id} has no evaluation that waits or runs: see `piloop eval queue`')
-        s.commit()
+    with api() as client:
+        client.cancel_evaluation(candidate_id)
     common.console.print(f'candidate#{candidate_id}: its evaluation is cancelled', markup=False)

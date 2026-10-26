@@ -1,4 +1,4 @@
-"""The ``piloop measurement`` command: record a measurement made outside the daemon."""
+"""The ``piloop measurement`` command, a client of the API: record a measurement made outside the daemon."""
 
 from pathlib import Path
 from typing import Annotated
@@ -6,8 +6,9 @@ from typing import Annotated
 import cyclopts
 from pydantic import ValidationError
 
-from piloop.campaign import ops
-from piloop.cli import common, local
+from piloop.api.contract import Report
+from piloop.cli import common
+from piloop.cli.client import api
 from piloop.ids import CandidateId
 
 app = cyclopts.App(name='measurement')  # its help is where piloop.cli.main registers it
@@ -33,12 +34,9 @@ def measurement_add(
     says which. The measurement is signed as PILOOP_ACTOR.
     """
     try:
-        parsed = ops.Report.model_validate_json(report.read_text())
+        parsed = Report.model_validate_json(report.read_text())
     except ValidationError as e:
         raise SystemExit(f'the report is not {{"metrics": {{…}}, "seconds": …, "error": …}}: {e}') from e
-    with local.refused(), local.session() as s:
-        added = ops.add_measurement(s, candidate_id, parsed, actor=common.settings.actor)
-        s.commit()
-        common.console.print(
-            f'measurement#{added.measurement.id} of candidate#{candidate_id}: {added.effect}', markup=False
-        )
+    with api() as client:
+        added = client.add_measurement(candidate_id, parsed)
+    common.console.print(f'measurement#{added.measurement} of candidate#{candidate_id}: {added.effect}', markup=False)

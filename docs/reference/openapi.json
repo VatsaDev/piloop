@@ -822,6 +822,729 @@
         }
       }
     },
+    "/v1/limits": {
+      "get": {
+        "summary": "Limits",
+        "description": "Each live key: its value, and where it comes from (the default, ``config.toml``, or a limit).",
+        "operationId": "limits",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LiveKeys"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/limits/{key}": {
+      "put": {
+        "summary": "Set Limit",
+        "description": "Set a live key. It wins over ``config.toml`` at once, and holds until it is unset.",
+        "operationId": "set_limit",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LimitBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LiveKeys"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Unset Limit",
+        "description": "Remove a limit: ``config.toml`` holds again at once.",
+        "operationId": "unset_limit",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LiveKeys"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/tokens": {
+      "get": {
+        "summary": "List Tokens",
+        "description": "The bearer tokens: name, access and when each was made. Never the secrets.",
+        "operationId": "list_tokens",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenList"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create Token",
+        "description": "Make a token, and answer its secret: the only time that it is shown, since the home keeps its hash only.",
+        "operationId": "create_token",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TokenBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenMade"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/tokens/{name}": {
+      "delete": {
+        "summary": "Revoke Token",
+        "description": "Delete a token: the next call with it gets 401.",
+        "operationId": "revoke_token",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenList"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/campaigns/{campaign}/agents": {
+      "post": {
+        "summary": "Launch",
+        "description": "Ask the daemon for one more agent of a sweeping role: it launches it at once, within ``max_concurrent``.",
+        "operationId": "launch",
+        "parameters": [
+          {
+            "name": "campaign",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "The campaign's name.",
+              "title": "Campaign"
+            },
+            "description": "The campaign's name."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LaunchBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentAnswer"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{agent}/prompt": {
+      "post": {
+        "summary": "Prompt",
+        "description": "Queue a message for the next turn of a running agent: a note on it, which the daemon delivers.\n\nWith wait, it answers once something came of the note, or at the end of the wait with ``pending``. The note is\nwritten first, in the thread pool; between two reads of its outcome the route holds no thread.",
+        "operationId": "prompt",
+        "parameters": [
+          {
+            "name": "agent",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Agent"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PromptBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Prompted"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{agent}/cancel": {
+      "post": {
+        "summary": "Cancel Agent",
+        "description": "Cancel an agent of any role: a requested one never starts, a running one ends as ``ending`` says.\n\nFor an implementer, this cancels its run. The daemon acts at once.",
+        "operationId": "cancel_agent",
+        "parameters": [
+          {
+            "name": "agent",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Agent"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentAnswer"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/journal": {
+      "post": {
+        "summary": "Journal",
+        "description": "Append a line to the orchestrator's journal, signed by the caller's actor. ``piloop wake`` prints it.",
+        "operationId": "journal",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JournalBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Journaled"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/inbox/ack": {
+      "post": {
+        "summary": "Ack",
+        "description": "Acknowledge inbox items, to say that the caller has seen them. Nothing waits for an acknowledgement.",
+        "operationId": "ack",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AckBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Acked"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/inbox/{comment}/reply": {
+      "post": {
+        "summary": "Reply",
+        "description": "Answer an inbox item with a ``decision`` on the root of its thread, which is an inbox item of its own.",
+        "operationId": "reply",
+        "parameters": [
+          {
+            "name": "comment",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Comment"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReplyBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Replied"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/campaigns/{campaign}/ideas": {
       "post": {
         "summary": "Add Idea",
@@ -1418,20 +2141,33 @@
         }
       }
     },
-    "/v1/inbox/ack": {
+    "/v1/campaigns/{campaign}/candidates": {
       "post": {
-        "summary": "Ack",
-        "description": "Acknowledge inbox items, to say that the caller has seen them. Nothing waits for an acknowledgement.",
-        "operationId": "ack",
+        "summary": "Import Candidate",
+        "description": "Register the files of a version as a reference candidate: a starting point for an idea.",
+        "operationId": "import_candidate",
+        "parameters": [
+          {
+            "name": "campaign",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "The campaign's name.",
+              "title": "Campaign"
+            },
+            "description": "The campaign's name."
+          }
+        ],
         "requestBody": {
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/AckBody"
+                "$ref": "#/components/schemas/ImportBody"
               }
             }
-          },
-          "required": true
+          }
         },
         "responses": {
           "200": {
@@ -1439,7 +2175,336 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Acked"
+                  "$ref": "#/components/schemas/CandidateAnswer"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/candidates/{candidate}/remeasure": {
+      "post": {
+        "summary": "Remeasure",
+        "description": "Ask the daemon to measure a candidate again, next to its bar, with the current evaluator.",
+        "operationId": "remeasure",
+        "parameters": [
+          {
+            "name": "candidate",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Candidate"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RemeasureBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Remeasured"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/candidates/{candidate}/note": {
+      "post": {
+        "summary": "Note",
+        "description": "Keep a regressed result in view as a lead, with follow-up seeds pinned to it.",
+        "operationId": "note",
+        "parameters": [
+          {
+            "name": "candidate",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Candidate"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NoteBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Noted"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/candidates/{candidate}/verdict": {
+      "post": {
+        "summary": "Set Verdict",
+        "description": "Override a candidate's judgement, with the reason. The verdict is then the caller's.",
+        "operationId": "set_verdict",
+        "parameters": [
+          {
+            "name": "candidate",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Candidate"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerdictBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VerdictChanged"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/candidates/{candidate}/measurements": {
+      "post": {
+        "summary": "Add Measurement",
+        "description": "Record a measurement of a candidate under the campaign's current evaluator, and have its verdict judged again.",
+        "operationId": "add_measurement",
+        "parameters": [
+          {
+            "name": "candidate",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Candidate"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Report"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeasurementAdded"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/evaluations": {
+      "get": {
+        "summary": "Evaluations",
+        "description": "The evaluation queue: the running evaluations, then the waiting ones in the order in which they get a slot.",
+        "operationId": "evaluations",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvaluationQueue"
                 }
               }
             }
@@ -1463,6 +2528,56 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/v1/candidates/{candidate}/evaluation/cancel": {
+      "post": {
+        "summary": "Cancel Evaluation",
+        "description": "Cancel a candidate's evaluation, waiting or running, or its requested remeasure: it measures a crash at once.",
+        "operationId": "cancel_evaluation",
+        "parameters": [
+          {
+            "name": "candidate",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Candidate"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CandidateAnswer"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Conflict"
           },
           "422": {
             "description": "Validation Error",
@@ -1477,19 +2592,19 @@
         }
       }
     },
-    "/v1/inbox/{comment}/reply": {
+    "/v1/runs/{run}/cancel": {
       "post": {
-        "summary": "Reply",
-        "description": "Answer an inbox item with a ``decision`` on the root of its thread, which is an inbox item of its own.",
-        "operationId": "reply",
+        "summary": "Cancel Run",
+        "description": "Cancel a queued or running run: a queued one never starts, a running implementer ends as ``ending`` says.",
+        "operationId": "cancel_run",
         "parameters": [
           {
-            "name": "comment",
+            "name": "run",
             "in": "path",
             "required": true,
             "schema": {
               "type": "integer",
-              "title": "Comment"
+              "title": "Run"
             }
           }
         ],
@@ -1498,7 +2613,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ReplyBody"
+                "$ref": "#/components/schemas/CancelBody"
               }
             }
           }
@@ -1509,7 +2624,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Replied"
+                  "$ref": "#/components/schemas/RunAnswer"
                 }
               }
             }
@@ -1550,6 +2665,17 @@
   },
   "components": {
     "schemas": {
+      "Access": {
+        "type": "string",
+        "enum": [
+          "read",
+          "act",
+          "admin",
+          "worker"
+        ],
+        "title": "Access",
+        "description": "What a caller of the server may do. A token has one (``piloop token create --access``)."
+      },
       "AckBody": {
         "properties": {
           "ids": {
@@ -1629,6 +2755,30 @@
         ],
         "title": "Acked",
         "description": "What an acknowledgement did to each id, read at ``cursor``."
+      },
+      "AgentAnswer": {
+        "properties": {
+          "cursor": {
+            "type": "integer",
+            "title": "Cursor"
+          },
+          "agent": {
+            "type": "integer",
+            "title": "Agent"
+          },
+          "role": {
+            "type": "string",
+            "title": "Role"
+          }
+        },
+        "type": "object",
+        "required": [
+          "cursor",
+          "agent",
+          "role"
+        ],
+        "title": "AgentAnswer",
+        "description": "An agent that a change requested or asked to cancel, read at ``cursor``."
       },
       "AnomalyNews": {
         "properties": {
@@ -1965,6 +3115,121 @@
         "title": "CampaignStatus",
         "description": "Whether the daemon still requests work for a campaign. ``stopped`` after a ``[stop]`` condition held."
       },
+      "CancelBody": {
+        "properties": {
+          "ending": {
+            "$ref": "#/components/schemas/Ending",
+            "description": "How its running agents end: at once, or after they were told to save their work and stop.",
+            "default": "now"
+          }
+        },
+        "type": "object",
+        "title": "CancelBody",
+        "description": "How to cancel a run or an agent."
+      },
+      "CancelledBy": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "cancelled",
+            "title": "Kind",
+            "default": "cancelled"
+          },
+          "by": {
+            "type": "string",
+            "title": "By",
+            "description": "Who cancelled it, as the actor signs."
+          }
+        },
+        "type": "object",
+        "required": [
+          "by"
+        ],
+        "title": "CancelledBy",
+        "description": "A running evaluation that someone cancelled: the daemon stops its evaluator."
+      },
+      "CandidateAnswer": {
+        "properties": {
+          "cursor": {
+            "type": "integer",
+            "title": "Cursor"
+          },
+          "candidate": {
+            "$ref": "#/components/schemas/CandidateView"
+          }
+        },
+        "type": "object",
+        "required": [
+          "cursor",
+          "candidate"
+        ],
+        "title": "CandidateAnswer",
+        "description": "A candidate that a change wrote, read at ``cursor``."
+      },
+      "CandidateView": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label",
+            "description": "The verdict as a person reads it: the verdict, ``pending``, or the origin of a candidate that is never judged."
+          },
+          "cause": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Cause"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "verdict_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verdict Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "summary",
+          "label",
+          "cause",
+          "verdict_reason"
+        ],
+        "title": "CandidateView",
+        "description": "A candidate, as the change that wrote it left it."
+      },
+      "Cause": {
+        "type": "string",
+        "enum": [
+          "note",
+          "moved"
+        ],
+        "title": "Cause",
+        "description": "Why an ``interesting`` verdict is not the verdict rule's own.\n\n``note``: an agent marked a regressed result as a lead (``piloop candidate note``, the ``Piloop-Note`` trailer).\n``moved``: it kept against its own bar, but the head moved on, so it was merged onto the head."
+      },
       "CommentKind": {
         "type": "string",
         "enum": [
@@ -2147,6 +3412,44 @@
         ],
         "title": "Defined",
         "description": "An idea that ``add`` or ``develop`` defined."
+      },
+      "Delivered": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "delivered",
+            "title": "Kind",
+            "default": "delivered"
+          }
+        },
+        "type": "object",
+        "title": "Delivered",
+        "description": "The agent read the note."
+      },
+      "Delivery": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/Pending"
+          },
+          {
+            "$ref": "#/components/schemas/Queued"
+          },
+          {
+            "$ref": "#/components/schemas/Delivered"
+          },
+          {
+            "$ref": "#/components/schemas/Undelivered"
+          }
+        ],
+        "discriminator": {
+          "propertyName": "kind",
+          "mapping": {
+            "delivered": "#/components/schemas/Delivered",
+            "pending": "#/components/schemas/Pending",
+            "queued": "#/components/schemas/Queued",
+            "undelivered": "#/components/schemas/Undelivered"
+          }
+        }
       },
       "DevelopBody": {
         "properties": {
@@ -2334,6 +3637,44 @@
         ],
         "title": "Envelope",
         "description": "One event, as every reader sees it."
+      },
+      "EvaluationQueue": {
+        "properties": {
+          "evaluations": {
+            "items": {
+              "$ref": "#/components/schemas/QueuedEvaluation"
+            },
+            "type": "array",
+            "title": "Evaluations"
+          }
+        },
+        "type": "object",
+        "required": [
+          "evaluations"
+        ],
+        "title": "EvaluationQueue",
+        "description": "The running evaluations, oldest start first, then the waiting ones in the order in which they get a slot."
+      },
+      "EvaluationState": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/RunningSince"
+          },
+          {
+            "$ref": "#/components/schemas/WaitingSince"
+          },
+          {
+            "$ref": "#/components/schemas/CancelledBy"
+          }
+        ],
+        "discriminator": {
+          "propertyName": "kind",
+          "mapping": {
+            "cancelled": "#/components/schemas/CancelledBy",
+            "running": "#/components/schemas/RunningSince",
+            "waiting": "#/components/schemas/WaitingSince"
+          }
+        }
       },
       "Figure": {
         "properties": {
@@ -2618,6 +3959,33 @@
         "title": "IdeaView",
         "description": "An idea, as the change that wrote it left it."
       },
+      "ImportBody": {
+        "properties": {
+          "version": {
+            "type": "string",
+            "title": "Version",
+            "description": "A version as the campaign's vcs names one: a revision, a branch, a tag."
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary",
+            "description": "A summary of the candidate. Default: the version's own summary."
+          }
+        },
+        "type": "object",
+        "required": [
+          "version"
+        ],
+        "title": "ImportBody",
+        "description": "A version of the campaign's repo to register as a reference candidate."
+      },
       "Inbox": {
         "properties": {
           "cursor": {
@@ -2747,7 +4115,111 @@
         "title": "Item",
         "description": "An inbox item: a comment with a priority."
       },
+      "JournalBody": {
+        "properties": {
+          "line": {
+            "type": "string",
+            "title": "Line"
+          }
+        },
+        "type": "object",
+        "required": [
+          "line"
+        ],
+        "title": "JournalBody",
+        "description": "A line of the orchestrator's journal: a decision, a plan or a result, with its ids."
+      },
+      "Journaled": {
+        "properties": {
+          "cursor": {
+            "type": "integer",
+            "title": "Cursor"
+          },
+          "journal": {
+            "type": "integer",
+            "title": "Journal"
+          }
+        },
+        "type": "object",
+        "required": [
+          "cursor",
+          "journal"
+        ],
+        "title": "Journaled",
+        "description": "A line appended to the orchestrator's journal, read at ``cursor``."
+      },
       "JsonValue": {},
+      "KeyOrigin": {
+        "type": "string",
+        "enum": [
+          "default",
+          "config.toml",
+          "limit"
+        ],
+        "title": "KeyOrigin",
+        "description": "Where the value of a live key of a provider comes from (``piloop limits``)."
+      },
+      "LaunchBody": {
+        "properties": {
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "role": {
+            "type": "string",
+            "title": "Role"
+          },
+          "harness": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Harness",
+            "description": "The harness to use instead of the role's."
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model",
+            "description": "The model id, as the harness names it."
+          }
+        },
+        "type": "object",
+        "required": [
+          "reason",
+          "role"
+        ],
+        "title": "LaunchBody",
+        "description": "One more agent of a sweeping role (``[roles.<name>]``). The agent's brief includes the reason."
+      },
+      "LimitBody": {
+        "properties": {
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "value": {
+            "$ref": "#/components/schemas/JsonValue"
+          }
+        },
+        "type": "object",
+        "required": [
+          "reason",
+          "value"
+        ],
+        "title": "LimitBody",
+        "description": "A value for a live key, with why: it shows next to the value."
+      },
       "Lines": {
         "properties": {
           "kind": {
@@ -2851,9 +4323,7 @@
             "$ref": "#/components/schemas/JsonValue"
           },
           "origin": {
-            "type": "string",
-            "title": "Origin",
-            "description": "``default``, ``config.toml`` or ``limit``."
+            "$ref": "#/components/schemas/KeyOrigin"
           },
           "actor": {
             "anyOf": [
@@ -2889,6 +4359,78 @@
         ],
         "title": "LiveKey",
         "description": "A live key of a provider of the home (``piloop limits``), and where its value comes from."
+      },
+      "LiveKeys": {
+        "properties": {
+          "cursor": {
+            "type": "integer",
+            "title": "Cursor"
+          },
+          "keys": {
+            "items": {
+              "$ref": "#/components/schemas/LiveKey"
+            },
+            "type": "array",
+            "title": "Keys"
+          }
+        },
+        "type": "object",
+        "required": [
+          "cursor",
+          "keys"
+        ],
+        "title": "LiveKeys",
+        "description": "Each live key of the home's providers, read at ``cursor``."
+      },
+      "MeasurementAdded": {
+        "properties": {
+          "cursor": {
+            "type": "integer",
+            "title": "Cursor"
+          },
+          "measurement": {
+            "type": "integer",
+            "title": "Measurement"
+          },
+          "rejudged": {
+            "type": "boolean",
+            "title": "Rejudged",
+            "description": "Whether the daemon judges the candidate again (``RejudgeRequested``)."
+          },
+          "effect": {
+            "type": "string",
+            "title": "Effect",
+            "description": "What happens to the verdict, in one line: when the daemon judges it again, or why the verdict stays."
+          }
+        },
+        "type": "object",
+        "required": [
+          "cursor",
+          "measurement",
+          "rejudged",
+          "effect"
+        ],
+        "title": "MeasurementAdded",
+        "description": "A measurement recorded by hand, read at ``cursor``."
+      },
+      "Merge": {
+        "properties": {
+          "candidate": {
+            "type": "integer",
+            "title": "Candidate"
+          },
+          "head": {
+            "type": "integer",
+            "title": "Head"
+          }
+        },
+        "type": "object",
+        "required": [
+          "candidate",
+          "head"
+        ],
+        "title": "Merge",
+        "description": "A keep off the head, merged onto it: a candidate that the daemon measures and judges against that head."
       },
       "Named": {
         "properties": {
@@ -2961,6 +4503,68 @@
           }
         }
       },
+      "NoteBody": {
+        "properties": {
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "follow_ups": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Follow Ups",
+            "description": "A seed pinned to the candidate for each, for research to develop.",
+            "default": []
+          },
+          "track": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Track",
+            "description": "The track of the follow-ups. Default: the track of the candidate's run, else the first track."
+          }
+        },
+        "type": "object",
+        "required": [
+          "reason"
+        ],
+        "title": "NoteBody",
+        "description": "Why a regressed result is worth starting from, and the seeds to pin to it."
+      },
+      "Noted": {
+        "properties": {
+          "cursor": {
+            "type": "integer",
+            "title": "Cursor"
+          },
+          "candidate": {
+            "$ref": "#/components/schemas/CandidateView"
+          },
+          "seeds": {
+            "items": {
+              "$ref": "#/components/schemas/IdeaView"
+            },
+            "type": "array",
+            "title": "Seeds",
+            "description": "The follow-ups: seeds pinned to the candidate."
+          }
+        },
+        "type": "object",
+        "required": [
+          "cursor",
+          "candidate",
+          "seeds"
+        ],
+        "title": "Noted",
+        "description": "A regressed candidate kept in view as a lead."
+      },
       "OpenRun": {
         "properties": {
           "id": {
@@ -2999,6 +4603,17 @@
         ],
         "title": "OpenRun",
         "description": "A run that is queued or running."
+      },
+      "Outcome": {
+        "type": "string",
+        "enum": [
+          "keep",
+          "interesting",
+          "discard",
+          "crash"
+        ],
+        "title": "Outcome",
+        "description": "A verdict: what a rule gives, and what ``candidates.verdict`` holds. The column is NULL until a candidate is judged."
       },
       "Overview": {
         "properties": {
@@ -3050,6 +4665,19 @@
         "title": "PauseBody",
         "description": "How to pause a campaign."
       },
+      "Pending": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "pending",
+            "title": "Kind",
+            "default": "pending"
+          }
+        },
+        "type": "object",
+        "title": "Pending",
+        "description": "Nothing came of the note yet: the daemon queues it once the agent runs."
+      },
       "Priority": {
         "type": "integer",
         "maximum": 4.0,
@@ -3081,6 +4709,100 @@
         "title": "ProblemDetail",
         "description": "Why a route refuses a request, with its status: a ``Problem``, and what to do."
       },
+      "PromptBody": {
+        "properties": {
+          "wait": {
+            "type": "number",
+            "maximum": 25.0,
+            "minimum": 0.0,
+            "title": "Wait",
+            "description": "Seconds to hold the request while there is nothing to answer yet.",
+            "default": 0
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          }
+        },
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "title": "PromptBody",
+        "description": "A message for the next turn of a running agent. With wait, the answer waits for what came of it."
+      },
+      "Prompted": {
+        "properties": {
+          "cursor": {
+            "type": "integer",
+            "title": "Cursor"
+          },
+          "comment": {
+            "type": "integer",
+            "title": "Comment"
+          },
+          "delivery": {
+            "$ref": "#/components/schemas/Delivery"
+          }
+        },
+        "type": "object",
+        "required": [
+          "cursor",
+          "comment",
+          "delivery"
+        ],
+        "title": "Prompted",
+        "description": "A note on an agent, which the daemon delivers, and what came of it, read at ``cursor``."
+      },
+      "Queued": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "queued",
+            "title": "Kind",
+            "default": "queued"
+          }
+        },
+        "type": "object",
+        "title": "Queued",
+        "description": "The agent's runtime holds the note: the agent reads it at its next turn."
+      },
+      "QueuedEvaluation": {
+        "properties": {
+          "candidate": {
+            "type": "integer",
+            "title": "Candidate"
+          },
+          "campaign": {
+            "type": "string",
+            "title": "Campaign",
+            "description": "The name of the candidate's campaign."
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "state": {
+            "$ref": "#/components/schemas/EvaluationState"
+          }
+        },
+        "type": "object",
+        "required": [
+          "candidate",
+          "campaign",
+          "summary",
+          "state"
+        ],
+        "title": "QueuedEvaluation",
+        "description": "One evaluation of the queue."
+      },
       "Reasoned": {
         "properties": {
           "reason": {
@@ -3094,6 +4816,70 @@
         ],
         "title": "Reasoned",
         "description": "A change to an idea, with why: it goes into the event or a note on the idea."
+      },
+      "RemeasureBody": {
+        "properties": {
+          "repeats": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Repeats",
+            "description": "How many pairs of the candidate and its bar.",
+            "default": 3
+          }
+        },
+        "type": "object",
+        "title": "RemeasureBody",
+        "description": "How to measure a candidate again."
+      },
+      "Remeasured": {
+        "properties": {
+          "cursor": {
+            "type": "integer",
+            "title": "Cursor"
+          },
+          "candidate": {
+            "$ref": "#/components/schemas/CandidateView"
+          },
+          "bar": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bar",
+            "description": "The bar that it is measured next to. Null: alone."
+          },
+          "held": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Held",
+            "description": "What the daemon waits for before it measures, such as a resume. Null: it measures soon."
+          },
+          "rejudged": {
+            "type": "boolean",
+            "title": "Rejudged",
+            "description": "Whether the daemon judges the candidate again after the measurements. Else its verdict stays."
+          }
+        },
+        "type": "object",
+        "required": [
+          "cursor",
+          "candidate",
+          "bar",
+          "held",
+          "rejudged"
+        ],
+        "title": "Remeasured",
+        "description": "A candidate that the daemon measures again."
       },
       "Rendered": {
         "properties": {
@@ -3152,6 +4938,95 @@
         ],
         "title": "ReplyBody",
         "description": "An answer to an inbox item: a ``decision`` on the root of its thread."
+      },
+      "Report": {
+        "properties": {
+          "metrics": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object",
+            "title": "Metrics",
+            "description": "Each metric's value, as the evaluate command's ``METRIC`` lines would give it."
+          },
+          "seconds": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seconds",
+            "description": "How long the evaluation took."
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error",
+            "description": "Why the evaluation failed. A failed measurement may lack metrics."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "metrics"
+        ],
+        "title": "Report",
+        "description": "A measurement made outside the daemon, for example by running the evaluate command by hand."
+      },
+      "Revealed": {
+        "type": "string",
+        "format": "password",
+        "writeOnly": true
+      },
+      "RunAnswer": {
+        "properties": {
+          "cursor": {
+            "type": "integer",
+            "title": "Cursor"
+          },
+          "run": {
+            "type": "integer",
+            "title": "Run"
+          }
+        },
+        "type": "object",
+        "required": [
+          "cursor",
+          "run"
+        ],
+        "title": "RunAnswer",
+        "description": "A run that a change asked to cancel, read at ``cursor``."
+      },
+      "RunningSince": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "running",
+            "title": "Kind",
+            "default": "running"
+          },
+          "since": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Since"
+          }
+        },
+        "type": "object",
+        "required": [
+          "since"
+        ],
+        "title": "RunningSince",
+        "description": "An evaluation that has a slot of the executor."
       },
       "Seed": {
         "properties": {
@@ -3506,6 +5381,96 @@
         "title": "Thread",
         "description": "An inbox item, and the comments that it cites, that cite it, or that reply to it."
       },
+      "TokenBody": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "The name of the caller that uses it, such as a worker."
+          },
+          "access": {
+            "$ref": "#/components/schemas/Access"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "access"
+        ],
+        "title": "TokenBody",
+        "description": "A bearer token to make for a caller."
+      },
+      "TokenList": {
+        "properties": {
+          "tokens": {
+            "items": {
+              "$ref": "#/components/schemas/TokenView"
+            },
+            "type": "array",
+            "title": "Tokens"
+          }
+        },
+        "type": "object",
+        "required": [
+          "tokens"
+        ],
+        "title": "TokenList",
+        "description": "The tokens, by name."
+      },
+      "TokenMade": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "The name of its caller."
+          },
+          "access": {
+            "$ref": "#/components/schemas/Access"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "secret": {
+            "$ref": "#/components/schemas/Revealed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "access",
+          "created_at",
+          "secret"
+        ],
+        "title": "TokenMade",
+        "description": "A new token, with its secret: the only answer that carries it, since the home keeps its hash only."
+      },
+      "TokenView": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "The name of its caller."
+          },
+          "access": {
+            "$ref": "#/components/schemas/Access"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "access",
+          "created_at"
+        ],
+        "title": "TokenView",
+        "description": "A bearer token of the server, never its secret."
+      },
       "TrackBody": {
         "properties": {
           "reason": {
@@ -3594,6 +5559,33 @@
         "title": "TrackScore",
         "description": "The head on one track."
       },
+      "Undelivered": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "undelivered",
+            "title": "Kind",
+            "default": "undelivered"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "title": "Undelivered",
+        "description": "The note never reached the agent: its runtime refused it, or the agent ended before it read it."
+      },
       "ValidationError": {
         "properties": {
           "loc": {
@@ -3650,6 +5642,59 @@
           }
         ]
       },
+      "VerdictBody": {
+        "properties": {
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "verdict": {
+            "$ref": "#/components/schemas/Outcome"
+          }
+        },
+        "type": "object",
+        "required": [
+          "reason",
+          "verdict"
+        ],
+        "title": "VerdictBody",
+        "description": "A candidate's verdict, set by hand."
+      },
+      "VerdictChanged": {
+        "properties": {
+          "cursor": {
+            "type": "integer",
+            "title": "Cursor"
+          },
+          "candidate": {
+            "$ref": "#/components/schemas/CandidateView"
+          },
+          "was": {
+            "type": "string",
+            "title": "Was",
+            "description": "The verdict that it had, as ``label`` reads it."
+          },
+          "merge": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Merge"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "cursor",
+          "candidate",
+          "was",
+          "merge"
+        ],
+        "title": "VerdictChanged",
+        "description": "A candidate whose verdict was set by hand."
+      },
       "VerdictNews": {
         "properties": {
           "kind": {
@@ -3679,6 +5724,28 @@
         ],
         "title": "VerdictNews",
         "description": "The daemon's verdict on a measured candidate."
+      },
+      "WaitingSince": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "waiting",
+            "title": "Kind",
+            "default": "waiting"
+          },
+          "since": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Since",
+            "description": "When it was asked for."
+          }
+        },
+        "type": "object",
+        "required": [
+          "since"
+        ],
+        "title": "WaitingSince",
+        "description": "An evaluation that waits for a slot, or a remeasure that someone asked for and that is not queued yet."
       }
     }
   }

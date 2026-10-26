@@ -4,6 +4,7 @@ import signal
 import socket
 import subprocess
 import sys
+from contextlib import closing
 from pathlib import Path
 
 import httpx2 as httpx
@@ -13,7 +14,11 @@ from covalence import Cid, IntegrityError
 from pytest_mock import MockerFixture
 from rich.console import Console
 
+from piloop.actor import System
+from piloop.api.contract import Access
 from piloop.cli import common
+from piloop.db.session import Database
+from piloop.net.tokens import Tokens
 from piloop.plugins.cas.cached import Cached, CachedCas
 from piloop.plugins.cas.disk import Disk, DiskCas
 from piloop.plugins.cas.http import Http, HttpCas
@@ -70,9 +75,8 @@ def test_cas_serve_is_its_own_process_that_keeps_the_contract_for_a_worker(
     home = tmp_path / 'home'
     at_head(schema, home / 'piloop.db')
     env = env_for(home)
-    secret = subprocess.run(
-        [*PILOOP, 'token', 'create', 'gpu1'], env=env, capture_output=True, text=True, check=True
-    ).stdout.strip()
+    with closing(Database(Settings(home=home).database_url, actor=System.HUMAN)) as db:
+        secret = Tokens(db).mint('gpu1', Access.WORKER)
     monkeypatch.setenv(TOKEN_ENV, secret)
     with subprocess.Popen(
         [*PILOOP, 'cas', 'serve', '--listen', '127.0.0.1:0'], env=env, stdout=subprocess.PIPE, text=True

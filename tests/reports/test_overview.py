@@ -14,7 +14,6 @@ from piloop.db.models import (
     AgentSessionState,
     Campaign,
     Candidate,
-    Cause,
     Comment,
     Event,
     Idea,
@@ -27,6 +26,7 @@ from piloop.db.session import Database
 from piloop.ids import (
     IMPLEMENTER,
     CampaignStatus,
+    Cause,
     CommentKind,
     IdeaStatus,
     LinkKind,

@@ -28,13 +28,13 @@ from functools import partial
 from http import HTTPStatus
 from importlib.metadata import version
 from time import monotonic
-from typing import Annotated
 
 import httpx2 as httpx
 from covalence import Cid
-from pydantic import BaseModel, Field, PlainSerializer, RootModel, SecretStr, ValidationError
+from pydantic import BaseModel, Field, RootModel, SecretStr, ValidationError
 
 from piloop.api.contract import MAX_POLL_SECONDS, Polled
+from piloop.api.views import Revealed
 from piloop.db.models import NoLease
 from piloop.ids import Revision
 from piloop.mcp import EnvName
@@ -178,10 +178,6 @@ class SecretsAsked(BaseModel):
     """The body of ``secrets``."""
 
     lease: int
-
-
-type Revealed = Annotated[SecretStr, PlainSerializer(SecretStr.get_secret_value, when_used='json')]
-"""A secret's value in the answer of ``secrets``: pydantic writes a ``SecretStr`` as stars otherwise."""
 
 
 class SecretValues(RootModel[dict[EnvName, Revealed]]):

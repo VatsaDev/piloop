@@ -1,7 +1,7 @@
 """The API's routes: FastAPI path operations under ``/v1``, each calling the function that owns its answer.
 
-``router`` is the API, and ``with_api`` puts it on a server with what its routes read with. The routes share their
-lookups as dependencies (``Selected``, ``Narrowed``) over one session per request. The OpenAPI document of the router
+``ROUTERS`` are the API, and ``with_api`` puts it on a server with what its routes read with. The routes share their
+lookups as dependencies (``Selected``, ``Narrowed``) over one session per request. The OpenAPI document of the API
 (``openapi``) is ``docs/reference/openapi.json``.
 """
 
@@ -21,58 +21,106 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from piloop.actor import Actor, Person, System
+from piloop.agents.results import PromptOutcome, queue_prompt
 from piloop.api.contract import (
     Access,
     AckBody,
     BaseBody,
+    CancelBody,
     DevelopBody,
     EventsQuery,
     IdeaBody,
+    ImportBody,
     InboxQuery,
+    JournalBody,
+    LaunchBody,
+    LimitBody,
     Located,
     NewsQuery,
+    NoteBody,
     PauseBody,
     Problem,
+    PromptBody,
     Reasoned,
+    RemeasureBody,
     ReplyBody,
+    Report,
     SeedBody,
     Selection,
     StatusBody,
     StopBody,
+    TokenBody,
     TrackBody,
+    VerdictBody,
 )
 from piloop.api.views import (
     Acked,
+    AgentAnswer,
     Batch,
     CampaignAnswer,
     CampaignOverview,
+    CandidateAnswer,
     DaemonState,
     Defined,
+    Delivered,
+    Delivery,
+    EvaluationQueue,
     IdeaAnswer,
     Inbox,
+    Journaled,
+    LiveKeys,
+    MeasurementAdded,
+    Merge,
     News,
+    Noted,
     Overview,
+    Pending,
     ProblemDetail,
+    Prompted,
+    Queued,
+    Remeasured,
     Replied,
+    RunAnswer,
     Status,
     StatusChanged,
     Thread,
+    TokenList,
+    TokenMade,
     TrackChanged,
+    Undelivered,
+    VerdictChanged,
 )
 from piloop.campaign import inbox as inbox_module, ops
-from piloop.campaign.campaigns import UnknownCampaign, named, selected, workspace_dir
+from piloop.campaign.campaigns import UnknownCampaign, named, repository, selected, workspace_dir
 from piloop.campaign.ideas import Definition, idea_view
+from piloop.campaign.stop import CANCELLABLE, request_cancel
 from piloop.db import feed as db_feed
-from piloop.db.models import Campaign, Comment, Idea, utcnow
+from piloop.db.events import has, latest
+from piloop.db.models import OPEN_RUNS, AgentSession, Campaign, Candidate, Comment, Event, Idea, Journal, Run, utcnow
 from piloop.db.session import Database
-from piloop.ids import CampaignId, CommentId, IdeaId, LinkKind
-from piloop.net import Refusal
+from piloop.ids import (
+    AgentSessionId,
+    CampaignId,
+    CandidateId,
+    CommentId,
+    IdeaId,
+    KeyOrigin,
+    LinkKind,
+    RunId,
+    TargetKind,
+    TargetRef,
+)
+from piloop.net import Refusal, tokens
 from piloop.net.server import OWNER, App, asked, authorized, changed
 from piloop.net.tokens import Caller
+from piloop.plugins import limits as limits_module
 from piloop.plugins.cas.contract import Cas
-from piloop.plugins.limits import Origin, live_keys
+from piloop.plugins.limits import live_keys
 from piloop.plugins.section.contract import Rendering, rendered
 from piloop.reports import feed
+from piloop.scoring import queue
+from piloop.scoring.ledger import ImportRefused, RemeasureRefused, bar_of, import_reference, request_remeasure
+from piloop.scoring.verdict import candidate_view, rejudgeable
 from piloop.settings import Settings
 
 
@@ -166,6 +214,8 @@ ACTOR: TypeAdapter[Actor] = TypeAdapter(Actor)
 Acting = Annotated[Actor, Depends(acting)]
 actor_access = authorized(Access.ACT)
 """The access of every route that writes."""
+admin_access = authorized(Access.ADMIN)
+"""The access of every route that reads or changes the home's own settings."""
 
 
 def writing(api: Api, me: Acting) -> Generator[Session]:
@@ -207,18 +257,59 @@ def _idea(s: Session, idea: IdeaId) -> Idea:
     return found
 
 
+def candidate_addressed(s: Writing, candidate: CandidateId) -> Candidate:
+    """The candidate that the path names. Refuses one that the home does not have."""
+    if (found := s.get(Candidate, candidate)) is None:
+        raise Refusal(HTTPStatus.NOT_FOUND, Problem.UNKNOWN_CANDIDATE, f'no candidate#{candidate}')
+    return found
+
+
+def agent_addressed(s: Writing, agent: AgentSessionId) -> AgentSession:
+    """The agent that the path names. Refuses one that the home does not have."""
+    return _agent(s, agent)
+
+
+def run_addressed(s: Writing, run: RunId) -> Run:
+    """The run that the path names. Refuses one that the home does not have."""
+    if (found := s.get(Run, run)) is None:
+        raise Refusal(HTTPStatus.NOT_FOUND, Problem.UNKNOWN_RUN, f'no run#{run}')
+    return found
+
+
+def _agent(s: Session, agent: AgentSessionId) -> AgentSession:
+    if (found := s.get(AgentSession, agent)) is None:
+        raise Refusal(HTTPStatus.NOT_FOUND, Problem.UNKNOWN_AGENT, f'no agent_session#{agent}')
+    return found
+
+
 Addressed = Annotated[Campaign, Depends(campaign_addressed)]
+AddressedCandidate = Annotated[Candidate, Depends(candidate_addressed)]
+AddressedAgent = Annotated[AgentSession, Depends(agent_addressed)]
+AddressedRun = Annotated[Run, Depends(run_addressed)]
 Commented = Annotated[Comment, Depends(comment_addressed)]
 AddressedIdea = Annotated[Idea, Depends(idea_addressed)]
 Target = Annotated[Idea, Depends(target_addressed)]
 
 
+REFUSALS_DOCUMENTED: dict[int | str, dict[str, object]] = {
+    HTTPStatus.NOT_FOUND: {'model': ProblemDetail},
+    HTTPStatus.CONFLICT: {'model': ProblemDetail},
+}
+"""What a route answers when it refuses: ``Refusal``'s 404 or 409, with a ``ProblemDetail``."""
 router = APIRouter(
     prefix='/v1',
     dependencies=[Depends(reader)],
-    responses={HTTPStatus.NOT_FOUND: {'model': ProblemDetail}, HTTPStatus.CONFLICT: {'model': ProblemDetail}},
+    responses=REFUSALS_DOCUMENTED,
 )
-"""The API. Every route reads; ``Refusal`` answers 404 or 409 with a ``ProblemDetail``."""
+"""The kernel's routes: the views, the feed, the inbox, campaigns, agents and the home's settings. Every route reads."""
+optimization = APIRouter(
+    prefix='/v1',
+    dependencies=[Depends(reader)],
+    responses=REFUSALS_DOCUMENTED,
+)
+"""The research model's routes: ideas, candidates, measurements, evaluations and runs, on a router of their own."""
+ROUTERS = (router, optimization)
+"""The API: every router that ``with_api`` serves."""
 
 
 @router.get('/status', operation_id='status')
@@ -234,7 +325,7 @@ def overview(api: Api, s: Reading, campaigns: Selected) -> Overview:
     now = utcnow()
     return Overview(
         daemon=api.daemon,
-        limits=live_keys(s, api.cfg.providers, (Origin.CONFIG, Origin.LIMIT)),
+        limits=live_keys(s, api.cfg.providers, (KeyOrigin.CONFIG, KeyOrigin.LIMIT)),
         campaigns=[
             CampaignOverview(
                 id=c.id,
@@ -322,7 +413,7 @@ def stop(s: Writing, me: Acting, campaign: Addressed, body: StopBody) -> Campaig
     return _campaign_answer(s, campaign)
 
 
-@router.post('/campaigns/{campaign}/ideas', operation_id='add_idea', dependencies=[Depends(actor_access)])
+@optimization.post('/campaigns/{campaign}/ideas', operation_id='add_idea', dependencies=[Depends(actor_access)])
 def add_idea(s: Writing, me: Acting, campaign: Addressed, body: IdeaBody) -> Defined:
     """Add a defined idea, which the daemon schedules in priority order once it is ready."""
     idea, review = ops.add_idea(
@@ -347,7 +438,7 @@ def add_idea(s: Writing, me: Acting, campaign: Addressed, body: IdeaBody) -> Def
         return Defined(cursor=cursor, idea=idea_view(idea), review=review)
 
 
-@router.post('/campaigns/{campaign}/seeds', operation_id='file_seed', dependencies=[Depends(actor_access)])
+@optimization.post('/campaigns/{campaign}/seeds', operation_id='file_seed', dependencies=[Depends(actor_access)])
 def file_seed(s: Writing, me: Acting, campaign: Addressed, body: SeedBody) -> IdeaAnswer:
     """File a seed, for research to develop into a defined idea or to reject."""
     idea = ops.file_seed(
@@ -356,7 +447,7 @@ def file_seed(s: Writing, me: Acting, campaign: Addressed, body: SeedBody) -> Id
     return _idea_answer(s, idea)
 
 
-@router.post('/ideas/{idea}/develop', operation_id='develop', dependencies=[Depends(actor_access)])
+@optimization.post('/ideas/{idea}/develop', operation_id='develop', dependencies=[Depends(actor_access)])
 def develop(s: Writing, me: Acting, idea: AddressedIdea, body: DevelopBody) -> Defined:
     """Develop a seed into a defined idea that the daemon can schedule."""
     definition = Definition(body.hypothesis, body.evidence, body.check, body.metric, body.effect, body.plan)
@@ -378,7 +469,7 @@ def develop(s: Writing, me: Acting, idea: AddressedIdea, body: DevelopBody) -> D
         return Defined(cursor=cursor, idea=idea_view(developed), review=review)
 
 
-@router.post('/ideas/{idea}/status', operation_id='set_status', dependencies=[Depends(actor_access)])
+@optimization.post('/ideas/{idea}/status', operation_id='set_status', dependencies=[Depends(actor_access)])
 def set_status(s: Writing, me: Acting, idea: AddressedIdea, body: StatusBody) -> StatusChanged:
     """Set an idea's status, with a note on the idea that says why."""
     was = ops.set_idea_status(s, idea.id, body.status, reason=body.reason, actor=me)
@@ -387,28 +478,28 @@ def set_status(s: Writing, me: Acting, idea: AddressedIdea, body: StatusBody) ->
         return StatusChanged(cursor=cursor, idea=idea_view(idea), was=was)
 
 
-@router.put('/ideas/{idea}/links/{kind}/{target}', operation_id='link', dependencies=[Depends(actor_access)])
+@optimization.put('/ideas/{idea}/links/{kind}/{target}', operation_id='link', dependencies=[Depends(actor_access)])
 def link(s: Writing, me: Acting, idea: AddressedIdea, kind: LinkKind, target: Target, body: Reasoned) -> IdeaAnswer:
     """Link an idea to another of its campaign: it runs after the target, or supersedes it."""
     ops.link(s, idea.id, kind, target.id, reason=body.reason, actor=me)
     return _idea_answer(s, idea)
 
 
-@router.delete('/ideas/{idea}/links/{kind}/{target}', operation_id='unlink', dependencies=[Depends(actor_access)])
+@optimization.delete('/ideas/{idea}/links/{kind}/{target}', operation_id='unlink', dependencies=[Depends(actor_access)])
 def unlink(s: Writing, me: Acting, idea: AddressedIdea, kind: LinkKind, target: IdeaId, body: Reasoned) -> IdeaAnswer:
     """Delete an idea's link."""
     ops.unlink(s, idea.id, kind, target, reason=body.reason, actor=me)
     return _idea_answer(s, idea)
 
 
-@router.post('/ideas/{idea}/base', operation_id='set_base', dependencies=[Depends(actor_access)])
+@optimization.post('/ideas/{idea}/base', operation_id='set_base', dependencies=[Depends(actor_access)])
 def set_base(s: Writing, me: Acting, idea: AddressedIdea, body: BaseBody) -> IdeaAnswer:
     """Set the candidate that an idea's runs start from, or clear the pin."""
     ops.set_base(s, idea.id, body.base, reason=body.reason, actor=me)
     return _idea_answer(s, idea)
 
 
-@router.post('/ideas/{idea}/track', operation_id='set_track', dependencies=[Depends(actor_access)])
+@optimization.post('/ideas/{idea}/track', operation_id='set_track', dependencies=[Depends(actor_access)])
 def set_track(s: Writing, me: Acting, idea: AddressedIdea, body: TrackBody) -> TrackChanged:
     """Move an idea to another track of its campaign, with a note on the idea that says why."""
     was = ops.set_track(s, idea.id, body.track, reason=body.reason, actor=me)
@@ -421,6 +512,235 @@ def _idea_answer(s: Session, idea: Idea) -> IdeaAnswer:
     s.commit()
     with db_feed.snapshot(s) as cursor:
         return IdeaAnswer(cursor=cursor, idea=idea_view(idea))
+
+
+@optimization.post(
+    '/campaigns/{campaign}/candidates', operation_id='import_candidate', dependencies=[Depends(actor_access)]
+)
+def import_candidate(s: Writing, me: Acting, campaign: Addressed, body: ImportBody) -> CandidateAnswer:
+    """Register the files of a version as a reference candidate: a starting point for an idea."""
+    candidate = import_reference(
+        s, campaign, campaign.config, repository(campaign), body.version, summary=body.summary, actor=me
+    )
+    s.commit()
+    with db_feed.snapshot(s) as cursor:
+        return CandidateAnswer(cursor=cursor, candidate=candidate_view(candidate))
+
+
+@optimization.post('/candidates/{candidate}/remeasure', operation_id='remeasure', dependencies=[Depends(actor_access)])
+def remeasure(s: Writing, me: Acting, candidate: AddressedCandidate, body: RemeasureBody) -> Remeasured:
+    """Ask the daemon to measure a candidate again, next to its bar, with the current evaluator."""
+    request_remeasure(s, candidate, me, body.repeats)
+    s.commit()
+    campaign = s.get_one(Campaign, candidate.campaign_id)
+    held = ops.measuring_held(s, campaign, campaign.config).strip() or None
+    bar = None if candidate.parent is None else bar_of(s, candidate.parent).id
+    with db_feed.snapshot(s) as cursor:
+        return Remeasured(
+            cursor=cursor, candidate=candidate_view(candidate), bar=bar, held=held, rejudged=rejudgeable(candidate)
+        )
+
+
+@optimization.post('/candidates/{candidate}/note', operation_id='note', dependencies=[Depends(actor_access)])
+def note(s: Writing, me: Acting, candidate: AddressedCandidate, body: NoteBody) -> Noted:
+    """Keep a regressed result in view as a lead, with follow-up seeds pinned to it."""
+    _, seeds = ops.note_candidate(s, candidate.id, body.reason, actor=me, follow_ups=body.follow_ups, track=body.track)
+    s.commit()
+    with db_feed.snapshot(s) as cursor:
+        return Noted(cursor=cursor, candidate=candidate_view(candidate), seeds=[idea_view(i) for i in seeds])
+
+
+@optimization.post('/candidates/{candidate}/verdict', operation_id='set_verdict', dependencies=[Depends(actor_access)])
+def set_verdict(s: Writing, me: Acting, candidate: AddressedCandidate, body: VerdictBody) -> VerdictChanged:
+    """Override a candidate's judgement, with the reason. The verdict is then the caller's."""
+    done = ops.set_verdict(s, candidate.id, body.verdict, reason=body.reason, actor=me)
+    s.commit()
+    rebased = done.rebased
+    merged = None if rebased is None or rebased.rebased is None else Merge(candidate=rebased.rebased, head=rebased.head)
+    with db_feed.snapshot(s) as cursor:
+        return VerdictChanged(cursor=cursor, candidate=candidate_view(candidate), was=done.old, merge=merged)
+
+
+@optimization.post(
+    '/candidates/{candidate}/measurements', operation_id='add_measurement', dependencies=[Depends(actor_access)]
+)
+def add_measurement(s: Writing, me: Acting, candidate: AddressedCandidate, body: Report) -> MeasurementAdded:
+    """Record a measurement of a candidate under the campaign's current evaluator, and have its verdict judged again."""
+    added = ops.add_measurement(s, candidate.id, body, actor=me)
+    s.commit()
+    with db_feed.snapshot(s) as cursor:
+        return MeasurementAdded(
+            cursor=cursor, measurement=added.measurement.id, rejudged=added.rejudged, effect=added.effect
+        )
+
+
+@optimization.get('/evaluations', operation_id='evaluations')
+def evaluations(s: Reading) -> EvaluationQueue:
+    """The evaluation queue: the running evaluations, then the waiting ones in the order in which they get a slot."""
+    return queue.view(s)
+
+
+@optimization.post(
+    '/candidates/{candidate}/evaluation/cancel',
+    operation_id='cancel_evaluation',
+    dependencies=[Depends(actor_access)],
+)
+def cancel_evaluation(s: Writing, me: Acting, candidate: AddressedCandidate) -> CandidateAnswer:
+    """Cancel a candidate's evaluation, waiting or running, or its requested remeasure: it measures a crash at once."""
+    if not queue.cancel(s, candidate.id, me):
+        raise Refusal(
+            HTTPStatus.CONFLICT,
+            Problem.REFUSED,
+            f'candidate#{candidate.id} has no evaluation that waits or runs: see `piloop eval queue`',
+        )
+    s.commit()
+    with db_feed.snapshot(s) as cursor:
+        return CandidateAnswer(cursor=cursor, candidate=candidate_view(candidate))
+
+
+@router.get('/limits', operation_id='limits', dependencies=[Depends(admin_access)])
+def limits(api: Api, s: Reading) -> LiveKeys:
+    """Each live key: its value, and where it comes from (the default, ``config.toml``, or a limit)."""
+    return _live_keys(api, s)
+
+
+@router.put('/limits/{key}', operation_id='set_limit', dependencies=[Depends(admin_access)])
+def set_limit(api: Api, s: Writing, me: Acting, key: str, body: LimitBody) -> LiveKeys:
+    """Set a live key. It wins over ``config.toml`` at once, and holds until it is unset."""
+    limits_module.set_limit(s, api.cfg.providers, key, body.value, reason=body.reason, actor=me.signature)
+    s.commit()
+    return _live_keys(api, s)
+
+
+@router.delete('/limits/{key}', operation_id='unset_limit', dependencies=[Depends(admin_access)])
+def unset_limit(api: Api, s: Writing, key: str) -> LiveKeys:
+    """Remove a limit: ``config.toml`` holds again at once."""
+    if not limits_module.unset_limit(s, key):
+        raise Refusal(HTTPStatus.NOT_FOUND, Problem.UNKNOWN_LIMIT, f'{key} has no limit: see `piloop limits`')
+    s.commit()
+    return _live_keys(api, s)
+
+
+def _live_keys(api: Handlers, s: Session) -> LiveKeys:
+    with db_feed.snapshot(s) as cursor:
+        return LiveKeys(cursor=cursor, keys=live_keys(s, api.cfg.providers, tuple(KeyOrigin)))
+
+
+@router.get('/tokens', operation_id='list_tokens', dependencies=[Depends(admin_access)])
+def list_tokens(s: Reading) -> TokenList:
+    """The bearer tokens: name, access and when each was made. Never the secrets."""
+    return tokens.listing(s)
+
+
+@router.post('/tokens', operation_id='create_token', dependencies=[Depends(admin_access)])
+def create_token(s: Writing, body: TokenBody) -> TokenMade:
+    """Make a token, and answer its secret: the only time that it is shown, since the home keeps its hash only."""
+    made = tokens.made(s, body.name, body.access)
+    s.commit()
+    return made
+
+
+@router.delete('/tokens/{name}', operation_id='revoke_token', dependencies=[Depends(admin_access)])
+def revoke_token(s: Writing, name: str) -> TokenList:
+    """Delete a token: the next call with it gets 401."""
+    try:
+        tokens.revoke(s, name)
+    except tokens.NoToken as e:
+        raise Refusal(HTTPStatus.NOT_FOUND, Problem.UNKNOWN_TOKEN, str(e)) from e
+    s.commit()
+    return tokens.listing(s)
+
+
+@router.post('/campaigns/{campaign}/agents', operation_id='launch', dependencies=[Depends(actor_access)])
+def launch(s: Writing, campaign: Addressed, body: LaunchBody) -> AgentAnswer:
+    """Ask the daemon for one more agent of a sweeping role: it launches it at once, within ``max_concurrent``."""
+    agent = ops.request_agent(s, campaign.id, body.role, harness=body.harness, model=body.model, reason=body.reason)
+    s.commit()
+    with db_feed.snapshot(s) as cursor:
+        return AgentAnswer(cursor=cursor, agent=agent.id, role=agent.kind)
+
+
+@router.post('/agents/{agent}/prompt', operation_id='prompt', dependencies=[Depends(actor_access)])
+async def prompt(request: Request, api: Api, me: Acting, agent: AgentSessionId, body: PromptBody) -> Prompted:
+    """Queue a message for the next turn of a running agent: a note on it, which the daemon delivers.
+
+    With wait, it answers once something came of the note, or at the end of the wait with ``pending``. The note is
+    written first, in the thread pool; between two reads of its outcome the route holds no thread.
+    """
+    comment = await run_in_threadpool(_queue_prompt, api.db, me, agent, body.text)
+    deadline, seen = time.monotonic() + body.wait, 0
+    answer = await run_in_threadpool(_prompted, api.db, agent, comment)
+    while isinstance(answer.delivery, Pending) and (left := deadline - time.monotonic()) > 0:
+        if (woke := await changed(request, api.db.changed, seen, left)) is None:
+            break
+        seen = woke
+        answer = await run_in_threadpool(_prompted, api.db, agent, comment)
+    return answer
+
+
+def _queue_prompt(db: Database, me: Actor, agent: AgentSessionId, text: str) -> CommentId:
+    with db.acting(me) as s:
+        _agent(s, agent)
+        if (comment := queue_prompt(s, agent, text, me.signature)) is None:
+            raise Refusal(HTTPStatus.CONFLICT, Problem.REFUSED, f'agent_session#{agent} is not running')
+        s.commit()
+        return comment
+
+
+def _prompted(db: Database, agent: AgentSessionId, comment: CommentId) -> Prompted:
+    on_agent = Event.target == TargetRef(TargetKind.AGENT_SESSION, agent)
+    with db.session() as s, db_feed.snapshot(s) as cursor:
+        found = latest(s, PromptOutcome, on_agent, has(PromptOutcome, comment=comment))
+        return Prompted(cursor=cursor, comment=comment, delivery=_delivery(None if found is None else found[1]))
+
+
+def _delivery(outcome: PromptOutcome | None) -> Delivery:
+    match outcome:
+        case None:
+            return Pending()
+        case PromptOutcome(kind='comment.queued'):
+            return Queued()
+        case PromptOutcome(kind='comment.delivered'):
+            return Delivered()
+        case _:
+            return Undelivered(error=outcome.error)
+
+
+@router.post('/agents/{agent}/cancel', operation_id='cancel_agent', dependencies=[Depends(actor_access)])
+def cancel_agent(s: Writing, me: Acting, agent: AddressedAgent, body: CancelBody) -> AgentAnswer:
+    """Cancel an agent of any role: a requested one never starts, a running one ends as ``ending`` says.
+
+    For an implementer, this cancels its run. The daemon acts at once.
+    """
+    if agent.state not in CANCELLABLE:
+        raise Refusal(
+            HTTPStatus.CONFLICT, Problem.REFUSED, f'agent_session#{agent.id} is not requested, starting or running'
+        )
+    request_cancel(s, agent, me, ending=body.ending)
+    s.commit()
+    with db_feed.snapshot(s) as cursor:
+        return AgentAnswer(cursor=cursor, agent=agent.id, role=agent.kind)
+
+
+@optimization.post('/runs/{run}/cancel', operation_id='cancel_run', dependencies=[Depends(actor_access)])
+def cancel_run(s: Writing, me: Acting, run: AddressedRun, body: CancelBody) -> RunAnswer:
+    """Cancel a queued or running run: a queued one never starts, a running implementer ends as ``ending`` says."""
+    if run.status not in OPEN_RUNS:
+        raise Refusal(HTTPStatus.CONFLICT, Problem.REFUSED, f'run#{run.id} is not queued or running')
+    request_cancel(s, run, me, ending=body.ending)
+    s.commit()
+    with db_feed.snapshot(s) as cursor:
+        return RunAnswer(cursor=cursor, run=run.id)
+
+
+@router.post('/journal', operation_id='journal', dependencies=[Depends(actor_access)])
+def journal(s: Writing, me: Acting, body: JournalBody) -> Journaled:
+    """Append a line to the orchestrator's journal, signed by the caller's actor. ``piloop wake`` prints it."""
+    entry = Journal(author=me.signature, line=body.line)
+    s.add(entry)
+    s.commit()
+    with db_feed.snapshot(s) as cursor:
+        return Journaled(cursor=cursor, journal=entry.id)
 
 
 @router.post('/inbox/ack', operation_id='ack', dependencies=[Depends(actor_access)])
@@ -459,10 +779,22 @@ def _events(db: Database, query: EventsQuery, campaign: CampaignId | None, after
 
 def with_api(server: App, api: Handlers) -> App:
     """``server`` with the API's routes, which read with ``api``. An operation's refusal answers 409, ``refused``."""
-    server.include_router(router)
-    server.add_exception_handler(ops.Refused, _refused)
+    for routes in ROUTERS:
+        server.include_router(routes)
+    for refused in REFUSALS:
+        server.add_exception_handler(refused, _refused)
     server.state.handlers = api
     return server
+
+
+REFUSALS: tuple[type[Exception], ...] = (
+    ops.Refused,
+    ImportRefused,
+    RemeasureRefused,
+    limits_module.Refused,
+    tokens.NameTaken,
+)
+"""What an operation raises when it refuses its input and changes nothing: each answers 409, ``refused``."""
 
 
 def _refused(_request: Request, e: Exception) -> Response:
@@ -475,9 +807,10 @@ def daemon_state(started: str, listen: str | None) -> DaemonState:
 
 
 def openapi() -> dict[str, object]:
-    """The OpenAPI document of ``router``: what ``GET /v1/openapi.json`` answers, and ``docs/reference/openapi.json``."""
+    """The OpenAPI document of ``ROUTERS``: what ``GET /v1/openapi.json`` answers, and ``docs/reference/openapi.json``."""
     described = FastAPI(title='piloop', version='1')
-    described.include_router(router)
+    for routes in ROUTERS:
+        described.include_router(routes)
     return described.openapi()
 
 

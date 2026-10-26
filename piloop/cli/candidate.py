@@ -1,26 +1,16 @@
-"""The ``piloop candidate`` commands: import, measure again, note a regressed result, or override a verdict."""
+"""The ``piloop candidate`` commands, clients of the API: import, measure again, note a regressed result, or override a verdict."""
 
 from typing import Annotated
 
 import cyclopts
 from cyclopts import validators
 
-from piloop.campaign import ops
-from piloop.campaign.campaigns import repository
-from piloop.cli import common, local
+from piloop.api.contract import REPEATS, ImportBody, NoteBody, RemeasureBody, VerdictBody
+from piloop.cli import common
+from piloop.cli.client import api, campaign_name
 from piloop.cli.common import CampaignRef
-from piloop.db.models import Campaign, Candidate
 from piloop.ids import CandidateId, TrackName
 from piloop.plugins.verdict_rule.contract import Outcome
-from piloop.scoring.ledger import (
-    REPEATS,
-    ImportRefused,
-    RemeasureRefused,
-    bar_of,
-    import_reference,
-    request_remeasure,
-)
-from piloop.scoring.verdict import label, rejudgeable
 
 app = cyclopts.App(name='candidate')  # its help is where piloop.cli.main registers it
 
@@ -44,27 +34,14 @@ def candidate_import(
     It does not count in the kept total, the sparkline or a stop condition. To import a candidate of another campaign,
     bring its `revision` into this campaign's repo first.
     """
-    with local.session() as s:
-        campaign = local.campaign(s, ref)
-        cfg = campaign.config
-        try:
-            candidate = import_reference(
-                s,
-                campaign,
-                cfg,
-                repository(campaign),
-                version,
-                summary=summary,
-                actor=common.settings.actor,
-            )
-        except ImportRefused as e:
-            raise SystemExit(str(e)) from e
-        s.commit()
-        common.console.print(
-            f'candidate#{candidate.id} reference: {candidate.summary}; the daemon measures it; start an idea from it'
-            f' with `piloop idea add {campaign.name} "<title>" --base {candidate.id}`',
-            markup=False,
-        )
+    with api() as client:
+        name = campaign_name(client, ref)
+        candidate = client.import_candidate(name, ImportBody(version=version, summary=summary)).candidate
+    common.console.print(
+        f'candidate#{candidate.id} reference: {candidate.summary}; the daemon measures it; start an idea from it'
+        f' with `piloop idea add {name} "<title>" --base {candidate.id}`',
+        markup=False,
+    )
 
 
 @app.command(name='remeasure')
@@ -85,23 +62,15 @@ def candidate_remeasure(
     is paused with `--evals`, or held by its stop rule. A commit that the daemon never measured, `skipped` or
     `recovered`, is measured and judged. A pending candidate is refused: its run measures and judges it.
     """
-    with local.session() as s:
-        candidate = s.get(Candidate, candidate_id)
-        if candidate is None:
-            raise SystemExit(f'no candidate#{candidate_id}')
-        try:
-            request_remeasure(s, candidate, common.settings.actor, repeats)
-        except RemeasureRefused as e:
-            raise SystemExit(str(e)) from e
-        s.commit()
-        campaign = s.get_one(Campaign, candidate.campaign_id)
-        later = ops.measuring_held(s, campaign, campaign.config)
-        bar = f'next to its bar candidate#{bar_of(s, candidate.parent).id}' if candidate.parent is not None else 'alone'
-        effect = 'then judges it again' if rejudgeable(candidate) else 'its verdict stays'
-        common.console.print(
-            f'candidate#{candidate.id} {label(candidate)}: the daemon measures it {repeats} times {bar}{later}; {effect}',
-            markup=False,
-        )
+    with api() as client:
+        done = client.remeasure(candidate_id, RemeasureBody(repeats=repeats))
+    later = '' if done.held is None else f' {done.held}'
+    bar = 'alone' if done.bar is None else f'next to its bar candidate#{done.bar}'
+    effect = 'then judges it again' if done.rejudged else 'its verdict stays'
+    common.console.print(
+        f'candidate#{candidate_id} {done.candidate.label}: the daemon measures it {repeats} times {bar}{later}; {effect}',
+        markup=False,
+    )
 
 
 @app.command(name='note')
@@ -132,16 +101,14 @@ def candidate_note(
     candidate. An implementer files no follow-ups. When its candidate does not exist yet, an implementer notes the
     version that it saves instead, and the daemon applies the note when it judges the version.
     """
-    with local.refused(), local.session() as s:
-        candidate, ideas = ops.note_candidate(
-            s, candidate_id, reason, actor=common.settings.actor, follow_ups=follow_ups, track=track
-        )
-        s.commit()
-        common.console.print(
-            f'candidate#{candidate.id} interesting ({candidate.cause}): {candidate.verdict_reason}', markup=False
-        )
-        for idea in ideas:
-            common.console.print(f'idea#{idea.id} seed, pinned to candidate#{candidate.id}: {idea.title}', markup=False)
+    with api() as client:
+        noted = client.note(candidate_id, NoteBody(reason=reason, follow_ups=follow_ups, track=track))
+    candidate = noted.candidate
+    common.console.print(
+        f'candidate#{candidate.id} interesting ({candidate.cause}): {candidate.verdict_reason}', markup=False
+    )
+    for idea in noted.seeds:
+        common.console.print(f'idea#{idea.id} seed, pinned to candidate#{candidate.id}: {idea.title}', markup=False)
 
 
 @app.command(name='verdict')
@@ -160,16 +127,14 @@ def candidate_verdict(
     kept. So the candidate becomes `interesting`, and its merge onto the head is a new candidate that the daemon
     measures and judges against the head, as for its own keeps. A merge that conflicts files a seed to compose it.
     """
-    with local.refused(), local.session() as s:
-        done = ops.set_verdict(s, candidate_id, verdict, reason=reason, actor=common.settings.actor)
-        s.commit()
-        candidate = s.get_one(Candidate, candidate_id)
+    with api() as client:
+        done = client.set_verdict(candidate_id, VerdictBody(verdict=verdict, reason=reason))
+    common.console.print(
+        f'candidate#{candidate_id} {done.was} → {done.candidate.label}: {done.candidate.verdict_reason}', markup=False
+    )
+    if done.merge is not None:
         common.console.print(
-            f'candidate#{candidate_id} {done.old} → {candidate.verdict}: {candidate.verdict_reason}', markup=False
+            f'candidate#{done.merge.candidate}: the daemon measures it and judges it against the head'
+            f' candidate#{done.merge.head}',
+            markup=False,
         )
-        if done.rebased is not None and done.rebased.rebased is not None:
-            common.console.print(
-                f'candidate#{done.rebased.rebased}: the daemon measures it and judges it against the head'
-                f' candidate#{done.rebased.head}',
-                markup=False,
-            )

@@ -1,24 +1,17 @@
-"""The commands that act on agents: ``launch``, ``prompt``, ``attach``, ``agent messages``, ``agent cancel`` and ``run cancel``."""
+"""The commands that act on agents, clients of the API: ``launch``, ``prompt``, ``agent cancel`` and ``run cancel``."""
 
-from typing import Annotated
+from typing import Annotated, assert_never
 
 import cyclopts
-from sqlalchemy.orm import Session
 
-from piloop.agents import results
-from piloop.campaign.stop import CANCELLABLE, request_cancel
-from piloop.cli import common, local
+from piloop.api.contract import CancelBody, LaunchBody, PromptBody
+from piloop.api.views import Delivered, Pending, Queued, Undelivered
+from piloop.cli import common
+from piloop.cli.client import api, campaign_name
 from piloop.cli.common import HARNESS_HELP, CampaignRef
-from piloop.db.events import has, latest
-from piloop.db.models import OPEN_RUNS, AgentSession, Event, Run, TargetKind
-from piloop.db.session import Database
-from piloop.harnesses import MessageFormat, render_messages
-from piloop.ids import AgentSessionId, CommentId, Ending, RoleName, RunId, TargetRef
-from piloop.plugins.runtime.contract import MESSAGES_ENV, take
-from piloop.reports.overview import agent_output
+from piloop.ids import AgentSessionId, Ending, RoleName, RunId
 
-agent_app = cyclopts.App(name='agent')  # their help is where piloop.cli.main registers them
-run_app = cyclopts.App(name='run')
+run_app = cyclopts.App(name='run')  # its help is where piloop.cli.main registers it
 
 
 def launch(
@@ -42,23 +35,10 @@ def launch(
 
     The daemon launches it at once, within the role's `max_concurrent`.
     """
-    with local.session() as s:
-        campaign = local.campaign(s, ref)
-        roles = campaign.config.roles
-        sweeping = roles.sweeping()
-        if role not in sweeping:
-            agent_sessions = (
-                ' The daemon launches implementers by itself, one for each queued run.'
-                if role in roles.doing_runs()
-                else ''
-            )
-            raise SystemExit(
-                f'{campaign.name} has no sweeping role {role!r}; it has {", ".join(sweeping)}.{agent_sessions}'
-            )
-        agent_session = AgentSession(kind=role, campaign_id=campaign.id, harness=harness, model=model, reason=reason)
-        s.add(agent_session)
-        s.commit()
-        common.console.print(f'agent_session#{agent_session.id} {role} requested for {campaign.name}: {reason}')
+    with api() as client:
+        name = campaign_name(client, ref)
+        agent = client.launch(name, LaunchBody(role=role, harness=harness, model=model, reason=reason))
+    common.console.print(f'agent_session#{agent.agent} {agent.role} requested for {name}: {reason}')
 
 
 DELIVERY_WAIT = 20.0
@@ -77,61 +57,21 @@ def prompt(
     The message is a note on the agent. The daemon queues it through the agent's executor and its runtime. When it
     cannot, the command says why. After 20 seconds without an outcome, the daemon still queues it once the agent runs.
     """
-    with local.session() as s:
-        comment_id = results.queue_prompt(s, agent_session_id, text, common.settings.actor.signature)
-        if comment_id is None:
-            raise SystemExit(f'agent_session#{agent_session_id} is not running')
-        s.commit()
-    outcome = _outcome(agent_session_id, comment_id)
-    match outcome:
-        case None:
-            line = f'comment#{comment_id}: the daemon queues it for agent_session#{agent_session_id} once it runs'
-        case results.PromptOutcome(kind='comment.queued'):
-            line = f'queued comment#{comment_id} for agent_session#{agent_session_id}: it reads it at its next turn'
-        case results.PromptOutcome(kind='comment.delivered'):
-            line = f'agent_session#{agent_session_id} read comment#{comment_id}'
+    with api() as client:
+        prompted = client.prompt(agent_session_id, PromptBody(text=text, wait=DELIVERY_WAIT))
+    comment = prompted.comment
+    match prompted.delivery:
+        case Pending():
+            line = f'comment#{comment}: the daemon queues it for agent_session#{agent_session_id} once it runs'
+        case Queued():
+            line = f'queued comment#{comment} for agent_session#{agent_session_id}: it reads it at its next turn'
+        case Delivered():
+            line = f'agent_session#{agent_session_id} read comment#{comment}'
+        case Undelivered(error=error):
+            raise SystemExit(f'agent_session#{agent_session_id} did not get comment#{comment}: {error}')
         case _:
-            raise SystemExit(f'agent_session#{agent_session_id} did not get comment#{comment_id}: {outcome.error}')
+            assert_never(prompted.delivery)
     common.console.print(line, markup=False)
-
-
-def _outcome(agent_session_id: AgentSessionId, comment_id: CommentId) -> results.PromptOutcome | None:
-    """Wait up to ``DELIVERY_WAIT`` for the comment's outcome on the agent."""
-    found: list[results.PromptOutcome] = []
-    on_agent = Event.target == TargetRef(TargetKind.AGENT_SESSION, agent_session_id)
-
-    def settled(s: Session) -> bool:
-        event = latest(s, results.PromptOutcome, on_agent, has(results.PromptOutcome, comment=comment_id))
-        if event is not None:
-            found.append(event[1])
-        return event is not None
-
-    db = Database(common.settings.database_url, actor=common.settings.actor)
-    try:
-        db.wait_until(settled, timeout=DELIVERY_WAIT)
-    finally:
-        db.close()
-    return found[0] if found else None
-
-
-ATTACH_LINES = 40
-"""How many lines of the agent's output ``piloop attach`` prints."""
-
-
-def attach(agent_session_id: Annotated[AgentSessionId, cyclopts.Parameter(help='The id of the agent.')], /) -> None:
-    """Print the last lines that an agent wrote, running or ended.
-
-    An agent is a background process, with no terminal to type into: `piloop prompt` sends it a message.
-    A running agent's lines come from the latest snapshot of its session, on any machine: a few seconds old, 30 at most.
-    """
-    with local.session() as s:
-        agent_session = s.get(AgentSession, agent_session_id)
-        if agent_session is None:
-            raise SystemExit(f'no agent_session#{agent_session_id}')
-        output, state = agent_output(s, agent_session, ATTACH_LINES, local.cas()), agent_session.state
-    if not output:
-        raise SystemExit(f'agent_session#{agent_session_id} is {state} and has written nothing yet')
-    common.console.print('\n'.join(output), markup=False, highlight=False, soft_wrap=True)
 
 
 WrapUp = Annotated[
@@ -144,25 +84,6 @@ WrapUp = Annotated[
 ]
 
 
-@agent_app.command(name='messages')
-def messages(
-    form: Annotated[
-        MessageFormat,
-        cyclopts.Parameter(name='--format', help='How to print them: the format that the hook of the harness reads.'),
-    ] = MessageFormat.LINES,
-) -> None:
-    """Take the messages that wait for this agent's turn, and print them.
-
-    A hook of the harness runs it during a turn, so a message reaches the turn in progress. It prints nothing when no
-    message waits.
-    """
-    if common.settings.messages is None:
-        raise SystemExit(f'{MESSAGES_ENV} is not set: the runtime of this agent keeps no message queue')
-    if taken := take(common.settings.messages):
-        common.console.out(render_messages(taken, form), highlight=False)
-
-
-@agent_app.command(name='cancel')
 def agent_cancel(
     agent_session_id: Annotated[AgentSessionId, cyclopts.Parameter(help='The id of the agent.')],
     /,
@@ -174,12 +95,8 @@ def agent_cancel(
     A requested agent never starts. A running one is ended with every process that it started, at once or, with
     `--wrap-up`, after it was told to save its work and stop. For an implementer, this cancels its run (`piloop run cancel`).
     """
-    with local.session() as s:
-        agent_session = s.get(AgentSession, agent_session_id)
-        if agent_session is None or agent_session.state not in CANCELLABLE:
-            raise SystemExit(f'agent_session#{agent_session_id} is not requested, starting or running')
-        request_cancel(s, agent_session, common.settings.actor, ending=Ending.WRAP_UP if wrap_up else Ending.NOW)
-        s.commit()
+    with api() as client:
+        client.cancel_agent(agent_session_id, _cancel(wrap_up))
     common.console.print(f'cancel requested for agent_session#{agent_session_id}: the daemon acts at once')
 
 
@@ -194,10 +111,10 @@ def run_cancel(
     closes as `cancelled`, unless the implementer left its finding before the daemon ended it: a later finding is
     refused. Its commits are scored, and its idea is parked: set it `ready` to run it again.
     """
-    with local.session() as s:
-        run = s.get(Run, run_id)
-        if run is None or run.status not in OPEN_RUNS:
-            raise SystemExit(f'run#{run_id} is not queued or running')
-        request_cancel(s, run, common.settings.actor, ending=Ending.WRAP_UP if wrap_up else Ending.NOW)
-        s.commit()
+    with api() as client:
+        client.cancel_run(run_id, _cancel(wrap_up))
     common.console.print(f'cancel requested for run#{run_id}: the daemon acts at once')
+
+
+def _cancel(wrap_up: bool) -> CancelBody:
+    return CancelBody(ending=Ending.WRAP_UP if wrap_up else Ending.NOW)

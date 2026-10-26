@@ -1,4 +1,4 @@
-"""``piloop limits``: list the live limits, or set and unset one while the daemon runs."""
+"""``piloop limits``, a client of the API: list the live limits, or set and unset one while the daemon runs."""
 
 import json
 from typing import Annotated
@@ -6,9 +6,10 @@ from typing import Annotated
 import cyclopts
 from pydantic import JsonValue
 
-from piloop.cli import common, local
+from piloop.api.contract import LimitBody
+from piloop.cli import common
+from piloop.cli.client import api
 from piloop.cli.views import limit_line
-from piloop.plugins import limits
 
 app = cyclopts.App(name='limits')  # its help is where piloop.cli.main registers it
 
@@ -16,9 +17,10 @@ app = cyclopts.App(name='limits')  # its help is where piloop.cli.main registers
 @app.default
 def limits_list() -> None:
     """List each live key: its value, and where it comes from (the default, `config.toml`, or a limit)."""
-    with local.session() as s:
-        for key in limits.live_keys(s, common.settings.providers, tuple(limits.Origin)):
-            common.console.print(limit_line(key), markup=False)
+    with api() as client:
+        keys = client.limits().keys
+    for key in keys:
+        common.console.print(limit_line(key), markup=False)
 
 
 @app.command(name='set')
@@ -35,24 +37,16 @@ def limits_set(
     key, eq, text = assignment.partition('=')
     if not eq:
         raise SystemExit(f'{assignment!r}: write KEY=VALUE')
-    with local.session() as s:
-        try:
-            limits.set_limit(
-                s, common.settings.providers, key, _value(text), reason=reason, actor=common.settings.actor.signature
-            )
-        except limits.Refused as e:
-            raise SystemExit(str(e)) from e
-        s.commit()
+    with api() as client:
+        client.set_limit(key, LimitBody(value=_value(text), reason=reason))
     common.console.print(f'{key} = {text}: the daemon applies it at once', markup=False)
 
 
 @app.command(name='unset')
 def limits_unset(key: Annotated[str, cyclopts.Parameter(help='The key of the limit.')], /) -> None:
     """Remove a limit: `config.toml` holds again at once."""
-    with local.session() as s:
-        if not limits.unset_limit(s, key):
-            raise SystemExit(f'{key} has no limit: see `piloop limits`')
-        s.commit()
+    with api() as client:
+        client.unset_limit(key)
     common.console.print(f'{key}: the limit is gone', markup=False)
 
 
