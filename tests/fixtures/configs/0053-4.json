@@ -1,0 +1,90 @@
+{
+  "evaluate": [
+    "name_4",
+    "name_5",
+    "name_6",
+    "dir/file7.py"
+  ],
+  "evaluate_timeout": 300.0,
+  "harness": {
+    "codex": {
+      "executable": "codex",
+      "headless": [
+        "exec",
+        "--json",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--dangerously-bypass-hook-trust",
+        "--skip-git-repo-check",
+        "--model",
+        "{model}",
+        "{prompt}"
+      ],
+      "session_id_pattern": null,
+      "usage": null
+    },
+    "pi": {
+      "executable": "pi",
+      "headless": [
+        "-p",
+        "--mode",
+        "json",
+        "--no-extensions",
+        "--no-skills",
+        "--no-context-files",
+        "--approve",
+        "--session-dir",
+        "{log_dir}",
+        "--model",
+        "{model}",
+        "{prompt}"
+      ],
+      "session_id_pattern": null,
+      "usage": null
+    }
+  },
+  "harnesses": [
+    "pi",
+    "claude",
+    "codex"
+  ],
+  "link": [
+    "name_11",
+    "dir/file12"
+  ],
+  "metrics": [
+    {
+      "direction": "higher",
+      "name": "name_2",
+      "role": "primary"
+    }
+  ],
+  "model": {
+    "claude": "name_9",
+    "codex": "name_10",
+    "pi": "dir/file8"
+  },
+  "name": "campaign-1",
+  "roles": {
+    "implementer": {
+      "harnesses": null,
+      "max_concurrent": 1,
+      "model": null,
+      "timeout": 900.0
+    },
+    "research": {
+      "harnesses": null,
+      "max_concurrent": 3,
+      "max_ideas": 3,
+      "model": null,
+      "timeout": 900.0
+    },
+    "watchdog": {
+      "harnesses": null,
+      "interval": 600.0,
+      "max_concurrent": 1,
+      "model": null,
+      "timeout": 600.0
+    }
+  },
+  "runtime": "subprocess"
+}

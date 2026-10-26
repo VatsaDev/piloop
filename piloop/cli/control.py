@@ -1,10 +1,11 @@
 """The commands that steer a campaign as a whole, clients of the API: ``pause``, ``resume`` and ``campaign stop``."""
 
-from typing import Annotated
+from typing import Annotated, assert_never
 
 import cyclopts
 
 from piloop.api.contract import PauseBody, StopBody
+from piloop.api.views import CampaignState, InvalidConfig
 from piloop.cli import common
 from piloop.cli.client import api, campaign_name
 from piloop.cli.common import CampaignRef
@@ -30,11 +31,14 @@ def pause(
     """
     with api() as client:
         state = client.pause(campaign_name(client, ref), PauseBody(reason=reason, evals=evals)).campaign
-    common.console.print(
-        f'campaign {state.name} paused ({state.paused}): {state.paused_reason}; running work goes on;'
-        f' `piloop resume {state.name}` ends it',
-        markup=False,
-    )
+    match state:
+        case CampaignState():
+            held = f' ({state.paused}): {state.paused_reason}; running work goes on;'
+        case InvalidConfig():
+            held = f'; its stored config is invalid, fix it with {state.fix};'
+        case _:
+            assert_never(state)
+    common.console.print(f'campaign {state.name} paused{held} `piloop resume {state.name}` ends it', markup=False)
 
 
 def resume(ref: CampaignRef, /) -> None:

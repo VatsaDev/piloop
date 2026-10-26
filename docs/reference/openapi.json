@@ -2897,7 +2897,7 @@
             "title": "Cursor"
           },
           "campaign": {
-            "$ref": "#/components/schemas/CampaignState"
+            "$ref": "#/components/schemas/CampaignEntry"
           }
         },
         "type": "object",
@@ -2908,8 +2908,31 @@
         "title": "CampaignAnswer",
         "description": "A campaign after a change, read at ``cursor``: the events after it are the effects of the change."
       },
+      "CampaignEntry": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/CampaignState"
+          },
+          {
+            "$ref": "#/components/schemas/InvalidConfig"
+          }
+        ],
+        "discriminator": {
+          "propertyName": "kind",
+          "mapping": {
+            "invalid_config": "#/components/schemas/InvalidConfig",
+            "state": "#/components/schemas/CampaignState"
+          }
+        }
+      },
       "CampaignOverview": {
         "properties": {
+          "kind": {
+            "type": "string",
+            "const": "overview",
+            "title": "Kind",
+            "default": "overview"
+          },
           "id": {
             "type": "integer",
             "title": "Id"
@@ -2953,6 +2976,12 @@
       },
       "CampaignState": {
         "properties": {
+          "kind": {
+            "type": "string",
+            "const": "state",
+            "title": "Kind",
+            "default": "state"
+          },
           "id": {
             "type": "integer",
             "title": "Id"
@@ -4017,6 +4046,62 @@
         "title": "Inbox",
         "description": "What ``piloop inbox`` lists, read at ``cursor``."
       },
+      "InvalidConfig": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "invalid_config",
+            "title": "Kind",
+            "default": "invalid_config"
+          },
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Named"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/CampaignStatus"
+          },
+          "problem": {
+            "type": "string",
+            "title": "Problem",
+            "description": "Each key that does not validate, and why."
+          },
+          "fix": {
+            "type": "string",
+            "title": "Fix"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "path",
+          "parent",
+          "status",
+          "problem",
+          "fix"
+        ],
+        "title": "InvalidConfig",
+        "description": "A campaign whose stored config (``campaigns.config``) no longer validates, for example after an upgrade.\n\nThe daemon schedules nothing for it until ``fix`` stores the config again."
+      },
       "Item": {
         "properties": {
           "id": {
@@ -4629,7 +4714,7 @@
           },
           "campaigns": {
             "items": {
-              "$ref": "#/components/schemas/CampaignOverview"
+              "$ref": "#/components/schemas/OverviewEntry"
             },
             "type": "array",
             "title": "Campaigns"
@@ -4643,6 +4728,23 @@
         ],
         "title": "Overview",
         "description": "What ``piloop status`` prints: the daemon, the live keys that ``config.toml`` or a limit sets, and each overview."
+      },
+      "OverviewEntry": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/CampaignOverview"
+          },
+          {
+            "$ref": "#/components/schemas/InvalidConfig"
+          }
+        ],
+        "discriminator": {
+          "propertyName": "kind",
+          "mapping": {
+            "invalid_config": "#/components/schemas/InvalidConfig",
+            "overview": "#/components/schemas/CampaignOverview"
+          }
+        }
       },
       "PauseBody": {
         "properties": {
@@ -5148,7 +5250,7 @@
           },
           "campaigns": {
             "items": {
-              "$ref": "#/components/schemas/CampaignState"
+              "$ref": "#/components/schemas/CampaignEntry"
             },
             "type": "array",
             "title": "Campaigns"

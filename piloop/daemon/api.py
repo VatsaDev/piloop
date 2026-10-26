@@ -67,6 +67,7 @@ from piloop.api.views import (
     EvaluationQueue,
     IdeaAnswer,
     Inbox,
+    InvalidConfig,
     Journaled,
     LiveKeys,
     MeasurementAdded,
@@ -323,21 +324,19 @@ def status(api: Api, s: Reading, campaigns: Selected) -> Status:
 def overview(api: Api, s: Reading, campaigns: Selected) -> Overview:
     """The sections of each campaign's ``[status] sections``, and the live keys that config.toml or a limit sets."""
     now = utcnow()
+    shown: list[CampaignOverview | InvalidConfig] = []
+    for c in campaigns:
+        match feed.configured(s, c):
+            case InvalidConfig() as invalid:
+                shown.append(invalid)
+            case cfg:
+                rendering = Rendering(s, now, c, workspace_dir(api.cfg.home, c.id), api.cas)
+                sections = rendered(cfg.status.shown(), rendering)
+                shown.append(
+                    CampaignOverview(id=c.id, name=c.name, path=c.path, parent=feed.parent_of(s, c), sections=sections)
+                )
     return Overview(
-        daemon=api.daemon,
-        limits=live_keys(s, api.cfg.providers, (KeyOrigin.CONFIG, KeyOrigin.LIMIT)),
-        campaigns=[
-            CampaignOverview(
-                id=c.id,
-                name=c.name,
-                path=c.path,
-                parent=feed.parent_of(s, c),
-                sections=rendered(
-                    c.config.status.shown(), Rendering(s, now, c, workspace_dir(api.cfg.home, c.id), api.cas)
-                ),
-            )
-            for c in campaigns
-        ],
+        daemon=api.daemon, limits=live_keys(s, api.cfg.providers, (KeyOrigin.CONFIG, KeyOrigin.LIMIT)), campaigns=shown
     )
 
 

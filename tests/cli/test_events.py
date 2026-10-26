@@ -120,6 +120,7 @@ def test_status_and_inbox_print_one_json_document_with_the_cursor_they_were_read
     status = document(StatusDocument, out())
     assert status.cursor == end and (status.daemon.pid, status.daemon.listen) == (os.getpid(), None)
     [state] = status.campaigns
+    assert isinstance(state, views.CampaignState)
     assert state.name == 'demo' and state.paused == 'all' and state.paused_reason == 'budget review'
     assert state.inbox == 1 and state.head is not None
 
@@ -231,6 +232,7 @@ def test_a_separate_process_joins_a_snapshot_to_the_feed_and_resumes_after_a_dis
     cursor = snap.cursor
     assert cursor == event_ids(db, 0)[-1]
     [state] = snap.campaigns
+    assert isinstance(state, views.CampaignState)
     assert state.ideas['parked'] == 1, 'the snapshot holds what the events up to its cursor did'
 
     args = ['events', '--follow', '--timeout', '30', '--json', '--limit', '2']

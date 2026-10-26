@@ -142,6 +142,7 @@ class Named(View):
 class CampaignState(View):
     """What ``piloop status`` shows of a campaign, as data."""
 
+    kind: Literal['state'] = 'state'
     id: CampaignId
     name: str
     path: str
@@ -168,6 +169,27 @@ class CampaignState(View):
     inbox: int
     """The unacknowledged inbox items."""
     tokens: int
+
+
+class InvalidConfig(View):
+    """A campaign whose stored config (``campaigns.config``) no longer validates, for example after an upgrade.
+
+    The daemon schedules nothing for it until ``fix`` stores the config again.
+    """
+
+    kind: Literal['invalid_config'] = 'invalid_config'
+    id: CampaignId
+    name: str
+    path: str
+    parent: Named | None
+    status: CampaignStatus
+    problem: str
+    """Each key that does not validate, and why."""
+    fix: str
+
+
+type CampaignEntry = Annotated[CampaignState | InvalidConfig, Field(discriminator='kind')]
+"""A campaign of ``Status``: its state, or why its stored config cannot give one."""
 
 
 class Target(View):
@@ -237,7 +259,7 @@ class Status(View):
 
     cursor: int
     daemon: DaemonState
-    campaigns: list[CampaignState]
+    campaigns: list[CampaignEntry]
 
 
 class LiveKey(View):
@@ -357,6 +379,7 @@ class Rendered(View):
 class CampaignOverview(View):
     """A campaign's overview: the sections of its ``[status] sections``, in order."""
 
+    kind: Literal['overview'] = 'overview'
     id: CampaignId
     name: str
     path: str
@@ -364,12 +387,16 @@ class CampaignOverview(View):
     sections: list[Rendered]
 
 
+type OverviewEntry = Annotated[CampaignOverview | InvalidConfig, Field(discriminator='kind')]
+"""A campaign of ``Overview``: its sections, or why its stored config cannot give them."""
+
+
 class Overview(View):
     """What ``piloop status`` prints: the daemon, the live keys that ``config.toml`` or a limit sets, and each overview."""
 
     daemon: DaemonState
     limits: list[LiveKey]
-    campaigns: list[CampaignOverview]
+    campaigns: list[OverviewEntry]
 
 
 class ProblemDetail(View):
@@ -480,7 +507,7 @@ class CampaignAnswer(View):
     """A campaign after a change, read at ``cursor``: the events after it are the effects of the change."""
 
     cursor: int
-    campaign: CampaignState
+    campaign: CampaignEntry
 
 
 class IdeaView(View):

@@ -45,7 +45,16 @@ from piloop.api.contract import (
     TokenBody,
     defaulted,
 )
-from piloop.api.views import CancelledBy, Pending, Queued, RunningSince, Status, thread_lines
+from piloop.api.views import (
+    CampaignState,
+    CancelledBy,
+    InvalidConfig,
+    Pending,
+    Queued,
+    RunningSince,
+    Status,
+    thread_lines,
+)
 from piloop.cli import common, main as cli
 from piloop.daemon.api import ROUTERS, Handlers, daemon_state, openapi, with_api
 from piloop.db.events import emit
@@ -88,7 +97,7 @@ from piloop.plugins.secrets.local import LocalSecrets
 from piloop.settings import Settings
 from piloop.watch.panels import Context, InboxPanel
 from tests.campaign.test_stop import add_run
-from tests.conftest import disk, home_cas, serving_api
+from tests.conftest import disk, home_cas, serving_api, store_config
 
 
 @pytest.fixture
@@ -358,6 +367,7 @@ def test_a_proxy_caller_s_ack_reply_and_pause_sign_as_the_person_it_names(
         with httpx.Client(base_url=tcp.url, headers={**stamped, PROXY.actor_header: 'orchestrator'}) as asking:
             acted = Client(asking).reply(CommentId(1), ReplyBody(body='mine')).comment
     me = 'human:ana@example.com'
+    assert isinstance(paused, CampaignState)
     assert (acked.acked_by, replied.author, paused.paused) == (me, me, 'launches')
     assert acted.author == 'orchestrator', 'a person may still act as the orchestrator'
     with db.session() as s:
@@ -390,7 +400,9 @@ def test_a_write_answers_its_cursor_and_refuses_what_its_operation_refuses(
         with pytest.raises(Refused, match=r'^campaign demo is paused already') as twice:
             client.pause('demo', PauseBody(reason='again'))
         assert twice.value.error == Problem.REFUSED
-        assert client.resume('demo').campaign.paused is None and paused.campaign.paused == 'launches'
+        resumed = client.resume('demo').campaign
+        assert isinstance(resumed, CampaignState) and isinstance(paused.campaign, CampaignState)
+        assert resumed.paused is None and paused.campaign.paused == 'launches'
         stopped = client.stop('demo', StopBody(reason='done'))
         assert stopped.cursor > paused.cursor
         with pytest.raises(Refused, match='^no campaign .nope.') as unknown:
@@ -595,6 +607,39 @@ def test_without_a_campaign_named_status_answers_every_campaign(
         listed = client.status(Selection()).campaigns
     assert [c.name for c in listed] == ['demo', 'other'], 'a client that lists campaigns sees them all'
     assert [c.name for c in defaulted(listed)] == ['demo'], 'the CLI shows the only active one'
+
+
+def test_a_campaign_whose_stored_config_is_invalid_is_listed_as_such_and_the_others_as_ever(
+    db: Database,
+    campaign: Campaign,
+    cfg: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A stored copy that no longer validates, as after an upgrade, is no 500 for every campaign: status and the
+    overview list it with what is wrong and how to fix it, and every other campaign in full."""
+    with db.session() as s:
+        broken = Campaign(name='broken', path='/elsewhere', config=campaign.config)
+        s.add(broken)
+        s.commit()
+        broken_id = broken.id
+    store_config(db, broken_id, {})
+    with serving_api(cfg), Client.on(cfg.socket_file, System.HUMAN) as client:
+        listed = client.status(Selection()).campaigns
+        shown = client.overview(Selection()).campaigns
+        monkeypatch.setattr(common, 'settings', cfg)
+        monkeypatch.setattr(common, 'console', Console(width=200, force_terminal=False))
+        cli.app(['status'], result_action='return_value', exit_on_error=False)
+        cli.app(['pause', 'broken', '--reason', 'r'], result_action='return_value', exit_on_error=False)
+    for entries in (listed, shown):
+        ok, invalid = entries
+        assert not isinstance(ok, InvalidConfig) and ok.name == 'demo'
+        assert isinstance(invalid, InvalidConfig) and (invalid.id, invalid.name) == (broken_id, 'broken')
+        assert invalid.fix == '`piloop init /elsewhere`'
+        assert invalid.problem.startswith('the stored config is not a valid piloop config'), invalid.problem
+    status, paused = capsys.readouterr().out.split('campaign broken paused')
+    assert 'demo #1' in status and 'broken #2' in status and 'fix: `piloop init /elsewhere`' in status, status
+    assert paused.startswith('; its stored config is invalid, fix it with `piloop init /elsewhere`;'), paused
 
 
 def test_with_a_server_set_the_commands_call_it_through_the_network_with_its_credential(

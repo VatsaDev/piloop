@@ -1,0 +1,323 @@
+{
+  "confidence": 0.95,
+  "context": [
+    "dir/file56.md",
+    "dir/file57.md",
+    "dir/file58.md",
+    "dir/file59.py",
+    "dir/file60.py",
+    "dir/file61.py",
+    "dir/file62.py",
+    "dir/file63.py"
+  ],
+  "evaluate": [
+    "name_46",
+    "--flag47",
+    "dir/file48.py\n"
+  ],
+  "evaluate_timeout": 7200.0,
+  "harness": {
+    "claude": {
+      "busy_screens": null,
+      "composer": null,
+      "entire_agent": "claude-code",
+      "executable": "claude",
+      "failed_turn_screens": null,
+      "headless": [
+        "-p",
+        "--output-format",
+        "json",
+        "--session-id",
+        "{session_id}",
+        "--model",
+        "{model}",
+        "--effort",
+        "high",
+        "--dangerously-skip-permissions",
+        "{mcp}",
+        "--settings",
+        "{\"autoMemoryEnabled\":false,\"env\":{\"BASH_DEFAULT_TIMEOUT_MS\":\"300000\",\"BASH_MAX_TIMEOUT_MS\":\"600000\"}}",
+        "{prompt}"
+      ],
+      "interactive": [
+        "--session-id",
+        "{session_id}",
+        "--model",
+        "{model}",
+        "--effort",
+        "high",
+        "--dangerously-skip-permissions",
+        "{mcp}",
+        "--settings",
+        "{\"autoMemoryEnabled\":false,\"env\":{\"BASH_DEFAULT_TIMEOUT_MS\":\"300000\",\"BASH_MAX_TIMEOUT_MS\":\"600000\"}}"
+      ],
+      "mcp": "claude",
+      "queue_key": null,
+      "resume": [],
+      "session_id_pattern": null,
+      "startup_dialogs": [
+        [
+          "trust this folder",
+          [
+            "down",
+            "enter"
+          ]
+        ]
+      ],
+      "usage": {
+        "cwd": "dash_non_alnum",
+        "file": "{home}/.claude/projects/{cwd}/{session_id}.jsonl",
+        "reader": "jsonl",
+        "tally": "claude"
+      }
+    }
+  },
+  "harnesses": [
+    "codex",
+    "claude"
+  ],
+  "link": [
+    "text 53",
+    "dir/file54",
+    "name_55"
+  ],
+  "max_concurrent": {
+    "claude": 2
+  },
+  "mcp": {
+    "exa": {
+      "bearer_token_env": null,
+      "command": null,
+      "env": [],
+      "headers_env": {
+        "x-api-key": "EXA_API_KEY"
+      },
+      "url": "https://example.com/64"
+    },
+    "firecrawl": {
+      "bearer_token_env": "FIRECRAWL_API_KEY",
+      "command": null,
+      "env": [],
+      "headers_env": {},
+      "url": "https://example.com/65"
+    },
+    "xai": {
+      "bearer_token_env": null,
+      "command": [
+        "name_66",
+        "/path/67.py",
+        "text 68"
+      ],
+      "env": [
+        "XAI_API_KEY"
+      ],
+      "headers_env": {},
+      "url": null
+    }
+  },
+  "memory": {
+    "documents": [
+      "dir/file56.md"
+    ],
+    "wake_budget": 400
+  },
+  "metrics": [
+    {
+      "direction": "higher",
+      "floor": 1.0,
+      "margin": 1.0,
+      "name": "name_2",
+      "role": "primary",
+      "track": "name_3"
+    },
+    {
+      "direction": "higher",
+      "floor": 1.0,
+      "margin": 1.0,
+      "name": "name_4",
+      "role": "primary",
+      "track": "name_5"
+    },
+    {
+      "direction": "lower",
+      "floor": null,
+      "margin": 1.0,
+      "name": "name_6",
+      "role": "guardrail",
+      "track": null
+    },
+    {
+      "direction": "lower",
+      "floor": 1.0,
+      "margin": 1.0,
+      "name": "name_8",
+      "role": "guardrail",
+      "track": null
+    },
+    {
+      "direction": "lower",
+      "floor": null,
+      "margin": null,
+      "name": "name_17",
+      "role": "watch",
+      "track": null
+    }
+  ],
+  "model": {
+    "claude": "name_50",
+    "codex": "text 49"
+  },
+  "name": "campaign-1",
+  "roles": {
+    "implementer": {
+      "addendum": null,
+      "explore_every": 4,
+      "files": "nothing",
+      "harnesses": [
+        "codex"
+      ],
+      "max_concurrent": 4,
+      "mcp": [
+        "firecrawl"
+      ],
+      "model": null,
+      "prompt": null,
+      "recovery_requeues": 2,
+      "runs": true,
+      "runtime": null,
+      "takes": null,
+      "timeout": 28800.0,
+      "wake_budget": null,
+      "writes": [
+        "commits",
+        "comments(finding) on your idea",
+        "comments(note) on your run"
+      ]
+    },
+    "research": {
+      "addendum": "dir/file52.md",
+      "files": "ideas",
+      "harnesses": null,
+      "incident_prompt": null,
+      "interval": 0.0,
+      "max_concurrent": 1,
+      "max_ideas": 0,
+      "mcp": [
+        "exa",
+        "firecrawl",
+        "xai"
+      ],
+      "model": null,
+      "prompt": null,
+      "routine_prompt": null,
+      "runs": false,
+      "runtime": null,
+      "timeout": 14400.0,
+      "triggers": [
+        {
+          "buffer": 2,
+          "kind": "low_water"
+        },
+        {
+          "kind": "seed"
+        }
+      ],
+      "wake_budget": null,
+      "workdir": "head",
+      "writes": [
+        "seeds via idea develop, or their status to rejected with a note",
+        "ideas via idea add",
+        "comments(finding, escalation) on the project",
+        "comments(note) on an idea"
+      ]
+    },
+    "scout": {
+      "addendum": null,
+      "files": "seeds",
+      "harnesses": null,
+      "incident_prompt": null,
+      "interval": 0.0,
+      "max_concurrent": 1,
+      "max_ideas": 1,
+      "mcp": [],
+      "model": null,
+      "prompt": null,
+      "routine_prompt": null,
+      "runs": false,
+      "runtime": null,
+      "seeds": 3,
+      "timeout": 900.0,
+      "triggers": [
+        {
+          "kind": "cron"
+        }
+      ],
+      "wake_budget": null,
+      "workdir": "head",
+      "writes": [
+        "seeds via idea seed (at most the count under Context)",
+        "techniques (the library), by INSERT",
+        "one comments(finding) on the project"
+      ]
+    },
+    "watchdog": {
+      "addendum": "dir/file51.md",
+      "files": "seeds",
+      "harnesses": null,
+      "incident_prompt": null,
+      "interval": 1800.0,
+      "max_concurrent": 1,
+      "max_ideas": 1,
+      "mcp": [],
+      "model": null,
+      "prompt": null,
+      "routine_prompt": null,
+      "runs": false,
+      "runtime": null,
+      "timeout": 1200.0,
+      "triggers": [
+        {
+          "kind": "anomaly"
+        }
+      ],
+      "wake_budget": 0,
+      "workdir": "head",
+      "writes": [
+        "comments(escalation, finding, note)",
+        "lessons on the project once it stopped",
+        "seeds via idea seed"
+      ]
+    }
+  },
+  "runtime": "subprocess",
+  "spend": {
+    "command": [
+      "/path/69",
+      "--flag70",
+      "/path/71.py"
+    ],
+    "interval": 300.0,
+    "limit": 600.0,
+    "notices": [
+      150.0,
+      300.0
+    ]
+  },
+  "stop": {
+    "max_hours": 72.0,
+    "max_runs": 60,
+    "max_tokens": 3000000000,
+    "plateau": 30,
+    "target": null
+  },
+  "tracks": {
+    "name_3": {
+      "addendum": null,
+      "share": 0.5
+    },
+    "name_5": {
+      "addendum": null,
+      "share": 0.5
+    }
+  }
+}

@@ -19,17 +19,19 @@ import math
 from collections.abc import Collection, Sequence
 from datetime import UTC, datetime
 
-from pydantic import JsonValue
+from pydantic import JsonValue, ValidationError
 from sqlalchemy import String, case, cast, func, select
 from sqlalchemy.orm import Session
 
 from piloop.api.contract import LIMIT, MAX_LIMIT
 from piloop.api.views import (
     Batch,
+    CampaignEntry,
     CampaignState,
     Envelope,
     Head,
     Inbox,
+    InvalidConfig,
     Item,
     LiveAgent,
     Named,
@@ -40,6 +42,7 @@ from piloop.api.views import (
 )
 from piloop.campaign import inbox
 from piloop.campaign.inbox import campaign_of
+from piloop.config import CampaignConfig, explain
 from piloop.db import feed as db_feed
 from piloop.db.models import OPEN_RUNS, Campaign, Event, Idea, Run, campaign_runs, count
 from piloop.ids import CampaignId, CommentKind, IdeaStatus
@@ -108,58 +111,80 @@ def read(
     return Batch(events=events, next=page.next, more=page.more)
 
 
-def status_view(s: Session, campaigns: Sequence[Campaign]) -> list[CampaignState]:
+def status_view(s: Session, campaigns: Sequence[Campaign]) -> list[CampaignEntry]:
     """The state of each campaign, as ``piloop status`` shows it. Call it inside a snapshot for one consistent view."""
-    states = []
+    states: list[CampaignEntry] = []
     for campaign in campaigns:
-        at = head_scores(s, campaign, campaign.config)
-        by_status = select(Idea.status, func.count()).where(Idea.campaign_id == campaign.id).group_by(Idea.status)
-        counts: dict[IdeaStatus, int] = {status: n for status, n in s.execute(by_status)}
-        open_runs = s.scalars(campaign_runs(campaign.id).where(Run.status.in_(OPEN_RUNS)).order_by(Run.id)).all()
-        states.append(
-            CampaignState(
-                id=campaign.id,
-                name=campaign.name,
-                path=campaign.path,
-                parent=parent_of(s, campaign),
-                status=str(campaign.status),
-                stopped_reason=campaign.stopped_reason,
-                paused=None if campaign.paused is None else str(campaign.paused),
-                paused_reason=campaign.paused_reason,
-                evaluator=campaign.evaluator_id,
-                head=None
-                if at is None
-                else Head(
-                    candidate=at[0].id,
-                    tracks=[
-                        TrackScore(track=track.name, metric=track.primary.name, value=value, delta=delta)
-                        for track, value, delta in at[1]
-                    ],
-                ),
-                kept=count(s, keeps(campaign)),
-                candidates=count(s, produced(campaign)),
-                ideas={str(status): counts.get(status, 0) for status in IdeaStatus},
-                runnable=len(queued_ideas(s, campaign)[1]),
-                runs=[
-                    OpenRun(
-                        id=r.id,
-                        idea=r.idea_id,
-                        title=r.idea.title,
-                        harness=r.harness,
-                        model=r.model,
-                        status=str(r.status),
-                    )
-                    for r in open_runs
-                ],
-                agents=[
-                    LiveAgent(id=w.id, kind=w.kind, state=str(w.state), harness=w.harness, model=w.model, run=w.run_id)
-                    for w in live_agent_sessions(s, campaign)
-                ],
-                inbox=len(inbox.items(s, campaign_id=campaign.id)),
-                tokens=campaign_tokens(s, campaign.id),
-            )
-        )
+        match configured(s, campaign):
+            case InvalidConfig() as invalid:
+                states.append(invalid)
+            case cfg:
+                states.append(_state(s, campaign, cfg))
     return states
+
+
+def configured(s: Session, campaign: Campaign) -> CampaignConfig | InvalidConfig:
+    """The stored config of ``campaign``, or what is wrong with it, when it no longer validates."""
+    try:
+        return campaign.config
+    except ValidationError as e:
+        return InvalidConfig(
+            id=campaign.id,
+            name=campaign.name,
+            path=campaign.path,
+            parent=parent_of(s, campaign),
+            status=campaign.status,
+            problem=explain('the stored config', e),
+            fix=f'`piloop init {campaign.path}`',
+        )
+
+
+def _state(s: Session, campaign: Campaign, cfg: CampaignConfig) -> CampaignState:
+    at = head_scores(s, campaign, cfg)
+    by_status = select(Idea.status, func.count()).where(Idea.campaign_id == campaign.id).group_by(Idea.status)
+    counts: dict[IdeaStatus, int] = {status: n for status, n in s.execute(by_status)}
+    open_runs = s.scalars(campaign_runs(campaign.id).where(Run.status.in_(OPEN_RUNS)).order_by(Run.id)).all()
+    return CampaignState(
+        id=campaign.id,
+        name=campaign.name,
+        path=campaign.path,
+        parent=parent_of(s, campaign),
+        status=str(campaign.status),
+        stopped_reason=campaign.stopped_reason,
+        paused=None if campaign.paused is None else str(campaign.paused),
+        paused_reason=campaign.paused_reason,
+        evaluator=campaign.evaluator_id,
+        head=None
+        if at is None
+        else Head(
+            candidate=at[0].id,
+            tracks=[
+                TrackScore(track=track.name, metric=track.primary.name, value=value, delta=delta)
+                for track, value, delta in at[1]
+            ],
+        ),
+        kept=count(s, keeps(campaign)),
+        candidates=count(s, produced(campaign)),
+        ideas={str(status): counts.get(status, 0) for status in IdeaStatus},
+        runnable=len(queued_ideas(s, campaign)[1]),
+        runs=[
+            OpenRun(
+                id=r.id,
+                idea=r.idea_id,
+                title=r.idea.title,
+                harness=r.harness,
+                model=r.model,
+                status=str(r.status),
+            )
+            for r in open_runs
+        ],
+        agents=[
+            LiveAgent(id=w.id, kind=w.kind, state=str(w.state), harness=w.harness, model=w.model, run=w.run_id)
+            for w in live_agent_sessions(s, campaign)
+        ],
+        inbox=len(inbox.items(s, campaign_id=campaign.id)),
+        tokens=campaign_tokens(s, campaign.id),
+    )
 
 
 def parent_of(s: Session, campaign: Campaign) -> Named | None:

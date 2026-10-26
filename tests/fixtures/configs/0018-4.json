@@ -1,0 +1,162 @@
+{
+  "confidence": 0.95,
+  "evaluate": [
+    "name_32",
+    "--flag33",
+    "dir/file34.py\n"
+  ],
+  "evaluate_timeout": 5400.0,
+  "harness": {
+    "codex": {
+      "entire_agent": "codex",
+      "executable": "codex",
+      "headless": [
+        "exec",
+        "--json",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--skip-git-repo-check",
+        "--model",
+        "{model}",
+        "-c",
+        "model_reasoning_effort=\"high\"",
+        "-c",
+        "features.memories=false",
+        "-c",
+        "shell_environment_policy.inherit=\"all\"",
+        "-c",
+        "shell_environment_policy.ignore_default_excludes=true",
+        "-c",
+        "shell_environment_policy.include_only=[\"HOME\",\"PATH\",\"PILOOP_*\"]",
+        "{prompt}"
+      ],
+      "interactive": [
+        "--model",
+        "{model}",
+        "-c",
+        "model_reasoning_effort=\"high\"",
+        "-c",
+        "check_for_update_on_startup=false",
+        "-c",
+        "features.memories=false",
+        "--sandbox",
+        "danger-full-access",
+        "--ask-for-approval",
+        "never",
+        "-c",
+        "shell_environment_policy.inherit=\"all\"",
+        "-c",
+        "shell_environment_policy.ignore_default_excludes=true",
+        "-c",
+        "shell_environment_policy.include_only=[\"HOME\",\"PATH\",\"PILOOP_*\"]"
+      ],
+      "mcp": null,
+      "session_id_pattern": "\"thread_id\":\"([0-9a-f-]{36})\"",
+      "startup_dialogs": [
+        [
+          "Do you trust the contents of this directory",
+          [
+            "enter"
+          ]
+        ],
+        [
+          "Press t to trust all",
+          [
+            "t"
+          ]
+        ],
+        [
+          "Hooks need review",
+          [
+            "down",
+            "enter"
+          ]
+        ],
+        [
+          "Trust this folder?",
+          [
+            "enter"
+          ]
+        ]
+      ],
+      "usage": {
+        "cwd": "none",
+        "file": "{home}/.codex/sessions/*/*/*/rollout-*-{session_id}.jsonl",
+        "reader": "jsonl",
+        "tally": "codex"
+      }
+    }
+  },
+  "harnesses": [
+    "codex"
+  ],
+  "link": [
+    "text 40",
+    "dir/file41",
+    "name_42"
+  ],
+  "mcp": {},
+  "metrics": [
+    {
+      "direction": "higher",
+      "floor": null,
+      "margin": null,
+      "name": "name_2",
+      "role": "primary"
+    },
+    {
+      "direction": "lower",
+      "floor": null,
+      "margin": 1.0,
+      "name": "name_3",
+      "role": "guardrail"
+    }
+  ],
+  "model": {
+    "claude": "name_36",
+    "codex": "text 35"
+  },
+  "name": "campaign-1",
+  "roles": {
+    "implementer": {
+      "addendum": null,
+      "harnesses": [
+        "codex"
+      ],
+      "max_concurrent": 5,
+      "mcp": [],
+      "model": null,
+      "timeout": 86400.0
+    },
+    "research": {
+      "addendum": "dir/file39.md",
+      "harnesses": [
+        "codex"
+      ],
+      "max_concurrent": 2,
+      "max_ideas": 3,
+      "mcp": [],
+      "model": {
+        "claude": "name_37",
+        "codex": "name_38"
+      },
+      "timeout": 14400.0
+    },
+    "watchdog": {
+      "addendum": null,
+      "harnesses": null,
+      "interval": 1800.0,
+      "max_concurrent": 1,
+      "mcp": [],
+      "model": null,
+      "timeout": 1200.0
+    }
+  },
+  "runtime": "subprocess",
+  "stop": {
+    "max_hours": 168.0,
+    "max_runs": 108,
+    "max_tokens": 3000000000,
+    "plateau": 33,
+    "target": null
+  }
+}

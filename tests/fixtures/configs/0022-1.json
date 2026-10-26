@@ -1,0 +1,252 @@
+{
+  "confidence": 0.95,
+  "context": [
+    "dir/file89.md",
+    "dir/file90.md"
+  ],
+  "evaluate": [
+    "name_81",
+    "/path/82.sh"
+  ],
+  "evaluate_timeout": 7200.0,
+  "harness": {},
+  "harnesses": [
+    "codex"
+  ],
+  "link": [
+    "text 86",
+    "dir/file87",
+    "name_88"
+  ],
+  "max_concurrent": {
+    "codex": 4
+  },
+  "mcp": {
+    "exa": {
+      "bearer_token_env": null,
+      "command": null,
+      "env": [],
+      "headers_env": {
+        "x-api-key": "EXA_API_KEY"
+      },
+      "url": "https://example.com/91"
+    },
+    "firecrawl": {
+      "bearer_token_env": "FIRECRAWL_API_KEY",
+      "command": null,
+      "env": [],
+      "headers_env": {},
+      "url": "https://example.com/92"
+    },
+    "xai": {
+      "bearer_token_env": null,
+      "command": [
+        "name_93",
+        "/path/94.py",
+        "text 95",
+        "--flag96",
+        "text 97"
+      ],
+      "env": [
+        "XAI_API_KEY"
+      ],
+      "headers_env": {},
+      "url": null
+    }
+  },
+  "memory": {
+    "documents": [],
+    "wake_budget": 400
+  },
+  "metrics": [
+    {
+      "direction": "higher",
+      "floor": null,
+      "margin": null,
+      "name": "name_2",
+      "role": "primary",
+      "track": null
+    },
+    {
+      "direction": "lower",
+      "floor": 1.0,
+      "margin": 1.0,
+      "name": "name_3",
+      "role": "guardrail",
+      "track": null
+    },
+    {
+      "direction": "higher",
+      "floor": null,
+      "margin": 1.0,
+      "name": "name_5",
+      "role": "guardrail",
+      "track": null
+    }
+  ],
+  "model": {
+    "claude": "name_84",
+    "codex": "name_83"
+  },
+  "name": "campaign-1",
+  "plugins": {},
+  "roles": {
+    "implementer": {
+      "addendum": null,
+      "explore_every": 4,
+      "files": "nothing",
+      "harnesses": [
+        "codex"
+      ],
+      "max_concurrent": 3,
+      "mcp": [
+        "firecrawl"
+      ],
+      "model": null,
+      "prompt": null,
+      "recovery_requeues": 2,
+      "runs": true,
+      "runtime": null,
+      "takes": null,
+      "timeout": 28800.0,
+      "wake_budget": null,
+      "writes": [
+        "commits",
+        "comments(finding) on your idea",
+        "comments(note) on your run"
+      ]
+    },
+    "research": {
+      "addendum": null,
+      "files": "ideas",
+      "harnesses": [
+        "codex"
+      ],
+      "incident_prompt": null,
+      "interval": 0.0,
+      "max_concurrent": 1,
+      "max_ideas": 2,
+      "mcp": [
+        "exa",
+        "firecrawl",
+        "xai"
+      ],
+      "model": null,
+      "prompt": null,
+      "routine_prompt": null,
+      "runs": false,
+      "runtime": null,
+      "timeout": 7200.0,
+      "triggers": [
+        {
+          "buffer": 2,
+          "kind": "low_water"
+        },
+        {
+          "kind": "seed"
+        }
+      ],
+      "wake_budget": null,
+      "workdir": "head",
+      "writes": [
+        "seeds via idea develop, or their status to rejected with a note",
+        "ideas via idea add",
+        "comments(finding, escalation) on the campaign",
+        "comments(note) on an idea"
+      ]
+    },
+    "scout": {
+      "addendum": null,
+      "files": "seeds",
+      "harnesses": [
+        "codex"
+      ],
+      "incident_prompt": null,
+      "interval": 21600.0,
+      "max_concurrent": 1,
+      "max_ideas": 1,
+      "mcp": [
+        "xai",
+        "exa"
+      ],
+      "model": null,
+      "prompt": null,
+      "routine_prompt": null,
+      "runs": false,
+      "runtime": null,
+      "seeds": 3,
+      "timeout": 1800.0,
+      "triggers": [
+        {
+          "kind": "cron"
+        }
+      ],
+      "wake_budget": null,
+      "workdir": "head",
+      "writes": [
+        "seeds via idea seed (at most the count under Context)",
+        "techniques (the library), by INSERT",
+        "one comments(finding) on the campaign"
+      ]
+    },
+    "watchdog": {
+      "addendum": "dir/file85.md",
+      "files": "seeds",
+      "harnesses": [
+        "codex"
+      ],
+      "incident_prompt": null,
+      "interval": 1800.0,
+      "max_concurrent": 1,
+      "max_ideas": 1,
+      "mcp": [],
+      "model": null,
+      "prompt": null,
+      "routine_prompt": null,
+      "runs": false,
+      "runtime": null,
+      "timeout": 1800.0,
+      "triggers": [
+        {
+          "kind": "anomaly"
+        }
+      ],
+      "wake_budget": 0,
+      "workdir": "head",
+      "writes": [
+        "comments(escalation, finding, note)",
+        "lessons on the campaign once it stopped",
+        "seeds via idea seed"
+      ]
+    }
+  },
+  "runtime": "subprocess",
+  "spend": {
+    "closing_review": "run",
+    "command": [
+      "/path/98",
+      "--flag99",
+      "/path/100.py"
+    ],
+    "interval": 300.0,
+    "limit": 2000.0,
+    "notices": [
+      200.0,
+      400.0,
+      600.0,
+      800.0,
+      1000.0,
+      1300.0,
+      1600.0,
+      1800.0
+    ]
+  },
+  "stop": {
+    "max_hours": 72.0,
+    "max_runs": null,
+    "max_tokens": null,
+    "plateau": 30,
+    "target": null
+  },
+  "tracks": {}
+}

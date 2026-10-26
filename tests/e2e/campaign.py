@@ -150,8 +150,9 @@ class Smoke:
     def campaign_state(self) -> CampaignState:
         """The campaign in ``piloop status --json``, the only one."""
         doc = self.status()
-        assert [p.name for p in doc.campaigns] == [self.name], doc.campaigns
-        return doc.campaigns[0]
+        [state] = doc.campaigns
+        assert isinstance(state, CampaignState) and state.name == self.name, doc.campaigns
+        return state
 
     def campaign_row(self) -> sqlite3.Row:
         """The campaign's row in the database."""

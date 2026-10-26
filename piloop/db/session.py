@@ -16,12 +16,14 @@ import fcntl
 import hashlib
 import math
 import os
+import re
 import sqlite3
 import threading
 import time
 from collections.abc import Callable, Generator
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import NewType
 
@@ -44,6 +46,7 @@ MIGRATIONS = Path(__file__).parent / 'migrations'
 CAS_ATTRIBUTE = 'cas'
 """The key of the home's CAS in the Alembic config's ``attributes``, for ``migration_cas``."""
 BACKUP_INFIX = '.bak-'
+BACKUP_TIME = '%Y%m%dT%H%M%SZ'
 MigrationRevision = NewType('MigrationRevision', str)
 """An Alembic revision id of ``MIGRATIONS``, such as ``0001``."""
 
@@ -301,8 +304,25 @@ def revision(database: Path) -> str | None:
 
 
 def backups(database: Path) -> list[Path]:
-    """The copies that ``migrate`` wrote of ``database``, oldest first."""
-    return sorted(database.parent.glob(f'{database.name}{BACKUP_INFIX}*'), key=lambda p: p.name.rpartition('-')[2])
+    """The copies that ``migrate`` wrote of ``database``, ``<database>.bak-<revision>-<UTC time>``, oldest first.
+
+    No other name is one: not SQLite's ``-shm`` and ``-wal`` next to a copy that something opened, and not a copy that
+    a person named ``<database>.bak-<anything>``.
+    """
+    ours = re.compile(rf'{re.escape(database.name)}{re.escape(BACKUP_INFIX)}[0-9]+-(?P<at>.+)')
+    written: dict[Path, datetime] = {}
+    for path in database.parent.glob(f'{database.name}{BACKUP_INFIX}*'):
+        if (found := ours.fullmatch(path.name)) is not None and (at := _written_at(found['at'])) is not None:
+            written[path] = at
+    return sorted(written, key=written.__getitem__)
+
+
+def _written_at(stamp: str) -> datetime | None:
+    """The time in the name of a copy, or None for a text that is no such time: no name that ``migrate`` wrote."""
+    try:
+        return datetime.strptime(stamp, BACKUP_TIME)
+    except ValueError:
+        return None
 
 
 def _backup(database: Path, at: str, keep: int) -> Path:
@@ -310,7 +330,7 @@ def _backup(database: Path, at: str, keep: int) -> Path:
 
     ``VACUUM INTO`` reads one snapshot, with what the WAL holds, so the copy is consistent while others write.
     """
-    copy = database.with_name(f'{database.name}{BACKUP_INFIX}{at}-{utcnow():%Y%m%dT%H%M%SZ}')
+    copy = database.with_name(f'{database.name}{BACKUP_INFIX}{at}-{utcnow():{BACKUP_TIME}}')
     try:
         with closing(sqlite3.connect(database)) as con:
             con.execute('VACUUM INTO ?', (str(copy),))

@@ -1,0 +1,121 @@
+{
+  "context": [
+    "dir/file39.md",
+    "dir/file40.json",
+    "dir/file41.json",
+    "dir/file42.md",
+    "dir/file43.md",
+    "dir/file44.py"
+  ],
+  "evaluate": [
+    "name_27",
+    "--flag28",
+    "dir/file29.py\n"
+  ],
+  "evaluate_timeout": 3600.0,
+  "harness": {},
+  "harnesses": [
+    "codex",
+    "claude"
+  ],
+  "link": [
+    "text 33",
+    "dir/file34",
+    "name_35"
+  ],
+  "max_concurrent": {
+    "claude": 1
+  },
+  "mcp": {},
+  "memory": {
+    "documents": [
+      "dir/file39.md",
+      "dir/file32.md"
+    ]
+  },
+  "metrics": [
+    {
+      "direction": "higher",
+      "floor": null,
+      "margin": null,
+      "name": "name_2",
+      "role": "primary",
+      "track": null
+    },
+    {
+      "direction": "higher",
+      "floor": 1.0,
+      "margin": 1.0,
+      "name": "name_3",
+      "role": "guardrail",
+      "track": null
+    }
+  ],
+  "model": {
+    "claude": "name_31",
+    "codex": "text 30"
+  },
+  "name": "campaign-1",
+  "plugins": {
+    "stop_rule": {
+      "max_hours": 72.0,
+      "max_runs": 40,
+      "max_spend": 600.0,
+      "max_tokens": 1500000000,
+      "plateau": 10,
+      "target": 7.0
+    }
+  },
+  "roles": {
+    "implementer": {
+      "addendum": null,
+      "explore_every": 0,
+      "harnesses": null,
+      "max_concurrent": 3,
+      "mcp": [],
+      "model": null,
+      "timeout": 43200.0
+    },
+    "research": {
+      "addendum": "dir/file32.md",
+      "harnesses": null,
+      "max_concurrent": 1,
+      "max_ideas": 0,
+      "mcp": [],
+      "model": null,
+      "timeout": 7200.0,
+      "triggers": [
+        {
+          "buffer": 1,
+          "provider": "low_water"
+        },
+        {
+          "provider": "seed"
+        }
+      ]
+    },
+    "watchdog": {
+      "addendum": null,
+      "harnesses": null,
+      "interval": 3600.0,
+      "max_concurrent": 1,
+      "mcp": [],
+      "model": null,
+      "timeout": 900.0
+    }
+  },
+  "runtime": "subprocess",
+  "spend": {
+    "command": [
+      "/path/36",
+      "--flag37",
+      "/path/38.py"
+    ],
+    "interval": 600.0,
+    "notices": [
+      200.0,
+      400.0
+    ]
+  },
+  "tracks": {}
+}

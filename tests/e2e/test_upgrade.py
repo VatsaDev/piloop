@@ -38,11 +38,12 @@ import pytest
 import tomli_w
 from covalence import Cid
 
+from piloop.api.views import CampaignState
 from piloop.db.models import EVENT, JUDGED, UnknownEvent
 from piloop.plugins.runtime.kit.tags import tagged
 from piloop.store.tree import DRISL
 from tests.conftest import wait_until
-from tests.e2e.campaign import CHEAPEST_MODEL, OPEN, ROOT, Smoke, merged, needs
+from tests.e2e.campaign import CHEAPEST_MODEL, OPEN, ROOT, STATUS, Smoke, merged, needs
 from tests.e2e.conftest import Install, caller_env
 from tests.e2e.inventory import Changed, Inventory, Renames, differences, read_database, take
 
@@ -75,11 +76,13 @@ CONFIG_REWRITES = (
     'roles.*.wake_budget',
     'roles.*.sections',
     'status.*',
+    'harness.*.mcp',
 )
 """The keys of the stored ``piloop.toml`` that a migration may change, as patterns: it deletes the harness keys that
 only herdr read (revision 0034), ``workdir`` (0035) and ``entire_agent`` (0036), renames a trigger's ``kind`` to
 ``provider`` (0038), moves ``[stop]``, ``[spend] limit`` and ``confidence`` into the rules' tables (0039), and turns
-``wake_budget`` into the lessons entry of a role's ``sections`` and lists the overview's in ``[status]`` (0053)."""
+``wake_budget`` into the lessons entry of a role's ``sections`` and lists the overview's in ``[status]`` (0053), and
+drops a built-in harness's null ``mcp`` whose table inherits an argv with ``{mcp}`` (0057)."""
 DROPPED = {'agent_sessions.checkpoint_id', 'documents.commit_sha'}
 """The columns that this checkout dropped, as the upgrading guide lists them."""
 CURRENT_EVALUATOR = 'current evaluator'
@@ -158,6 +161,18 @@ LIVE = ('NOTES.md', 'research')
 """Workspace entries that the store never archives (``ArchivePolicy.live``)."""
 LIVE_STATES = {'requested', 'starting', 'running'}
 """The states of an agent that is not done."""
+OLD_SHAPE = 'old-shape'
+OLD_SHAPE_CONFIG = Path(__file__).parents[1] / 'fixtures' / 'configs' / '0018-4.json'
+"""A second campaign, paused, with the stored config of a real home of the release that only revision 0057 makes
+valid (``tests/db/test_stored_configs.py``): a ``[harness.codex]`` table with ``mcp`` null."""
+PLANTED_BACKUPS = [f'piloop.db.bak-0018-2025010{day}T000000Z' for day in (1, 2, 3)]
+"""Backups that piloop wrote before the upgrade, oldest first: the upgrade's own backup pushes out the oldest."""
+NOT_BACKUPS = [
+    'piloop.db.bak-before-upgrade',
+    f'{PLANTED_BACKUPS[-1]}-shm',
+    f'{PLANTED_BACKUPS[-1]}-wal',
+]
+"""A copy that the user saved, and what SQLite leaves next to a backup that something opened: never pruned."""
 
 
 class Upgrade:
@@ -370,7 +385,10 @@ def test_upgrade_with_an_agent_in_flight(upgrade: Upgrade) -> None:
     fails on the keys of ``piloop.toml`` that this checkout removed, and only on those."""
     smoke = upgrade.smoke
     assert smoke.run_in('in flight', {'running'}) is not None, 'the in-flight run ended before the upgrade'
+    add_old_shape(upgrade)
     upgrade.before = upgrade.take()
+    for name in (*PLANTED_BACKUPS, *NOT_BACKUPS):
+        (smoke.home / name).write_bytes(b'a copy')
     pid = int((smoke.home / 'serve.pid').read_text())
     upgrade.install(str(ROOT))
     done = upgrade.run('upgrade')
@@ -378,14 +396,38 @@ def test_upgrade_with_an_agent_in_flight(upgrade: Upgrade) -> None:
     upgrade.after = upgrade.take()
     lines = done.stdout.splitlines()
     assert f'daemon: pid {pid} runs the new code' in lines, done.stdout + done.stderr
-    failed = [line for line in lines if line.startswith('FAIL')]
+    # OLD_SHAPE runs codex, which this machine may lack
+    failed = [
+        line for line in lines if line.startswith('FAIL') and line != 'FAIL  harnesses: not on PATH: codex (codex)'
+    ]
     assert len(failed) == 1 and 'piloop.toml' in failed[0], done.stdout
     assert next(iter(REMOVED_KEYS.values())) in failed[0] + done.stdout, done.stdout
+    [backup] = [p.name for p in smoke.home.glob(f'piloop.db.bak-{RELEASE_HEAD}-*Z') if p.name not in PLANTED_BACKUPS]
+    left = sorted(p.name for p in smoke.home.glob('piloop.db.bak-*'))
+    assert left == sorted([*PLANTED_BACKUPS[1:], backup, *NOT_BACKUPS]), left
     assert done.returncode != 0 and 'piloop doctor found problems' in done.stderr, done.stderr
     assert upgrade.before.revision == RELEASE_HEAD and upgrade.after.revision != RELEASE_HEAD
     assert smoke.run_in('in flight', {'running'}) is not None, 'the upgrade ended the in-flight run'
     upgrade.release('in flight')
     print(done.stdout)
+
+
+@needs(test_upgrade_with_an_agent_in_flight)
+def test_status_without_a_campaign_named_answers_after_the_upgrade(upgrade: Upgrade) -> None:
+    """The check after every upgrade: ``piloop status``, in JSON and as text, with no campaign named. The campaign of
+    the old stored config is valid; then it goes, so that the steps after see one campaign."""
+    smoke = upgrade.smoke
+    try:
+        as_json, as_text = upgrade.run('status', '--json'), upgrade.run('status')
+        assert as_json.returncode == 0, as_json.stderr
+        assert as_text.returncode == 0, as_text.stderr
+        listed = {c.name: c for c in STATUS.validate_json(as_json.stdout).campaigns}
+        assert listed and set(listed) <= {smoke.name, OLD_SHAPE}, listed
+        [old] = STATUS.validate_json(smoke.piloop('status', OLD_SHAPE, '--json')).campaigns
+        assert isinstance(old, CampaignState), old
+        print(as_text.stdout)
+    finally:
+        smoke.piloop('sql', f"DELETE FROM campaigns WHERE name = '{OLD_SHAPE}'")
 
 
 @needs(test_upgrade_with_an_agent_in_flight)
@@ -598,6 +640,20 @@ def test_a_home_of_0_1_0_is_refused_and_left_as_it_was(piloop_install: Install, 
     assert list(home.glob('piloop.db.bak-*')) == []
 
 
+def add_old_shape(upgrade: Upgrade) -> None:
+    """Register ``OLD_SHAPE`` with the release's ``piloop sql``, paused: its repo has a ``piloop.toml`` that loads."""
+    repo = upgrade.root / OLD_SHAPE
+    repo.mkdir()
+    shutil.copy(ROOT / 'piloop' / 'campaign' / 'templates' / 'enwik8' / 'piloop.toml', repo)
+    subprocess.run(['git', 'init', '--quiet'], cwd=repo, check=True)
+    config = json.dumps(json.loads(OLD_SHAPE_CONFIG.read_text())).replace("'", "''")
+    upgrade.smoke.piloop(
+        'sql',
+        'INSERT INTO campaigns (name, path, config, paused, paused_reason) VALUES'
+        f" ('{OLD_SHAPE}', '{repo}', '{config}', 'all', 'e2e: an old stored config')",
+    )
+
+
 def live_dirs(inventory: Inventory) -> list[str]:
     """``runs/<id>`` and ``agent_sessions/<id>`` of every agent at work in ``inventory``: its files under the home and
     its transcripts, by these names."""
@@ -623,13 +679,15 @@ def opened(inventory: Inventory) -> set[tuple[str, object]]:
     ):
         rows |= {(table, r['__rowid']) for r in inventory.tables[table] if r[column] in values}
     evaluators = {r['id']: r['__rowid'] for r in inventory.tables['evaluators']}
-    return rows | {(CURRENT_EVALUATOR, evaluators[r['evaluator_id']]) for r in inventory.tables['campaigns']}
+    current = [r['evaluator_id'] for r in inventory.tables['campaigns'] if r['evaluator_id'] is not None]
+    return rows | {(CURRENT_EVALUATOR, evaluators[e]) for e in current}
 
 
 def allowed(change: Changed, open_rows: set[tuple[str, object]]) -> bool:
     """A change of a row the campaign still changes; for the campaign row, only its time, signer and the documented
     rewrite of its stored config; for an event, the documented rewrite to its model; for an archive, its manifest's
-    address as a CID; for a campaign's current evaluator, its key and definition, which revision 0052 recomputes."""
+    address as a CID; for an agent's usage, the path of its session file, which revision 0054 moves into the CAS; for
+    a campaign's current evaluator, its key and definition, which revision 0052 recomputes."""
     match change.table, change.column:
         case 'campaigns', 'config':
             return all(
@@ -641,6 +699,10 @@ def allowed(change: Changed, open_rows: set[tuple[str, object]]) -> bool:
             return typed(change)
         case 'archives', 'manifest':
             return is_cid(str(change.after))
+        case 'agent_sessions', 'usage':
+            return json.loads(str(change.after)) == {
+                k: v for k, v in json.loads(str(change.before)).items() if k != 'source'
+            }
         case 'evaluators', 'key' | 'definition':
             return (CURRENT_EVALUATOR, change.rowid) in open_rows
         case table, _:

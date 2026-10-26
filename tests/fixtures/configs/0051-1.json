@@ -1,0 +1,172 @@
+{
+  "context": [
+    "dir/file88.md",
+    "dir/file89.md"
+  ],
+  "evaluate": [
+    "name_81",
+    "/path/82.sh"
+  ],
+  "evaluate_timeout": 7200.0,
+  "harness": {},
+  "harnesses": [
+    "codex"
+  ],
+  "link": [
+    "text 85",
+    "dir/file86",
+    "name_87"
+  ],
+  "max_concurrent": {
+    "codex": 4
+  },
+  "mcp": {
+    "exa": {
+      "bearer_token_env": null,
+      "command": null,
+      "env": [],
+      "headers_env": {
+        "x-api-key": "EXA_API_KEY"
+      },
+      "url": "https://example.com/90"
+    },
+    "firecrawl": {
+      "bearer_token_env": "FIRECRAWL_API_KEY",
+      "command": null,
+      "env": [],
+      "headers_env": {},
+      "url": "https://example.com/91"
+    },
+    "xai": {
+      "bearer_token_env": null,
+      "command": [
+        "name_92",
+        "/path/93.py",
+        "text 94",
+        "--flag95",
+        "text 96"
+      ],
+      "env": [
+        "XAI_API_KEY"
+      ],
+      "headers_env": {},
+      "url": null
+    }
+  },
+  "memory": {
+    "documents": [],
+    "wake_budget": 400
+  },
+  "metrics": [
+    {
+      "direction": "higher",
+      "floor": null,
+      "margin": null,
+      "name": "name_2",
+      "repeats": null,
+      "role": "primary",
+      "track": null
+    },
+    {
+      "direction": "lower",
+      "floor": 1.0,
+      "margin": 1.0,
+      "name": "name_3",
+      "repeats": null,
+      "role": "guardrail",
+      "track": null
+    },
+    {
+      "direction": "higher",
+      "floor": null,
+      "margin": 1.0,
+      "name": "name_5",
+      "repeats": null,
+      "role": "guardrail",
+      "track": null
+    }
+  ],
+  "model": {
+    "codex": "name_83"
+  },
+  "name": "campaign-1",
+  "plugins": {
+    "stop_rule": {
+      "max_hours": 48.0,
+      "max_spend": 1000.0,
+      "plateau": 30,
+      "provider": "limits"
+    },
+    "verdict_rule": {
+      "confidence": 0.95,
+      "provider": "bootstrap"
+    }
+  },
+  "roles": {
+    "implementer": {
+      "explore_every": 4,
+      "harnesses": [
+        "codex"
+      ],
+      "max_concurrent": 3,
+      "mcp": [
+        "firecrawl"
+      ],
+      "runs": true,
+      "timeout": 28800.0
+    },
+    "research": {
+      "harnesses": [
+        "codex"
+      ],
+      "max_concurrent": 1,
+      "max_ideas": 2,
+      "mcp": [
+        "exa",
+        "firecrawl",
+        "xai"
+      ],
+      "runs": false,
+      "timeout": 7200.0
+    },
+    "scout": {
+      "harnesses": [
+        "codex"
+      ],
+      "interval": 21600.0,
+      "mcp": [
+        "xai",
+        "exa"
+      ],
+      "runs": false,
+      "seeds": 3,
+      "timeout": 1800.0
+    },
+    "watchdog": {
+      "addendum": "dir/file84.md",
+      "harnesses": [
+        "codex"
+      ],
+      "interval": 1800.0,
+      "max_concurrent": 1,
+      "runs": false,
+      "timeout": 1800.0
+    }
+  },
+  "runtime": "subprocess",
+  "spend": {
+    "closing_review": "run",
+    "command": [
+      "/path/97",
+      "--flag98",
+      "/path/99.py"
+    ],
+    "interval": 300.0,
+    "notices": [
+      300.0,
+      600.0,
+      900.0
+    ]
+  },
+  "tracks": {}
+}

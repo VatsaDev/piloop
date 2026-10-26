@@ -10,6 +10,7 @@ from sqlalchemy import func, select, text, update
 
 from piloop.actor import System
 from piloop.api.contract import MAX_LIMIT
+from piloop.api.views import CampaignState
 from piloop.campaign import ops
 from piloop.db import feed as db_feed
 from piloop.db.events import emit
@@ -299,6 +300,7 @@ def test_snapshots_carry_the_cursor_they_were_read_at(db: Database, campaign: Ca
         )
     idea_id, seed_id, candidate_id, run_id, agent_session_id = ids
     assert state.model_dump() == {
+        'kind': 'state',
         'id': campaign.id,
         'name': 'demo',
         'path': campaign.path,
@@ -355,4 +357,4 @@ def test_a_campaign_without_a_keep_has_no_head(db: Database, campaign: Campaign)
         s.execute(update(Candidate).values(verdict=Outcome.DISCARD))
         s.commit()
         [state] = feed.status_view(s, [s.get_one(Campaign, campaign.id)])
-    assert state.head is None and state.kept == 0
+    assert isinstance(state, CampaignState) and state.head is None and state.kept == 0

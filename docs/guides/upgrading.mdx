@@ -102,7 +102,8 @@ it knows, and what to run:
 Before it migrates, piloop writes a copy of the database next to it, as the old schema left it:
 `$PILOOP_HOME/piloop.db.bak-<revision>-<UTC time>`, for example `piloop.db.bak-0001-20261021T002254Z`. `piloop migrate`
 and `piloop upgrade` print where it is, and the daemon's log names it in its `piloop.start` line. piloop keeps the 3
-newest copies; `migration_backups` in `config.toml` sets how many, and `0` writes none. Each copy is about the size of
+newest copies; `migration_backups` in `config.toml` sets how many, and `0` writes none. It never deletes a file of
+another name, such as a copy that you saved. Each copy is about the size of
 the database. When the copy cannot be written, for example on a full disk, nothing is migrated, and the error says so.
 
 While a daemon of an older piloop runs, `piloop migrate` and `piloop serve` do not migrate the database, because the

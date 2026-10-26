@@ -1,0 +1,204 @@
+{
+  "evaluate": [
+    "name_19",
+    "--flag20",
+    "dir/file21.py\n"
+  ],
+  "evaluate_timeout": 3600.0,
+  "harness": {
+    "claude": {
+      "executable": "claude",
+      "headless": [
+        "-p",
+        "--output-format",
+        "json",
+        "--session-id",
+        "{session_id}",
+        "--model",
+        "{model}",
+        "--effort",
+        "high",
+        "--dangerously-skip-permissions",
+        "--mcp-config",
+        "/path/24.json",
+        "--settings",
+        "{\"autoMemoryEnabled\":false}",
+        "{prompt}"
+      ],
+      "session_id_pattern": null,
+      "usage": {
+        "cwd": "dash_non_alnum",
+        "file": "{home}/.claude/projects/{cwd}/{session_id}.jsonl",
+        "reader": "jsonl",
+        "tally": "claude"
+      }
+    },
+    "claude_research": {
+      "executable": "claude",
+      "headless": [
+        "-p",
+        "--output-format",
+        "json",
+        "--session-id",
+        "{session_id}",
+        "--model",
+        "{model}",
+        "--effort",
+        "high",
+        "--dangerously-skip-permissions",
+        "--strict-mcp-config",
+        "--mcp-config",
+        "/path/25.json",
+        "--settings",
+        "{\"autoMemoryEnabled\":false}",
+        "{prompt}"
+      ],
+      "session_id_pattern": null,
+      "usage": {
+        "cwd": "dash_non_alnum",
+        "file": "{home}/.claude/projects/{cwd}/{session_id}.jsonl",
+        "reader": "jsonl",
+        "tally": "claude"
+      }
+    },
+    "codex": {
+      "executable": "codex",
+      "headless": [
+        "exec",
+        "--json",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--skip-git-repo-check",
+        "--model",
+        "{model}",
+        "-c",
+        "model_reasoning_effort=\"high\"",
+        "-c",
+        "features.memories=false",
+        "-c",
+        "shell_environment_policy.inherit=\"all\"",
+        "-c",
+        "shell_environment_policy.ignore_default_excludes=true",
+        "-c",
+        "shell_environment_policy.include_only=[\"HOME\",\"PATH\",\"PILOOP_*\"]",
+        "-c",
+        "dir/file26",
+        "{prompt}"
+      ],
+      "session_id_pattern": "\"thread_id\":\"([0-9a-f-]{36})\"",
+      "usage": {
+        "cwd": "none",
+        "file": "{home}/.codex/sessions/*/*/*/rollout-*-{session_id}.jsonl",
+        "reader": "jsonl",
+        "tally": "codex"
+      }
+    },
+    "codex_research": {
+      "executable": "codex",
+      "headless": [
+        "exec",
+        "--json",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--skip-git-repo-check",
+        "--model",
+        "{model}",
+        "-c",
+        "model_reasoning_effort=\"high\"",
+        "-c",
+        "features.memories=false",
+        "-c",
+        "shell_environment_policy.inherit=\"all\"",
+        "-c",
+        "shell_environment_policy.ignore_default_excludes=true",
+        "-c",
+        "shell_environment_policy.include_only=[\"HOME\",\"PATH\",\"PILOOP_*\"]",
+        "-c",
+        "dir/file26",
+        "-c",
+        "dir/file27",
+        "-c",
+        "dir/file28.20-0309-non-reasoning\"]}",
+        "{prompt}"
+      ],
+      "session_id_pattern": "\"thread_id\":\"([0-9a-f-]{36})\"",
+      "usage": {
+        "cwd": "none",
+        "file": "{home}/.codex/sessions/*/*/*/rollout-*-{session_id}.jsonl",
+        "reader": "jsonl",
+        "tally": "codex"
+      }
+    }
+  },
+  "harnesses": [
+    "codex",
+    "claude"
+  ],
+  "link": [
+    "text 32",
+    "dir/file33",
+    "name_34"
+  ],
+  "metrics": [
+    {
+      "direction": "higher",
+      "floor": null,
+      "margin": null,
+      "name": "name_2",
+      "role": "primary"
+    },
+    {
+      "direction": "lower",
+      "floor": null,
+      "margin": 1.0,
+      "name": "name_3",
+      "role": "guardrail"
+    }
+  ],
+  "model": {
+    "claude": "name_23",
+    "codex": "text 22"
+  },
+  "name": "campaign-1",
+  "plugins": {
+    "stop_rule": {
+      "max_hours": 240.0,
+      "max_runs": 150,
+      "max_tokens": 4500000000,
+      "plateau": 31
+    }
+  },
+  "roles": {
+    "implementer": {
+      "addendum": null,
+      "harnesses": [
+        "codex",
+        "claude"
+      ],
+      "max_concurrent": 1,
+      "model": null,
+      "timeout": 86400.0
+    },
+    "research": {
+      "addendum": "dir/file31.md",
+      "harnesses": [
+        "claude_research",
+        "codex_research"
+      ],
+      "max_concurrent": 2,
+      "max_ideas": 3,
+      "model": {
+        "claude_research": "name_29",
+        "codex_research": "name_30"
+      },
+      "timeout": 14400.0
+    },
+    "watchdog": {
+      "addendum": null,
+      "harnesses": null,
+      "interval": 1800.0,
+      "max_concurrent": 1,
+      "model": null,
+      "timeout": 1200.0
+    }
+  },
+  "runtime": "subprocess"
+}

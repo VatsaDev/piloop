@@ -39,6 +39,7 @@ from piloop.db.session import (
     SchemaAhead,
     SchemaMismatch,
     SchemaTooOld,
+    backups,
     fingerprints,
     migrate,
     revision,
@@ -516,6 +517,34 @@ def test_a_migration_first_backs_up_the_database_and_keeps_the_newest_backups(tm
     engine.dispose()
 
 
+def test_a_migration_prunes_only_the_backups_that_piloop_wrote_oldest_by_their_time(tmp_path: Path) -> None:
+    """SQLite's ``-shm`` and ``-wal`` next to a copy that something opened, a copy that a person named and a name whose
+    digits are no time stay. The oldest by the time in its name goes, not the first by name: here a copy of 0018 is older
+    than the copy of 0017."""
+    path = tmp_path / 'piloop.db'
+    command.upgrade(alembic(path), '0018')
+    engine = create_engine(f'sqlite:///{path}')
+    ours = [
+        'piloop.db.bak-0018-20250101T000000Z',
+        'piloop.db.bak-0017-20250102T000000Z',
+        'piloop.db.bak-0018-20250103T000000Z',
+        'piloop.db.bak-0018-20250104T000000Z',
+    ]
+    others = [
+        'piloop.db.bak-mine',
+        'piloop.db.bak-0018-20251399T000000Z',
+        'piloop.db.bak-0018-20250104T000000Z-shm',
+        'piloop.db.bak-0018-20250104T000000Z-wal',
+    ]
+    for name in (*ours, *others):
+        (tmp_path / name).write_bytes(b'a copy')
+    backup = migrate(engine, cas=disk(tmp_path), backups=4, daemon=None)
+    assert backup is not None
+    assert sorted(p.name for p in tmp_path.glob('piloop.db.bak-*')) == sorted([*ours[1:], backup.name, *others])
+    assert backups(path) == [tmp_path / name for name in ours[1:]] + [backup]
+    engine.dispose()
+
+
 def test_a_backup_that_fails_leaves_the_database_unmigrated_and_no_partial_copy(tmp_path: Path) -> None:
     """A full disk, as a limit on the size of the files this process writes: the copy fails, nothing is migrated."""
     path = tmp_path / 'piloop.db'
@@ -913,9 +942,8 @@ def test_0011_makes_scout_sweeps_scout_rows_and_stored_configs_valid_and_downgra
 
 def upgraded(config: dict[str, object]) -> object:
     """``config`` as revisions 0018 (``roles.implementer``), 0034 (no herdr), 0035 (no ``workdir``), 0036 (no Entire),
-    0038 (a trigger's ``provider``), 0039 (the rules' limits), 0055 (the incident triggers) and 0056 (``[[facts]]``) store
-    it, so that today's
-    piloop reads it."""
+    0038 (a trigger's ``provider``), 0039 (the rules' limits), 0055 (the incident triggers), 0056 (``[[facts]]``) and
+    0057 (an inherited ``mcp``) store it, so that today's piloop reads it."""
     roles = config.get('roles')
     if isinstance(roles, dict) and 'worker' in roles:
         roles['implementer'] = roles.pop('worker')
@@ -926,7 +954,8 @@ def upgraded(config: dict[str, object]) -> object:
     config = revisions.get_revision('0038').module.renamed(config, 'kind', 'provider')
     config = revisions.get_revision('0039').module.upgraded(config)
     config = revisions.get_revision('0055').module.upgraded(config)
-    return revisions.get_revision('0056').module.upgraded(config)
+    config = revisions.get_revision('0056').module.upgraded(config)
+    return revisions.get_revision('0057').module.upgraded(config)
 
 
 def test_0012_leaves_the_cached_input_out_of_the_input_of_codex_rows_and_downgrades(tmp_path: Path) -> None:
@@ -1814,6 +1843,35 @@ def test_0055_makes_the_anomaly_trigger_the_incident_triggers_and_names_the_trig
         assert [a for _, a in con.execute(reports)] == ['failed', 'dead at startup', 'failed']
     watchdog = loads(stored)['roles']['watchdog']
     assert (watchdog['triggers'], watchdog['sections']) == (triggers, sections)
+
+
+def test_0057_a_built_in_harness_table_that_inherits_an_argv_with_mcp_inherits_its_renderer(tmp_path: Path) -> None:
+    """Only a null ``mcp`` of a built-in's table that lacks one of its argv keys with ``{mcp}`` goes."""
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0056')
+    harness = {
+        'codex': {'executable': 'codex', 'headless': ['exec', '{prompt}'], 'mcp': None},
+        'claude': {'headless': ['-p', '{prompt}'], 'resume': ['--resume', '{session_id}', '{prompt}'], 'mcp': None},
+        'pi': {'mcp': 'pi'},
+        'mine': {'executable': 'mine', 'headless': ['{prompt}'], 'mcp': None},
+    }
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute("INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', ?)", (dumps({'harness': harness}),))
+    command.upgrade(cfg, '0057')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        [(stored,)] = con.execute('SELECT config FROM campaigns').fetchall()
+    assert loads(stored)['harness'] == {
+        'codex': {'executable': 'codex', 'headless': ['exec', '{prompt}']},
+        'claude': harness['claude'],
+        'pi': harness['pi'],
+        'mine': harness['mine'],
+    }, 'codex inherits resume; claude sets both of its argvs; a harness that is no built-in inherits nothing'
+    whole = bare_config('p').model_dump(mode='json') | {'harness': {'codex': loads(stored)['harness']['codex']}}
+    assert CampaignConfig.model_validate(whole).harness['codex'].mcp == 'codex'
+    command.downgrade(cfg, '0056')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute('SELECT config FROM campaigns').fetchall() == [(stored,)]
 
 
 def test_0040_checks_the_role_of_a_row_against_its_campaign_config_alone_and_downgrades(tmp_path: Path) -> None:

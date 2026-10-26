@@ -4,7 +4,7 @@ import json
 import shlex
 import time
 from datetime import UTC, datetime, timedelta
-from typing import Annotated
+from typing import Annotated, assert_never
 
 import cyclopts
 from cyclopts import validators
@@ -23,7 +23,15 @@ from piloop.api.contract import (
     Selection,
     defaulted,
 )
-from piloop.api.views import Batch, DaemonState, LiveKey, seed_line, thread_lines
+from piloop.api.views import (
+    Batch,
+    CampaignOverview,
+    DaemonState,
+    InvalidConfig,
+    LiveKey,
+    seed_line,
+    thread_lines,
+)
 from piloop.cli import common
 from piloop.cli.client import api, cwd
 from piloop.cli.common import CampaignRef, JsonFlag
@@ -61,8 +69,15 @@ def status(ref: CampaignRef | None = None, /, *, json_: JsonFlag = False) -> Non
         parent = campaign.parent
         under = '' if parent is None else f'  under {parent.name} #{parent.id}'
         common.heading(f'[bold]{campaign.name}[/] #{campaign.id}  {campaign.path}{under}')
-        for section in campaign.sections:
-            common.console.print(section.markdown() + '\n', markup=False, highlight=False, soft_wrap=True)
+        match campaign:
+            case CampaignOverview():
+                blocks = [section.markdown() for section in campaign.sections]
+            case InvalidConfig():
+                blocks = [campaign.problem, f'fix: {campaign.fix}']
+            case _:
+                assert_never(campaign)
+        for text in blocks:
+            common.console.print(text + '\n', markup=False, highlight=False, soft_wrap=True)
 
 
 def daemon_line(state: DaemonState) -> str:
