@@ -1,0 +1,128 @@
+---
+title: Write a plugin
+description: A plugin is a Python package that adds providers to piloop's capabilities, with entry points.
+---
+
+A **plugin** is a Python package that you install next to piloop. This one adds a verdict rule, `min_gain`. It calls
+the built-in rule `bootstrap` and changes one thing: a keep whose gain is below `min_gain` becomes `interesting`.
+
+```toml
+[project.entry-points."piloop.verdict_rules"]
+min_gain = "piloop_min_gain:MinGain"
+```
+
+```python
+from piloop.capabilities import Bootstrap, Case, Judgement, Outcome
+
+
+class MinGain(Bootstrap):
+    min_gain: float
+
+    def decide(self, case: Case) -> Judgement:
+        judged = super().decide(case)  # the built-in rule's verdict and reason
+        if judged.verdict is Outcome.KEEP and gain(case) < self.min_gain:
+            return Judgement(Outcome.INTERESTING, judged.reason + '; the gain is below min_gain')
+        return judged
+```
+
+`gain` is a short helper. The full rule is in [Verdict rules](/plugins/rules#verdict-rules). Install the plugin next
+to piloop, check that piloop finds it, then select it in `piloop.toml` and run `piloop init .`:
+
+```bash
+uv tool install piloop --with ./examples/plugins/min-gain
+piloop plugins
+```
+
+```text
+[plugins.verdict_rule]
+provider = "min_gain"
+min_gain = 100
+```
+
+Each example plugin of these pages is a package in
+[`examples/plugins/`](https://github.com/hiloopai/piloop/tree/main/examples/plugins). piloop's tests install each one
+and select it.
+
+## Providers and capabilities
+
+A **capability** is one kind of decision or service, such as the verdict rule. A **provider** is one implementation
+of it, with a name. Each capability has a built-in provider. [How piloop is built](/concepts/how-piloop-is-built#capabilities)
+lists every capability, the entry point group of its providers, and its built-in providers.
+
+A provider is a class that subclasses its capability's contract. Its fields are its **parameters**, and its methods
+are the contract. Import the contract, its types and the built-in providers from one module,
+`piloop.capabilities`. The entry point's name is the provider's name.
+
+## Select a provider
+
+A table selects a provider: `provider` is its name, and the other keys are its parameters.
+
+- A capability with one provider per file has its own table, `[plugins.<capability>]`. The table is in `piloop.toml`
+  for a campaign's choice, such as the verdict rule, and in `$PILOOP_HOME/config.toml` for the home's, such as the
+  executor.
+- A provider in a list, such as a trigger, is an entry of that list: `{ provider = "<name>", <parameter> = <value> }`.
+- A key that only names a provider, such as `runtime`, takes its name.
+
+piloop validates each table into the provider's class when it loads the file. An unknown name is an error that lists
+the names that exist.
+
+## Host and pure contracts
+
+A **host** provider, such as a runtime, can get live objects of piloop: processes, files, a database session.
+
+A **pure** provider gets data and returns data. The verdict rules and the stop rules are pure. A pure provider
+imports only the standard library and, from `piloop.capabilities`, its contract and the built-in providers that it
+calls. Its methods take and return data only:
+
+- `str`, `int`, `float`, `bool`, `bytes`, an enum, a dataclass or a pydantic model of data, `list`, `tuple`, `dict`,
+  and unions of these.
+- No database session, file, function or other class.
+- No `Any`, no `object`, no model that allows extra fields, and no type that contains itself.
+
+A pure provider returns an error as a value, a case of a union. It does not raise. Data that costs database queries
+is asked for by name first, as the stop rule's `reads` does.
+
+## Call a built-in provider
+
+A provider can subclass a built-in provider, call it with `super()`, and change one part of its answer, as `min_gain`
+does above. The rest of the answer, and the built-in provider's parameters, stay the same.
+
+## Let other plugins extend your plugin
+
+A plugin can declare a capability of its own. Other plugins then add providers to it:
+
+1. Make a `Capability` with its name and its contract, an abstract class. Its providers are entry points in the group
+   `piloop.<name>s`.
+2. Add an entry point in `piloop.capabilities` that names it.
+3. Give your provider a field of the providers that it calls. `Annotated[P, CAP.entry]` takes a table
+   `{ provider = "<name>", <its parameters> }`, and piloop refuses a name that no provider has when the file loads.
+
+```python
+class VerdictCheck(Parameters, ABC):
+    @abstractmethod
+    def check(self, case: Case) -> str | None: ...
+
+
+VERDICT_CHECKS = Capability('verdict_check', VerdictCheck, tier=Tier.PURE)  # providers: piloop.verdict_checks
+
+
+class Checked(Bootstrap):  # a verdict rule that calls the checks of its field `checks`
+    checks: list[Annotated[VerdictCheck, VERDICT_CHECKS.entry]]
+
+    def decide(self, case: Case) -> Judgement:
+        judged = super().decide(case)
+        held = [why for check in self.checks if (why := check.check(case)) is not None]
+        return Judgement(Outcome.INTERESTING, '; '.join(held)) if judged.verdict is Outcome.KEEP and held else judged
+```
+
+`piloop plugins` and `piloop doctor` list your capability and its providers.
+
+## How piloop loads plugins
+
+- **All or nothing.** piloop loads every provider of a capability and checks each one. Then it registers all of them,
+  or none.
+- **Before the daemon starts.** The daemon does not start when an entry point does not import, names an object of the
+  wrong type, or has a name that another provider has. It also does not start when `config.toml` selects a provider
+  that does not exist.
+- **The same checks elsewhere.** `piloop serve --check`, `piloop doctor` and `piloop plugins` do the same checks.
+  `piloop restart` and `piloop upgrade` do them first, and keep the daemon running if it would not start again.

@@ -1,6 +1,6 @@
 # piloop-sqlite-cas
 
-A plugin that adds a [CAS provider](https://piloop.autoresearch.inc/architecture/extension-points#cas-providers). Its
+A plugin that adds a [CAS provider](https://piloop.autoresearch.inc/plugins/infrastructure#cas-providers). Its
 store is covalence's `Cas.sqlite`, as it is: all the blobs in one SQLite file.
 
 ```bash

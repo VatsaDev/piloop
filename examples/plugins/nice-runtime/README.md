@@ -1,6 +1,6 @@
 # piloop-nice
 
-A plugin that adds a [runtime](https://piloop.autoresearch.inc/architecture/extension-points#runtimes). piloop starts
+A plugin that adds a [runtime](https://piloop.autoresearch.inc/plugins/agents#runtimes). piloop starts
 each agent through a runtime. This runtime starts each agent as the built-in runtime `subprocess` does, but under
 `nice`, with a lower CPU priority. Your own work then gets the CPU first.
 

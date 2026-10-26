@@ -1,0 +1,9 @@
+{/* WARNING: This file is auto-generated (uv run -m scripts.generate_all). Update the docstrings in `piloop/plugins/archive/contract.py` if you want to change anything here. */}
+
+| Member | What it is |
+|---|---|
+| `ArchiveConfig.open(host: ArchiveHost) -> Archiver` | Make the archiver. The daemon calls it once, when it starts. |
+| `ArchiveConfig.restore(s: Session, cas: Cas, home: Path, campaign: Campaign, target: TargetRef \| str \| None) -> Restored` | Write archived files back into `campaign`'s workspace: a subject's, a workspace-relative path's, or all. |
+| `ArchiveConfig.summary(s: Session) -> Summary` | What the archive holds and what waits for its archiving, for `piloop store status`. |
+| `Archiver.contribution() -> Contribution` | Its consumer `CONSUMER`. |
+| `Archiver.stop(timeout: float) -> None` | Stop, and wait up to `timeout` seconds for the job in flight. The daemon's stop calls it. |

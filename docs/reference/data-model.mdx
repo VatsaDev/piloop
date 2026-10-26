@@ -1,0 +1,46 @@
+---
+title: Data model
+description: The tables of the piloop database and how they relate.
+---
+
+import DataModel from '/snippets/generated/data-model.mdx';
+import States from '/snippets/generated/states.mdx';
+
+The database is the contract between every actor: you, the orchestrator, the daemon and the agents. They all read and
+write the same tables, with `piloop sql` or through the CLI. CHECK constraints fix the allowed values, foreign keys
+and unique keys fix the relations, and triggers record who changed a row and log each change in `events`.
+
+Core's tables hold what every campaign has:
+
+- A **campaign** is one repo.
+- An **agent session** is one agent process, in any role.
+- A **comment** or an **event** points at any row through `(target_kind, target_id)`, so it has no foreign key. A
+  program reads the events after a cursor with `piloop events`: see the [event feed](/reference/event-feed).
+
+The `optimization` campaign type's tables hold the research:
+
+- An **idea** is something to try. `idea_links` relates two ideas of one campaign: one runs `after` the other, or
+  `supersedes` it. `ideas.track` is the name of a track in `piloop.toml`.
+- A **run** is one attempt at an idea. Its agent session has its `run_id`.
+- A **candidate** is a distinct state of the code. Its git tree identifies it, and `parent_id` is its lineage.
+- An **evaluator** is one version of the evaluate command and the metrics. `piloop init` adds one when they change.
+  A **measurement** is one run of an evaluator on a candidate.
+- A **technique** is an outside technique that a [scout](/concepts/roles#the-built-in-roles) sweep found.
+
+The memory's tables (`lessons`, `documents`, `journal`) and the archive's (`archives`) are their providers'.
+Three columns hold a candidate id or an evaluator id without a foreign key: `campaigns.evaluator_id`,
+`ideas.base_candidate_id` and `runs.base_candidate_id`. The foreign keys would make a cycle.
+
+Each line of the diagram is a foreign key, labeled with its column. The [database schema](/reference/schema) has the
+full DDL with the indexes, by the plugin that owns each table.
+
+<DataModel />
+
+## Statuses
+
+A CHECK constraint fixes the values of each status column. The daemon and the CLI move a row from one value to the
+next, as [ideas and runs](/concepts/ideas-and-runs), [the verdict](/concepts/verdict) and
+[agents](/concepts/roles#watch-and-steer-an-agent) show. Anyone with `piloop sql` can set any value, for example to park an
+idea.
+
+<States />

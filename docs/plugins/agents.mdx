@@ -1,0 +1,221 @@
+---
+title: Harnesses, runtimes, roles, triggers and sections
+sidebarTitle: Agents and sections
+description: Plugins that start the agents, define what they do and when, and show a campaign.
+---
+
+import ExampleNiceRuntime from '/snippets/generated/example-nice-runtime.mdx';
+import RuntimeProtocol from '/snippets/generated/runtime-protocol.mdx';
+import Roles from '/snippets/generated/roles.mdx';
+import ContractTrigger from '/snippets/generated/contract-trigger.mdx';
+import ContractSection from '/snippets/generated/contract-section.mdx';
+import ContractHarness from '/snippets/generated/contract-harness.mdx';
+
+A harness is the coding agent CLI that an agent runs in. A runtime starts and steers the agents. A role says what an agent does, and its triggers say when it starts. A section
+is one part of what `piloop status`, a brief or a UI shows. [Agents and roles](/concepts/roles) describes them as a
+user sees them.
+
+## Harnesses
+
+A harness provider holds what piloop knows about one coding agent CLI. This one is Claude Code's beta build, which every
+campaign that does not set `harnesses` rotates through:
+
+```python
+from typing import ClassVar
+
+from piloop.capabilities import Claude
+
+
+class ClaudeBeta(Claude):
+    """``claude_beta``: Claude Code installed as ``claude-beta``."""
+
+    DEFAULT: ClassVar[bool] = True
+    executable: str = 'claude-beta'
+```
+
+```toml
+[project.entry-points."piloop.harnesses"]
+claude_beta = "my_package:ClaudeBeta"
+```
+
+### The contract
+
+A harness provider is a subclass of `Harness`. Its fields are the keys of `[harness.<name>]` with its defaults. Its
+methods hold what piloop knows about the CLI: `mcp` writes a role's MCP servers in its flags, `usage` reads the tokens
+from its session files when an agent ends, `messages` is what its hook prints for a message, and `skills_dir` is where
+it reads user skills.
+
+<ContractHarness />
+
+A table with a new name and `provider = "<harness>"` is that harness over its defaults. A table with a new name and no
+`provider` runs its argv and does nothing else: it takes no MCP servers, and records no tokens.
+[Harnesses](/concepts/roles#harnesses) lists the built-in ones.
+
+## Runtimes
+
+piloop starts each agent through a runtime. The runtime starts the agent's process. piloop then waits for the agent,
+sends it messages and stops it through the runtime.
+
+### Example: run the agents under `nice`
+
+This runtime starts each agent as the built-in runtime `subprocess` does, but with a lower CPU priority:
+
+<ExampleNiceRuntime />
+
+Install it, then select it in `piloop.toml` and run `piloop init .`:
+
+```toml
+runtime = "nice"
+```
+
+A role can select its own: `[roles.research] runtime = "nice"`. `[runtimes.nice]` in `config.toml` holds the
+runtime's settings.
+
+### The contract
+
+A runtime is a pydantic model, a subclass of `RuntimeConfig`: the name of its entry point is its name, and its fields
+are the keys of `[runtimes.<name>]`. Its `open()` returns an object with the methods of the `Runtime` protocol. That
+object starts the `headless` argv of a harness, with the first prompt in it. [Runtimes](/concepts/roles#runtimes)
+says what a runtime does for you.
+
+<RuntimeProtocol />
+
+### Built in
+
+[Runtimes](/concepts/roles#runtimes) lists the built-in runtimes.
+
+## Roles
+
+[Agents and roles](/concepts/roles#define-a-role) defines a role in `piloop.toml`. A plugin can ship one too.
+
+### Example: a role and a trigger from a plugin
+
+This plugin adds a trigger, `no_keep`, that starts an agent when no candidate
+was kept for some hours. It also adds a role, `auditor`, that uses this trigger:
+
+```python
+from datetime import datetime, timedelta
+from importlib.resources import files
+
+from sqlalchemy import func, select
+
+from piloop.capabilities import Fire, Outcome, Pass, SweepRole, Trigger, TriggerEntry
+from piloop.db.models import Candidate
+
+
+class NoKeep(Trigger):
+    """``no_keep``: no new keep for ``hours`` hours, once per agent of the role."""
+
+    hours: float = 6
+
+    def fire(self, p: Pass) -> Fire | None:
+        return Fire(f'no keep for {self.hours:g} hours') if p.now >= self._due(p) else None
+
+    def due_in(self, p: Pass) -> timedelta | None:
+        return max(self._due(p) - p.now, timedelta(0))
+
+    def _due(self, p: Pass) -> datetime:
+        keeps = select(func.max(Candidate.created_at)).where(
+            Candidate.campaign_id == p.campaign.id, Candidate.verdict == Outcome.KEEP
+        )
+        latest = p.s.scalar(keeps) or p.campaign.created_at
+        started = p.last.started_at if p.last is not None else latest
+        return max(latest, started) + timedelta(hours=self.hours)
+
+
+class Auditor(SweepRole):
+    """``auditor``: the role's defaults are its fields' defaults."""
+
+    PROMPT = files(__package__) / 'auditor.md'  # ships in the package
+    triggers: list[TriggerEntry] = [NoKeep()]
+    timeout: float = 1800
+```
+
+```toml
+[project.entry-points."piloop.triggers"]
+no_keep = "my_package:NoKeep"
+
+[project.entry-points."piloop.roles"]
+auditor = "my_package:Auditor"
+```
+
+Any campaign can then use `{ provider = "no_keep", hours = 12 }` in the triggers of a role, and gets the `auditor` role,
+with its table in `piloop.toml` over the package's defaults, at its next `piloop init`.
+
+### The contract
+
+A role is a table in `piloop.toml`: its prompt, when it starts (the run queue, or its triggers), where it works, how
+(harnesses, models, MCP servers, timeout, concurrency) and what it may file. A role that does runs (`runs = true`)
+takes ideas from the run queue, and its commits are scored and judged. A sweeping role starts on its triggers, and
+nothing it commits is scored. A plugin's role is a subclass of `SweepRole` or of `ImplementerRole` whose fields have
+the role's defaults, and whose `PROMPT` is the prompt that starts its brief: a file of its package. `prompt` in the
+table overrides it. [Roles](/concepts/roles) describes each key.
+
+### Built in
+
+The built-in roles are the same tables with defaults, so a campaign can change any key of them:
+
+<Roles />
+
+## Triggers
+
+A `sql` trigger needs no code: its query fires the role when it returns a row, as in
+[Define a role](/concepts/roles#define-a-role). A trigger with code of its own comes from a plugin, as `no_keep` above.
+
+### The contract
+
+A trigger is an entry of `[roles.<name>] triggers`: `{ provider = "<trigger>", <parameter> = <value> }`. A plugin's
+trigger is a subclass of `Trigger`: its fields are its parameters. On each pass, for each sweeping role
+without a pending request, the daemon calls `fire(p)` of each trigger of the role in order. A pass comes when
+something changes in the campaign, or in what a trigger names in `WAKES_ON`, and when the time that a trigger's
+`due_in` returns comes. A trigger that compares a time returns when the comparison turns: there is no pass on a timer.
+The rows that it reads are the models of `piloop.db.models`, the [data model](/reference/data-model).
+
+<ContractTrigger />
+
+### Built in
+
+[Triggers](/concepts/roles#triggers) lists the built-in triggers.
+
+## Sections
+
+### Example: the keeps per hour
+
+```python
+from sqlalchemy import func, select
+
+from piloop.capabilities import Figure, Figures, Rendered, Rendering, Section, Surface
+from piloop.db.models import Candidate
+
+
+class KeepRate(Section):
+    """The keeps per hour since the campaign started."""
+
+    SHOWN_IN = frozenset({Surface.STATUS})
+    ORDER = 175  # after the evaluations
+
+    def render(self, r: Rendering) -> Rendered | None:
+        mine = (Candidate.campaign_id == r.campaign.id) & (Candidate.verdict == 'keep')
+        kept = r.s.scalar(select(func.count()).select_from(Candidate).where(mine)) or 0
+        hours = (r.now - r.campaign.created_at).total_seconds() / 3600
+        if not kept or hours <= 0:
+            return None
+        rate = Figure(label='keeps per hour', value=round(kept / hours, 2))
+        return Rendered(title='Keep rate', blocks=(Figures(figures=(rate,)),))
+```
+
+Declare it with an entry point in `piloop.sections`. `piloop status` then shows it after the evaluations, wherever
+`[status] sections` is not set.
+
+### The contract
+
+A section is an entry of a list of sections: `{ provider = "<section>", <parameter> = <value> }`. A plugin's section is
+a subclass of `Section`: its fields are its parameters. Its `render` returns a `Rendered`, a title and its blocks. A
+block is one of four kinds: `Text`, `Lines`, `Figures` (named values, a number with its unit) and `Table`.
+`piloop status`, a brief, the API and a UI render each kind their own way, so a section never formats for one reader.
+
+<ContractSection />
+
+### Built in
+
+[Sections](/concepts/roles#sections) lists the built-in sections.

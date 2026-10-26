@@ -3,111 +3,14 @@ title: Candidates, the head and the verdict
 description: How piloop decides whether a commit is kept.
 ---
 
-## Candidates
-
-A **candidate** is one state of the code, identified by its git tree. Each commit that an implementer makes is a candidate.
-The baseline that `piloop init` measures is the first one.
-
-Because a candidate is a tree, a commit that goes back to a known state is that known candidate, and piloop does not
-measure it again. It keeps its verdict, unless another run reaches it: then the daemon's verdict, if it is not a keep,
-is judged again on that run's bar. A keep stays. A run's commits are its first-parent history, so a line that an implementer
-merges in is not the run's, and a merge's parent is the commit it merged onto. A candidate can have several
-measurements. Its score is their mean under the current
-[evaluator](/concepts/campaigns#evaluators).
-
-## The head and the bar
-
-The **head** is the latest kept candidate on the trunk. New runs start from it, unless an idea pins another starting
-point.
-
-Each run is judged against its **bar**. The bar starts at the base of the run. When the base is not a keep or a
-reference (a pinned `interesting` candidate, for example), the bar starts at the nearest kept ancestor of the base. The
-bar moves to each keep that the run makes. A run that starts from the head has the head as its bar. Each keep on the
-trunk beats the head before it, so the trunk is a chain of improvements. A branch keep that a trunk run merges is not
-its bar: the merge must still beat the head.
-
-## The verdict
-
-The daemon gives each measured candidate one verdict (`candidates.verdict`). Until then, the verdict is NULL: the
-candidate is **pending**.
-
-| Verdict | Meaning |
-|---|---|
-| `keep` | The primary metric beat the bar with confidence, and every guardrail held. On the trunk, the candidate becomes the new head. |
-| `interesting` | The primary metric improved, but without enough confidence, or a guardrail got worse by more than its margin. |
-| `discard` | The primary metric did not improve, or a guardrail went past its floor. |
-| `crash` | The candidate has no successful measurement: the evaluate command failed or timed out, wrote a bad per-unit results file, or did not print every metric in `piloop.toml`. |
-
-Only the `baseline` and the commits of a `run` are judged. The **origin** of a candidate (`candidates.origin`) says
-where it comes from. Three origins never get a verdict:
-
-| Origin | Meaning |
-|---|---|
-| `reference` | A starting point imported with `piloop candidate import`. |
-| `skipped` | A commit marked `Piloop-Eval: skip`. It is never measured, and says nothing about its idea. |
-| `recovered` | What an implementer left uncommitted when it stopped, committed by the daemon (`Piloop-Recovered: run#<id>`). The implementer never declared it ready, so it is never measured or kept. If its run did not succeed, the next attempt starts from it, as from the last commit of any such run ([Ideas and runs](/concepts/ideas-and-runs)). |
-
-A later commit of a `skipped` or `recovered` tree without its mark is measured and judged, and its origin becomes
-`run`.
-
-The rule, in order:
-
-1. No value for the primary metric: `crash`.
-2. A guardrail past its `floor`: `discard`.
-3. The bar has no score under the current evaluator: `keep`.
-4. The primary metric is not better than the bar: `discard`.
-5. The primary metric is better, but its worst case at the `confidence` level is not above zero: `interesting`.
-6. A guardrail's worst case is worse than the bar by more than its `margin`: `interesting`.
-7. Otherwise: `keep`.
-
-Each verdict has a reason. This one is from the enwik8 example campaign:
+piloop measures each commit and compares it with the result that it must beat. This is the verdict on the first
+commit of the enwik8 example:
 
 ```text
-against candidate#1: bytes 2720458 vs 3688775 (-968317; 95% worst case -968317 over 3 pairs); guardrails: seconds 10.9 vs 0.8467 (+10.05; 95% worst case +10.28 over 3 pairs) within its margin 60
+candidate#2 keep: against candidate#1: bytes 2720458 vs 3688775 (-968317; 95% worst case -968317 over 3 pairs); guardrails: seconds 10.9 vs 0.8467 (+10.05; 95% worst case +10.28 over 3 pairs) within its margin 60
 ```
 
-The reason names every guardrail past its floor or beyond its margin, whatever rule decided the verdict. So the
-reason of a `discard` on the primary metric still shows a large regression of a guardrail:
-
-```text
-against candidate#33: bytes 2365922 vs 2365922 (+0; 95% worst case +0 over 3 pairs); guardrails past their margin: seconds 92.37 vs 23.29 (+69.07; 95% worst case +69.61 over 3 pairs) beyond its margin 60
-```
-
-A candidate whose primary and guardrail values equal those of its parent has `no-op` in its reason. The change did
-not reach what the evaluate command measures.
-
-## Metric roles
-
-- **primary**: the metric to improve. It must beat the bar with confidence for a `keep`.
-- **guardrail**: a metric that may get a little worse. `margin` is the largest regression from the bar that is
-  allowed, in the metric's own units. `floor` is an optional hard limit on the value itself: at least the floor for
-  `higher`, at most the floor for `lower`.
-- **watch**: recorded, and never part of the verdict.
-
-A margin applies to each step. Many keeps that each give up a margin can add up to a large regression. A floor stops
-that. Only an edit of `piloop.toml` moves a floor.
-
-## Confidence
-
-When the evaluate command writes [per-unit results](/concepts/campaigns#per-unit-results), the verdict uses a paired
-bootstrap over the units:
-
-1. Take the units that the candidate and the bar both report, and the difference of each.
-2. Resample the units with replacement 4000 times, and sum the differences each time.
-3. The worst case is the `1 - confidence` quantile of these sums. With the default `[plugins.verdict_rule] confidence` of
-   0.95, it is the 5th
-   percentile.
-
-So a gain that comes from three units has the spread of three units, not of the whole test set. The random generator
-has a fixed seed, so the same numbers always give the same verdict.
-
-Without per-unit results, a metric that the candidate and the bar measured in **pairs** is compared on the pairs. A
-pair is one run of the evaluate command on the candidate and one on the bar, one after the other on one worker, so a
-load on the host slows both. The worst case is the `1 - confidence` quantile of the mean pair difference, from the same
-bootstrap over the pairs, and the reason says `over 3 pairs`.
-
-Mark a noisy metric, such as a time, with `repeats`. Then the daemon measures each candidate that the metric judges
-`repeats` times, each next to a run of its bar, in the order candidate, bar, bar, candidate, candidate, bar:
+It came from these metrics in `piloop.toml`:
 
 ```toml
 [[metrics]]
@@ -119,124 +22,91 @@ role = "primary"
 name = "seconds"
 direction = "lower"
 role = "guardrail"
-margin = 60
-repeats = 3
+margin = 60       # may get 60 s worse for each keep
+floor = 120       # and never worse than 120 s
+repeats = 3       # a time: measure it 3 times next to the bar
 ```
 
-A candidate then costs `2 × repeats` runs of the evaluate command. `piloop candidate remeasure` measures in pairs too.
+## The words
 
-Without either, or when the two sides report different units, the verdict compares the aggregate values. Any gain
-then counts, and the reason says `aggregate`. This is right for a deterministic metric, such as a compressed size.
-For a noisy metric, write per-unit results, or measure in pairs.
+| Word | Meaning |
+|---|---|
+| **candidate** | One state of the code, identified by its git tree. Each commit of a run is one. A commit back to a known tree is that candidate again, and is not measured again. |
+| **head** | The latest kept candidate on the trunk. New runs start from it. |
+| **bar** | What a run's commits must beat: the run's starting point, then each keep that the run makes. |
+| **verdict** | The daemon's judgement of a measured candidate. Until it has one, the candidate is **pending**. |
 
-## Replace the rule
+## The verdicts
 
-The rule on this page is the built-in verdict rule, `bootstrap`. A plugin can add another verdict rule, and you
-select it in `piloop.toml`. For example, the example plugin `examples/plugins/min-gain` adds the rule `min_gain`. It
-keeps a candidate only when the candidate beats its bar by at least `min_gain`:
+| Verdict | When |
+|---|---|
+| `keep` | The primary beat the bar with confidence, and every guardrail held. On the trunk, it is the new head. |
+| `interesting` | The primary improved without enough confidence, or a guardrail got worse by more than its margin. |
+| `discard` | The primary did not improve, or a guardrail went past its floor. |
+| `crash` | No successful measurement: the evaluate command failed, timed out, or missed a metric. |
 
-```text
-[plugins.verdict_rule]
-provider = "min_gain"
-min_gain = 100
-```
+The rule, in order:
 
-A rule can also choose the bar, the head and what follows a keep that lacks the head. The rest of this page describes
-the built-in choices. [Verdict rules](/architecture/extension-points#verdict-rules) has the details.
+1. No value for the primary: `crash`.
+2. A guardrail past its `floor`: `discard`.
+3. The bar has no score under the current evaluator: `keep`.
+4. The primary is not better than the bar: `discard`.
+5. The primary's worst case at the `confidence` level is not a gain: `interesting`.
+6. A guardrail's worst case is worse than the bar by more than its `margin`: `interesting`.
+7. Otherwise: `keep`.
+
+The reason names every guardrail past its floor or margin, whatever rule decided. A candidate whose values equal its
+parent's has `no-op` in its reason: the change did not reach what the evaluate command measures.
+
+Three kinds of candidate never get a verdict:
+
+| `candidates.origin` | What it is |
+|---|---|
+| `reference` | A starting point from outside the campaign: `piloop candidate import`. |
+| `skipped` | A commit with a `Piloop-Eval: skip` trailer. |
+| `recovered` | What an implementer left uncommitted when it stopped. The next attempt at the idea starts from it. |
+
+## Confidence
+
+How piloop compares a metric depends on what the evaluate command gives it:
+
+| The evaluate command gives | piloop compares |
+|---|---|
+| [Per-unit results](/concepts/campaigns#per-unit-results) | The units that both sides report, with a paired bootstrap: 4000 resamples, and the worst case at the `confidence` level, 0.95 by default. |
+| A metric with `repeats` | `repeats` pairs, each one run of the candidate and one of the bar back to back on one worker, with the same bootstrap. |
+| Neither | The aggregates. Any gain counts, and the reason says `aggregate`. Right for a deterministic metric, such as a size. |
+
+So a gain from three lucky units has the spread of three units. The bootstrap has a fixed seed: the same numbers
+always give the same verdict.
 
 ## When the head moves during a run
 
-Two runs can start from the same head. When the first one keeps, the head moves. If the second one then beats its own
-bar, it is `interesting`, with the cause `moved`.
+Two runs can start from the same head. When the first keeps, the head moves. A later keep of the second is then
+`interesting`, with the cause `moved`. The daemon merges it onto the new head, and measures and judges the merge
+there. A merge that conflicts files a seed, `Compose candidate#N onto the head`, for research.
 
-The daemon then merges the second candidate onto the new head, as a commit with two parents. The merge is a new
-candidate of the same run, and the daemon measures and judges it against the new head. A run that started from a
-rebased copy of a head (the same tree under another commit) merges only its own changes. If the merge has conflicts,
-the daemon files a seed `Compose candidate#N onto the head` instead, once per candidate: a seed you rejected is not
-filed again when the candidate is judged again. The seed of a run's later commit supersedes the seeds of the run's
-earlier commits that it contains. The ideas that run after the run's idea, and have not started, then run after the
-seed: the change comes with it.
+## Act on a candidate
 
-## Measure a candidate again
-
-A fault of the host, such as a full disk, can crash a measurement of good code. A load on the host can slow a
-candidate that its bar, measured earlier on a quiet host, then beats. The same tree committed again is the same
-candidate, so the daemon does not measure it again by itself. Ask for it:
+| Command | What it does |
+|---|---|
+| `piloop candidate remeasure 42` | Measure it again, 3 times next to its bar. A `crash`, `discard` or `interesting` that the daemon gave is judged again. A keep stays. |
+| `piloop candidate verdict 42 interesting --reason "lucky seed"` | Override the verdict. The daemon never overwrites a verdict that it did not set. |
+| `piloop candidate note 42 "<why>" --follow-up "<seed>"` | Keep a regressed result in view: it becomes `interesting`, with the cause `note`, and each follow-up is a seed pinned to it. |
+| `piloop measurement add 42 --report report.json` | Record an evaluation that you ran, such as `{"metrics": {"accuracy": 0.853}, "seconds": 600}`. |
+| `piloop eval queue`, `piloop eval cancel 42` | List the evaluations, or cancel one. A cancelled evaluation is a `crash`. |
 
 ```bash
-piloop candidate remeasure 42
+piloop candidate remeasure 1
 ```
 
-The daemon measures the candidate in pairs with its bar, 3 times each (`--repeats`), with the current evaluator,
-after the head and the bars that runs need. It stops at the first run that fails. A `crash`, `discard` or
-`interesting` that the daemon gave is then judged again on these pairs, as its run would have judged it. So is a
-`skipped` or `recovered` commit, which gets its first measurement. A keep, and a verdict that someone set, stay. The
-baseline and a reference have no bar: they run alone. A pending candidate is refused: its run measures and judges it.
-
-A stopped campaign is measured too, but only what someone asked for, so you can measure a result again when you
-review a campaign. A campaign paused with `--evals`, or held by its stop rule, is measured once the hold ends. The
-command says when. `piloop eval queue` shows the request as `waiting` at once, and `piloop eval cancel` cancels it.
-
-## The evaluation queue
-
-Each worker runs at most `evaluations` evaluate commands at the same time, across all campaigns: a key of its
-[pool](/architecture/leases#capacity). The others wait in the evaluation queue, which `piloop eval queue` lists. A
-free slot goes to the campaign with the fewest running evaluations, and in that campaign to its head first (the runs
-that start from the head wait for its score), then to the oldest request. So a busy campaign never holds back another
-one. The order in which a run measures its own commits does not change.
-
-A tree is evaluated once: a second request for a candidate that waits or runs waits for that evaluation.
-
-If another process kills an evaluation, the daemon runs it once more. The error of a killed evaluation names the
-signal, for example `evaluate killed by SIGTERM`. To stop an evaluation, use `piloop eval cancel`, not `pkill -f`.
-
-```bash
-piloop eval queue
-piloop eval cancel 42
+```text
+candidate#1 keep: the daemon measures it 3 times alone; its verdict stays
 ```
 
-`piloop eval cancel` cancels the evaluation of one candidate: a waiting evaluation never starts, and a running one is
-stopped. The candidate gets a crashed measurement that names who cancelled it at once, so a candidate of a run is
-judged a `crash`, and a daemon restart does not evaluate it again. Like any crash, it is measured again only when
-someone asks (`piloop candidate remeasure`).
+An implementer notes its own commit with a `Piloop-Note: <why>` trailer. Each worker runs at most `evaluations`
+evaluate commands at a time, a key of its [pool](/guides/workers#capacity). A free slot goes to the campaign with the
+fewest running evaluations, then to its head. To stop an evaluation, use `piloop eval cancel`, not `pkill`: the daemon
+runs a killed evaluation once more.
 
-## Override a verdict
-
-Any agent or human can change a verdict and say why:
-
-```bash
-piloop candidate verdict 42 interesting --reason "lucky seed"
-```
-
-The daemon never overwrites a verdict that it did not set. The `candidate.verdict` event records the change with the
-reason. Only a judgement (`keep`, `interesting`, `discard`, `crash`) is overridden. The head is the newest trunk keep,
-so a keep from an older bar would drop what the head kept since. Such a keep goes the way of the daemon's own (see
-[When the head moves during a run](#when-the-head-moves-during-a-run)): the candidate is `interesting`, and the daemon
-merges it onto the head, then measures and judges the merge there. A keep of a branch run never moves the head.
-
-## Add a measurement by hand
-
-When you ran the evaluation yourself, for example after the daemon's evaluation timed out, record it:
-
-```bash
-piloop measurement add 42 --report report.json
-```
-
-`report.json` is `{"metrics": {"accuracy": 0.853}, "seconds": 600}`, with the metrics of `piloop.toml`. The
-measurement counts under the current evaluator. When the verdict is the daemon's `crash`, `discard` or `interesting`,
-or the commit is `skipped` or `recovered`, the daemon judges the candidate again with all its measurements, as its run
-would have judged it. A keep stays: runs started from it as their bar, and they must now beat its new
-mean. A pending candidate is refused until the daemon has judged it.
-
-## Notes
-
-A result that regressed can still be a good starting point. A **note** keeps it in view:
-
-```bash
-piloop candidate note 42 "faster tokenizer, but loses accuracy on long inputs" --follow-up "fix the long-input case"
-```
-
-The candidate becomes `interesting`, with the cause `note` (`candidates.cause`) and your reason before its earlier
-reason. Each
-`--follow-up` files a seed pinned to the candidate. A note is not a keep, and it does not move a bar. An implementer notes its
-own commit with a `Piloop-Note: <why>` trailer in the commit message.
+The rule on this page is the built-in verdict rule, `bootstrap`. A plugin can replace it: see
+[Verdict rules](/plugins/rules#verdict-rules).

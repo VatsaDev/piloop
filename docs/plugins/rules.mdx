@@ -1,0 +1,200 @@
+---
+title: Verdict rules, stop rules and fact sources
+sidebarTitle: Rules and facts
+description: Plugins that decide which candidates to keep and when a campaign stops, and the facts that they read.
+---
+
+import ExampleMinGain from '/snippets/generated/example-min-gain.mdx';
+import ExampleStopAfterKeeps from '/snippets/generated/example-stop-after-keeps.mdx';
+import ExampleKeepCost from '/snippets/generated/example-keep-cost.mdx';
+import ContractVerdictRule from '/snippets/generated/contract-verdict-rule.mdx';
+import ContractStopRule from '/snippets/generated/contract-stop-rule.mdx';
+import ContractFactSource from '/snippets/generated/contract-fact-source.mdx';
+import StopAnswers from '/snippets/generated/stop-answers.mdx';
+import Facts from '/snippets/generated/facts.mdx';
+
+The verdict rule decides which candidates to keep. The stop rule decides whether a campaign goes on. Both are
+[pure](/plugins/overview#host-and-pure-contracts): piloop gives them data, and they return data. The fact sources
+supply what a stop rule or a section reads.
+
+## Verdict rules
+
+After piloop measures a candidate, it asks the verdict rule whether to keep the candidate. piloop gives the rule a
+`Case`: the measurements of the candidate, the measurements of its bar, and the metrics that decide. The bar is the
+candidate that this one must beat. The rule returns a `Judgement`: `keep`, `interesting`, `discard` or `crash`, and
+a reason. piloop stores the verdict and the reason on the candidate.
+
+The built-in rule is `bootstrap`. It keeps a candidate when the primary metric beats the bar with confidence and no
+guardrail metric gets too much worse.
+
+### Example: keep only a gain of a fixed size
+
+This rule [calls the built-in rule](/plugins/overview#call-a-built-in-provider) `bootstrap` and changes one thing: a keep whose gain is
+below `min_gain` becomes `interesting`. `min_gain` is in the units of the primary metric:
+
+<ExampleMinGain />
+
+[Write a plugin](/plugins/overview) installs and selects it.
+
+### The contract
+
+A verdict rule is a [pure](/plugins/overview#host-and-pure-contracts) provider, a subclass of `VerdictRule`. Import the types from
+`piloop.capabilities`.
+
+<ContractVerdictRule />
+
+A rule has no error case: it returns a verdict for every case.
+
+The rule also decides the lineage: `bar`, `raises_bar`, `head` and `on_moved` read `Node`s (a candidate's id,
+verdict, where it was made, `Trunk`, `Branch` or `Imported`, and its means), and each has the built-in behaviour as its
+default.
+
+piloop applies the answers: it moves the head, merges, files the seed, and applies the `Piloop-Note` of a commit.
+
+### Built in
+
+`bootstrap` is the rule of a campaign without `[plugins.verdict_rule]`. [The verdict](/concepts/verdict#the-verdicts)
+describes it.
+
+## Stop rules
+
+On each pass, the daemon asks the stop rule of each active campaign whether the campaign
+goes on, holds, or stops. piloop gives the rule a `StopCase`: the facts that the rule asked for. The rule returns one
+of four answers:
+
+<StopAnswers />
+
+A hold is not a pause. piloop asks the rule again on each pass, and the hold ends when the rule answers `Go`. piloop
+does not stop a paused campaign, but it holds one.
+
+The built-in rule is `limits`. It holds the campaign while a fact of `hold_at` is unknown or at its limit. Else it
+stops the campaign at the first of its other limits that the campaign reaches.
+
+### Example: end the campaign after a number of keeps
+
+This rule stops the campaign after `keeps` candidates are kept. It [calls the built-in rule](/plugins/overview#call-a-built-in-provider)
+`limits` and adds one limit, so the limits of `limits`, such as `max_hours` and `hold_at`, still apply:
+
+<ExampleStopAfterKeeps />
+
+```text
+[plugins.stop_rule]
+provider = "after_keeps"
+keeps = 3
+max_hours = 12
+```
+
+### Example: escalate when a keep costs too much
+
+This rule compares the fact that `spend` names, since the latest keep, with its value per keep so far. Past
+`escalate_at` times, it answers `Escalate` once for each keep; past `stop_at` times, it stops the campaign:
+
+<ExampleKeepCost />
+
+```text
+[plugins.stop_rule]
+provider = "keep_cost"
+spend = "spend"
+escalate_at = 2
+stop_at = 4
+```
+
+### The contract
+
+A stop rule is a [pure](/plugins/overview#host-and-pure-contracts) provider, a subclass of `StopRule`. Its fields are its limits and other
+parameters. Import the types from `piloop.capabilities`. Most facts cost database queries on every pass, so piloop
+gets only those of `reads`. `piloop status` and the briefs join the parts of `describe` into the progress line:
+piloop formats no fact itself.
+
+<ContractStopRule />
+
+`Go.left` says how much of each fact is left before the rule stops the campaign. piloop starts no more runs than
+`RUNS` leaves, and cuts each agent's timeout where `HOURS` runs out, so a run that starts just before the stop ends
+with it. `check_config` refuses a campaign that the rule cannot serve when the file loads: `limits` refuses a
+`target` on a campaign of more than one track.
+
+A fact is a typed key, `Fact[T]`, that a [fact source](#fact-sources) of the campaign supplies.
+`case.facts.get(KEEPS)` reads one, and `case.facts.get(reading('spend'))` one that a source reads by name. Every fact
+that a rule reads needs a source in the campaign, or piloop refuses the configuration. The facts of the built-in
+sources `campaign` and `optimization`, from `piloop.capabilities`, and the ratios over facts that a rule names (`spend`, the fact of what the
+campaign spent; `cost`, the evaluator's metric of what one evaluation costs):
+
+<Facts />
+
+Each is None while a term is, or when its count is 0. A rule that reads a ratio asks for the facts of its terms.
+
+A stop that a person requests (`piloop campaign stop`) stops the campaign whatever the rule answers, also when the
+rule holds it. The closing review of that stop then follows the rule's `while_held`
+([Spend outside piloop](/concepts/cost#spend-outside-piloop)).
+
+### Built in
+
+`limits` is the rule of a campaign without `[plugins.stop_rule]`. [Stop conditions](/concepts/cost)
+lists its limits.
+
+## Fact sources
+
+A **fact source** supplies the facts that a stop rule or a section reads.
+
+### Example: read the spend from a billing endpoint
+
+```python
+import json
+import urllib.request
+from pathlib import Path
+
+from piloop.capabilities import FactReadError, Readings
+
+
+class Billing(Readings):
+    """``billing``: what a billing endpoint says that the campaign spent, as ``spend``."""
+
+    url: str
+
+    def names(self) -> tuple[str, ...]:
+        return ('spend',)
+
+    def read(self, repo: Path) -> dict[str, float]:
+        try:
+            with urllib.request.urlopen(self.url, timeout=30) as answer:
+                return {'spend': float(json.load(answer)['total'])}
+        except (OSError, KeyError, ValueError) as e:
+            raise FactReadError(f'{self.url}: {e}') from e
+```
+
+```toml
+[project.entry-points."piloop.fact_sources"]
+billing = "my_package:Billing"
+```
+
+```text
+[[facts]]
+provider = "campaign"
+
+[[facts]]
+provider = "optimization"
+
+[[facts]]
+provider = "billing"
+url = "https://billing.example.com/campaigns/enwik8"
+```
+
+`hold_at = { spend = 1000 }` then holds the campaign at that spend.
+
+A fact source is a provider of `FACT_SOURCES`, a subclass of `FactSource`. `[[facts]]` lists a campaign's sources; a
+campaign that does not list them has every installed source that is on by default (`ON_BY_DEFAULT`): `campaign`, the
+hours and tokens of any campaign, and `optimization`, its research. A list that adds a source lists those too. Two
+sources never supply the same fact.
+
+A `Readings` source (`piloop.plugins.fact_source.kit.readings`) is one that the daemon reads every `interval` seconds,
+outside any transaction. It implements `names` and `read`, and piloop does the rest: each reading is a `fact.read`
+event on the campaign, its one record. It posts a note at each of its `notices`, and escalates once when its readings
+start to fail.
+
+### The contract
+
+<ContractFactSource />
+
+The built-in `command` source runs a command that prints `METRIC <name>=<value>` lines, as the evaluate command does.
+[Spend outside piloop](/concepts/cost#spend-outside-piloop) configures it. piloop gives no fact a meaning: a stop rule
+or a section names the facts that it reads.

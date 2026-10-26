@@ -1,6 +1,6 @@
 """The optimization routes on candidates, measurements and evaluations: their models, and the client that calls them.
 
-They build on the kernel's API (``piloop.api``): its base models, and ``Client`` for the routes of every campaign.
+They build on core's API (``piloop.api``): its base models, and ``Client`` for the routes of every campaign.
 """
 
 from datetime import datetime

@@ -1,0 +1,10 @@
+{/* WARNING: This file is auto-generated (uv run -m scripts.generate_all). Update the docstrings in `piloop/plugins/contribution.py` and `piloop/daemon/loop.py` if you want to change anything here. */}
+
+| Member | What it is |
+|---|---|
+| `Contributes.contribution() -> Contribution` | What it adds to core. The daemon asks once, after it opened the provider. |
+| `Contribution.consumers: tuple[Consumer, ...]` | Jobs of the daemon's loop. A turn runs them after `limits` and before the scheduler's own. |
+| `Contribution.router: APIRouter \| None` | Routes of the daemon's server, beside the API's. A route of a method and path that is taken is refused. |
+| `Consumer.name: str` | Its name, unique in the daemon. `Loop.wake` runs it by this name. |
+| `Consumer.wakes_on: Kinds` | The event models whose new events run it in the next turn. |
+| `Consumer.run: Callable[[Turn], datetime \| None]` | Do the job from the tables, and return when it must run again for time alone, or None. |

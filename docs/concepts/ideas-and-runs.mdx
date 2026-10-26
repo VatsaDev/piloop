@@ -4,109 +4,99 @@ sidebarTitle: Ideas and runs
 description: An idea is one thing to try. A seed is a hunch that research turns into an idea. A run is one attempt at an idea.
 ---
 
-An **idea** is one thing to try: a title, a hypothesis and, optionally, a plan for the implementer.
+An **idea** is one thing to try:
 
 ```bash
 piloop idea add enwik8 "Model the text with an order-2 context mixer" \
-  --hypothesis "lzma does not model the next byte from the bytes before it" --priority 1
+  --hypothesis "lzma does not model the next byte from the bytes before it"
 ```
 
 ```text
-idea#2 ready p1: Model the text with an order-2 context mixer
+idea#2 ready p2: Model the text with an order-2 context mixer
 ```
 
-The daemon runs the `ready` ideas in order of priority: 0 is urgent, 4 is someday, and 2 is the default. An idea has
-one of these statuses:
-
-| Status | Meaning |
-|---|---|
-| `seed` | A hunch that waits for the research agent. See [Seeds](#seeds). |
-| `proposed` | Waits for a human to approve it. Add it with `--proposed`. |
-| `ready` | Waits for a free implementer. |
-| `scheduled` | A run of it is queued or running. |
-| `done` | Its runs are finished and their commits are judged. |
-| `parked` | Set aside. The daemon does not run it. |
-| `rejected` | Will not run. |
-
-You, the orchestrator and the research agent add ideas. The watchdog files only seeds. An implementer files neither:
-it writes its hunches in its `finding` comment, and research reads them.
-
-To change a status, give the reason:
+The daemon runs the `ready` ideas, most urgent first: priority 0 is urgent, 4 is someday, and 2 is the default. To
+change a status, give the reason:
 
 ```bash
 piloop idea status 2 parked --reason "wait for the results of idea#1"
 ```
 
-### Links between ideas
+```text
+idea#2 scheduled → parked: wait for the results of idea#1
+```
 
-- `--after <id>`: the idea waits until those ideas are `done`, then starts from the head, which holds what they kept.
-  If one ends without a keep, the daemon parks the idea and asks you whether to run it without that change.
-- `--supersedes <id>`: the idea is a sharper version of those ideas. The daemon rejects each of them that never ran.
+| Status | Meaning |
+|---|---|
+| `seed` | A hunch that waits for research. |
+| `proposed` | Waits for a human to set it `ready`. Add it with `--proposed`. |
+| `ready` | Waits for a free implementer. |
+| `scheduled` | A run of it is queued or running, or its commits wait for their verdicts. |
+| `done` | Its run ended and its commits are judged. |
+| `parked` | Set aside: by hand, or when its last attempt failed to start or ended on an open escalation. |
+| `rejected` | Will not run. |
 
-`piloop idea link` and `piloop idea unlink` change the links of an idea that exists.
+## Who adds ideas
 
-### Starting points
-
-A run starts from the **head**, the latest keep. To start from another candidate, pin it with `--base <candidate>`, or
-later with `piloop idea base`. A run from another starting point is a **branch run**: its keeps do not move the head,
-unless its starting point has the head's changes already. At least one run in every `[roles.implementer] explore_every`
-runs starts from a pinned idea when one is ready.
-
-`piloop candidate import enwik8 <commit>` makes any commit of the repo a **reference**: a starting point from outside
-the campaign, such as a branch. The daemon measures it, and an idea can start from it.
+| Who | What it adds |
+|---|---|
+| You, the orchestrator | Ideas and seeds. You change the priority and status of any idea. |
+| Research | Develops each seed into an idea, or rejects it. Adds ideas of its own. |
+| Watchdog | Seeds, such as a retry that avoids a failure. |
+| Implementer | Nothing. Its hunches go in its `finding`, which research reads. |
+| Daemon | Retries an idea whose run failed. Files a seed when a merge conflicts. Rejects an idea that a newer one supersedes. |
 
 ## Seeds
 
 A **seed** is a hunch with pointers, for a follow-up that you do not have time to define:
 
 ```bash
-piloop idea seed enwik8 "Combine the lzma preset of candidate#2 with a preprocessed dictionary" --from "candidate#2"
+piloop idea seed enwik8 "Combine the lzma preset with a preprocessed dictionary" --from "idea#1"
 ```
 
 ```text
-idea#3 seed: Combine the lzma preset of candidate#2 with a preprocessed dictionary; research develops it next
+idea#3 seed: Combine the lzma preset with a preprocessed dictionary; research develops it next
 ```
 
-A seed starts a research sweep as soon as a research agent can start. Research reads the earlier work on the
-mechanism. Then it develops the seed into an idea with `piloop idea develop`, or rejects it with the earlier work that
-settled the question.
+A seed starts a research agent. Research reads the earlier work, then develops the seed into an idea
+(`piloop idea develop`) or rejects it.
+
+## Where a run starts
+
+| Option of `piloop idea add` | Effect |
+|---|---|
+| `--after 1` | Waits until idea 1 is `done`, then starts from the head, which holds what idea 1 kept. |
+| `--supersedes 1` | A sharper version of idea 1. The daemon rejects idea 1 if it never ran. |
+| `--base 7` | Starts from candidate 7, not the head. Its keeps move the head only when candidate 7 has the head's changes. |
+| `--harness codex` | Runs on that harness, not the next one of `harnesses`. |
+
+`piloop candidate import enwik8 <commit>` makes any commit a **reference**, a starting point from outside the
+campaign, such as a branch.
 
 ## Runs
 
-A **run** is one attempt at an idea by one implementer, with one harness and one model. When an implementer slot is
-free, the daemon takes the most urgent ready idea and the next harness of `harnesses`, unless the idea pins one with
-`--harness`. It makes a worktree at the starting point, writes the brief, and starts the implementer. The brief holds
-your `brief.md`, the idea, and every comment on the idea and on its earlier runs.
+A **run** is one attempt at an idea by one implementer. The daemon makes a worktree at the starting point, writes the
+brief (your `brief.md`, the idea and every comment on it), and starts the implementer. The implementer commits, also
+when the idea did not work.
 
-The implementer commits, also when the idea did not work, and says so in the message. When the run ends, the daemon
-scores every new commit. piloop commits what the implementer left uncommitted as a `recovered` commit. It is never
-measured.
+The run ends when the implementer exits, at its `timeout`, or a minute after it writes its `finding`. Then the daemon
+scores each new commit. What the implementer left uncommitted becomes a `recovered` commit, which is never measured.
 
-Then the idea is `done`. When the run failed, timed out or was cut by `piloop stop` after it made commits, the idea
-goes back to `ready`, and the next attempt starts from its last commit (`[roles.implementer] recovery_requeues`). The
-commits of a run that `piloop stop` cut are `recovered`, never measured. When the head moved past the last commit, the
-next attempt starts on the head, and a note on the idea gives the `git cherry-pick` of the commits. A run that failed
-with no commit sends the idea back to `ready` while it has attempts left. A run whose agent never started to work is
-not an attempt. See [Run lifecycle](/architecture/run-lifecycle).
+| How the run ended | What happens to the idea |
+|---|---|
+| It finished | `done` once its commits are judged. |
+| It failed or timed out, and attempts are left | Back to `ready`. The next attempt starts from its last commit. |
+| Its agent never started to work | Not an attempt: the run is queued again, up to two times, then the idea is `parked`. |
+| It stopped on an open escalation | `parked`. Answer with a `decision` comment, then set the idea `ready`. |
 
-An implementer asks for a decision with an `escalation` comment. If it stops while the escalation waits for an answer,
-its run fails and the idea is `parked`. Answer with a `decision` comment on the idea, then set the idea `ready`. The
-next run reads the decision in its brief.
+## Talk to a running implementer
 
-### Commit trailers
+A `note`, `finding` or `decision` comment on a running run, or on its idea, reaches the implementer within seconds. It
+gets the first line, up to 200 characters. A comment that cannot reach it goes into the next run's brief.
 
-An implementer can add a trailer, a line of its own after the subject, to a commit message:
+An implementer can add a trailer to a commit message:
 
-- `Piloop-Note: <why>`: the commit regressed, but it is worth starting from. See [Notes](/concepts/verdict#notes).
-- `Piloop-Eval: skip`: the commit is scaffolding. The daemon does not measure it: its origin is `skipped`.
-
-## Steer a running implementer
-
-A `note`, `finding` or `decision` comment on a running run, or on its idea, reaches the implementer within a few
-seconds. The implementer gets the first line, up to 200 characters, so put the instruction there. A comment on the
-campaign reaches no implementer. When a comment cannot reach the implementer, the next run of the idea reads it in its
-brief.
-
-`piloop prompt <agent-session-id> "<text>"` writes a note on the agent itself, and the agent gets its full text. It
-reaches a Claude agent of the `subprocess` runtime after its next tool call, and any other agent when its current
-turn ends.
+| Trailer | Effect |
+|---|---|
+| `Piloop-Note: <why>` | The commit regressed, but is worth starting from. |
+| `Piloop-Eval: skip` | The commit is scaffolding: it is not measured. |

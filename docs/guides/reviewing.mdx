@@ -54,7 +54,7 @@ git diff --stat <baseline-sha> <head-sha> -- evaluate.py data/
   a new evaluator. Check the diffs of the kept candidates.
 </Warning>
 
-Read the [session](/concepts/research-memory#sessions) of an agent, its harness's own file:
+Read the [session](/concepts/roles#sessions) of an agent, its harness's own file:
 
 ```bash
 piloop sql "SELECT id, kind, session_file FROM agent_sessions WHERE campaign_id = 1"

@@ -1,6 +1,6 @@
 # piloop-inline
 
-A plugin that adds an [executor](https://piloop.autoresearch.inc/architecture/extension-points#executors). It runs
+A plugin that adds an [executor](https://piloop.autoresearch.inc/plugins/infrastructure#executors). It runs
 each job at once, in a thread of the daemon: no leases, no evaluation slots, and nothing survives a restart.
 
 ```bash

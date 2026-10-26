@@ -4,16 +4,9 @@ sidebarTitle: Orchestrator and inbox
 description: A coding agent of your choice runs the campaign for you, and records each decision that it takes for you in your inbox.
 ---
 
-The **orchestrator** is a coding agent that runs the campaign for you. It answers what the other agents escalate,
-manages the ideas, steers the implementers and reports. It is any coding agent with the `piloop-operate` skill: the
-daemon never starts it, and works without one. To start one, open your agent in the campaign repo and ask it to
-"orchestrate the piloop campaign".
-
-The skills come with the CLI: the installer and `piloop upgrade` run `piloop install-skills`, so they always match it.
-
-## The loop
-
-The orchestrator waits on one command, so its model uses no tokens while nothing happens:
+The **orchestrator** is the coding agent that you talk to. It runs the campaign for you: it answers what the other
+agents escalate, manages the ideas and reports. Open your agent in the campaign repo and ask it to "orchestrate the
+piloop campaign". It follows the `piloop-operate` skill, and loops on one command:
 
 ```bash
 PILOOP_ACTOR=orchestrator piloop inbox wait enwik8 --timeout 1800
@@ -26,43 +19,62 @@ seed idea#3 (enwik8) by human: Combine the lzma preset of candidate#2 with a pre
 next: piloop inbox wait enwik8 --after 17
 ```
 
-The wait returns on a new inbox item, a new seed, a verdict, an anomaly or a stop, or at the timeout. Its last line is
-the next wait, with a cursor, so nothing is lost between two waits. `PILOOP_ACTOR=orchestrator` signs the
-orchestrator's writes, and the wait skips them. A person who calls a server over the network signs them as
-`orchestrator via human:<name>`.
+The wait returns on a new inbox item, seed, verdict, anomaly or stop, or at the timeout. Its last line is the next
+wait, with a cursor, so nothing is lost between two waits. The orchestrator uses no tokens while it waits. The daemon
+never starts it, and runs without one. Run one orchestrator for each campaign: two would answer an escalation
+twice.
 
-Run one orchestrator for each campaign. Two orchestrators answer the same escalation twice.
+## The inbox
+
+The **inbox** is every comment that has a priority: 0 and 1 are urgent, 2 to 4 can wait.
+
+```bash
+piloop inbox
+```
+
+```text
+┏━━━━┳━━━┳━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━┳━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ id ┃ p ┃ kind       ┃ campaign ┃ on         ┃ by     ┃ age ┃ first line                                                                                           ┃
+┡━━━━╇━━━╇━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━╇━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ 5  │ 0 │ escalation │ enwik8   │ campaign#1 │ daemon │ 2m  │ Stop rule limits: spend reached its hold_at of 1000: nothing launches until you raise it and run pi… │
+│ 3  │ 1 │ note       │ enwik8   │ campaign#1 │ daemon │ 4m  │ Notice: spend is 412.3, past the 300 notice.                                                         │
+│ 4  │ 1 │ note       │ enwik8   │ campaign#1 │ daemon │ 2m  │ Notice: spend is 1012, past the 600 notice.                                                          │
+└────┴───┴────────────┴──────────┴────────────┴────────┴─────┴──────────────────────────────────────────────────────────────────────────────────────────────────────┘
+3 item(s) unacknowledged; `piloop inbox show <id>`, `piloop inbox ack <id>`
+```
+
+| Command | What it does |
+|---|---|
+| `piloop inbox show 5` | Shows the item and its thread. |
+| `piloop inbox ack 5` | Marks it as seen. |
+| `piloop inbox reply 5 "<text>"` | Answers it. |
+| `piloop message enwik8 "<text>"` | Writes to the orchestrator. Its next wait returns the message. |
+
+```bash
+piloop message enwik8 "Try a larger dictionary next"
+```
+
+```text
+comment#2 message on campaign#1
+```
 
 ## Comments
 
-Agents and humans talk through **comments** on a campaign, an idea, a run, a candidate or another comment. A comment
-has a kind:
+Agents and people talk through **comments** on a campaign, an idea, a run, a candidate or another comment. A comment on
+an idea goes into the brief of its next run.
 
 | Kind | Use |
 |---|---|
 | `note` | Context, or a short remark. |
-| `finding` | A result: what an agent tried and learned. |
+| `finding` | What an agent tried and learned. |
 | `decision` | A decision, with the reason and how to revert it. |
-| `escalation` | A question that needs a decision. |
+| `escalation` | A question that needs a decision. It always has a priority. |
 | `message` | Someone's word to the orchestrator. |
-
-A comment on an idea goes into the brief of the idea's next run.
-
-## The inbox
-
-The **inbox** is every comment that has a priority: 0 and 1 are urgent, 2 to 4 can wait. An escalation always has a
-priority. A comment without one is not in the inbox.
-
-```bash
-piloop inbox                 # the open items, most urgent first, and the seeds
-piloop inbox show 812        # one item and its thread
-piloop inbox ack 812         # mark it as seen
-```
 
 ## Decisions
 
-Work should not wait for you, so the orchestrator decides what comes up. It records each decision that it takes for you
-as a `decision` comment in your inbox:
+The orchestrator decides what comes up, so work never waits for you. It records each decision that it takes for you as
+a `decision` in your inbox:
 
 ```text
 [<category>, reversible|irreversible] <what it decided, in one line>
@@ -71,37 +83,12 @@ Changed: <the rows, files, settings or commits>
 Revert: <the command or edit that undoes it>
 ```
 
-A change to a goal, a metric, a guardrail, the evaluate command or a stop condition has priority 0. A routine fix has
-priority 3 or 4. A decision that cannot be undone and can wait, the orchestrator leaves to you as an escalation.
-
-To revise a decision, reply to it in `piloop watch` (key `r`). The orchestrator's next wait returns your reply, and it
-applies your reply first.
-
-## Messages
-
-To ask the orchestrator something, or to tell it what to do, send it a **message**:
-
-```bash
-piloop message enwik8 'Try a larger dictionary next'
-```
-
-```text
-comment#41 message on campaign#1
-```
-
-Its next wait returns the message. It answers with `piloop inbox reply`, and the answer is in your inbox.
+A change to a goal, a metric, a guardrail, the evaluate command or a stop condition has priority 0. A decision that
+cannot be undone, and can wait, it leaves to you as an escalation. To revise a decision, reply to it: in
+`piloop watch`, press `r`. The orchestrator applies your reply first.
 
 ## Several campaigns
 
-A campaign is one repo with its own `piloop.toml`. To improve two repos, set up two campaigns: open your agent in each
-repo, or name the repo. One daemon serves every campaign of a `PILOOP_HOME`.
-
-```text
-Use piloop on ~/projects/search to cut the p95 latency of the query endpoint.
-```
-
-Two goals for the same code, such as the accuracy and the cost of one model, are [tracks](/concepts/tracks) of one
-campaign, not two campaigns.
-
-One agent can orchestrate every campaign. Ask it to "orchestrate all my piloop campaigns". Without a campaign name,
-`piloop inbox wait`, `piloop inbox` and `piloop watch` cover every campaign, and each item names its campaign.
+One daemon serves every campaign of a `PILOOP_HOME`. To improve two repos, set up a campaign in each. Two goals for the
+same code, such as accuracy and cost, are [tracks](/concepts/tracks) of one campaign. One agent can orchestrate every
+campaign: ask it to "orchestrate all my piloop campaigns".

@@ -4,6 +4,8 @@ sidebarTitle: Campaigns
 description: A campaign is a git repo, a command that scores its code, and the metrics to improve.
 ---
 
+import EvaluateExamples from '/snippets/generated/evaluate-examples.mdx';
+
 A **campaign** is a git repo, an **evaluate command** that scores its code, and the metrics to improve. This is the
 `piloop.toml` of the enwik8 example, without its limits:
 
@@ -28,95 +30,74 @@ floor = 120
 repeats = 3
 ```
 
-`brief.md`, next to it, tells every agent what to improve and what it must not touch. `piloop init` registers the
-campaign and stores a copy of `piloop.toml`. The daemon uses that copy, so run `piloop init` again after each edit. The
+`brief.md`, next to it, tells the agents what to improve and what not to touch. `piloop init` registers the campaign
+and stores a copy of `piloop.toml`, which the daemon uses: run `piloop init` again after each edit. The
 [configuration reference](/reference/configuration) lists every key.
 
 ## The evaluate command
 
-piloop runs the evaluate command at the root of a clean worktree of each commit. The command prints one
-`METRIC <name>=<value>` line for each metric:
+piloop runs the command at the root of a clean worktree of each commit. It prints one `METRIC <name>=<value>` line for
+each metric:
 
-```text
-$ uv run python evaluate.py
-METRIC bytes=3688775
-METRIC seconds=0.69
+```bash
+uv run python evaluate.py
 ```
 
-piloop ignores the other output. A non-zero exit, a missing metric, or a run longer than `evaluate_timeout` seconds
-makes the commit a `crash`. Print the reason on stderr. The measurement of a crash keeps the `METRIC` lines that it
-printed, and never scores.
+```text
+METRIC bytes=3688775
+METRIC seconds=0.85
+```
 
-Make the command deterministic: fix the seeds and the data splits. In `brief.md`, tell the implementers not to edit
-the evaluate command or the data.
+A non-zero exit, a missing metric, or a run longer than `evaluate_timeout` seconds makes the commit a `crash`. Print
+the reason on stderr. Fix the seeds and the data splits, so that the same code gets the same score.
 
 <Warning>
   piloop runs the evaluate command from the commit that it measures. An implementer that edits the command changes its
-  own score.
+  own score. Tell the implementers in `brief.md` not to edit it or the data.
 </Warning>
+
+`piloop init` writes a stub `evaluate.py`. `piloop init --example <name>` makes an example campaign with a working one:
+
+<EvaluateExamples />
 
 ## Metrics
 
-Each `[[metrics]]` table names one metric that the evaluate command prints, and its `direction`: `higher` or `lower`
-is better. Its `role` says how the [verdict](/concepts/verdict) uses it:
+| `role` | How the [verdict](/concepts/verdict) uses it |
+|---|---|
+| `primary` | The metric to improve. One per campaign, or one per [track](/concepts/tracks). |
+| `guardrail` | May get worse by at most `margin` for each keep, and never past `floor`. |
+| `watch` | Recorded only. |
 
-- **primary**: the metric to improve. A campaign has one, or one for each [track](/concepts/tracks).
-- **guardrail**: it may get worse by at most its `margin` for each keep, and never past its `floor`.
-- **watch**: recorded only.
+`direction` is `higher` or `lower`: which way is better.
 
 ## Per-unit results
 
-A metric is often a sum over units, such as test examples. When the evaluate command reports the result of each unit,
-the verdict can tell a broad gain from a gain on a few lucky units.
-
-piloop sets `PILOOP_UNITS_FILE` to a path when it measures a candidate. Write a JSON object there, with each unit's
-part of each metric:
+A metric that is a sum over units, such as test examples, can report each unit. Then the verdict can tell a broad
+gain from a gain on a few lucky units. piloop sets `PILOOP_UNITS_FILE` to a path. Write there each unit's part of each
+metric:
 
 ```json
 {"accuracy": {"test-0001": 0.0056, "test-0002": 0.0, "test-0003": 0.0056}}
 ```
 
-- The values of a metric must sum to its `METRIC` value, within 0.1%. For a mean over `n` units, divide each value
-  by `n`.
-- Leave out metrics that are not sums, such as a latency.
-- A file that is not valid makes the evaluation fail.
-
-The agents never see the file, so they cannot tune their code to single units.
+The parts of a metric must sum to its `METRIC` value, within 0.1%. Leave out metrics that are not sums, such as a
+latency. The agents never see the file.
 
 ## Evaluators
 
-piloop never compares scores from two different evaluators. These words have one meaning each:
-
-| Word | Meaning |
-|---|---|
-| evaluate command | Your program: the `evaluate` key. |
-| **evaluator** | The evaluate command, `link`, and the names and directions of the primaries and guardrails. A change to one of these makes a new evaluator at the next `piloop init`. |
-| **evaluation** | One run of the evaluator on a candidate. |
-| **measurement** | The metric values that one evaluation recorded. |
-
-After a new evaluator, the daemon measures the head again, and what the open runs need. The other keeps keep their
-old scores. To measure one of them again, for example to compare the whole trajectory:
+An **evaluator** is the evaluate command, `link`, and the names and directions of the primaries and guardrails. A
+change to one of them makes a new evaluator at the next `piloop init`. piloop never compares scores of two evaluators:
+it measures the head again, and runs then compare under the new one. To measure an older keep again:
 
 ```bash
 piloop candidate remeasure 2
 ```
 
-A change to a margin, a floor or the verdict rule makes no new evaluator, and neither does a watch metric that you add,
-remove or redirect: older measurements just lack it. These change how the next candidates are judged. Making a watch
-metric a guardrail or a primary, or the reverse, makes a new evaluator.
-
-## Shared files
-
-- `link` lists paths that git ignores, such as `data` or `.venv`. Every worktree gets them read-only, as they were when
-  its job was made. A write in place to a linked file fails. New files stay in the worktree.
-- `workspace/` is a directory that every agent of the campaign shares, for notes, caches and plots. It is never
-  committed. Each agent gets a read-only copy of it as it was when the agent started, on any machine. What the agent
-  writes or removes there goes into the shared workspace when it ends. When two agents change one file, the first
-  one's stays, and the second one's goes beside it, as `NOTES.md.implementer-12`.
+A change to a margin, a floor or a watch metric makes no new evaluator.
 
 ## Retire a campaign
 
-A **retired** campaign is stopped for good. Retire a campaign that you do not want to resume, to free its name:
+A **retired** campaign is stopped for good, and its name is free for a new one:
 
 ```bash
 piloop campaign stop enwik8
@@ -127,15 +108,17 @@ piloop campaign retire enwik8 --reason "tried every idea"
 campaign enwik8 #3 retired: its name is free
 ```
 
-`retire` waits until the closing review and the runs of the stop are over. Then the campaign changes no more, and
-`piloop status` leaves it out unless you ask with `--status retired`. Its rows, events and archived workspace stay, and
-its id still names it: `piloop status 3`. A new campaign may take its name, and `piloop init --name` names a new
-campaign of the same repo.
+`retire` waits until the closing review and the runs of the stop are over. Its rows, events and archived workspace
+stay, and its id still names it: `piloop status 3`. `piloop status` leaves it out unless you ask with
+`--status retired`.
 
-## Where the results are
+## Files
 
-- Each commit of a run is a git ref under `refs/piloop/<campaign>/`, for example `refs/piloop/enwik8/r1/0`.
-  `git show` and `git cherry-pick` work on it after its worktree is gone.
-- The database holds the ideas, runs, candidates, measurements and comments. Read it with `piloop sql`. See the
-  [database schema](/reference/schema).
-- The briefs, logs and transcripts of the agents are under `~/.piloop/runs/` and `~/.piloop/agent_sessions/`.
+| Path | What it is |
+|---|---|
+| `link` paths | Paths that git ignores, such as `data` or `.venv`, put into every worktree read-only. |
+| `workspace/` | A directory that every agent of the campaign shares, for notes, caches and plots. It is never committed. An agent gets a copy when it starts, and its changes go back when it ends. |
+| `refs/piloop/<campaign>/` | A git ref for each commit of each run, such as `refs/piloop/enwik8/r1/0`. `git show` works on it after its worktree is gone. |
+| `~/.piloop/runs/`, `~/.piloop/agent_sessions/` | The briefs, logs and transcripts of the agents. |
+
+The database holds the ideas, runs, candidates, measurements and comments: read it with `piloop sql`.

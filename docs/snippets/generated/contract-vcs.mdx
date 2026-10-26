@@ -1,0 +1,27 @@
+{/* WARNING: This file is auto-generated (uv run -m scripts.generate_all). Update the docstrings in `piloop/plugins/vcs/contract.py` if you want to change anything here. */}
+
+| Member | What it is |
+|---|---|
+| `Vcs.init(path: Path, summary: str, owned: Sequence[str], ignore: Sequence[str]) -> list[str]` | Make `path` a repository if it is not one, and save its files for `piloop init`. |
+| `Vcs.open(path: Path) -> Repository` | The repository of the checkout at `path`. |
+| `Vcs.clone(url: str, path: Path, credential: SecretStr \| None) -> Repository` | Clone the repository at `url` into `path`, and return it. |
+| `Vcs.replica(path: Path) -> Repository` | A worker's replica of a repo of record at `path`, made empty if none is there: `Repository.fetch` fills it. |
+| `Vcs.identity(path: Path) -> str` | The project that the checkout at `path` is, the same for each clone of it: `campaigns.repo`. |
+| `Vcs.root(path: Path) -> Path \| None` | The main checkout that `path` is in, also from a checkout that `Repository.checkout` made. None: none. |
+| `Vcs.changed(path: Path, ignore: Sequence[str]) -> bool` | Whether an agent changed the checkout at `path`: a saved version, or a changed file outside `ignore`. |
+| `Vcs.prompt(part: Part) -> str` | What the built-in prompts say about `part` for this provider (`prompted`). |
+| `Vcs.checks() -> list[Check]` | Check that the provider can work on this machine. `piloop doctor` shows the result. Read only. |
+| `Repository.head() -> Version` | The version that the checkout is at. |
+| `Repository.version(native: str) -> Version` | The version that `native` names in the provider's own terms: a revision, or under `git` a branch or tag. |
+| `Repository.receive(cas: Cas, transfer: Transfer, base: Revision) -> list[Version]` | Take the versions of `transfer` from `cas`, and return those from `base` to its head, oldest first. |
+| `Repository.send(cas: Cas, revisions: Sequence[Revision], have: Sequence[Revision]) -> Cid \| None` | Put what `revisions` have beyond `have` into `cas`, as a `Transfer`'s blob, or None when nothing is. |
+| `Repository.fetch(cas: Cas, revisions: Sequence[Revision], ask: Fetch) -> None` | Take those of `revisions` that the repository lacks: `ask` puts them into `cas`. |
+| `Repository.merge(onto: Revision, other: Revision, message: str) -> Version \| Conflicts` | Save the merge of `other` onto `onto` as a version, without a checkout, or return what conflicts. |
+| `Repository.contains(revision: Revision, ancestor: Revision) -> bool` | Whether `revision` has all of `ancestor`: it descends from it, or merging it in changes nothing. |
+| `Repository.keep(revision: Revision, why: Keep) -> None` | Keep `revision` for `why`, also after whatever named it is gone. |
+| `Repository.kept(campaign: str, run: RunId) -> list[Version]` | The versions of `run` that `keep` kept (`RunVersion`), in their order, for a run before 0.3.0. |
+| `Repository.checkout(revision: Revision, path: Path) -> None` | Put the files of `revision` at `path`, where an agent or an evaluator works on them. |
+| `Repository.discard(path: Path) -> None` | Remove what `checkout` put at `path`. Nothing fails if it is gone, or a directory of something else. |
+| `Repository.checkouts(root: Path) -> list[Path]` | The paths under `root` that `checkout` made and `discard` did not remove yet. |
+| `Repository.untracked(revision: Revision, names: Sequence[str]) -> list[str]` | Those of `names` that `revision` does not hold: what was put in its checkout from elsewhere. |
+| `Repository.capture(cas: Cas, base: Revision, run: RunId, ignore: Sequence[str]) -> Transfer \| None` | Put the versions that an agent saved in this checkout of `base` into `cas`, or None when it saved none. |

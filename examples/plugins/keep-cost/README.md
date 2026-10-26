@@ -1,6 +1,6 @@
 # piloop-keep-cost
 
-A plugin that adds a [stop rule](https://piloop.autoresearch.inc/architecture/extension-points#stop-conditions). It
+A plugin that adds a [stop rule](https://piloop.autoresearch.inc/plugins/rules#stop-rules). It
 compares the fact that `spend` names, since the latest keep, with its value per keep so far. Past `escalate_at` times,
 it asks a human once for each keep, and the campaign goes on. Past `stop_at` times, it stops the campaign. It is the
 built-in rule `limits` with these two lines, so `max_hours`, `hold_at` and the other limits still apply. It needs a

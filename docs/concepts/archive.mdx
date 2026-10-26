@@ -1,0 +1,81 @@
+---
+title: The archive and the CAS
+sidebarTitle: Archive and CAS
+description: piloop archives the shared workspace when it is done with it, into a content-addressed store, and gets files back on request.
+---
+
+Agents leave notes, logs and outputs in the campaign's shared workspace, `$PILOOP_HOME/projects/<id>/workspace`. The
+**archive** moves the finished parts of it into the **CAS**, a content-addressed store:
+
+```bash
+piloop store status
+```
+
+```text
+cas: disk
+
+  campaign   archives   files   archived
+ ────────────────────────────────────────
+  arch       1          2       200.0 kB
+
+to archive: 0 settled subject(s), 0 stopped campaign(s); latest archiving 2026-10-26 17:27 UTC (the daemon works through them in the background, one at a time)
+```
+
+`piloop restore` brings files back. It never overwrites a file that is there:
+
+```bash
+piloop restore arch idea1/plots
+```
+
+```text
+restored 1 file(s), 200.0 kB, into /tmp/pl-docs/home/projects/3/workspace; 0 already there
+```
+
+`piloop restore arch idea#12` restores one idea's files, and `piloop restore arch` everything.
+
+## What is archived, and when
+
+| When | What |
+|---|---|
+| An idea is done and none of its runs is open | The entries named after it: `idea12/`, `idea12-canary.log`. |
+| A campaign stops and none of its agents is alive | Everything left in its workspace. |
+| Never | `NOTES.md` and `research/` at the top of the workspace. |
+
+An archiving removes nothing. The daemon removes the local copies 7 days later, or sooner, oldest first, while the disk
+has less than `[storage] min_free_gb` free. It removes only a file that still holds what was stored.
+`[plugins.archive]` in `$PILOOP_HOME/config.toml` selects the archive's provider: `local` by default.
+
+## The CAS
+
+One CAS serves every campaign of a `PILOOP_HOME`. It holds the archived files, the agents'
+[sessions](/concepts/roles#sessions) and the workers' jobs. A blob is addressed by the BLAKE3 hash of its content, so a
+file that appears in many places is stored once. Nothing is ever deleted from it.
+
+`[plugins.cas]` in `$PILOOP_HOME/config.toml` selects where the blobs go. The default, `disk`, keeps them in
+`$PILOOP_HOME/store`. `cached` keeps a local cache over a remote store, such as a bucket:
+
+```toml
+[plugins.cas]
+provider = "cached"
+evict_after_days = 30      # drop local copies older than this
+local_max_gb = 200         # and keep the local cache under this size
+remote = { provider = "s3", url = "s3://my-bucket/piloop" }
+```
+
+| Command | What it does |
+|---|---|
+| `piloop store verify` | Checks that every archived blob is still there. |
+| `piloop store evict` | Drops the local copies that the remote holds, now. |
+| `piloop cas serve` | Serves the CAS to [workers on other machines](/guides/workers), which use the `http` provider. |
+
+```bash
+piloop store verify
+```
+
+```text
+1 manifest(s), 3 blob(s): 3 ok, 0 missing, 0 corrupt
+```
+
+S3 finds its credentials as boto3 does. `gcs` needs the `gcs` extra: `uv tool install --reinstall 'piloop[gcs]'`. A
+store whose blobs went to one remote refuses to open over another. The
+[configuration reference](/reference/configuration#plugins) lists each provider's keys.

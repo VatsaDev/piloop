@@ -1,9 +1,0 @@
-{/* WARNING: This file is auto-generated (uv run -m scripts.generate_all). Update the fields of `McpServer` in `piloop/mcp/` if you want to change anything here. */}
-
-| Key | Meaning |
-|---|---|
-| `url` | The URL of a streamable HTTP server. SSE is not supported, because Codex and pi reject it. |
-| `headers_env` | HTTP only. Maps each header name to the environment variable whose value is sent in it, for example `{ "x-api-key" = "EXA_API_KEY" }`. |
-| `bearer_token_env` | HTTP only. The environment variable whose value is sent as `Authorization: Bearer <value>`. |
-| `command` | The command (argv) of a stdio server, for example `["python3", "/path/to/server.py"]`. |
-| `env` | stdio only. The environment variables that the server reads, for example `["XAI_API_KEY"]`. |

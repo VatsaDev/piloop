@@ -1,0 +1,18 @@
+{/* WARNING: This file is auto-generated (uv run -m scripts.generate_all). Update the docstrings in `piloop/plugins/harness/contract.py` if you want to change anything here. */}
+
+| Member | What it is |
+|---|---|
+| `Harness.DEFAULT: ClassVar[bool]` | Whether a campaign that does not set `harnesses` rotates through this one. |
+| `Harness.executable: str` | The program to run. |
+| `Harness.headless: list[str]` | The arguments for a run without a terminal. Must include `{prompt}`. |
+| `Harness.resume: list[str]` | The arguments that continue the session of a run with a new prompt. When the agent's turn ends with messages queued for it (comments, `piloop prompt`), the runtime runs the harness again with these, `{prompt}` being the messages and `{session_id}` the session's id. Must include both. When empty, the agent takes no message while it runs. |
+| `Harness.session_id_pattern: str \| None` | A regex with one group that finds the session id in the first lines of the process's stdout. Use it in a harness that cannot take its id as an argument (`{session_id}`). For example, Codex `exec --json` prints `{"type":"thread.started","thread_id":"<uuid>"}` first. |
+| `Harness.home: str \| None` | The directory where the agent keeps its config and sessions: a path, which may start with `~` or name a variable as `{env:NAME:default}`. A harness that reads usage finds its session files under it, and the daemon's service unit carries `NAME`. |
+| `Harness.session_env: list[str]` | The variables the agent sets for the processes of its session. piloop clears them for every agent, so an agent started from inside such a session is not its child. |
+| `Harness.env: dict[EnvName, str \| SecretRef]` | Variables of the agent's environment: a value, or a secret, `{ secret = "NAME" }`. For example a model gateway, `{ ANTHROPIC_BASE_URL = "https://gw.example.com", ANTHROPIC_API_KEY = { secret = "ANTHROPIC_API_KEY" } }`. When unset, the agent uses the login of the machine that runs it. |
+| `Harness.mcp() -> McpRenderer \| None` | How it takes the MCP servers of a role. None, by default: it takes none. |
+| `Harness.sessions() -> UsageReader \| None` | How to read the session files that its CLI leaves. None, by default: it leaves none that piloop reads. |
+| `Harness.usage() -> UsageReader \| None` | How to read the tokens of an agent that ended: its `sessions`, when the session id can be known. |
+| `Harness.messages(lines: list[str]) -> str` | What `piloop agent messages --harness <provider>` prints for the messages it takes: by default, one a line. |
+| `Harness.skills_dir(settings: Settings) -> Path` | Where its CLI reads user skills: by default, the Agent Skills directory (`agent_skills_dir`). |
+| `Harness.refuses_servers() -> str \| None` | Return why `headless` cannot take MCP servers, or None when it can. |

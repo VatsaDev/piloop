@@ -1,30 +1,12 @@
 ---
 title: Agents and roles
-description: Every agent that piloop starts has a role, which says what it does and when it starts. A runtime starts it, and you can watch and steer it.
+description: Every agent that piloop starts has a role, which says what it does and when it starts.
 ---
 
 import Triggers from '/snippets/generated/triggers.mdx';
 import Sections from '/snippets/generated/sections.mdx';
 import Runtimes from '/snippets/generated/runtimes.mdx';
-
-Every agent that piloop starts has a **role**, which says what the agent does and when it starts. The agent is a
-**harness**, a coding agent CLI (Claude Code, Codex or pi), in a git worktree of the campaign. piloop has four roles:
-
-| Role | What it does | When the daemon starts one | Its worktree |
-|---|---|---|---|
-| **implementer** | Implements one idea and commits. | A ready idea and a free implementer slot. | At the starting point of its run. Its commits are scored. |
-| **watchdog** | Looks for problems and reports them. | On an incident (a failed run, an agent dead at its start, a funnel that most runs leak from), every `interval` seconds, and once when the campaign stops. | At the head. Its commits are not scored. |
-| **research** | Develops seeds into ideas and adds ideas of its own. | A new seed, or a short backlog. | At the head. Its commits are not scored. |
-| **scout** | Searches outside the repo for techniques and files them as seeds. Experimental. | Every `interval` seconds, when you set it. Off by default. | At the head. Its commits are not scored. |
-
-Each agent that the daemon starts is an **agent session**, with an id, a log and the tokens that it used.
-`piloop status` lists the live ones, for example `implementer#12`.
-
-The implementer **does runs**: it takes ideas from the run queue, and its commits are scored. The other roles are
-**sweep roles**: their triggers start them, and nothing that they commit is scored. The
-[orchestrator](/concepts/orchestrator) is not a role. The daemon never starts it.
-
-## Configure a role
+import Harnesses from '/snippets/generated/harnesses.mdx';
 
 Each role has a table in `piloop.toml`. This one runs up to four implementers on two harnesses, for at most 30 minutes
 each, and one research agent at a time:
@@ -41,20 +23,36 @@ timeout = 1800
 max_concurrent = 1
 ```
 
-The [configuration reference](/reference/configuration#roleconfig) lists every key and its default. The top-level
-`max_concurrent` table limits one harness across every role, for example `max_concurrent = { claude = 2 }` when your
-account limits the request rate.
+Run `piloop init` after you change it. To ask for one more agent of a role:
+
+```bash
+piloop launch enwik8 research --reason "second opinion on idea#2"
+```
+
+```text
+agent_session#4 research requested for enwik8: second opinion on idea#2
+```
+
+Each agent is an **agent session**, with an id, a log and the tokens that it used. It signs its writes
+`<role>#<id>`, such as `research#4`. The [configuration reference](/reference/configuration#roleconfig) lists every
+key of a role.
+
+## The built-in roles
+
+| Role | What it does | When it starts |
+|---|---|---|
+| **implementer** | Implements one idea, commits, and writes a `finding`. Its commits are scored. | A ready idea and a free slot. |
+| **research** | Develops seeds into ideas, and adds ideas where the head loses the most. | A new seed, a short backlog, or a stall. |
+| **watchdog** | Investigates failures and reviews progress. Writes comments and seeds, never code. | A failed run, an agent dead at its start, every `interval` seconds, and once at the stop, for the closing report. |
+| **scout** | Searches X, GitHub and arXiv for techniques, and files the best as seeds. | Every `interval` seconds. Off until you set it. |
+
+The implementer **does runs**: it takes ideas from the queue. The others are **sweeps**: their triggers start them,
+and nothing that they commit is scored. The [orchestrator](/concepts/orchestrator) is not a role.
 
 ## Triggers
 
-A **trigger** is a condition that the daemon checks on each **pass** over the campaigns: when something changes in a
-campaign, and when a trigger's time comes, as for `cron`. When a
-trigger of a sweep role fires, the daemon starts one more agent of that role, and the agent's brief says why:
-
-<Triggers />
-
-The `triggers` key of a role sets its triggers. This watchdog does not investigate incidents. It reviews the progress
-every hour, and once when the campaign stops:
+A **trigger** is a condition that starts one more agent of a sweep. This watchdog only reviews the progress every hour,
+and once when the campaign stops:
 
 ```toml
 [roles.watchdog]
@@ -62,36 +60,14 @@ triggers = [{ provider = "cron" }, { provider = "stopped" }]
 interval = 3600
 ```
 
-An empty list turns the triggers off. The role then starts only when you ask, with `piloop launch`.
+An empty list turns a role's triggers off. These are built in:
 
-A `sql` trigger can use two parameters: `:campaign`, the campaign's id, and `:since`, when the role's last agent
-started. `piloop init` refuses a query that is not one statement that only reads.
-
-## Sections
-
-A **section** is one titled part of what a reader sees of a campaign: the goal, the queue, the lessons. `piloop status`
-shows the sections of `[status] sections`, and a brief shows the sections of its role, after the role's own context.
-Without the key, each one shows every installed section that declares it, in the sections' order, as the table below
-says. A section with nothing to show is left out. Set the key to choose and order them yourself. This research role
-reads the lessons in a larger budget, the overview without the events, and the research pack:
-
-```toml
-[roles.research]
-sections = [
-  { provider = "lessons", budget = 800 },
-  { provider = "headline" }, { provider = "goal" }, { provider = "trajectory" }, { provider = "queue" },
-  { provider = "candidates" }, { provider = "inbox" }, { provider = "tools" }, { provider = "pack" },
-]
-```
-
-A plugin can add sections, which then show where they declare. See [Extension points](/architecture/extension-points#sections).
-
-<Sections />
+<Triggers />
 
 ## Define a role
 
-A table with a new name defines a sweep role. It needs `prompt`, the file that starts its brief, and `triggers`. This
-reviewer reads each new keep and files a seed when it finds a problem:
+A table with a new name defines a sweep. It needs `prompt`, the file that starts its brief, and `triggers`. This
+reviewer reads each new keep:
 
 ```toml
 [roles.reviewer]
@@ -105,17 +81,9 @@ files = "seeds"
 writes = ["comments(finding) on a candidate", "seeds via idea seed"]
 ```
 
-Its brief is your prompt, then `brief.md`, the database procedures, the reason that it started, and the sections of a sweep.
-Run `piloop init` after you change the table. `piloop launch enwik8 reviewer` asks for one more reviewer.
+`:campaign` is the campaign's id, and `:since` is when the role's last agent started.
 
-A role name has at most 20 characters: lowercase letters, digits, `_` and `-`, with a letter first. `run`,
-`orchestrator`, `human` and `daemon` are taken. A plugin can also add roles and triggers. See
-[Extension points](/architecture/extension-points#roles).
-
-## Define a role that does runs
-
-A table with a new name and `runs = true` defines a role that does runs. It has the implementer's defaults, so every
-other key is optional. This role takes the cheap ideas, with its own harness and a short timeout:
+With `runs = true`, a new role does runs. It has the implementer's defaults. This one takes the cheap ideas:
 
 ```toml
 [roles.quick]
@@ -123,74 +91,89 @@ runs = true
 takes = "priority >= 3"    # an SQL condition on the ideas table
 harnesses = ["pi"]
 timeout = 300
-max_concurrent = 2
 ```
 
-The roles that you define take their ideas first. The implementer takes every idea that they leave, also one that
-waits for a slot of a full role. To keep the implementer away from the cheap ideas, give it a condition too:
-`[roles.implementer] takes = "priority < 3"`.
+Your roles take their ideas first, and the implementer takes the rest. A keep of any role moves the head.
 
-Each role that does runs has its own `takes`, harnesses, prompt, timeout and slots. The stop rule's limits, the attempts
-of an idea and the verdict count every run of the campaign. A keep of any role moves the head.
+## Sections
 
-## The built-in roles
-
-- The **implementer** gets one idea, with your `brief.md`, the starting point and the recent results. It edits the
-  code and commits. At the end, it writes a `finding` comment on its idea. It files no ideas or seeds.
-- The **watchdog** edits no code and changes no row. It writes comments for the orchestrator, and seeds for research.
-  An **incident sweep** investigates an incident that a trigger found: a failed run (`run_failed`), or an agent that died at its start (`dead_at_startup`). A **progress review** asks if the campaign gets closer to its goal. The last review, when the
-  campaign stops, writes the closing report.
-- The **research** agent reads the **research pack**: the metrics, what was tried for each mechanism, the recent ideas
-  and their outcomes, the kept lineage, and the findings of every role. `piloop history enwik8` prints it. Research
-  develops each waiting seed, adds ideas where the head loses the most, and writes one `finding`. It starts on a new
-  seed, when the backlog has fewer ready ideas than one for each run slot, plus a buffer (`low_water`), and once per
-  stall mark of runs without a keep (`stalled`).
-
-## Scout
-
-A **scout** writes the open problems as measured losses, then searches X, GitHub and arXiv for techniques that could
-reduce them. It files the best few as seeds, and keeps the others in the `techniques` table. It is off until you set
-its `interval`:
+A **section** is one part of what `piloop status` or a brief shows, such as `## Goal` or `## Queue`. Without
+`sections`, each shows every section that declares it. Set the list to choose and order them:
 
 ```toml
-[roles.scout]
-interval = 86400   # seconds between scout sweeps
-seeds = 3          # seeds that one scout sweep may file
+[roles.research]
+sections = [{ provider = "lessons", budget = 800 }, { provider = "goal" }, { provider = "queue" }, { provider = "pack" }]
+
+[status]
+sections = [{ provider = "headline" }, { provider = "trajectory" }, { provider = "runs" }]
 ```
 
-A search tool for X needs an MCP server in the scout's `mcp`. See [MCP servers](/guides/mcp-servers).
+<Sections />
 
-## Ask for one more agent
+## Harnesses
 
-```bash
-piloop launch enwik8 research --reason "second opinion on idea#2"
+A **harness** is the coding agent CLI that an agent runs in. `harnesses` lists the ones that runs use in turn. A
+`[harness.<name>]` table changes a built-in harness, or adds one:
+
+```toml
+harnesses = ["claude", "gateway", "mycli"]
+model = { claude = "claude-opus-5-5", gateway = "claude-opus-5-5", mycli = "my-model" }
+
+[harness.gateway]
+provider = "claude"
+env = { ANTHROPIC_BASE_URL = "https://gw.example.com" }
+
+[harness.mycli]
+executable = "mycli"
+headless = ["--model", "{model}", "{prompt}"]
 ```
 
-The daemon starts the agent at once, within `max_concurrent`. `--harness` and `--model` choose the agent's
-harness and model.
+| Table | What it is |
+|---|---|
+| A built-in name, such as `[harness.claude]` | That harness, with the keys that the table changes. |
+| A new name with `provider`, such as `gateway` | That provider over its defaults: Claude Code through a gateway. |
+| A new name without `provider`, such as `mycli` | Its argv and nothing else: it takes no MCP servers, and records no tokens. |
+
+A campaign without `harnesses` uses the ones on by default:
+
+<Harnesses />
 
 ## Runtimes
 
-A **runtime** is where an agent runs. It starts the agent, watches it, sends it messages and stops it. The `runtime`
-key of `piloop.toml` sets it for the campaign, and `[roles.<name>] runtime` for one role.
-
-### Built-in runtimes
+A **runtime** starts, steers and stops the agents' processes. `runtime` sets it for the campaign, and
+`[roles.<name>] runtime` for one role.
 
 <Runtimes />
 
-A plugin can add a runtime. See [Extension points](/architecture/extension-points#runtimes).
+## Watch and steer an agent
 
-## Look at an agent
+| Command | What it does |
+|---|---|
+| `piloop watch` | Shows the agents with their last output. |
+| `piloop attach 12` | Prints the last 40 lines that agent 12 wrote. |
+| `piloop prompt 12 "<text>"` | Sends text to the agent's next turn. |
 
-- `piloop watch` shows the agents with their last output.
-- `piloop attach <agent-session-id>` prints the last 40 lines that the agent wrote.
-- `piloop prompt <agent-session-id> "<text>"` queues a message for the agent's next turn.
+A run's brief, log and transcript are in `~/.piloop/runs/<run>/`, and a sweep's in `~/.piloop/agent_sessions/<id>/`.
+When an agent ends, piloop ends every process that it started, such as a build server.
 
-When the runtime of the agent cannot take the message, the command says why. The brief, log and
-transcript of an agent are in `~/.piloop/runs/<run>/` for a run, and in `~/.piloop/agent_sessions/<id>/` for a sweep.
+`agent_sessions.state` is where an agent is:
 
-## When an agent ends
+| State | Meaning |
+|---|---|
+| `requested` | Waits for a slot. |
+| `starting`, `running` | Its process starts, then works. |
+| `ending` | A stop or a cancel ends it. piloop refuses its finding from now on. |
+| `exited`, `killed` | It ended by itself, or piloop ended it. |
 
-When an agent ends, piloop ends every process that the agent started, also one in a session of its own. So a shared
-server that an agent starts, such as an sccache, Gradle or Bazel daemon, ends with the agent. Start it outside piloop
-to keep it running.
+## Sessions
+
+piloop keeps each agent's **session**, the harness's file of its prompts, tool calls and reasoning, in the
+[CAS](/concepts/archive#the-cas). It saves a snapshot at least every 30 seconds while the agent runs. To read the
+session that made candidate 2:
+
+```bash
+piloop sql "SELECT s.id, s.session_file FROM agent_sessions s JOIN candidates c ON c.run_id = s.run_id WHERE c.id = 2"
+piloop cas get <session_file> > session.jsonl
+```
+
+A plugin can add roles, triggers, sections and runtimes: see [Agents and sections](/plugins/agents).

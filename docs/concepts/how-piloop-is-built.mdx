@@ -1,0 +1,72 @@
+---
+title: How piloop is built
+description: piloop is a small core and a set of plugins. A plugin owns its tables, and core owns everything else.
+---
+
+import Capabilities from '/snippets/generated/capabilities.mdx';
+
+piloop is a small **core** and a set of **plugins**. Core runs things. The plugins decide what to run, how to judge
+it and where it runs. A plugin owns its own tables and migrations. Core owns every other table. It works like a
+Django project: each app has its own models and migrations, and core is one more app.
+
+The memory of past campaigns is one plugin, `memory/local`. It adds three things:
+
+| What it adds | How |
+|---|---|
+| The `lessons`, `documents` and `journal` tables, with their own migrations | an entry point in `piloop.schemas` |
+| The `piloop journal` command | an entry point in `piloop.commands` |
+| The route `POST /v1/campaigns/{campaign}/journal` | its `contribution()` |
+
+A campaign selects it in `piloop.toml`, as it selects any provider:
+
+```toml
+[plugins.memory]
+provider = "local"
+documents = ["docs/evidence/**/*.md"]
+```
+
+## Core
+
+Core is the mechanism that every plugin builds on:
+
+- The SQLite database, and its **event feed**: every change appends a typed event in the same transaction.
+- The daemon's loop, which runs the consumers on new events.
+- The plugin host, which finds, checks and loads plugins.
+- The API, the CLI and the interfaces that plugins implement.
+- Leases, which hand jobs to workers.
+
+Core's tables are `campaigns`, `agent_sessions`, `events`, `comments`, `secrets`, `tokens`, `limits`, `migrations`,
+and the tables of leases and workers. The [database schema](/reference/schema) lists each table under the plugin
+that owns it.
+
+## The research model is a plugin
+
+Ideas, runs, candidates, evaluations and the head are the **campaign type** `optimization`. Its tables are
+`ideas`, `idea_links`, `runs`, `candidates`, `evaluators`, `evaluations`, `measurements` and `techniques`. Every
+campaign is of this type: it is what the rest of these docs describe.
+
+## Capabilities
+
+A **capability** is one kind of decision or service, such as the verdict, the stop condition or where jobs run. Each
+capability has at least one **built-in provider**, which is a plugin of piloop itself. Your configuration selects a
+provider by its name. A plugin package adds more providers.
+
+<Capabilities />
+
+## What a plugin adds
+
+A plugin is a Python package that you install next to piloop. It declares what it adds with entry points in its
+`pyproject.toml`:
+
+| Slot | Entry point group | What it adds |
+|---|---|---|
+| Providers | the capability's group, for example `piloop.verdict_rules` | an implementation of a capability |
+| Tables | `piloop.schemas` | its tables and its own chain of migrations |
+| Commands | `piloop.commands` | a command or a group of commands of `piloop` |
+| A capability | `piloop.capabilities` | a capability of its own, that other plugins add providers to |
+
+A provider that the daemon opens also adds, through its `contribution()`, **consumers** (jobs of the daemon's loop
+that wake on events) and **routes** of the daemon's server.
+
+piloop declares its own capabilities, providers, tables and commands in the same groups. So a plugin can do anything
+that a built-in provider does. [Write a plugin](/plugins/overview) shows how.

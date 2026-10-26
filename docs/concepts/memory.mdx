@@ -1,0 +1,69 @@
+---
+title: Memory
+description: What past campaigns learned, and the orchestrator's journal, for the next agent to read.
+---
+
+**Memory** is what a campaign leaves for the next agent: lessons, documents and the orchestrator's journal. An
+orchestrator session that loses its context writes to the **journal** as it goes, and the next session reads it first:
+
+```bash
+piloop journal "lesson on lzma recorded; idea#2 is next, p1" --campaign enwik8
+piloop wake enwik8
+```
+
+```text
+journal#1
+# piloop wake: enwik8, 2026-10-26 17:16 UTC
+
+## Journal, oldest to newest (1 lines in all)
+- 2026-10-26 17:16 human: lesson on lzma recorded; idea#2 is next, p1
+
+## Inbox (1 open)
+- p2 comment#2 message on campaign#1 by human (enwik8): Try a larger dictionary next
+
+## Active campaigns (1)
+- enwik8 · head bytes 3688775 (candidate#1) · 1 kept / 1 candidates
+
+## Current lessons on their repos (0)
+- none
+```
+
+A journal line has at most 280 bytes, and nobody can change it later. Without `--campaign`, it goes to the campaign of
+the current directory. The `piloop-operate` skill runs `piloop wake` first.
+
+## Lessons
+
+A **lesson** is the conclusion about one family of ideas (`ideas.family`), such as "stronger generic compressor". The
+closing watchdog writes one for each family that the campaign tried. An agent writes one with SQL:
+
+```sql
+INSERT INTO lessons (campaign_id, family, status, effect, metric, body, created_by)
+VALUES (1, 'stronger generic compressor', 'promising', -976922, 'bytes',
+        'LZMA1 at preset 9 extreme (idea#1, candidate#2) beat zlib by 976922 bytes; the time guardrail held.', 'orchestrator');
+```
+
+| Column | Meaning |
+|---|---|
+| `status` | `dead`, `promising` or `untested`. |
+| `effect` | The best effect measured, in the units of `metric`, with its sign. NULL when nothing was measured. |
+| `body` | Why, with idea and candidate ids. |
+
+A newer lesson for the same family replaces the older one. The briefs show the current lessons of every campaign on
+the same repo, also from other clones of it, in the [`lessons` section](/concepts/roles#sections).
+
+## Documents
+
+Name the reports and notes that agents should be able to search:
+
+```toml
+[plugins.memory]
+documents = ["docs/evidence/**/*.md"]
+```
+
+`piloop init` and the stop of a campaign copy them into the `documents` table. An edited file is a new version.
+
+<Warning>
+  Every agent of every campaign can read the documents. Never name one that comes from validation or test data.
+</Warning>
+
+`[plugins.memory]` selects the memory's provider. The built-in `local` keeps it in the home's database.

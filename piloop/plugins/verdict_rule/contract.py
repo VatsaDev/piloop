@@ -76,7 +76,7 @@ class Case:
     candidate: Side
     """The candidate that the rule judges."""
     bar: Side
-    """What the candidate must beat: its run's bar (https://piloop.autoresearch.inc/concepts/verdict#the-head-and-the-bar)."""
+    """What the candidate must beat: its run's bar (https://piloop.autoresearch.inc/concepts/verdict#the-words)."""
     parent: Side | None = None
     """The candidate's parent, which the candidate changed. None for a candidate without one."""
 

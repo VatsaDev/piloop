@@ -316,8 +316,8 @@ def test_a_pyproject_block_puts_its_entry_points_under_project(tmp_path: Path) -
         check_toml(Block(ROOT / 'README.md', 1, 'toml', '[build-system]\nrequires = [\n'), tmp_path)
 
 
-def test_the_extension_points_page_lists_no_member_of_a_contract_by_hand() -> None:
-    """A member list written by hand drifts from the code: the page shows them from ``scripts/generate/contracts.py``."""
-    page = (ROOT / 'docs' / 'architecture' / 'extension-points.mdx').read_text()
-    by_hand = re.findall(r'^- `\w+\(.*$', page, re.MULTILINE)
-    assert by_hand == [], 'list the contract in CONTRACTS of scripts/generate/contracts.py, and import its snippet'
+def test_the_plugin_pages_list_no_member_of_a_contract_by_hand() -> None:
+    """A member list written by hand drifts from the code: the pages show them from ``scripts/generate/contracts.py``."""
+    for page in (ROOT / 'docs' / 'plugins').glob('*.mdx'):
+        by_hand = re.findall(r'^- `\w+\(.*$', page.read_text(), re.MULTILINE)
+        assert by_hand == [], f'{page.name}: list the contract in CONTRACTS of scripts/generate/contracts.py'

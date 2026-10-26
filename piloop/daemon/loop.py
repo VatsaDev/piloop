@@ -43,7 +43,9 @@ class Consumer:
     """One job of the daemon: the event models that wake it, and the job."""
 
     name: str
+    """Its name, unique in the daemon. ``Loop.wake`` runs it by this name."""
     wakes_on: Kinds
+    """The event models whose new events run it in the next turn."""
     run: Callable[[Turn], datetime | None]
     """Do the job from the tables, and return when it must run again for time alone, or None."""
 

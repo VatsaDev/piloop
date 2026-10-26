@@ -1,4 +1,4 @@
-"""Generate ``docs/snippets/generated/contract-*.mdx``: the members of each contract on the extension points page.
+"""Generate ``docs/snippets/generated/contract-*.mdx``: the members of each contract on the plugin pages.
 
 Each snippet is a table of the members of the classes that a capability's contract names, from the code: each public
 method with its signature, and each documented attribute (a field, a ``ClassVar``) with its type. The text of each row
@@ -13,15 +13,23 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from piloop.daemon.loop import Consumer
+from piloop.plugins.archive.contract import ArchiveConfig, Archiver
 from piloop.plugins.cas.contract import Cas, CasProvider, Evictable, Upkeep
+from piloop.plugins.contribution import Contributes, Contribution
 from piloop.plugins.executor.contract import Executor, ExecutorConfig
 from piloop.plugins.fact_source import facts
 from piloop.plugins.fact_source.contract import FactSource
 from piloop.plugins.fact_source.kit.readings import Readings
+from piloop.plugins.harness.contract import Harness
+from piloop.plugins.memory.contract import MemoryProvider
 from piloop.plugins.network.contract import Network, NetworkConfig
+from piloop.plugins.provisioner.contract import ProvisionerConfig, Provisioning
+from piloop.plugins.secrets.contract import SecretsProvider
 from piloop.plugins.section.contract import Rendering, Section
 from piloop.plugins.stop_rule.contract import Escalate, Go, Hold, Stop, StopCase, StopRule
 from piloop.plugins.trigger.contract import Fire, Pass, Trigger
+from piloop.plugins.vcs.contract import Repository, Vcs
 from piloop.plugins.verdict_rule.contract import (
     Branch,
     Case,
@@ -57,6 +65,15 @@ CONTRACTS: dict[str, Contract] = {
     'section': Contract((Section, Rendering), '`piloop/plugins/section/contract.py`'),
     'stop-rule': Contract((StopRule, StopCase), '`piloop/plugins/stop_rule/contract.py`'),
     'fact-source': Contract((FactSource, Readings), '`piloop/plugins/fact_source/`'),
+    'contribution': Contract(
+        (Contributes, Contribution, Consumer), '`piloop/plugins/contribution.py` and `piloop/daemon/loop.py`'
+    ),
+    'harness': Contract((Harness,), '`piloop/plugins/harness/contract.py`'),
+    'memory': Contract((MemoryProvider,), '`piloop/plugins/memory/contract.py`'),
+    'archive': Contract((ArchiveConfig, Archiver), '`piloop/plugins/archive/contract.py`'),
+    'vcs': Contract((Vcs, Repository), '`piloop/plugins/vcs/contract.py`'),
+    'secrets': Contract((SecretsProvider,), '`piloop/plugins/secrets/contract.py`'),
+    'provisioner': Contract((ProvisionerConfig, Provisioning), '`piloop/plugins/provisioner/contract.py`'),
 }
 """Each contract snippet by the end of its name: ``contract-<name>.mdx``."""
 

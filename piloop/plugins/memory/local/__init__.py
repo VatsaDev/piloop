@@ -40,7 +40,7 @@ class LocalMemory(MemoryProvider):
         return synced(s, campaign, self.documents, actor)
 
     def contribution(self) -> Contribution:
-        """The journal's route, ``POST /v1/journal``."""
+        """The journal's route, ``POST /v1/campaigns/{campaign}/journal``."""
         from piloop.plugins.contribution import Contribution  # here: piloop journal imports this package
         from piloop.plugins.memory.local.api import router
 

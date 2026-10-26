@@ -19,7 +19,7 @@ These are the settings of the daemon and the CLI. The table comes from piloop's 
 | `CLAUDE_CONFIG_DIR` | `~/.claude` | Claude Code's configuration directory. `piloop install-skills` writes Claude Code's skills to its `skills/` directory, unless `PILOOP_CLAUDE_SKILLS_DIR` names another one. It is the `home` of the `claude` harness (`{env:CLAUDE_CONFIG_DIR:~/.claude}`), where piloop reads its session files. |
 | `CODEX_HOME` | `~/.codex` | Codex's home directory. It is the `home` of the `codex` harness (`{env:CODEX_HOME:~/.codex}`). |
 | `PI_CODING_AGENT_DIR` | `~/.pi/agent` | pi's agent directory. It is the `home` of the `pi` harness (`{env:PI_CODING_AGENT_DIR:~/.pi/agent}`). |
-| `PILOOP_HTTPS_TOKEN` | none | The token that `piloop token create` printed on the server. `piloop worker`, and the `http` CAS provider, send it. See [Workers on other machines](/guides/remote-workers). |
+| `PILOOP_HTTPS_TOKEN` | none | The token that `piloop token create` printed on the server. `piloop worker`, and the `http` CAS provider, send it. See [Workers on other machines](/guides/workers). |
 | `PILOOP_SRC` | PyPI | For `install.sh` only: install piloop from this checkout or pip-style URL instead of from PyPI. |
 
 The `home` of a harness can read any variable with `{env:NAME:default}`. `piloop service-unit` carries each one that
@@ -32,7 +32,7 @@ the harnesses name.
 | `PILOOP_ACTOR` | every agent | The agent's signature, `<role>#<agent-session-id>`, for example `implementer#12` or `scout#7`. |
 | `PILOOP_AGENT_TOKEN` | every agent | The agent's own token, minted when it starts and dead when it ends. Its piloop commands sign as the agent with it, whatever `PILOOP_ACTOR` says. |
 | `PILOOP_HOME` | every agent | The home of the daemon, or of the worker on another machine that runs the agent. |
-| `PILOOP_BIN` | every agent | `$PILOOP_HOME/bin/piloop`, which runs the daemon's own piloop on the daemon's home. On a [worker on another machine](/guides/remote-workers), it relays the command to the server. The briefs run piloop with it. |
+| `PILOOP_BIN` | every agent | `$PILOOP_HOME/bin/piloop`, which runs the daemon's own piloop on the daemon's home. On a [worker on another machine](/guides/workers), it relays the command to the server. The briefs run piloop with it. |
 | `PATH` | every agent | The daemon's `PATH`, after `$PILOOP_HOME/bin`, so that a plain `piloop` is the daemon's too. |
 | `PILOOP_UNITS_FILE` | the evaluate command, in piloop's own measurements only: the daemon's, and the baseline that `piloop init` measures. Never in an agent's environment. | The path where the evaluate command may write its [per-unit results](/concepts/campaigns#per-unit-results). |
 | `PILOOP_DEADLINE` | every agent | The Unix time at which the role's `timeout`, or the campaign's stop if it comes first, ends the agent. |

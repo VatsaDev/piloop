@@ -1,0 +1,8 @@
+{/* WARNING: This file is auto-generated (uv run -m scripts.generate_all). Update the docstrings in `piloop/plugins/provisioner/contract.py` if you want to change anything here. */}
+
+| Member | What it is |
+|---|---|
+| `ProvisionerConfig.open(host: ProvisionerHost) -> Provisioning` | Make the live side. The executor calls it once, when the daemon starts. |
+| `Provisioning.list() -> Sequence[Instance]` | Every instance tagged with this server's owner, in any pool, that the platform still has. |
+| `Provisioning.start(launch: Launch) -> None` | Start the instance `launch.name`. Started already: nothing. Raises `StartRefused`. |
+| `Provisioning.stop(name: str) -> None` | Stop the instance `name`. An instance that is gone already is a success. |

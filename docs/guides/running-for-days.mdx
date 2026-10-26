@@ -3,52 +3,42 @@ title: Running for days
 description: Run the daemon in the background or under a service manager, and restart it without losing work.
 ---
 
-A campaign can run for days. Keep the daemon running in the background or under a service manager, and restart it
-without stopping the agents.
-
-## The daemon
-
-`piloop serve` is the daemon. It starts the agents, scores the commits and enforces the limits of every campaign.
+`piloop serve` is the daemon: it starts the agents, scores the commits and enforces the limits of every campaign. One
+daemon runs for each `PILOOP_HOME`.
 
 ```bash
-piloop serve --detach     # start in the background; output goes to ~/.piloop/serve.log
-piloop status             # the first line shows the daemon's pid and uptime
-piloop stop               # stop it; waits up to --timeout seconds
-piloop restart            # restart it in place on the installed code
+piloop serve --detach
+piloop restart
+piloop stop
 ```
 
-Without `--detach`, the daemon runs in the foreground. Ctrl-C stops it in the same way as `piloop stop`.
+```text
+daemon started: pid 586609, log ~/.piloop/serve.log
+daemon pid 586609 restarted
+daemon pid 586609 stopped
+```
 
-Only one daemon runs for each `PILOOP_HOME`. The daemon holds a lock on `serve.pid` while it runs, so a second
-`piloop serve` refuses to start. The operating system releases the lock when the process ends, so a crash leaves
-nothing to clean up.
+| Command | What happens to the agents |
+|---|---|
+| `piloop restart` | They keep running. The same process starts the installed code again, and connects to each agent. |
+| `piloop stop` | They stop. Their runs are not attempts: the ideas go back to `ready`, and the next run starts from what they left. |
+| A crash | Like a restart: the next daemon connects to the agents that still run. |
 
-## Stop and restart
+The campaigns stay active through all three. To hold one campaign and leave the others running:
 
-`piloop stop` stops the running agents:
+```bash
+piloop pause enwik8 --reason "the GPU trains a model"
+piloop resume enwik8
+```
 
-- The runs of the stopped implementers end `daemon_stopped`. This does not count as an attempt: the ideas go back to
-  `ready`.
-- What each run made is pinned under `refs/piloop/` as `recovered` candidates, never measured. The next run of the
-  idea starts from the last one, as after a [run that timed out](/concepts/ideas-and-runs).
-- Requested agents stay requested, and start when the daemon starts again.
-- The campaigns stay `active`. The next `piloop serve` continues them. A campaign ends only at the limits of its stop rule.
-
-`piloop restart` keeps the agents running. The daemon stops its loop, and the same process starts the installed
-code again, with the same pid and environment. The new daemon connects to every running agent again, and each agent
-finishes its run without interruption. The timeout of each agent still counts from its start.
-
-A daemon that starts after a crash does the same: it connects again to the agents that are still running.
-
-## Pause one campaign
-
-`piloop pause <campaign> --reason "…"` holds one campaign and leaves the daemon and the other campaigns running. Nothing
-new launches, and running work finishes and is scored. A pause raises no escalation. `piloop resume <campaign>` ends it.
-See [the CLI](/reference/cli#piloop-pause).
+```text
+campaign enwik8 paused (launches): the GPU trains a model; running work goes on; `piloop resume enwik8` ends it
+campaign enwik8 resumed
+```
 
 ## Under a service manager
 
-`piloop service-unit` prints a unit file for your service manager. It installs nothing.
+`piloop service-unit` prints a unit file. It installs nothing.
 
 <Tabs>
   <Tab title="Linux (systemd)">
@@ -65,33 +55,31 @@ See [the CLI](/reference/cli#piloop-pause).
   </Tab>
 </Tabs>
 
-The unit restarts the daemon when it fails. It sets `PILOOP_HOME` and your current `PATH`, because the daemon must
-find the harness CLIs on its `PATH`. It also carries the `PILOOP_*` variables that are set in your shell, such as
-`PILOOP_MIGRATION_BACKUPS`, `OTEL_EXPORTER_OTLP_ENDPOINT`, and the variables that the usage globs of the harnesses
-name, such as `CLAUDE_CONFIG_DIR` and `CODEX_HOME`. It carries no other variable. Set the variables before you run
-`piloop service-unit`. The agents get their API keys from [secrets](/guides/secrets).
+```text
+[Unit]
+Description=piloop autoresearch daemon
 
-Under a service manager:
+[Service]
+ExecStart=/home/me/.local/share/uv/tools/piloop/bin/python -P -m piloop serve
+Restart=on-failure
+Environment="PILOOP_HOME=/home/me/.piloop"
+Environment="PATH=…"
 
-- Start and stop the daemon with the service manager.
-- `piloop stop` stops the daemon until the service manager starts it again.
-- Do not use `piloop serve --detach`. After the managed daemon stops, it starts a daemon that the service manager does
-  not control.
-- `piloop restart` and `piloop upgrade` keep the daemon under the service manager, because the restart happens in
-  the same process.
-- After you change the unit file, load it again. On Linux, run `systemctl --user daemon-reload`, then
-  `systemctl --user restart piloop`. On macOS, run `launchctl unload` and then `launchctl load -w` on
-  `~/Library/LaunchAgents/dev.piloop.serve.plist`.
+[Install]
+WantedBy=default.target
+```
 
-## Logs and traces
+- The unit carries your current `PATH`, so the daemon finds the harness CLIs, and the `PILOOP_*` and harness variables
+  of your shell, such as `CLAUDE_CONFIG_DIR`. Set them before you run `piloop service-unit`. API keys are
+  [secrets](/guides/secrets).
+- Start and stop the daemon with the service manager. Never run `piloop serve --detach` beside it.
+- `piloop restart` and `piloop upgrade` keep the daemon under the service manager.
+- After you change the unit, reload it: `systemctl --user daemon-reload`, then `systemctl --user restart piloop`.
 
-The daemon writes one line for each span and span event to stderr. With `--detach`, stderr goes to
-`~/.piloop/serve.log`. Set `OTEL_EXPORTER_OTLP_ENDPOINT` to also send the spans to an OpenTelemetry collector.
-The collector also gets a `piloop.db.write` span, not printed, for each write that takes 1 ms or more
-([`[tracing] slow_write`](/reference/configuration#tracing)): `wait_ms` is its wait for the database's write lock,
-and `hold_ms` is how long it held the lock.
+## Logs
 
-The `events` table holds what happened to each row, and is the easiest record to query:
+The daemon writes one line for each span to `~/.piloop/serve.log`. Set `OTEL_EXPORTER_OTLP_ENDPOINT` to send the spans
+to an OpenTelemetry collector too. The `events` table is the easiest record to query:
 
 ```bash
 piloop sql "SELECT at, actor, kind, payload FROM events ORDER BY id DESC LIMIT 20"

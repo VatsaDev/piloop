@@ -51,6 +51,7 @@ The agent sets up the campaign, runs it, and asks you only what needs you. To tr
 
 - [Quickstart](https://piloop.autoresearch.inc/quickstart): your first campaign, through your agent.
 - [Concepts](https://piloop.autoresearch.inc/concepts/campaigns): campaigns, ideas, runs and the verdict.
+- [Plugins](https://piloop.autoresearch.inc/plugins/overview): add a verdict rule, a runtime, tables or commands.
 - [Reference](https://piloop.autoresearch.inc/reference/cli): the CLI, the configuration and the database schema.
 
 ## Contributing

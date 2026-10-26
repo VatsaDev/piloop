@@ -123,7 +123,7 @@ Map each answer to its keys:
 - **Measurement → `evaluate`, `evaluate_timeout`.**
 - **Budget → `[roles.implementer]` `timeout` and `max_concurrent`, and `[roles.research]`.**
 - **Compute on other machines (a GPU box) → a pool in `config.toml`, and `piloop worker` there:**
-  https://piloop.autoresearch.inc/guides/remote-workers.
+  https://piloop.autoresearch.inc/guides/workers.
 - **Prior art → `context`** (a top-level key). List the error analyses and evaluation reports of the repo (where the
   current system loses to a reference). Every sweep that reads the research pack starts from them.
 - **Outside techniques → `[roles.scout]`**, only when the human wants them.

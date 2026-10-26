@@ -41,4 +41,4 @@ def generate() -> str:
                 lines.append(f'    {fk.column.table.name} {parent}--o{{ {table.name} : "{column.name}"')
     indexes = ', '.join(f'`{t}_fts` ({", ".join(f"`{c}`" for c in cols)})' for t, cols in FTS_COLUMNS.items())
     diagram = '\n'.join([*lines, '```', '', f'The full-text indexes are not in the diagram: {indexes}.', ''])
-    return header('the models in `piloop/db/models.py`') + '\n' + diagram
+    return header('the tables of core and of each plugin (`piloop.db.schema`)') + '\n' + diagram

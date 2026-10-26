@@ -318,7 +318,7 @@ router = APIRouter(
     dependencies=[Depends(reader)],
     responses=REFUSALS_DOCUMENTED,
 )
-"""The kernel's routes: the views, the feed, the inbox, campaigns, agents and the home's settings. Every route reads."""
+"""Core's routes: the views, the feed, the inbox, campaigns, agents and the home's settings. Every route reads."""
 optimization = APIRouter(
     prefix='/v1',
     dependencies=[Depends(reader)],

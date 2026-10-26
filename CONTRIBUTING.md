@@ -181,10 +181,9 @@ renames a table, a column or a value, add the rename to `RENAMES` in that module
 - `docs/reference/schema.mdx`, from `piloop/db/models.py`.
 - `docs/reference/openapi.json`, the API's OpenAPI document, from the FastAPI routes of `piloop/daemon/api.py`.
 - `docs/snippets/generated/`: the generated parts of other pages. These are the diagram of the tables, the values of
-  the state enums and the graph of the imports, and the tables of the built-in runtimes, triggers, harnesses,
-  `Runtime` methods and the limits of the stop rule. They also include the environment variables of the settings classes. They come
-  from the docstrings and the built-in registries, so write those docstrings for the reader of the page. A missing
-  docstring stops `make docs`.
+  the state enums, the members of each capability's contract, the example plugins, the tables of the built-in
+  providers and the environment variables of the settings classes. They come from the docstrings and the built-in
+  registries, so write those docstrings for the reader of the page. A missing docstring stops `make docs`.
 
 Each file starts with a comment that names the command and the source to change. A page shows a generated part as a
 [Mintlify snippet](https://www.mintlify.com/docs/create/reusable-snippets): it imports the file, then uses it as a component.
@@ -372,6 +371,9 @@ that every subpackage may use.
 
 `plugins/` is everything about plugins. `plugins/host.py` loads, checks and shows them, and imports nothing else of
 piloop, so every layer may use it. `plugins/metric.py` has the metric types that the verdict and stop contracts share.
+A plugin package keeps its tables and migrations beside its code: a `tables.py` with its `Schema`, and its
+`migrations/`. [How piloop is built](https://piloop.autoresearch.inc/concepts/how-piloop-is-built) has the picture.
+
 Each capability is one package, `plugins/<capability>/`, with the name of its entry point in `piloop.capabilities`:
 - `contract.py` declares the capability, its entry point group, where the configuration selects it, and its types. A
   host contract may import the types that it passes; a pure one imports only the standard library, `host` and `metric`.

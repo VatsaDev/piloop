@@ -12,32 +12,25 @@
     "groups": [
       {
         "group": "Get started",
-        "pages": ["index", "quickstart", "by-hand"]
+        "pages": [
+          "index",
+          "quickstart",
+          "by-hand"
+        ]
       },
       {
         "group": "Concepts",
         "pages": [
+          "concepts/how-piloop-is-built",
           "concepts/campaigns",
           "concepts/ideas-and-runs",
           "concepts/verdict",
           "concepts/roles",
           "concepts/orchestrator",
           "concepts/tracks",
-          "concepts/research-memory",
+          "concepts/memory",
           "concepts/cost",
-          "concepts/artifact-store"
-        ]
-      },
-      {
-        "group": "Architecture",
-        "pages": [
-          "architecture/overview",
-          "architecture/run-lifecycle",
-          "architecture/leases",
-          "architecture/data-model",
-          "architecture/state-machines",
-          "architecture/code-layout",
-          "architecture/extension-points"
+          "concepts/archive"
         ]
       },
       {
@@ -45,11 +38,21 @@
         "pages": [
           "guides/running-for-days",
           "guides/secrets",
-          "guides/remote-workers",
+          "guides/workers",
           "guides/mcp-servers",
           "guides/upgrading",
           "guides/watch",
           "guides/reviewing"
+        ]
+      },
+      {
+        "group": "Plugins",
+        "pages": [
+          "plugins/overview",
+          "plugins/contributions",
+          "plugins/rules",
+          "plugins/agents",
+          "plugins/infrastructure"
         ]
       },
       {
@@ -59,6 +62,7 @@
           "reference/event-feed",
           "reference/configuration",
           "reference/schema",
+          "reference/data-model",
           "reference/environment"
         ]
       }
@@ -79,7 +83,47 @@
     },
     {
       "source": "/concepts/session-capture",
-      "destination": "/concepts/research-memory#sessions"
+      "destination": "/concepts/roles#sessions"
+    },
+    {
+      "source": "/architecture/overview",
+      "destination": "/concepts/how-piloop-is-built"
+    },
+    {
+      "source": "/concepts/research-memory",
+      "destination": "/concepts/memory"
+    },
+    {
+      "source": "/concepts/artifact-store",
+      "destination": "/concepts/archive"
+    },
+    {
+      "source": "/architecture/run-lifecycle",
+      "destination": "/concepts/ideas-and-runs#runs"
+    },
+    {
+      "source": "/architecture/state-machines",
+      "destination": "/reference/data-model#statuses"
+    },
+    {
+      "source": "/architecture/extension-points",
+      "destination": "/plugins/overview"
+    },
+    {
+      "source": "/guides/remote-workers",
+      "destination": "/guides/workers"
+    },
+    {
+      "source": "/architecture/leases",
+      "destination": "/guides/workers"
+    },
+    {
+      "source": "/architecture/data-model",
+      "destination": "/reference/data-model"
+    },
+    {
+      "source": "/architecture/code-layout",
+      "destination": "/concepts/how-piloop-is-built"
     }
   ],
   "navbar": {

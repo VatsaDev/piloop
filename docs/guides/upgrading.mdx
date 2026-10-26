@@ -154,7 +154,7 @@ one. The [changelog](https://github.com/hiloopai/piloop/blob/main/CHANGELOG.md) 
 ### Agent sessions are in the CAS
 
 piloop keeps each agent's session, the harness's own file, in the CAS: `agent_sessions.session_file`. Print it with
-`piloop cas get <session_file>` ([Sessions](/concepts/research-memory#sessions)).
+`piloop cas get <session_file>` ([Sessions](/concepts/roles#sessions)).
 
 - `usage->>'$.source'`, the file's path on the machine that ran the agent, is gone. The upgrade puts each file that is
   still on this machine into the CAS, and drops every path.
@@ -234,7 +234,7 @@ triggers = [{ provider = "low_water" }, { provider = "seed" }, { provider = "sta
 
 ### Memory documents
 
-`[memory] documents` is `documents` in [`[plugins.memory]`](/concepts/research-memory#documents); the old key works
+`[memory] documents` is `documents` in [`[plugins.memory]`](/concepts/memory#documents); the old key works
 until 0.4.0, with a warning.
 
 ### The journal is per campaign
@@ -323,7 +323,7 @@ it at the upgrade, and an agent that worked in the campaign checkout when you up
 ### Entire
 
 piloop no longer attaches agent sessions to Entire. The harness's own file holds each session: find it by
-`agent_sessions.session_id` ([Sessions](/concepts/research-memory#sessions)).
+`agent_sessions.session_id` ([Sessions](/concepts/roles#sessions)).
 
 - `agent_sessions.checkpoint_id` and the `checkpoint` column of the kept lineage are gone.
 - Delete `entire_agent` from each `[harness.<name>]` table. A `piloop.toml` that still has it fails at `piloop init`,
@@ -531,7 +531,7 @@ remote = { provider = "s3", url = "s3://my-bucket/piloop" }   # was [storage.bac
 
 - A storage backend that a package adds (the `piloop.stores` entry point group) no longer loads. Make it a CAS
   provider: a `CasProvider` in the `piloop.cas` group, whose `open(home)` returns a `Cas`. See
-  [CAS providers](/architecture/extension-points#cas-providers).
+  [CAS providers](/plugins/infrastructure#cas-providers).
 - The example `dir` backend is gone. Write `remote = { provider = "disk", path = "<its root>" }` instead.
 - `min_free_gb` measures the disk of `PILOOP_HOME`, not the disk of the store.
 

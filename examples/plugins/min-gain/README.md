@@ -1,6 +1,6 @@
 # piloop-min-gain
 
-A plugin that adds a [verdict rule](https://piloop.autoresearch.inc/architecture/extension-points#verdict-rules).
+A plugin that adds a [verdict rule](https://piloop.autoresearch.inc/plugins/rules#verdict-rules).
 After piloop measures a candidate, it asks the verdict rule whether to keep the candidate. This rule calls the
 built-in rule, `bootstrap`, and changes one thing: a keep whose gain is below `min_gain` becomes `interesting`. The
 gain is the difference between the candidate and its bar, the candidate that it must beat.

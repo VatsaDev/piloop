@@ -1,0 +1,102 @@
+---
+title: Tables, commands, routes and consumers
+sidebarTitle: Tables, commands and routes
+description: What a plugin adds to piloop besides its providers, and where it declares each.
+---
+
+import ContractContribution from '/snippets/generated/contract-contribution.mdx';
+
+A plugin can add tables, commands, routes and consumers, as piloop's own plugins do. The built-in memory provider,
+`local`, adds three tables, the `piloop journal` command and the route `POST /v1/campaigns/{campaign}/journal`:
+
+```toml
+[project.entry-points."piloop.memory"]
+local = "piloop.plugins.memory.local:LocalMemory"
+
+[project.entry-points."piloop.schemas"]
+"memory/local" = "piloop.plugins.memory.local.tables:SCHEMA"
+
+[project.entry-points."piloop.commands"]
+journal = "piloop.plugins.memory.local.cli:journal"
+```
+
+Its route comes from its `contribution()`:
+
+```python
+class LocalMemory(MemoryProvider):
+    def contribution(self) -> Contribution:
+        return Contribution(router=router)  # a FastAPI APIRouter with POST /v1/campaigns/{campaign}/journal
+```
+
+piloop reads the entry points before it opens any provider, and checks them as it checks the providers: two entries of
+one name in a group stop the daemon.
+
+## Tables and migrations
+
+A plugin keeps its tables in the home's database. It declares them in a `Schema`, with an entry point in
+`piloop.schemas`. The entry point's name is the schema's: the provider that has the tables, such as `memory/local`, or
+a name of the plugin's own. Every table that no plugin declares is core's.
+
+```toml
+[project.entry-points."piloop.schemas"]
+lattice = "piloop_lattice.tables:SCHEMA"
+```
+
+```python
+from pathlib import Path
+
+from sqlalchemy import ForeignKey
+from sqlalchemy.orm import Mapped, mapped_column
+
+from piloop.capabilities import Base, Schema
+
+
+class Rung(Base):
+    __tablename__ = 'rungs'
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    campaign_id: Mapped[int] = mapped_column(ForeignKey('campaigns.id', ondelete='CASCADE'))
+
+
+SCHEMA = Schema(tables=(Rung,), versions=Path(__file__).parent / 'migrations')
+```
+
+- `migrations/` is the plugin's own chain of Alembic revisions, `0001` first. piloop migrates core's chain first, then
+  each plugin's, in one transaction. The `migrations` table has one row for core and for each plugin.
+- A table references the plugin's own tables, or the `id` of a core table. piloop refuses any other reference, or a
+  table that another schema has, before the daemon starts.
+- `Schema.triggers` holds the triggers on the plugin's tables. Every connection creates the TEMP ones, and the
+  plugin's revisions create the others.
+- When you uninstall the plugin, its tables, rows and revision stay, and piloop does not read them. `piloop doctor`
+  names the package. When you install it again, it migrates from its own revision.
+
+[CONTRIBUTING.md](https://github.com/hiloopai/piloop/blob/main/CONTRIBUTING.md#change-the-database-schema) shows how to
+write a revision.
+
+## Commands
+
+An entry point in `piloop.commands` adds a command, or a group of them. Its name is the command's, and it names a
+function or a cyclopts `App`:
+
+```toml
+[project.entry-points."piloop.commands"]
+lattice = "piloop_lattice.cli:app"
+```
+
+`piloop` imports it only when the command runs, or when a help lists it. A name that a command of piloop has is
+refused.
+
+## Routes and consumers
+
+A provider that implements `contribution()` adds, while the daemon runs:
+
+- **Consumers**: jobs of the daemon's loop. A consumer runs in the next turn after a new event of a kind that it wakes
+  on, and when the time that it returned comes. It reads the tables, not a queue of its own.
+- **A router**: routes of the daemon's server, next to the API's. A [network](/plugins/infrastructure#networks) says
+  who may call them.
+
+The daemon asks each provider that it opens, such as the executor and the archive, once. A provider of a capability
+that a campaign selects, such as memory, contributes once for every installed provider, built with its defaults.
+A consumer name or a route that is taken already stops the daemon.
+
+<ContractContribution />
