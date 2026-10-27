@@ -7,7 +7,7 @@ from piloop.plugins.trigger.contract import TriggerEntry
 
 
 class WatchdogRole(SweepRole):
-    """``[roles.watchdog]``: the watchdog investigates the anomalies that the daemon detects and reviews progress."""
+    """``[plugins.role.watchdog]``: the watchdog investigates the anomalies that the daemon detects and reviews progress."""
 
     PROMPT = files(__package__) / 'prompts' / 'watchdog.md'
     INCIDENT_PROMPT = files(__package__) / 'prompts' / 'watchdog_incident.md'

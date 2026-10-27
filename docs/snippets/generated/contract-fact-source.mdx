@@ -2,7 +2,7 @@
 
 | Member | What it is |
 |---|---|
-| `FactSource.ON_BY_DEFAULT: ClassVar[bool]` | Whether a campaign that does not list its `[[facts]]` has this source, with its defaults. |
+| `FactSource.DEFAULT: ClassVar[bool]` | Whether a campaign that does not list its `[[facts]]` has this source, with its defaults. Only the class that sets it is a default: a subclass is not (`is_default`). |
 | `FactSource.CHANGES: ClassVar[frozenset[type[EventModel]]]` | The events that `record` writes, which wake the campaigns' pass: its stop rule reads the new values. A source whose facts change only with the campaign's state (its ideas, runs, agents, status and config) names none. |
 | `FactSource.supplies() -> tuple[Fact[FactValue], ...]` | The facts that it supplies. Two sources of a campaign never supply the same one. |
 | `FactSource.gather(s: Session, campaign: Campaign, wanted: frozenset[Fact[FactValue]], now: datetime) -> dict[Fact[FactValue], FactValue]` | The values of the facts in `wanted` that it supplies, as of `now`. It reads with `s`, never writes. |

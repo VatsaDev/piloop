@@ -30,7 +30,7 @@ def test_attach_and_status_read_the_output_through_a_runtime_that_a_package_adds
     db: Database, campaign: Campaign, shown: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with db.session() as s:
-        s.get_one(Campaign, campaign.id).config = reconfigured(campaign.config, runtime='shown')
+        s.get_one(Campaign, campaign.id).config = reconfigured(campaign.config, plugins={'runtime': {'use': 'shown'}})
         agent_session = AgentSession(
             kind=WATCHDOG,
             campaign_id=campaign.id,

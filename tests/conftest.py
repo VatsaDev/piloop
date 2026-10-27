@@ -11,7 +11,7 @@ import threading
 import time
 import tomllib
 import weakref
-from collections.abc import Callable, Generator, Iterator
+from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import contextmanager
 from datetime import datetime
 from importlib.metadata import EntryPoint, entry_points
@@ -106,24 +106,25 @@ EVALUATE = [
 TOML = """
 name = "demo"
 evaluate = {evaluate}
-runtime = "subprocess"
-harnesses = ["script"]
 evaluate_timeout = 30
 link = ["data"]
 
-[model]
-script = "test-model"
+[plugins.runtime]
+use = "subprocess"
 
-[roles.implementer]
+[plugins.harness]
+use = ["script"]
+
+[plugins.role.implementer]
 timeout = {implementer_timeout}
 max_concurrent = {max_implementers}
 
-[roles.watchdog]
+[plugins.role.watchdog]
 harnesses = ["script"]
 model = {{ script = "watchdog-model" }}
 timeout = {sweep_timeout}
 
-[roles.research]
+[plugins.role.research]
 timeout = {sweep_timeout}
 max_ideas = 0
 max_concurrent = 1
@@ -137,7 +138,8 @@ role = "primary"
 name = "size"
 direction = "lower"
 
-[harness.script]
+[plugins.harness.script]
+model = "test-model"
 executable = "{script}"
 headless = ["{{prompt}}"]
 """
@@ -370,15 +372,29 @@ def store_config(db: Database, campaign_id: CampaignId, raw: dict[str, object]) 
 
 
 def reconfigured(cfg: CampaignConfig, **keys: object) -> CampaignConfig:
-    """Return ``cfg`` with ``keys`` in place of its top-level keys of the same name, validated again."""
-    return CampaignConfig.model_validate(cfg.model_dump(mode='json') | keys)
+    """Return ``cfg`` with ``keys`` in place of its top-level keys of the same name, validated again.
+
+    ``plugins`` merges into the tables of ``cfg``, key by key, as ``load_campaign_config`` merges an override.
+    """
+    dumped = cfg.model_dump(mode='json')
+    plugins = keys.pop('plugins', {})
+    assert isinstance(plugins, Mapping), 'plugins is a table'
+    return CampaignConfig.model_validate(dumped | {'plugins': deep_merged(dumped['plugins'], plugins)} | keys)
+
+
+def deep_merged(base: object, over: Mapping[str, object]) -> dict[str, object]:
+    """``over`` on top of ``base``, table by table: a table merges into the table of the same key."""
+    out = dict(base) if isinstance(base, dict) else {}
+    for key, value in over.items():
+        out[key] = deep_merged(out.get(key), value) if isinstance(value, Mapping) else value
+    return out
 
 
 def bare_config(name: str) -> CampaignConfig:
     """Return the smallest valid config: for a campaign row that a test needs, with no repo behind it."""
     metric = {'name': 'score', 'direction': 'higher', 'role': 'primary'}
     return CampaignConfig.model_validate(
-        {'name': name, 'evaluate': ['true'], 'metrics': [metric], 'model': {'pi': 'm'}}
+        {'name': name, 'evaluate': ['true'], 'metrics': [metric], 'plugins': {'harness': {'pi': {'model': 'm'}}}}
     )
 
 

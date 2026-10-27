@@ -40,7 +40,7 @@ from piloop.otel import Tracer
 from piloop.plugins.cas.contract import BlobAddress, Cas
 from piloop.plugins.contribution import Contributes
 from piloop.plugins.harness.contract import HARNESSES, Harness
-from piloop.plugins.host import Capability, Choice, Parameters, Scope, Slot
+from piloop.plugins.host import Capability, One, Parameters, Scope, Slot
 from piloop.plugins.network.contract import Network
 from piloop.plugins.runtime.contract import AgentExit, AgentStart
 from piloop.plugins.secrets.contract import SecretsProvider, values
@@ -603,6 +603,6 @@ class ExecutorConfig(Parameters, ABC):
         """Make the executor. The daemon calls it once, when it starts."""
 
 
-EXECUTORS = Capability('executor', ExecutorConfig, choice=Choice(Scope.HOME, default='workers'))
+EXECUTORS = Capability('executor', ExecutorConfig, table=One(Scope.HOME, default='workers'))
 """Every executor by name. ``workers``, built in and the default, runs every job on a lease
 (``piloop.plugins.executor.kit.leases``)."""

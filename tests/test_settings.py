@@ -118,14 +118,14 @@ def test_the_storage_backend_of_config_toml_is_the_remote_of_a_cached_cas(
         Settings()
 
 
-def test_a_runtimes_value_that_is_no_table_of_tables_is_refused(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_a_runtime_value_that_is_no_table_of_tables_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv('PILOOP_HOME', str(tmp_path))
-    for text in ('runtimes = 3\n', '[runtimes]\nnice = 3\n'):
-        (tmp_path / 'config.toml').write_text(text)
-        with pytest.raises(ValidationError, match='runtimes'):
-            Settings()
+    (tmp_path / 'config.toml').write_text('[plugins]\nruntime = 3\n')
+    with pytest.raises(ValidationError, match='plugins.runtime'):
+        Settings()
+    (tmp_path / 'config.toml').write_text('[plugins.runtime]\nnice = 3\n')
+    with pytest.raises(ValidationError, match=r'runtime\.nice\n  Value error, a runtime is a table'):
+        _ = Settings().providers
 
 
 def test_the_actor_is_read_from_its_signature(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

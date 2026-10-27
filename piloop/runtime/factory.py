@@ -1,35 +1,35 @@
 """The runtimes of this machine, and the runtime of a launched agent session row."""
 
-from typing import Annotated, Protocol
-
-from pydantic import ConfigDict, TypeAdapter
+from typing import Protocol
 
 from piloop.db.models import AgentSession
+from piloop.plugins.host import MissingProvider
 from piloop.plugins.runtime.contract import RUNTIMES, Handle, Runtime, RuntimeConfig
 from piloop.settings import Settings, settings
 
-RUNTIME_TABLES: TypeAdapter[dict[str, RuntimeConfig]] = TypeAdapter(
-    Annotated[dict[str, RuntimeConfig], RUNTIMES.tables()], config=ConfigDict(title='[runtimes]')
-)
-
 
 def runtimes(cfg: Settings = settings) -> dict[str, RuntimeConfig]:
-    """Every runtime, with its settings from ``[runtimes.<name>]`` of ``config.toml``.
+    """Every runtime of this machine, by name.
+
+    They are the tables of ``[plugins.runtime.<name>]`` in ``config.toml``, and each runtime that needs no settings.
 
     Raises:
         ValidationError: A table names no runtime, or settings that its runtime refuses.
     """
-    return RUNTIME_TABLES.validate_python(cfg.runtimes)
+    return RUNTIMES.instances(cfg.providers)
 
 
 def make_runtime(name: str, cfg: Settings = settings) -> Runtime:
     """Open the runtime called ``name``, with its settings in ``cfg``.
 
     Raises:
-        MissingProvider: No runtime has that name.
+        MissingProvider: This machine has no runtime of that name.
+        ValidationError: ``config.toml`` does not validate.
     """
-    RUNTIMES.get(name)
-    return runtimes(cfg)[name].open()
+    found = runtimes(cfg)
+    if name not in found:
+        raise MissingProvider(f'no runtime {name!r} on this machine; there are: {", ".join(found)}')
+    return found[name].open(name)
 
 
 class RuntimeFactory(Protocol):

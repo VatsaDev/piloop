@@ -14,10 +14,10 @@ from piloop.usage.totals import campaign_tokens
 class CampaignFacts(FactSource):
     """``campaign``: the hours that the campaign ran and the tokens that its agents spent.
 
-    It is on by default (``ON_BY_DEFAULT``). A campaign that lists its ``[[facts]]`` lists it too, to keep these facts.
+    It is on by default (``DEFAULT``). A campaign that lists its ``[[facts]]`` lists it too, to keep these facts.
     """
 
-    ON_BY_DEFAULT = True
+    DEFAULT = True
 
     def supplies(self) -> tuple[Fact[FactValue], ...]:
         """``CAMPAIGN``."""

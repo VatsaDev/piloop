@@ -412,7 +412,7 @@ version come from these subjects, so write the title for a user:
 fix: a stopped campaign is measured again on request
 feat(watch): filter the agents panel
 feat!: remove the herdr_ keys of config.toml
-refactor: the [roles.research.scout] table is deprecated, use [roles.scout]
+refactor: the [plugins.role.research.scout] table is deprecated, use [plugins.role.scout]
 ```
 
 The form is `type(scope): description`. The scope is optional. The description is one sentence that a user

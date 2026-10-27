@@ -28,7 +28,7 @@ RungName = NewType('RungName', str)
 ROLE_NAME = r'^[a-z][a-z0-9_-]{0,19}$'
 """A role's name, which is also its config table, CLI name, signature and pane prefix."""
 RoleName = NewType('RoleName', str)
-"""A role's name: a role of a package, piloop's included, or a ``[roles.<name>]`` table. It matches ``ROLE_NAME``."""
+"""A role's name: a role of a package, piloop's included, or a ``[plugins.role.<name>]`` table. It matches ``ROLE_NAME``."""
 IMPLEMENTER: Final = RoleName('implementer')
 """The role that run slots fill last, and the role of a run whose row predates its role (``runs.role``)."""
 

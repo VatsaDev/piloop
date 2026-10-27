@@ -29,7 +29,6 @@ LEAVES: dict[str, frozenset[str] | None] = {
     'ids.py': None,
     'db/migrations/versions/*.py': None,
     'plugins/campaign_type/*/migrations/*.py': None,
-    'config.py': frozenset({'subprocess', 'orchestrator'}),
     'actor.py': frozenset({'orchestrator'}),
     'daemon/api.py': frozenset({'news'}),
     'plugins/role/research.py': frozenset({'claude', 'codex', 'low_water', 'seed', 'stalled'}),
@@ -37,7 +36,7 @@ LEAVES: dict[str, frozenset[str] | None] = {
     'plugins/role/scout.py': frozenset({'cron'}),
     'deprecated.py': None,
     'cli/idea.py': frozenset({'seed'}),
-    'plugins/role/contract.py': frozenset({'seed', 'sql'}),
+    'plugins/role/contract.py': frozenset({'seed', 'sql', 'orchestrator'}),
     'plugins/role/orchestrator.py': frozenset({'seed', 'sql'}),
     'plugins/archive/local/archiver.py': frozenset({'research'}),
 }
@@ -46,7 +45,6 @@ LEAVES: dict[str, frozenset[str] | None] = {
 - The harnesses (``plugins/harness/``), the triggers (``plugins/trigger/``) and ``ids.py`` (the built-in roles) define
   the entries. The migrations, core's and each campaign type's, are history.
 - ``db/models.py``: the states ``seed`` and ``stopped``, and ``measurements.stopped``, which share a name with a trigger.
-- ``config.py``: the default of ``runtime``, and ``orchestrator`` among the names that sign writes.
 - ``actor.py``: the outside orchestrator, ``orchestrator``, one party with the agents of the role.
 - ``daemon/api.py``: ``news``, the operation id of the route that ``piloop inbox wait`` reads.
 - ``plugins/role/research.py``: the default ``model`` of research.
@@ -54,7 +52,8 @@ LEAVES: dict[str, frozenset[str] | None] = {
   would load its provider, and with it the database, when the config models load.
 - ``deprecated.py``: the bridges rewrite the keys of earlier releases, which named built-in roles and triggers.
 - ``cli/idea.py``, ``plugins/role/contract.py`` and ``plugins/role/orchestrator.py``: the commands ``piloop idea seed``
-  and ``piloop sql``.
+  and ``piloop sql``, and ``orchestrator`` among the names that a new role may not take: the outside orchestrator signs
+  with it.
 - ``plugins/archive/local/archiver.py``: ``research/`` is a folder of the shared workspace, not the role.
 """
 

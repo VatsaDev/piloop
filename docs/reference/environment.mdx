@@ -15,7 +15,7 @@ These are the settings of the daemon and the CLI. The table comes from piloop's 
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `PILOOP_CAMPAIGN_<KEY>` | none | Overrides a key of `piloop.toml` when `piloop init` reads the file. `piloop init` stores the result, and the daemon uses it until the next `piloop init`. Set on `piloop serve`, it has no effect. Join nested keys with `__`, for example `PILOOP_CAMPAIGN_RUNTIME=subprocess`. `piloop doctor` reads it too. |
+| `PILOOP_CAMPAIGN_<KEY>` | none | Overrides a key of `piloop.toml` when `piloop init` reads the file. `piloop init` stores the result, and the daemon uses it until the next `piloop init`. Set on `piloop serve`, it has no effect. Join nested keys with `__`, for example `PILOOP_CAMPAIGN_PLUGINS__RUNTIME__USE=subprocess`. `piloop doctor` reads it too. |
 | `CLAUDE_CONFIG_DIR` | `~/.claude` | Claude Code's configuration directory. `piloop install-skills` writes Claude Code's skills to its `skills/` directory, unless `PILOOP_CLAUDE_SKILLS_DIR` names another one. It is the `home` of the `claude` harness (`{env:CLAUDE_CONFIG_DIR:~/.claude}`), where piloop reads its session files. |
 | `CODEX_HOME` | `~/.codex` | Codex's home directory. It is the `home` of the `codex` harness (`{env:CODEX_HOME:~/.codex}`). |
 | `PI_CODING_AGENT_DIR` | `~/.pi/agent` | pi's agent directory. It is the `home` of the `pi` harness (`{env:PI_CODING_AGENT_DIR:~/.pi/agent}`). |

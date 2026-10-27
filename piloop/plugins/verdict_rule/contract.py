@@ -23,7 +23,7 @@ from enum import StrEnum
 from typing import assert_never
 
 from piloop.ids import CandidateId, RungName
-from piloop.plugins.host import Capability, Choice, Parameters, Scope, Tier
+from piloop.plugins.host import Capability, One, Parameters, Scope, Tier
 from piloop.plugins.metric import Direction, number
 
 
@@ -249,8 +249,6 @@ class VerdictRule(Parameters, ABC):
         return Rebase()
 
 
-VERDICT_RULES = Capability(
-    'verdict_rule', VerdictRule, tier=Tier.PURE, choice=Choice(Scope.CAMPAIGN, default='bootstrap')
-)
+VERDICT_RULES = Capability('verdict_rule', VerdictRule, tier=Tier.PURE, table=One(Scope.CAMPAIGN, default='bootstrap'))
 """The verdict rule capability: every verdict rule by name. The built-in rule is ``bootstrap``
 (``piloop.plugins.verdict_rule.bootstrap``)."""

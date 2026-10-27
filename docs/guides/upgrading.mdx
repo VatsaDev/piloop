@@ -251,7 +251,7 @@ The stall mark is `every` of the `stalled` trigger. When it is not set, it is tw
 `plateau` set, which made it half of `plateau` before. To keep that mark, set it:
 
 ```toml
-[roles.research]
+[plugins.role.research]
 triggers = [{ provider = "low_water" }, { provider = "seed" }, { provider = "stalled", every = 15 }]
 ```
 
@@ -300,6 +300,43 @@ from its session files under its `home`. A package adds one with an entry point 
 
 The old keys and the old option still work until 0.4.0, with a warning. The upgrade rewrites the stored configs the
 same way. Upgrade `piloop worker` on every machine with the server: the server refuses a worker of the older protocol.
+
+### Plugin tables
+
+A plugin's keys are under `[plugins]`. A capability of one instance has `[plugins.<capability>]`, as before, and one of
+several has `[plugins.<capability>.<name>]`. The harnesses, the roles and the runtimes are of several:
+
+| Before 0.4.0 | Since 0.4.0 |
+|---|---|
+| `[harness.<name>]` | `[plugins.harness.<name>]` |
+| `model = { claude = "…" }` | `model = "…"` in `[plugins.harness.claude]` |
+| `max_concurrent = { claude = 2 }` | `max_concurrent = 2` in `[plugins.harness.claude]` |
+| `[roles.<name>]` | `[plugins.role.<name>]` |
+| `PILOOP_CAMPAIGN_ROLES__<NAME>__<KEY>` | `PILOOP_CAMPAIGN_PLUGINS__ROLE__<NAME>__<KEY>` |
+| `harnesses = ["claude", "codex"]` | `use = ["claude", "codex"]` in `[plugins.harness]` |
+| `runtime = "nice"` | `use = "nice"` in `[plugins.runtime]` |
+| `[runtimes.<name>]` in `config.toml` | `[plugins.runtime.<name>]` |
+
+```toml
+[plugins.harness]
+use = ["claude", "codex"]
+
+[plugins.harness.claude]
+model = "claude-opus-5-5"
+max_concurrent = 2
+
+[plugins.harness.codex]
+model = "gpt-6.1-sol"
+
+[plugins.role.implementer]
+max_concurrent = 4
+```
+
+A capability's own settings are in its table, next to its instances: `use` names the instances that the campaign uses.
+A role's `harnesses`, `runtime` and `model = { <harness> = "…" }` keep their place: they name instances. The old keys
+still work until 0.5.0, with a warning, and the upgrade rewrites the stored configs the same way. A runtime's `open`
+takes the name of its instance. Upgrade `piloop worker` on every machine with the server: the server refuses a worker
+of the older protocol.
 
 ### Archivings of subjects
 

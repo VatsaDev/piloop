@@ -289,7 +289,7 @@ class Proposer:
 
     actor: SignedAgent
     harness: str | None
-    """Its ``[harness.<name>]``. None when its row is gone."""
+    """Its ``[plugins.harness.<name>]``. None when its row is gone."""
     executable: str | None
     """Its harness's ``executable``. None when its row is gone, or ``piloop.toml`` no longer names the harness."""
     session_id: str | None
@@ -304,7 +304,7 @@ class Identified(EventModel):
     session_id: str
     """The harness's own session id."""
     harness: str
-    """The ``[harness.<name>]`` that runs the agent."""
+    """The ``[plugins.harness.<name>]`` that runs the agent."""
     executable: str | None
     """The harness's ``executable``. None when ``piloop.toml`` no longer names the harness."""
     role: RoleName

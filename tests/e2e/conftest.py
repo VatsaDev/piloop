@@ -177,7 +177,12 @@ def make_campaign(request: pytest.FixtureRequest, piloop_install: Install, e2e_m
         shutil.copytree(TEMPLATES / template, repo, ignore=shutil.ignore_patterns('data', '.venv', '__pycache__'))
         toml = merged(
             merged(tomllib.loads((repo / 'piloop.toml').read_text()), config or {}),
-            {'harnesses': [harness], 'model': {harness: model}, 'roles': {'research': {'model': {harness: model}}}},
+            {
+                'plugins': {
+                    'harness': {'use': [harness], harness: {'model': model}},
+                    'role': {'research': {'model': {harness: model}}},
+                },
+            },
         )
         (repo / 'piloop.toml').write_text(tomli_w.dumps(toml))
         home.mkdir()

@@ -25,7 +25,7 @@ from pydantic import BaseModel, ConfigDict, SecretStr
 from piloop import deprecated
 from piloop.ids import CandidateId, Revision, RunId
 from piloop.plugins.cas.contract import BlobAddress, Cas
-from piloop.plugins.host import Capability, Check, Choice, Parameters, Scope
+from piloop.plugins.host import Capability, Check, One, Parameters, Scope
 
 
 @dataclass(frozen=True)
@@ -327,5 +327,5 @@ def prompted(text: str, vcs: Vcs) -> str:
     return PART.sub(part, text)
 
 
-VCS = Capability('vcs', Vcs, choice=Choice(Scope.CAMPAIGN, default='git'), group='piloop.vcs', noun='vcs provider')
+VCS = Capability('vcs', Vcs, table=One(Scope.CAMPAIGN, default='git'), group='piloop.vcs', noun='vcs provider')
 """Every vcs provider by name. ``git``, built in and the default, keeps versions as commits of a git repository."""

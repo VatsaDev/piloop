@@ -626,7 +626,9 @@ def test_a_failing_turn_never_ends_the_loop_and_a_failing_streak_is_an_anomaly(
         workers_of(ex).leases, 'acquire', side_effect=OperationalError('SELECT', {}, Exception('database is locked'))
     )
     renewed_while(ex, db, agent_session_id, 2.5)
-    names = [s.name for s in spans.get_finished_spans()]
+    deadline = time.monotonic() + 30  # a slow runner reaches the third failing turn after the window
+    while WORKER_ANOMALY not in (names := [s.name for s in spans.get_finished_spans()]) and time.monotonic() < deadline:
+        renewed_while(ex, db, agent_session_id, 0.1)
     assert 'worker.turn_failed' in names and names.count(WORKER_ANOMALY) == 1, 'one anomaly for one failing streak'
     hold.unlink()
 

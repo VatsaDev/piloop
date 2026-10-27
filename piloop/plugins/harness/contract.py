@@ -1,4 +1,4 @@
-"""The harnesses: the coding-agent CLIs that piloop launches (``[harness.<name>]`` in ``piloop.toml``).
+"""The harnesses: the coding-agent CLIs that piloop launches (``[plugins.harness.<name>]`` in ``piloop.toml``).
 
 A harness is a provider of ``HARNESSES``. Its fields are the keys of its table: the program, the argv of a headless
 run and of a resumed one, its home, its environment. A provider gives them their defaults, and its methods hold all
@@ -6,9 +6,9 @@ that piloop knows about its CLI: how it takes the MCP servers of a role (``mcp``
 how to read their tokens (``usage``), what its hook prints for a message (``messages``) and where it reads user skills
 (``skills_dir``). The built-in providers are ``pi``, ``claude`` and ``codex``.
 
-A campaign has a table for every provider, by its name, over the provider's defaults. A table with another name is a
+A campaign has an instance of every provider, by its name, over the provider's defaults. A table with another name is a
 new harness: with ``provider = "<name>"`` it is that provider over its defaults, else a ``Custom`` harness, which runs
-its argv and does nothing else. The rotation (``harnesses``) defaults to the providers that are ``DEFAULT``.
+its argv and does nothing else. The rotation (``[plugins.harness] use``) defaults to the providers that are ``DEFAULT``.
 """
 
 from collections.abc import Mapping
@@ -16,11 +16,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, ClassVar, Protocol, Self
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from piloop import deprecated
 from piloop.mcp import EnvName, McpServer
-from piloop.plugins.host import Capability, Parameters, Tables
+from piloop.plugins.host import Capability, Many, Parameters, Pick, Scope, Use
 from piloop.settings import Settings
 from piloop.usage import Usage
 
@@ -132,7 +132,7 @@ class UsageReader(Protocol):
 
 
 class Harness(Parameters):
-    """``[harness.<name>]``: how to launch one coding agent.
+    """``[plugins.harness.<name>]``: how to launch one coding agent, with which model, and how many at once.
 
     piloop substitutes these placeholders in the argument lists: ``{model}``, ``{effort}`` (the role's ``effort``),
     ``{session_id}``, ``{cwd}`` (the agent's working directory), ``{log_dir}`` (the directory of the agent's brief and
@@ -147,8 +147,17 @@ class Harness(Parameters):
     """
 
     DEFAULT: ClassVar[bool] = False
-    """Whether a campaign that does not set ``harnesses`` rotates through this one."""
+    """Whether a campaign that does not set ``[plugins.harness] use`` rotates through this one. Only the class that sets it is a
+    default: a subclass is not (``is_default``)."""
 
+    model: str | None = None
+    """The model id, which fills ``{model}`` in the argv, for example ``claude-opus-5-5``. A role overrides it
+    (``[plugins.role.<name>] model``). A harness in a rotation needs one of the two."""
+    max_concurrent: int | None = Field(default=None, ge=1)
+    """The maximum number of agents of this harness, across all roles of the campaign, that are started or queued to
+    start. Example: 2 when the provider of its model limits the request rate. When it is the turn of a harness at its
+    limit, the slot goes to the next harness of the rotation. An idea or request that pins this harness waits. When
+    unset, only the limits of the roles apply."""
     executable: str
     """The program to run."""
     headless: list[str]
@@ -251,49 +260,30 @@ class Harness(Parameters):
 
 
 class Custom(Harness):
-    """A ``[harness.<name>]`` table with a new name and no ``provider``: it runs its argv, and does nothing else."""
+    """A ``[plugins.harness.<name>]`` table with a new name and no ``provider``: it runs its argv, and nothing else."""
 
 
-HARNESSES = Capability('harness', Harness, group='piloop.harnesses', noun='harness provider')
+def custom(name: str, table: Mapping[str, object]) -> type[Harness]:
+    """The class of a table with a new name and no ``provider``."""
+    return Custom
+
+
+HARNESSES = Capability(
+    'harness',
+    Harness,
+    table=Many(Scope.CAMPAIGN, new=custom, use=Use(Scope.CAMPAIGN, Pick.ORDERED)),
+    group='piloop.harnesses',
+    noun='harness provider',
+)
 """Every harness provider by name: ``pi``, ``claude``, ``codex``, and those that packages add."""
 
-
-@dataclass(frozen=True)
-class HarnessTables(Tables[Harness]):
-    """``[harness.<name>]``: a table for each provider over its defaults, then each table with a new name.
-
-    A table with a new name and ``provider = "<name>"`` is that provider over its defaults, and keeps ``provider`` when
-    it is dumped. Without ``provider``, it is a ``Custom`` harness.
-    """
-
-    def _validated(self, name: str, table: object) -> Harness:
-        if name not in self.capability.providers() and isinstance(table, Mapping) and 'provider' in table:
-            return self.capability.validated(table)
-        return super()._validated(name, table)
-
-    def _dumped(self, name: str, table: Harness, mode: str) -> dict[str, object]:
-        if name in self.capability.providers() or isinstance(table, Custom):
-            return super()._dumped(name, table, mode)
-        return self.capability.dumped(table, mode)
+HarnessName = Annotated[str, HARNESSES.ref]
+"""The name of a harness of the campaign: ``[plugins.harness.<name>]``, or a provider."""
 
 
 def of_provider(harness: Harness) -> Harness | None:
     """``harness`` when a provider has its class, else None: a ``Custom`` harness, which a job does not carry."""
     return None if isinstance(harness, Custom) else harness
-
-
-def custom(table: Mapping[str, object]) -> type[Harness]:
-    """The class of a table with a new name and no ``provider``."""
-    return Custom
-
-
-Harnesses = Annotated[dict[str, Harness], HarnessTables(HARNESSES, custom)]
-"""The type of ``CampaignConfig.harness``: every provider's table, then the new ones."""
-
-
-def defaults() -> list[str]:
-    """The rotation of a campaign that does not set ``harnesses``: the providers that are ``DEFAULT``."""
-    return [name for name, p in HARNESSES.providers().items() if p.model.DEFAULT]
 
 
 def each_provider() -> dict[str, Harness]:

@@ -36,7 +36,7 @@ class StalledTrigger(Trigger):
         """The stall mark of a campaign with the configuration ``cfg``."""
         if self.every is not None:
             return Mark(self.every, f'every = {self.every} of the stalled trigger')
-        slots = ' + '.join(f'[roles.{name}] max_concurrent' for name in cfg.roles.doing_runs())
+        slots = ' + '.join(f'[plugins.role.{name}] max_concurrent' for name in cfg.roles.doing_runs())
         return Mark(2 * cfg.run_slots, f'two rounds of {slots} = {cfg.run_slots}')
 
     def fire(self, p: Pass) -> Fire | None:

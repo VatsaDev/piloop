@@ -2,4 +2,4 @@
 
 | Runtime | What it is | `piloop prompt` |
 |---|---|---|
-| `subprocess` | Each agent as a background process without a terminal, one process per turn of the agent. | Keeps the message in a queue, which a hook of the harness can take in the turn, or else the next turn takes. When the turn ends with messages queued, piloop runs the harness again with `[harness.<name>] resume`, with the queued messages as the prompt. A harness without `resume` takes no message. Neither does an agent that the daemon re-attached to after `piloop restart`. |
+| `subprocess` | Each agent as a background process without a terminal, one process per turn of the agent. | Keeps the message in a queue, which a hook of the harness can take in the turn, or else the next turn takes. When the turn ends with messages queued, piloop runs the harness again with `[plugins.harness.<name>] resume`, with the queued messages as the prompt. A harness without `resume` takes no message. Neither does an agent that the daemon re-attached to after `piloop restart`. |

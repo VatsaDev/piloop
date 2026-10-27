@@ -5,7 +5,7 @@ the facts that it supplies (``supplies``), and gathers the values of those that 
 stop rule or a section reads the facts of every source of the campaign by name (``piloop.plugins.fact_source.facts``):
 piloop gives no fact a meaning of its own, a cost or a spend among them.
 
-A list that is not set is every installed source that is on by default (``ON_BY_DEFAULT``): ``campaign`` and
+A list that is not set is every installed source that is on by default (``DEFAULT``): ``campaign`` and
 ``optimization``. A source may also read on its own: the daemon calls its ``read`` when it is ``due``, outside
 any transaction, and then its ``record``. ``kit.readings.Readings`` does that for a source of named values, and
 ``command``, which runs a command that reports its values as the evaluate command does, is one.
@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, ClassVar
 
 from piloop.plugins.fact_source.facts import Fact, FactValue
-from piloop.plugins.host import Capability, Parameters
+from piloop.plugins.host import Capability, Parameters, is_default
 
 if TYPE_CHECKING:  # piloop.config imports this module, and the database imports piloop.config
     from sqlalchemy.orm import Session
@@ -33,8 +33,9 @@ class FactReadError(Exception):
 class FactSource(Parameters, ABC):
     """One entry of ``[[facts]]``: ``{ provider = "<source>", <parameter> = <value> }``."""
 
-    ON_BY_DEFAULT: ClassVar[bool] = False
-    """Whether a campaign that does not list its ``[[facts]]`` has this source, with its defaults."""
+    DEFAULT: ClassVar[bool] = False
+    """Whether a campaign that does not list its ``[[facts]]`` has this source, with its defaults. Only the class that
+    sets it is a default: a subclass is not (``is_default``)."""
     CHANGES: ClassVar[frozenset[type[EventModel]]] = frozenset()
     """The events that ``record`` writes, which wake the campaigns' pass: its stop rule reads the new values. A source
     whose facts change only with the campaign's state (its ideas, runs, agents, status and config) names none."""
@@ -80,7 +81,7 @@ FactSourceEntry = Annotated[FactSource, FACT_SOURCES.entry]
 
 def on_by_default() -> list[FactSource]:
     """The sources of a campaign that does not list its ``[[facts]]``: every installed source that is on by default."""
-    return [p.model() for _, p in sorted(FACT_SOURCES.providers().items()) if p.model.ON_BY_DEFAULT]
+    return [p.model() for _, p in sorted(FACT_SOURCES.providers().items()) if is_default(p.model)]
 
 
 def sources(listed: Sequence[FactSource] | None) -> list[FactSource]:

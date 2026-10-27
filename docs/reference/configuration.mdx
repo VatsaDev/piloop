@@ -9,7 +9,7 @@ description: Every key of piloop.toml, with its type and its default.
 copy. The daemon uses that copy, so an edit takes effect only when you run `piloop init`.
 
 To override a key when `piloop init` reads the file, set `PILOOP_CAMPAIGN_<KEY>`. Join nested keys with `__`, for
-example `PILOOP_CAMPAIGN_RUNTIME=subprocess` or `PILOOP_CAMPAIGN_ROLES__IMPLEMENTER__MAX_CONCURRENT=2`. The stored copy keeps the
+example `PILOOP_CAMPAIGN_PLUGINS__RUNTIME__USE=subprocess` or `PILOOP_CAMPAIGN_PLUGINS__ROLE__IMPLEMENTER__MAX_CONCURRENT=2`. The stored copy keeps the
 override until the next `piloop init`. The variable has no effect on `piloop serve`.
 
 A type in the tables links to the section that describes it. A table that you leave out has the defaults of its
@@ -23,21 +23,15 @@ section.
 | `metrics` | list\[[Metric](#metric)\] | required | Every metric that the evaluate command reports, each with its `role`. Each track has one `primary`, so a campaign with one track has exactly one. |
 | `tracks` | dict\[string, [TrackConfig](#trackconfig)\] | `{}` | `[tracks.<name>]`: the share and addendum of each track. Needed only with several primaries. |
 | `evaluate` | list\[string\] | required | The command (argv) that scores a commit. It runs in a clean worktree of the commit and writes one JSON line, `{"metrics": {"<name>": <value>}}`, to `$PILOOP_RESULT_FILE`. |
-| `runtime` | string | `"subprocess"` | Where the agents run: the name of a runtime, which starts, watches, steers and stops them. A package can add a runtime with a `piloop.runtimes` entry point. A role can override it (`[roles.<name>] runtime`). Built in: `subprocess`. |
-| `harnesses` | list\[string\] | `["pi"]` | The enabled harnesses. Runs use them in turn, unless an idea pins one. When unset, the harnesses that are on by default: `pi`. Built in: `claude`, `codex`, `pi`. |
-| `model` | dict\[string, string\] | required | The model id for each harness, for example `{pi = "anthropic/claude-opus-5-5", claude = "claude-opus-5-5", codex = "gpt-6.1-sol"}`. |
-| `harness` | dict\[string, object\] | `{"claude": {}, "codex": {}, "pi": {}}` | `[harness.<name>]`: the table of each harness over its defaults: the built-in harnesses (`pi`, `claude`, `codex`), those that packages add, and new ones. A table with a new name and `provider = "<harness>"` is that harness over its defaults, with another name; without `provider`, it runs its argv and does nothing else. Built in: `claude`, `codex`, `pi`. |
-| `max_concurrent` | dict\[string, integer\] | `{}` | The maximum number of agents of one harness, across all roles of the campaign, that are started or queued to start. Example: `{claude = 2}` when the provider of its model limits the request rate. When it is the turn of a harness at its limit, the slot goes to the next harness of the rotation. An idea or request that pins that harness waits. When unset, only the limits of the roles apply. |
 | `evaluate_timeout` | number | `600` | The number of seconds before the evaluate command is stopped. The evaluation is then a crash. |
 | `ladder` | list\[[Rung](#rung)\] | `[]` | `[[ladder]]`: the rungs that a run's evaluation of its own version climbs before the full panel, cheapest first. The climb stops at the first rung whose `stop` holds. A baseline, a head, a bar, a reference and a remeasure climb every rung and never stop. |
-| `roles` | dict\[string, object\] | `{}` | `[roles.<name>]`: the table of each role over its defaults: the built-in roles (implementer, watchdog, research, scout), the roles that packages add, and the roles that you define. |
 | `link` | list\[string\] | `[]` | Repo-relative paths, ignored by git, that piloop puts into every worktree read-only, for example data or virtual environments. Each job gets them as they are when it is made. |
 | `context` | list\[string\] | `[]` | Repo-relative files or globs (for example `docs/error-analysis-*.md`) that hold the campaign's analysis: error analyses, comparisons with a reference, evaluation reports. The research pack lists each one with its outline, newest first, so that every sweep that reads the pack reads them before it proposes work. |
-| `mcp` | dict\[string, [McpServer](#mcpserver)\] | `{}` | `[mcp.<name>]`: the MCP servers that a role can list in `[roles.<name>] mcp`. |
+| `mcp` | dict\[string, [McpServer](#mcpserver)\] | `{}` | `[mcp.<name>]`: the MCP servers that a role can list in `[plugins.role.<name>] mcp`. |
 | `status` | [StatusConfig](#statusconfig) | `{}` | `[status]`: the sections that `piloop status`, the API and a UI show. |
 | `agents` | [AgentTimings](#agenttimings) | `{}` | `[agents]`: how long the campaign's agents get to wrap up and to leave after their finding. |
 | `facts` | list\[object\] \| null | `null` | `[[facts]]`: where the campaign's facts come from, which its stop rule and its sections read: a list of `{ provider = "<source>", ... }` entries. When unset, every installed source that is on by default: `campaign`, the hours and tokens of any campaign, and `optimization`, its research. A list that adds a source lists those too, to keep their facts. |
-| `plugins` | dict\[string, object\] | `{}` | `[plugins.<capability>]`: the provider of each capability of the campaign, by its name (`provider`), and its parameters, the other keys of the table. A capability without a table, or a table without `provider`, has its default provider. |
+| `plugins` | dict\[string, object\] | `{"harness": {"claude": {}, "codex": {}, "pi": {}, "use": ["pi"]}, "role": {"implementer": {}, "orchestrator": {}, "research": {}, "scout": {}, "watchdog": {}}, "runtime": {"use": "subprocess"}}` | `[plugins]`: the campaign's plugins, a table for each capability (`PluginTables`). |
 
 ## Tolerance
 
@@ -95,40 +89,7 @@ Experimental: campaigns with more than one track.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `share` | number | `1` | The fraction of the `max_concurrent` of each role that does runs that the ideas of this track get. A free slot of a role goes to the track that is furthest below its share and has an idea that can run, and then to the most urgent idea of that track. A track with no idea that can run gives its slot to another track. A share of 0 stops the track: its ideas wait. |
-| `addendum` | string \| null | `null` | A repo-relative file that is appended to the brief of this track's runs, after `[roles.implementer] addendum`. Use it to say how work on this objective is done, for example "profile first" or "keep the output identical". |
-
-## Harness
-
-`[harness.<name>]`: how to launch one coding agent.
-
-piloop substitutes these placeholders in the argument lists: `{model}`, `{effort}` (the role's `effort`),
-`{session_id}`, `{cwd}` (the agent's working directory), `{log_dir}` (the directory of the agent's brief and
-logs) and `{prompt}` (the first prompt, which names the file that holds the brief). An element that is exactly
-`{mcp}` expands to the role's MCP servers, in the harness's own flags. The built-in harnesses run without
-permission prompts: agents run in worktrees that the daemon owns and throws away, and a sandbox that cannot reach
-the repo's `.git` cannot commit.
-
-When `headless` contains `{session_id}`, piloop creates the session id. Otherwise the runtime reads it with
-`session_id_pattern`. When the agent ends, the harness finds its session file by this id and reads the tokens
-the agent spent. Without either, no tokens are recorded.
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `executable` | string | required | The program to run. |
-| `headless` | list\[string\] | required | The arguments for a run without a terminal. Must include `{prompt}`. |
-| `resume` | list\[string\] | `[]` | The arguments that continue the session of a run with a new prompt. When the agent's turn ends with messages queued for it (comments, `piloop prompt`), the runtime runs the harness again with these, `{prompt}` being the messages and `{session_id}` the session's id. Must include both. When empty, the agent takes no message while it runs. |
-| `session_id_pattern` | string \| null | `null` | A regex with one group that finds the session id in the first lines of the process's stdout. Use it in a harness that cannot take its id as an argument (`{session_id}`). For example, Codex `exec --json` prints `{"type":"thread.started","thread_id":"<uuid>"}` first. |
-| `home` | string \| null | `null` | The directory where the agent keeps its config and sessions: a path, which may start with `~` or name a variable as `{env:NAME:default}`. A harness that reads usage finds its session files under it, and the daemon's service unit carries `NAME`. |
-| `session_env` | list\[string\] | `[]` | The variables the agent sets for the processes of its session. piloop clears them for every agent, so an agent started from inside such a session is not its child. |
-| `env` | dict\[string, string \| [SecretRef](#secretref)\] | `{}` | Variables of the agent's environment: a value, or a secret, `{ secret = "NAME" }`. For example a model gateway, `{ ANTHROPIC_BASE_URL = "https://gw.example.com", ANTHROPIC_API_KEY = { secret = "ANTHROPIC_API_KEY" } }`. When unset, the agent uses the login of the machine that runs it. |
-
-## SecretRef
-
-`{ secret = "NAME" }`: the value of the secret `NAME` (`piloop secret set`), in place of a literal.
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `secret` | string | required | The name of the secret. |
+| `addendum` | string \| null | `null` | A repo-relative file that is appended to the brief of this track's runs, after `[plugins.role.implementer] addendum`. Use it to say how work on this objective is done, for example "profile first" or "keep the output identical". |
 
 ## Rung
 
@@ -143,35 +104,6 @@ climb of a run's own version stops when `stop` says so, and piloop ends the eval
 | `name` | string | required | The rung's name, which its line names and which the measurements of it record. |
 | `stop` | dict\[string, [Tolerance](#tolerance)\] | required | When the climb stops at this rung, by metric of `[[metrics]]`. Example: `{ accuracy = { margin = 0.03 }, latency_ms = { fraction = 0.1 } }`. |
 | `evaluate` | list\[string\] \| null | `null` | Optional. A command (argv) of its own, which runs before the evaluate command and reports this rung alone. The rungs that have one come first in `[[ladder]]`. |
-
-## RoleConfig
-
-The keys that every `[roles.<name>]` table accepts. Each role's table below adds keys and sets defaults.
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `prompt` | string \| null | `null` | The file that starts the brief of this role: a path relative to the repo root, or an absolute path. When unset, the role's own prompt (`PROMPT`). A new role needs it. |
-| `runtime` | string \| null | `null` | Where the agents of this role run. When unset, the role uses the campaign's `runtime`. Built in: `subprocess`. |
-| `harnesses` | list\[string\] \| null | `null` | The harness rotation of this role. When unset, the role uses the campaign's `harnesses`. |
-| `model` | dict\[string, string\] \| null | `null` | The model for each harness in this role. It is merged over the campaign's `model`. |
-| `effort` | string | `"high"` | How hard the agents of this role think, as the harness names it, for example `high`. It fills `{effort}` in the harness's argv, and the harness checks it. |
-| `timeout` | number | `600` | The number of seconds one agent may run before it is stopped. |
-| `max_concurrent` | integer | `1` | The maximum number of agents of this role that run at the same time. More requests stay `requested` until a slot is free. |
-| `addendum` | string \| null | `null` | A repo-relative file that is appended to `brief.md` in the briefs of this role only. Use it for instructions that only this role needs, for example how the research agent searches. |
-| `mcp` | list\[string\] | `[]` | The MCP servers that the agents of this role get, by the name of their `[mcp.<name>]` table. Every harness in the role's rotation must be able to take them in the invocation of the role's runtime (`[harness.<name>] mcp`). |
-| `writes` | list\[string\] | `[]` | What the agents of this role may write, as their brief states it. Only `files` is enforced. |
-| `files` | `nothing` \| `seeds` \| `ideas` | `"seeds"` | What the agents of this role may file with `piloop idea`: `nothing`, `seeds` or `ideas`. The CLI refuses the rest. |
-| `sections` | list\[object\] \| null | `null` | What the briefs of this role show after the role's context: a list of `{ provider = "<section>", ... }` entries, in order. When unset, every installed section that a brief of this kind of role shows by default, in their order (`Section.SHOWN_IN`, `Section.ORDER`). Built in: `agents`, `candidates`, `cost`, `evaluations`, `events`, `funnel`, `goal`, `headline`, `history`, `idle_queue`, `inbox`, `incidents`, `lessons`, `pack`, `queue`, `reported`, `runs`, `same_as_parent`, `tools`, `tracks`, `trajectory`. |
-
-## Section
-
-One entry of a list of sections: `{ provider = "<section>", <parameter> = <value> }`.
-
-A section declares where it is shown by default and in what order, so that installing a package adds it there,
-and a list in the configuration replaces those defaults.
-
-| Key | Type | Default | Description |
-|---|---|---|---|
 
 ## McpServer
 
@@ -197,6 +129,16 @@ the header or the server's environment.
 |---|---|---|---|
 | `sections` | list\[object\] \| null | `null` | The sections, in order: a list of `{ provider = "<section>", ... }` entries. When unset, every installed section that status shows by default, in their order (`Section.SHOWN_IN`, `Section.ORDER`): the campaign overview. Built in: `agents`, `candidates`, `cost`, `evaluations`, `events`, `funnel`, `goal`, `headline`, `history`, `idle_queue`, `inbox`, `incidents`, `lessons`, `pack`, `queue`, `reported`, `runs`, `same_as_parent`, `tools`, `tracks`, `trajectory`. |
 
+## Section
+
+One entry of a list of sections: `{ provider = "<section>", <parameter> = <value> }`.
+
+A section declares where it is shown by default and in what order, so that installing a package adds it there,
+and a list in the configuration replaces those defaults.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+
 ## AgentTimings
 
 `[agents]`: how long the campaign's agents get to finish, over the home's `[agents]` in its `config.toml`.
@@ -213,9 +155,125 @@ One entry of `[[facts]]`: `{ provider = "<source>", <parameter> = <value> }`.
 | Key | Type | Default | Description |
 |---|---|---|---|
 
+## `[plugins]`
+
+`[plugins]` of `piloop.toml` holds the plugins of the campaign. A capability that has one instance takes `[plugins.<capability>]`: `provider`, the name of its entry point (the default without it), and the keys of that provider. One that has several takes `[plugins.<capability>.<name>]` for each: its `provider` is the one called `<name>` when the table has none, and each provider that needs no keys is an instance of its own name with its defaults. `[plugins.<capability>]` itself holds the settings of such a capability: `use` names the instances that the campaign uses, and is unset for the providers that are on by default (`DEFAULT`). No instance is called `use`.
+
+### `[plugins.harness] use`
+
+The harness instances that the campaign uses, by name, in order. Unset: `pi`.
+
+### `[plugins.harness.<name>]`
+
+Each harness by name.
+
+Each table takes the keys of [Harness](#harness), and those of its provider.
+
+### `[plugins.memory]`
+
+The memory provider. Without a table: `local`.
+
+With `provider = "local"`:
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `documents` | list\[string\] | `[]` | Repo-relative globs of text documents, for example `["docs/evidence/**/*.md"]`: campaign reports, orchestrator logs, design notes. `piloop init` and the stop of the campaign copy them into the `documents` table, where every agent of every campaign can search them. Never name a document that is derived from validation or test data. |
+
+### `[plugins.role.<name>]`
+
+Each role by name.
+
+Each table takes the keys of [RoleConfig](#roleconfig), and those of its provider.
+
+### `[plugins.runtime] use`
+
+The runtime instance that the campaign uses, by name. Unset: `subprocess`.
+
+### `[plugins.stop_rule]`
+
+The stop rule. Without a table: `limits`.
+
+With `provider = "limits"`:
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `while_held` | `run` \| `skip` \| `wait` | `"run"` | What the closing review does when the campaign stops (`piloop campaign stop`) while the rule holds its launches: `run` it anyway, `skip` it, or `wait` until the hold ends. |
+| `target` | number \| null | `null` | Stop when the primary metric at the head (the latest keep on the trunk) reaches this value, in its direction. Only for a campaign with one track. |
+| `max_runs` | integer \| null | `null` | Stop after this many runs that count, once none is queued, running or being scored. A run counts when it reached the evaluator, and also while it is queued, running or being scored, so piloop never starts more runs than this. A finished run that does not count frees its place, and piloop starts another run in it. |
+| `max_hours` | number \| null | `null` | Stop after this many hours of wall-clock time since the first run of the campaign started. The time that the campaign was paused (`piloop pause`) does not count. An agent's timeout ends at the stop too. |
+| `max_tokens` | integer \| null | `null` | Stop when all the agents of the campaign together spent this many tokens (the `total` of `agent_sessions.usage`), summed over the agents that ended. |
+| `plateau` | integer \| null | `null` | Stop after this many finished runs that reached the evaluator without a new `keep` candidate. The count starts again at each keep, and when the campaign is set `active` after a stop (`piloop init`, or an UPDATE of `campaigns.status`), so a reactivated campaign gets this many runs again. A new evaluator alone does not reset it. |
+| `hold_at` | dict\[string, number\] | `{}` | Hold the campaign while a fact that a source reads, by its name, is at this value or above, and while it is unknown: the daemon launches no agent and starts no evaluation. Work that already runs finishes and is scored. Example: `{ spend = 1000 }`, with a source in `[[facts]]` that reads `spend`. To resume, raise it and run `piloop init`. |
+
+### `[plugins.vcs]`
+
+The vcs provider. Without a table: `git`.
+
+With `provider = "git"`:
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `email` | string | `"piloop@localhost"` | The email of every commit that piloop makes, whatever git's config says: a merge, `piloop init`'s, and the save of what an agent left uncommitted, which its run authors. Their name is `piloop`. A worker can have no git config. |
+
+### `[plugins.verdict_rule]`
+
+The verdict rule. Without a table: `bootstrap`.
+
+With `provider = "bootstrap"`:
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `confidence` | number | `0.95` | The confidence level of the paired bootstrap behind the verdict. For a `keep`, the lower bound of the primary's gain must be above zero at this level. A guardrail's margin is tested on the bound at this level too. |
+
+## Harness
+
+`[plugins.harness.<name>]`: how to launch one coding agent, with which model, and how many at once.
+
+piloop substitutes these placeholders in the argument lists: `{model}`, `{effort}` (the role's `effort`),
+`{session_id}`, `{cwd}` (the agent's working directory), `{log_dir}` (the directory of the agent's brief and
+logs) and `{prompt}` (the first prompt, which names the file that holds the brief). An element that is exactly
+`{mcp}` expands to the role's MCP servers, in the harness's own flags. The built-in harnesses run without
+permission prompts: agents run in worktrees that the daemon owns and throws away, and a sandbox that cannot reach
+the repo's `.git` cannot commit.
+
+When `headless` contains `{session_id}`, piloop creates the session id. Otherwise the runtime reads it with
+`session_id_pattern`. When the agent ends, the harness finds its session file by this id and reads the tokens
+the agent spent. Without either, no tokens are recorded.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `model` | string \| null | `null` | The model id, which fills `{model}` in the argv, for example `claude-opus-5-5`. A role overrides it (`[plugins.role.<name>] model`). A harness in a rotation needs one of the two. |
+| `max_concurrent` | integer \| null | `null` | The maximum number of agents of this harness, across all roles of the campaign, that are started or queued to start. Example: 2 when the provider of its model limits the request rate. When it is the turn of a harness at its limit, the slot goes to the next harness of the rotation. An idea or request that pins this harness waits. When unset, only the limits of the roles apply. |
+| `executable` | string | required | The program to run. |
+| `headless` | list\[string\] | required | The arguments for a run without a terminal. Must include `{prompt}`. |
+| `resume` | list\[string\] | `[]` | The arguments that continue the session of a run with a new prompt. When the agent's turn ends with messages queued for it (comments, `piloop prompt`), the runtime runs the harness again with these, `{prompt}` being the messages and `{session_id}` the session's id. Must include both. When empty, the agent takes no message while it runs. |
+| `session_id_pattern` | string \| null | `null` | A regex with one group that finds the session id in the first lines of the process's stdout. Use it in a harness that cannot take its id as an argument (`{session_id}`). For example, Codex `exec --json` prints `{"type":"thread.started","thread_id":"<uuid>"}` first. |
+| `home` | string \| null | `null` | The directory where the agent keeps its config and sessions: a path, which may start with `~` or name a variable as `{env:NAME:default}`. A harness that reads usage finds its session files under it, and the daemon's service unit carries `NAME`. |
+| `session_env` | list\[string\] | `[]` | The variables the agent sets for the processes of its session. piloop clears them for every agent, so an agent started from inside such a session is not its child. |
+| `env` | dict\[string, string \| [SecretRef](#secretref)\] | `{}` | Variables of the agent's environment: a value, or a secret, `{ secret = "NAME" }`. For example a model gateway, `{ ANTHROPIC_BASE_URL = "https://gw.example.com", ANTHROPIC_API_KEY = { secret = "ANTHROPIC_API_KEY" } }`. When unset, the agent uses the login of the machine that runs it. |
+
+## RoleConfig
+
+The keys that every `[plugins.role.<name>]` table accepts. Each role's table below adds keys and sets defaults.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `prompt` | string \| null | `null` | The file that starts the brief of this role: a path relative to the repo root, or an absolute path. When unset, the role's own prompt (`PROMPT`). A new role needs it. |
+| `runtime` | string \| null | `null` | Where the agents of this role run. When unset, the role uses the campaign's, `[plugins.runtime] use`. Built in: `subprocess`. |
+| `harnesses` | list\[string\] \| null | `null` | The harness rotation of this role. When unset, the role uses the campaign's, `[plugins.harness] use`. |
+| `model` | dict\[string, string\] \| null | `null` | The model for each harness in this role, over the `model` of each `[plugins.harness.<name>]`. |
+| `effort` | string | `"high"` | How hard the agents of this role think, as the harness names it, for example `high`. It fills `{effort}` in the harness's argv, and the harness checks it. |
+| `timeout` | number | `600` | The number of seconds one agent may run before it is stopped. |
+| `max_concurrent` | integer | `1` | The maximum number of agents of this role that run at the same time. More requests stay `requested` until a slot is free. |
+| `addendum` | string \| null | `null` | A repo-relative file that is appended to `brief.md` in the briefs of this role only. Use it for instructions that only this role needs, for example how the research agent searches. |
+| `mcp` | list\[string\] | `[]` | The MCP servers that the agents of this role get, by the name of their `[mcp.<name>]` table. Every harness in the role's rotation must be able to take them in the invocation of the role's runtime (`[plugins.harness.<name>] mcp`). |
+| `writes` | list\[string\] | `[]` | What the agents of this role may write, as their brief states it. Only `files` is enforced. |
+| `files` | `nothing` \| `seeds` \| `ideas` | `"seeds"` | What the agents of this role may file with `piloop idea`: `nothing`, `seeds` or `ideas`. The CLI refuses the rest. |
+| `sections` | list\[object\] \| null | `null` | What the briefs of this role show after the role's context: a list of `{ provider = "<section>", ... }` entries, in order. When unset, every installed section that a brief of this kind of role shows by default, in their order (`Section.SHOWN_IN`, `Section.ORDER`). Built in: `agents`, `candidates`, `cost`, `evaluations`, `events`, `funnel`, `goal`, `headline`, `history`, `idle_queue`, `inbox`, `incidents`, `lessons`, `pack`, `queue`, `reported`, `runs`, `same_as_parent`, `tools`, `tracks`, `trajectory`. |
+
 ## ImplementerRole
 
-`[roles.implementer]`, and every `[roles.<name>]` table with `runs = true`: a role that does runs.
+`[plugins.role.implementer]`, and every `[plugins.role.<name>]` table with `runs = true`: a role that does runs.
 
 The run queue starts its agents. Each agent does one idea in a new checkout at its run's base, and its versions are
 scored and judged when it ends. A new role of this kind takes the implementer's defaults, its prompt included.
@@ -233,7 +291,7 @@ scored and judged when it ends. A new role of this kind takes the implementer's 
 
 ## SweepRole
 
-`[roles.<name>]` of a sweeping role: the watchdog, research, the scout, or a new role that you define.
+`[plugins.role.<name>]` of a sweeping role: the watchdog, research, the scout, or a new role that you define.
 
 A sweep is an agent without a run. Its triggers request it, and nothing is scored when it ends. A table with a new
 name defines a new role, and needs `prompt` and `triggers`.
@@ -250,7 +308,7 @@ name defines a new role, and needs `prompt` and `triggers`.
 
 ## OrchestratorRole
 
-`[roles.orchestrator]`: decides escalations, answers messages, steers the work and records each decision.
+`[plugins.role.orchestrator]`: decides escalations, answers messages, steers the work and records each decision.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
@@ -264,11 +322,11 @@ name defines a new role, and needs `prompt` and `triggers`.
 
 ## ResearchRole
 
-`[roles.research]`: research develops seeds and keeps ideas ready for the implementers.
+`[plugins.role.research]`: research develops seeds and keeps ideas ready for the implementers.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `model` | dict\[string, string\] \| null | `{"claude": "claude-opus-5-5", "codex": "gpt-6.1-sol"}` | The model for each harness in this role, merged over the campaign's `model`. A table that you set replaces this one. |
+| `model` | dict\[string, string\] \| null | `{"claude": "claude-opus-5-5", "codex": "gpt-6.1-sol"}` | The model for each harness in this role, over the harness's `model`. A table that you set replaces this one. |
 | `timeout` | number | `900` | The number of seconds one sweep may run before it is stopped. |
 | `max_concurrent` | integer | `1` | The maximum number of sweeps that run at the same time, each on the next harness of the rotation. The default is 1: sweeps that run at the same time read the same evidence and often duplicate each other, and two of them can race to develop the same seed. |
 | `writes` | list\[string\] | `["seeds via idea develop, or their status to rejected with a note", "ideas via idea add", "comments(finding, escalation) on the campaign", "comments(note) on an idea"]` | What a research sweep may write, as its brief states it. |
@@ -277,7 +335,7 @@ name defines a new role, and needs `prompt` and `triggers`.
 
 ## ScoutRole
 
-`[roles.scout]`: the scout files outside techniques as seeds for the measured losses. It is off by default.
+`[plugins.role.scout]`: the scout files outside techniques as seeds for the measured losses. It is off by default.
 
 Every `interval` seconds, a scout sweep states the open problems of the campaign from the evidence, and searches
 X, GitHub and arXiv for outside techniques that address them. It files at most `seeds` of them as seeds, signed
@@ -296,7 +354,7 @@ Experimental: the scout.
 
 ## WatchdogRole
 
-`[roles.watchdog]`: the watchdog investigates the anomalies that the daemon detects and reviews progress.
+`[plugins.role.watchdog]`: the watchdog investigates the anomalies that the daemon detects and reviews progress.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
@@ -306,7 +364,7 @@ Experimental: the scout.
 
 ## Trigger
 
-One entry of `[roles.<name>] triggers`: `{ provider = "<trigger>", <parameter> = <value> }`.
+One entry of `[plugins.role.<name>] triggers`: `{ provider = "<trigger>", <parameter> = <value> }`.
 
 The daemon checks the entries in the order of the list.
 
@@ -505,17 +563,17 @@ A campaign's `[agents]` in its `piloop.toml` can set `wrap_up_grace` and `findin
 
 ### `[plugins]`
 
-`[plugins.<capability>]` selects the provider of a capability of the home: `provider`, the name of its entry point (the default without it), and the provider's own keys, which the daemon checks before it starts.
+`[plugins]` of `config.toml` holds the plugins of the home, which the daemon checks before it starts. A capability that has one instance takes `[plugins.<capability>]`: `provider`, the name of its entry point (the default without it), and the keys of that provider. One that has several takes `[plugins.<capability>.<name>]` for each: its `provider` is the one called `<name>` when the table has none, and each provider that needs no keys is an instance of its own name with its defaults. `[plugins.<capability>]` itself holds the settings of such a capability: `use` names the instances that the campaign uses, and is unset for the providers that are on by default (`DEFAULT`). No instance is called `use`.
 
 #### `[plugins.archive]`
 
-Selects the archive provider.
+The archive provider. Without a table: `local`.
 
 With `provider = "local"`, the table has no other key.
 
 #### `[plugins.cas]`
 
-Selects the CAS provider.
+The CAS provider. Without a table: `disk`.
 
 With `provider = "cached"`:
 
@@ -558,7 +616,7 @@ With `provider = "s3"`:
 
 #### `[plugins.executor]`
 
-Selects the executor.
+The executor. Without a table: `workers`.
 
 With `provider = "workers"`:
 
@@ -603,7 +661,7 @@ target). `compute` is the provider that starts and stops the workers.
 
 #### `[plugins.network]`
 
-Selects the network.
+The network. Without a table: `https`.
 
 With `provider = "https"`:
 
@@ -645,21 +703,24 @@ A caller whose claims have these values gets `access`.
 | `access` | `read` \| `act` \| `admin` \| `worker` | required | What the caller may do: `read`, `act`, `admin`, or `worker` for the workers' credential. |
 | `caller` | `person` \| `service` | `"person"` | What the caller is: a `person`, who signs as `human:<name>`, or a `service`, such as a service account's key, which signs as `service:<name>`. |
 
+#### `[plugins.runtime.<name>]`
+
+Each runtime by name.
+
+With `provider = "subprocess"`, the table has no other key.
+
 #### `[plugins.secrets]`
 
-Selects the secrets provider.
+The secrets provider. Without a table: `local`.
 
 With `provider = "local"`, the table has no other key.
-
-### `[runtimes.<name>]`
-
-The settings of the runtime `<name>` on this machine: the fields of its provider class. The built-in runtime `subprocess` has none.
 
 ## Deprecated keys
 
 These keys still work. Each one shows a `PiloopDeprecationWarning` that names the file, the key, its replacement and the release that removes it. The changelog lists them too.
 
-- `kind` in an entry of `[roles.<name>] triggers` is `provider`: `{ provider = "cron" }`.
+- The tables of the harnesses and the roles are under `[plugins]`, with the keys of each harness. `[harness.<name>]` is `[plugins.harness.<name>]`. `model = { <name> = "…" }` and `max_concurrent = { <name> = n }` are `model` and `max_concurrent` of `[plugins.harness.<name>]`. `[roles.<name>]` is `[plugins.role.<name>]`. `harnesses` is `[plugins.harness] use`, and `runtime` is `[plugins.runtime] use`. Their `PILOOP_CAMPAIGN_*` variables move with them. A key that the new table sets too keeps its value there.
+- `kind` in an entry of `[plugins.role.<name>] triggers` is `provider`: `{ provider = "cron" }`.
 - `[stop] <key>` is `[plugins.stop_rule] <key>`, a limit of the stop rule. A rule without that key refuses it. A key that `[plugins.stop_rule]` sets too keeps its value there.
 - `[spend] limit` is `[plugins.stop_rule] hold_at = { spend = <value> }`. A value that it sets too wins.
 - `[spend]` is a `command` source of `[[facts]]` that reads `spend`, after `campaign` and `optimization`. Its command prints one number, so it runs in `SPEND_COMMAND`. `notices` are those of `spend`, and `closing_review` is `while_held` of `[plugins.stop_rule]`. A `[[facts]]` that the file lists keeps its sources, and the spend's comes after them.
@@ -667,10 +728,11 @@ These keys still work. Each one shows a `PiloopDeprecationWarning` that names th
 - `PILOOP_CAMPAIGN_STOP__<KEY>` and `PILOOP_CAMPAIGN_CONFIDENCE` set keys of the rules' tables. They are `PILOOP_CAMPAIGN_PLUGINS__STOP_RULE__<KEY>` and `PILOOP_CAMPAIGN_PLUGINS__VERDICT_RULE__CONFIDENCE`. The old variable still wins over the file.
 - The `anomaly` trigger is two triggers: `run_failed` and `dead_at_startup`, in its place in the list.
 - `[plugins.stop_rule] max_spend` is `hold_at = { spend = <value> }`. A value that `hold_at` sets too wins.
-- `[memory] wake_budget` and `[roles.<name>] wake_budget` are the `budget` of the role's `lessons` section. A role's own value wins over `[memory]`'s. A budget that differs from the role's old default sets the role's `sections` to its defaults with the lessons at that budget, or without them at 0. A role that sets `sections` keeps them. The watchdog's old default was 0: it now reads the lessons too.
+- `[memory] wake_budget` and `[plugins.role.<name>] wake_budget` are the `budget` of the `lessons` section. A role's own value wins over `[memory]`'s. A budget that differs from the role's old default sets the role's `sections` to its defaults with the lessons at that budget, or without them at 0. A role that sets `sections` keeps them. The watchdog's old default was 0: it now reads the lessons too.
 - `[memory] documents` is `documents` in `[plugins.memory]`, of the `local` provider. A value that `[plugins.memory]` sets too wins.
-- `mcp` and `[harness.<name>.usage]` are the harness's provider: it renders the servers and reads the usage. A table named after a built-in harness drops them: the provider's own come from `home`. A table with a new name gets `provider`: its usage's `tally`, else its `mcp`. A table that sets neither runs its argv and does nothing else, as before.
+- `mcp` and `[plugins.harness.<name>.usage]` are the harness's provider: it renders the servers, reads usage. A table named after a built-in harness drops them: the provider's own come from `home`. A table with a new name gets `provider`: its usage's `tally`, else its `mcp`. A table that sets neither runs its argv and does nothing else, as before.
 - In `config.toml`, `[storage.backend]` is the `remote` of `[plugins.cas] provider = "cached"`. Its `kind` is the remote's `provider`. `evict_after_days` and `local_max_gb` of `[storage]` move with it. A `[plugins.cas]` table of the file wins: the old keys then go, with the warning, and change nothing.
 - In `config.toml`, `max_evaluations` is `evaluations` in `[plugins.executor.pools.serve]`. A value that `[plugins.executor.pools.serve]` sets too wins.
+- In `config.toml`, `[runtimes.<name>]` is `[plugins.runtime.<name>]`. `PILOOP_RUNTIMES__<NAME>__<KEY>` is `PILOOP_PLUGINS__RUNTIME__<NAME>__<KEY>`.
 - In `config.toml`, `tick_seconds` does nothing: the daemon wakes on events, not on a timer.
 - In `config.toml`, `[plugins.network] name_claim` of the `proxy` network is `name_claims`, a list of one. A `name_claims` that the table sets too wins.

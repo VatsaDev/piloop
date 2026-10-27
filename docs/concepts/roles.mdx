@@ -12,14 +12,18 @@ Each role has a table in `piloop.toml`. This one runs up to four implementers on
 each, and one research agent at a time:
 
 ```toml
-model = { claude = "claude-opus-5-5", codex = "gpt-6.1-sol" }
+[plugins.harness.claude]
+model = "claude-opus-5-5"
 
-[roles.implementer]
+[plugins.harness.codex]
+model = "gpt-6.1-sol"
+
+[plugins.role.implementer]
 harnesses = ["claude", "codex"]
 max_concurrent = 4
 timeout = 1800
 
-[roles.research]
+[plugins.role.research]
 max_concurrent = 1
 ```
 
@@ -56,7 +60,7 @@ A **trigger** is a condition that starts one more agent of a sweep. This watchdo
 and once when the campaign stops:
 
 ```toml
-[roles.watchdog]
+[plugins.role.watchdog]
 triggers = [{ provider = "cron" }, { provider = "stopped" }]
 interval = 3600
 ```
@@ -71,7 +75,7 @@ A table with a new name defines a sweep. It needs `prompt`, the file that starts
 reviewer reads each new keep:
 
 ```toml
-[roles.reviewer]
+[plugins.role.reviewer]
 prompt = "briefs/reviewer.md"
 triggers = [
   { provider = "sql", when = "SELECT id FROM candidates WHERE campaign_id = :campaign AND verdict = 'keep' AND created_at > :since" },
@@ -87,7 +91,7 @@ writes = ["comments(finding) on a candidate", "seeds via idea seed"]
 With `runs = true`, a new role does runs. It has the implementer's defaults. This one takes the cheap ideas:
 
 ```toml
-[roles.quick]
+[plugins.role.quick]
 runs = true
 takes = "priority >= 3"    # an SQL condition on the ideas table
 harnesses = ["pi"]
@@ -102,7 +106,7 @@ A **section** is one part of what `piloop status` or a brief shows, such as `## 
 `sections`, each shows every section that declares it. Set the list to choose and order them:
 
 ```toml
-[roles.research]
+[plugins.role.research]
 sections = [{ provider = "lessons", budget = 800 }, { provider = "goal" }, { provider = "queue" }, { provider = "pack" }]
 
 [status]
@@ -113,36 +117,42 @@ sections = [{ provider = "headline" }, { provider = "trajectory" }, { provider =
 
 ## Harnesses
 
-A **harness** is the coding agent CLI that an agent runs in. `harnesses` lists the ones that runs use in turn. A
-`[harness.<name>]` table changes a built-in harness, or adds one:
+A **harness** is the coding agent CLI that an agent runs in. `use` in `[plugins.harness]` lists the ones that runs use
+in turn. A `[plugins.harness.<name>]` table sets a harness's `model`, changes a built-in harness, or adds one:
 
 ```toml
-harnesses = ["claude", "gateway", "mycli"]
-model = { claude = "claude-opus-5-5", gateway = "claude-opus-5-5", mycli = "my-model" }
+[plugins.harness]
+use = ["claude", "gateway", "mycli"]
 
-[harness.gateway]
+[plugins.harness.claude]
+model = "claude-opus-5-5"
+max_concurrent = 2   # agents of this harness at once, all roles together
+
+[plugins.harness.gateway]
 provider = "claude"
+model = "claude-opus-5-5"
 env = { ANTHROPIC_BASE_URL = "https://gw.example.com" }
 
-[harness.mycli]
+[plugins.harness.mycli]
+model = "my-model"
 executable = "mycli"
 headless = ["--model", "{model}", "{prompt}"]
 ```
 
 | Table | What it is |
 |---|---|
-| A built-in name, such as `[harness.claude]` | That harness, with the keys that the table changes. |
+| A built-in name, such as `[plugins.harness.claude]` | That harness, with the keys that the table changes. |
 | A new name with `provider`, such as `gateway` | That provider over its defaults: Claude Code through a gateway. |
 | A new name without `provider`, such as `mycli` | Its argv and nothing else: it takes no MCP servers, and records no tokens. |
 
-A campaign without `harnesses` uses the ones on by default:
+A campaign without `use` uses the ones on by default:
 
 <Harnesses />
 
 ## Runtimes
 
-A **runtime** starts, steers and stops the agents' processes. `runtime` sets it for the campaign, and
-`[roles.<name>] runtime` for one role.
+A **runtime** starts, steers and stops the agents' processes. `[plugins.runtime] use` sets it for the campaign, and
+`[plugins.role.<name>] runtime` for one role.
 
 <Runtimes />
 

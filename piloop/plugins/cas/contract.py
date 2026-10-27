@@ -21,7 +21,7 @@ from typing import Annotated, BinaryIO, Protocol, runtime_checkable
 from covalence import Cid, Hash, IntegrityError
 from pydantic import PlainSerializer, PlainValidator, WithJsonSchema
 
-from piloop.plugins.host import Capability, Choice, Parameters, Scope
+from piloop.plugins.host import Capability, One, Parameters, Scope
 
 BLAKE3 = Hash('blake3')
 UNBOUNDED = (1 << 64) - 1
@@ -219,5 +219,5 @@ class LocalProvider(CasProvider):
         """The directory where a store over this tier keeps its own files."""
 
 
-CAS = Capability('cas', CasProvider, choice=Choice(Scope.HOME, default='disk'), group='piloop.cas', noun='CAS provider')
+CAS = Capability('cas', CasProvider, table=One(Scope.HOME, default='disk'), group='piloop.cas', noun='CAS provider')
 """Every CAS provider by name. ``disk``, built in and the default, keeps the blobs in ``<PILOOP_HOME>/store``."""

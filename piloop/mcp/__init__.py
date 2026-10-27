@@ -1,6 +1,6 @@
 """MCP servers for agents: one definition in ``piloop.toml``, turned into each harness's own flags at launch.
 
-A server is data (``McpServer``). A role lists the servers it gets (``[roles.<kind>] mcp``). This module knows no
+A server is data (``McpServer``). A role lists the servers it gets (``[plugins.role.<kind>] mcp``). This module knows no
 harness: each harness provider renders the servers in its own flags (``Harness.mcp``).
 
 API keys are never written down. A server names the environment variables that hold them, each the name of a secret

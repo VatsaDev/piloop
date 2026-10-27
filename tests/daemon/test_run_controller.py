@@ -707,7 +707,7 @@ def test_dirt_after_a_commit_is_recovered_on_its_own_and_the_commit_is_scored_as
 def test_an_idea_whose_implementers_keep_dying_is_requeued_from_its_recovered_work_only_so_often(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    """``[roles.implementer] recovery_requeues`` caps the requeues, counted in events: implementers that leave the same two trees
+    """``[plugins.role.implementer] recovery_requeues`` caps the requeues, counted in events: implementers that leave the same two trees
     in turn reuse two candidates, and counting candidates would requeue them forever."""
     toggles = '#!/bin/sh\nif grep -q A solve.txt; then echo B > solve.txt; else echo A > solve.txt; fi\n'
     write_toml(Path(campaign.path), toggles)
@@ -756,7 +756,7 @@ def test_recovery_requeues_0_leaves_recovered_work_to_the_orchestrator(
     write_toml(Path(campaign.path), HARNESS_FORGETS_COMMIT)
     with db.session() as s:
         s.get_one(Campaign, campaign.id).config = load_campaign_config(
-            Path(campaign.path), roles={'implementer': {'recovery_requeues': 0}}
+            Path(campaign.path), plugins={'role': {'implementer': {'recovery_requeues': 0}}}
         )
         s.commit()
     run_id = make_run(db, campaign, max_runs=1)
@@ -773,7 +773,7 @@ def test_the_role_of_the_run_caps_its_recovery_requeues(
     write_toml(Path(campaign.path), HARNESS_FORGETS_COMMIT)
     roles = {'implementer': {'recovery_requeues': 0}, 'quick': {'runs': True, 'recovery_requeues': 1}}
     with db.session() as s:
-        s.get_one(Campaign, campaign.id).config = load_campaign_config(Path(campaign.path), roles=roles)
+        s.get_one(Campaign, campaign.id).config = load_campaign_config(Path(campaign.path), plugins={'role': roles})
         s.commit()
     run_id = make_run(db, campaign, max_runs=1)
     with db.session() as s:
@@ -1174,7 +1174,7 @@ def test_an_implementer_brief_ends_with_its_roles_sections(
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
         p.repo = 'github.com/o/r'
-        p.config = load_campaign_config(Path(campaign.path), roles={'implementer': {'sections': sections}})
+        p.config = load_campaign_config(Path(campaign.path), plugins={'role': {'implementer': {'sections': sections}}})
         s.add(
             Lesson(
                 campaign_id=campaign.id,
@@ -1387,14 +1387,14 @@ def test_implementer_env_points_at_the_daemon_home(
 
     A daemon started from a Claude Code session inherits its variables, and a Claude agent that has them acts as a
     child of that session, which saves no transcript. They are cleared for every agent, whatever its harness
-    definition: ``[harness.claude]`` replaces the built-in one, and a custom harness can run the same CLI. This one is
+    definition: ``[plugins.harness.claude]`` replaces the built-in one, and a custom harness can run the same CLI. This one is
     the ``script`` harness of the fixture, with a session variable of its own.
     """
     cleared = {*cleared_env(), 'SCRIPT_SESSION'}
     for name in cleared:
         monkeypatch.setenv(name, '1')
     write_toml(Path(campaign.path), '#!/bin/sh\nenv > env.txt\ngit add env.txt\ngit commit -qm env\n')
-    with (Path(campaign.path) / 'piloop.toml').open('a') as toml:  # [harness.script] is the last table
+    with (Path(campaign.path) / 'piloop.toml').open('a') as toml:  # [plugins.harness.script] is the last table
         toml.write('session_env = ["SCRIPT_SESSION"]\n')
     reload_campaign(db, campaign)
     run_id = make_run(db, campaign)
@@ -1522,7 +1522,7 @@ def test_an_implementer_that_spends_tokens_but_ends_at_once_with_nothing_did_not
     write_toml(Path(campaign.path), blocked)
     script = load_campaign_config(Path(campaign.path)).harness['script'].model_dump(mode='json')
     counted = {'headless': ['--session-id', '{session_id}', '{prompt}'], **READS_PI}
-    set_config(db, campaign, harness={'script': {**script, **counted}})
+    set_config(db, campaign, plugins={'harness': {'script': {**script, **counted}}})
     execute(controller(db, runtime, tmp_path), db, run_id)
     with db.session() as s:
         dead, relaunched = s.scalars(
@@ -1632,7 +1632,7 @@ def test_a_fast_implementer_whose_tokens_are_unknown_is_no_startup_death_when_it
     write_toml(Path(campaign.path), body)
     script = load_campaign_config(Path(campaign.path)).harness['script'].model_dump(mode='json')
     counted = {'headless': ['--session-id', '{session_id}', '{prompt}'], **READS_PI}
-    set_config(db, campaign, harness={'script': {**script, **counted}})
+    set_config(db, campaign, plugins={'harness': {'script': {**script, **counted}}})
     execute(controller(db, runtime, tmp_path), db, run_id)
     run = run_row(db, run_id)
     assert (run.status, run.error) == (RunStatus.SUCCEEDED, None)
@@ -1655,7 +1655,7 @@ def test_a_fast_implementer_that_left_uncommitted_work_started_and_its_work_is_r
     write_toml(Path(campaign.path), f'#!/bin/sh\n{edit}\n')
     script = load_campaign_config(Path(campaign.path)).harness['script'].model_dump(mode='json')
     counted = {'headless': ['--session-id', '{session_id}', '{prompt}'], **READS_PI}
-    set_config(db, campaign, harness={'script': {**script, **counted}})
+    set_config(db, campaign, plugins={'harness': {'script': {**script, **counted}}})
     run_id = make_run(db, campaign, max_runs=1)
     execute(controller(db, runtime, tmp_path), db, run_id)
     assert (run_row(db, run_id).status, run_row(db, run_id).error) == (RunStatus.FAILED, INTERRUPTED)

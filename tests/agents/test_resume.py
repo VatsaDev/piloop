@@ -1,5 +1,6 @@
 """A role with ``continuity = "resume"``: each agent continues the last agent's harness session, from the CAS."""
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -11,7 +12,6 @@ from piloop.actor import Agent
 from piloop.agents.launcher import resumable
 from piloop.agents.results import AgentSessionStarted, SessionNotResumed, Unresumed
 from piloop.agents.roles import compose_brief, compose_resumed, role
-from piloop.config import Roles
 from piloop.db.events import in_order
 from piloop.db.models import AgentSession, AgentSessionState, Campaign, Event
 from piloop.db.session import Database
@@ -22,12 +22,13 @@ from piloop.plugins.executor.contract import RepoId, Resume
 from piloop.plugins.executor.kit import jobs
 from piloop.plugins.harness.claude import Claude
 from piloop.plugins.harness.pi import Pi
+from piloop.plugins.host import Instances
 from piloop.plugins.role.contract import Continuity
 from piloop.plugins.runtime.contract import AgentStart
 from piloop.plugins.vcs.contract import Repository
 from piloop.usage import Usage
 from tests.agents.test_launcher import agent_session, checkout, controller, request, use_harness
-from tests.conftest import WATCHDOG, ScriptRuntime, events, home_cas, role_timeout
+from tests.conftest import WATCHDOG, ScriptRuntime, events, home_cas, reconfigured, role_timeout
 from tests.test_lease import agent_job
 from tests.usage.test_usage import SESSIONS
 
@@ -67,9 +68,7 @@ def resuming(db: Database, campaign: Campaign) -> None:
     """Make the watchdog a role that resumes its sessions."""
     with db.session() as s:
         row = s.get_one(Campaign, campaign.id)
-        cfg = row.config
-        watchdog = cfg.roles.root[WATCHDOG].model_copy(update={'continuity': Continuity.RESUME})
-        row.config = cfg.model_copy(update={'roles': Roles({**cfg.roles.root, WATCHDOG: watchdog})})
+        row.config = reconfigured(row.config, plugins={'role': {WATCHDOG: {'continuity': Continuity.RESUME.value}}})
         s.commit()
 
 
@@ -190,15 +189,21 @@ def test_no_session_is_resumed_after_a_resume_that_failed_or_on_a_harness_that_c
         assert resumable(s, other, cfg, Path('w')) == SessionNotResumed(
             reason=Unresumed.NO_SESSION, detail='no earlier watchdog left a session on other'
         )
+        harnesses = cfg.plugins['harness']
+        assert isinstance(harnesses, Instances)
         bare = cfg.harness['script'].model_copy(update={'resume': []})
-        assert resumable(s, later, cfg.model_copy(update={'harness': {'script': bare}}), Path('w')) == (
+        with_bare = replace(harnesses, instances={'script': bare})
+        assert resumable(
+            s, later, cfg.model_copy(update={'plugins': {**cfg.plugins, 'harness': with_bare}}), Path('w')
+        ) == (
             SessionNotResumed(
                 reason=Unresumed.HARNESS, detail='script has no resume argv, or its provider restores no session file'
             )
         )
-        assert resumable(s, later, cfg.model_copy(update={'harness': {}}), Path('w')) == SessionNotResumed(
-            reason=Unresumed.HARNESS, detail='piloop.toml no longer names script'
-        )
+        without = replace(harnesses, instances={})
+        assert resumable(
+            s, later, cfg.model_copy(update={'plugins': {**cfg.plugins, 'harness': without}}), Path('w')
+        ) == SessionNotResumed(reason=Unresumed.HARNESS, detail='piloop.toml no longer names script')
 
     use_harness(db, campaign, harness(tmp_path).replace('[ -f "$D/$2.jsonl" ] || exit 3', 'exit 3'), **HARNESS)
     resuming(db, campaign)

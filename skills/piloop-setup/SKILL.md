@@ -121,17 +121,18 @@ Map each answer to its keys:
     file for the runs of that track).
   - piloop refuses a `target` in `[plugins.stop_rule]` when there are several tracks.
 - **Measurement → `evaluate`, `evaluate_timeout`.**
-- **Budget → `[roles.implementer]` `timeout` and `max_concurrent`, and `[roles.research]`.**
+- **Budget → `[plugins.role.implementer]` `timeout` and `max_concurrent`, and `[plugins.role.research]`.**
 - **Compute on other machines (a GPU box) → a pool in `config.toml`, and `piloop worker` there:**
   https://piloop.autoresearch.inc/guides/workers.
 - **Prior art → `context`** (a top-level key). List the error analyses and evaluation reports of the repo (where the
   current system loses to a reference). Every sweep that reads the research pack starts from them.
-- **Outside techniques → `[roles.scout]`**, only when the human wants them.
+- **Outside techniques → `[plugins.role.scout]`**, only when the human wants them.
   - Set `interval` in seconds. The default, 0, keeps the scout off.
   - The X search needs an `[mcp.xai]` table that runs `scripts/xai_search_mcp.py`
-    (https://piloop.autoresearch.inc/guides/mcp-servers), `"xai"` in `[roles.scout] mcp`, and `XAI_API_KEY` in the
+    (https://piloop.autoresearch.inc/guides/mcp-servers), `"xai"` in `[plugins.role.scout] mcp`, and `XAI_API_KEY` in the
     daemon's environment.
-- **Harnesses → `harnesses`, `[model]`.** Remove the harnesses that the human does not have.
+- **Harnesses → `[plugins.harness] use`, and `model` in each `[plugins.harness.<name>]`.** Remove the harnesses that the human does
+  not have.
 - **`link`:** gitignored data or virtualenvs that the evaluate command needs inside a worktree.
 - **Objective target and budget → `[plugins.stop_rule]`:** `target`, `max_runs`, `max_hours`, `max_tokens`, and
   `plateau` when the human wants the campaign to end by itself. Leave them out only if the human explicitly wants an
@@ -147,7 +148,7 @@ Map each answer to its keys:
 
 The file lists every key. A key that is set shows its default, unless its comment says otherwise, and the optional keys
 are comments. https://piloop.autoresearch.inc/reference/configuration documents every key, and
-https://piloop.autoresearch.inc/concepts/roles documents the `[roles.*]` tables.
+https://piloop.autoresearch.inc/concepts/roles documents the `[plugins.role.*]` tables.
 
 ### The evaluate command
 

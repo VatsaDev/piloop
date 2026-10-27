@@ -19,6 +19,7 @@ import pytest
 from piloop import deprecated
 from piloop.config import ConfigError, load_campaign_config
 from piloop.deprecated import PiloopDeprecationWarning
+from piloop.ids import IMPLEMENTER
 from piloop.plugins.executor.contract import AgentJob
 from piloop.plugins.fact_source.campaign import CampaignFacts
 from piloop.plugins.fact_source.command import Command
@@ -36,6 +37,7 @@ from piloop.plugins.stop_rule.limits import Limits
 from piloop.plugins.trigger.contract import TRIGGERS
 from piloop.plugins.verdict_rule.bootstrap import Bootstrap
 from piloop.plugins.verdict_rule.contract import VERDICT_RULES
+from piloop.settings import config_file
 from piloop.version import Version
 from tests.conftest import AGENT_TIMEOUT, HARNESS_APPEND, role_of, write_toml
 
@@ -99,10 +101,15 @@ def deprecated_config(campaign_path: Path, tables: str) -> Path:
     write_toml(campaign_path, HARNESS_APPEND)
     toml = campaign_path / 'piloop.toml'
     text = toml.read_text().replace(
-        f'[roles.research]\ntimeout = {AGENT_TIMEOUT}\nmax_ideas = 0\nmax_concurrent = 1\n', ''
+        f'[plugins.role.research]\ntimeout = {AGENT_TIMEOUT}\nmax_ideas = 0\nmax_concurrent = 1\n', ''
     )
     toml.write_text(text + tables)
     return toml
+
+
+def without_plugin_tables(text: str) -> str:
+    """``text`` without its ``[plugins.<…>]`` tables, so that a test can set ``plugins`` to something else."""
+    return re.sub(r'^\[plugins\.[^\]]*\]\n(?:[^\[\n].*\n)*', '', text, flags=re.MULTILINE)
 
 
 TEMPLATES = Path(__file__).parent / 'fixtures' / 'templates'
@@ -125,20 +132,23 @@ def test_kind_in_a_trigger_entry_is_provider_and_warns_at_the_line_of_its_role(c
     write_toml(campaign_path, HARNESS_APPEND)
     toml = campaign_path / 'piloop.toml'
     text = toml.read_text().replace(
-        '[roles.research]\n', '[roles.research]\ntriggers = [{ kind = "low_water", buffer = 1 }, { kind = "seed" }]\n'
+        '[plugins.role.research]\n',
+        '[plugins.role.research]\ntriggers = [{ kind = "low_water", buffer = 1 }, { kind = "seed" }]\n',
     )
-    toml.write_text(text.replace('[roles.watchdog]\n', '[roles.watchdog]\ntriggers = [{ provider = "cron" }]\n'))
+    toml.write_text(
+        text.replace('[plugins.role.watchdog]\n', '[plugins.role.watchdog]\ntriggers = [{ provider = "cron" }]\n')
+    )
     with pytest.warns(PiloopDeprecationWarning, match='kind in a trigger is deprecated') as record:
         cfg = load_campaign_config(campaign_path)
     assert [TRIGGERS.name_of(t) for t in role_of(cfg, ResearchRole).triggers] == ['low_water', 'seed']
     lines = toml.read_text().splitlines()
-    assert [w.lineno for w in record] == [lines.index('[roles.research]') + 2], 'research, not the watchdog'
+    assert [w.lineno for w in record] == [lines.index('[plugins.role.research]') + 2], 'research, not the watchdog'
 
 
 def test_wake_budget_is_the_budget_of_the_lessons_section_of_each_role(campaign_path: Path) -> None:
     write_toml(campaign_path, HARNESS_APPEND)
     toml = campaign_path / 'piloop.toml'
-    text = toml.read_text().replace('[roles.research]\n', '[roles.research]\nwake_budget = 0\n')
+    text = toml.read_text().replace('[plugins.role.research]\n', '[plugins.role.research]\nwake_budget = 0\n')
     toml.write_text(text + '\n[memory]\nwake_budget = 200\n')
     with pytest.warns(PiloopDeprecationWarning, match='wake_budget is deprecated') as record:
         cfg = load_campaign_config(campaign_path)
@@ -176,18 +186,18 @@ def test_the_mcp_and_usage_of_a_harness_table_are_its_provider(campaign_path: Pa
     toml = campaign_path / 'piloop.toml'
     toml.write_text(
         toml.read_text()
-        + '\n[harness.claude]\nmcp = "claude"\n[harness.claude.usage]\nfile = "{env:CLAUDE_CONFIG_DIR:~/.claude}/x"\n'
-        + '\n[harness.local]\nexecutable = "local"\nheadless = ["--id", "{session_id}", "{mcp}", "{prompt}"]\n'
-        + 'mcp = "codex"\n[harness.local.usage]\ntally = "pi"\n'
+        + '\n[plugins.harness.claude]\nmcp = "claude"\n[plugins.harness.claude.usage]\nfile = "{env:CLAUDE_CONFIG_DIR:~/.claude}/x"\n'
+        + '\n[plugins.harness.local]\nexecutable = "local"\nheadless = ["--id", "{session_id}", "{mcp}", "{prompt}"]\n'
+        + 'mcp = "codex"\n[plugins.harness.local.usage]\ntally = "pi"\n'
     )
     with pytest.warns(PiloopDeprecationWarning) as record:
         cfg = load_campaign_config(campaign_path)
     assert cfg.harness_for('claude') == each_provider()['claude'], 'a built-in table drops them'
     assert isinstance(cfg.harness_for('local'), Pi), "a new name takes its tally's provider"
     assert [str(w.message).partition(';')[0] for w in record] == [
-        'mcp and usage of [harness.claude] are deprecated: the harness renders its servers and reads its usage itself,'
+        'mcp and usage of [plugins.harness.claude] are deprecated: the harness renders its servers and reads its usage itself,'
         ' under its home',
-        'mcp and usage of [harness.local] are deprecated',
+        'mcp and usage of [plugins.harness.local] are deprecated',
     ]
 
 
@@ -195,11 +205,145 @@ def test_the_anomaly_trigger_is_the_two_incident_triggers_in_its_place(campaign_
     write_toml(campaign_path, HARNESS_APPEND)
     toml = campaign_path / 'piloop.toml'
     old = 'triggers = [{ provider = "cron" }, { provider = "anomaly" }]\n'
-    toml.write_text(toml.read_text().replace('[roles.watchdog]\n', f'[roles.watchdog]\n{old}'))
+    toml.write_text(toml.read_text().replace('[plugins.role.watchdog]\n', f'[plugins.role.watchdog]\n{old}'))
     with pytest.warns(PiloopDeprecationWarning, match='the anomaly trigger is deprecated'):
         cfg = load_campaign_config(campaign_path)
     triggers = [TRIGGERS.name_of(t) for t in role_of(cfg, WatchdogRole).triggers]
     assert triggers == ['cron', 'run_failed', 'dead_at_startup']
+
+
+OLD_SHAPE = """
+name = "demo"
+evaluate = ["true"]
+harnesses = ["script"]
+model = { script = "test-model", pi = "p" }
+max_concurrent = { script = 2 }
+
+[[metrics]]
+name = "score"
+direction = "higher"
+role = "primary"
+
+[harness.script]
+executable = "agent"
+headless = ["{prompt}"]
+
+[roles.implementer]
+max_concurrent = 3
+
+[plugins.role.research]
+max_ideas = 0
+"""
+"""A piloop.toml of 0.3: the harnesses, their models and caps, and the roles at the top. Research is in its new table."""
+NEW_SHAPE = """
+name = "demo"
+evaluate = ["true"]
+
+[plugins.harness]
+use = ["script"]
+
+[[metrics]]
+name = "score"
+direction = "higher"
+role = "primary"
+
+[plugins.harness.script]
+model = "test-model"
+max_concurrent = 2
+executable = "agent"
+headless = ["{prompt}"]
+
+[plugins.harness.pi]
+model = "p"
+
+[plugins.role.implementer]
+max_concurrent = 3
+
+[plugins.role.research]
+max_ideas = 0
+"""
+
+
+def test_a_move_moves_each_key_that_its_old_path_matches_and_the_new_path_keeps_its_own_values() -> None:
+    raw: dict[str, object] = {
+        'model': {'claude': 'c', 'pi': 'p'},
+        'roles': {'research': {'timeout': 9, 'max_ideas': 2}, 'scout': {}},
+        'plugins': {'role': {'research': {'timeout': 5}}, 'harness': {'claude': {'model': 'mine'}}},
+    }
+    moved = [m.apply(raw) for m in deprecated.PLUGIN_TABLES]
+    assert moved == [[], ['model.claude', 'model.pi'], [], ['roles.research', 'roles.scout'], [], []]
+    assert raw == {
+        'plugins': {
+            'role': {'research': {'timeout': 5, 'max_ideas': 2}, 'scout': {}},
+            'harness': {'claude': {'model': 'mine'}, 'pi': {'model': 'p'}},
+        }
+    }, 'a table merges into the new one key by key, a value there wins, and an emptied old table goes'
+    back: dict[str, object] = {'plugins': {'harness': {'pi': {'model': 'p', 'env': {}}}}, 'harnesses': ['pi']}
+    for move in reversed(deprecated.PLUGIN_TABLES):
+        move.inverse().apply(back)
+    assert back == {'harness': {'pi': {'env': {}}}, 'model': {'pi': 'p'}, 'harnesses': ['pi']}
+    empty: dict[str, object] = {'model': {}, 'harness': {}}
+    assert [m.apply(empty) for m in deprecated.PLUGIN_TABLES] == [['harness'], ['model'], [], [], [], []]
+    assert empty == {}, 'an empty table of the old key goes, with its warning'
+    scalar: dict[str, object] = {'roles': 3}
+    assert deprecated.Move('roles.*', 'plugins.role.*').apply(scalar) == [], 'no table, no names to move'
+    assert scalar == {'roles': 3}, 'left for the validation to refuse'
+    lost: dict[str, object] = {'roles': {'a': {}}, 'plugins': 3}
+    deprecated.Move('roles.*', 'plugins.role.*').apply(lost)
+    assert lost == {'plugins': 3}, 'a value on the way that is not a table is left for the validation to refuse'
+
+
+def test_a_move_rebases_a_path_under_its_old_key() -> None:
+    roles, model = deprecated.Move('roles.*', 'plugins.role.*'), deprecated.Move('model.*', 'plugins.harness.*.model')
+    assert roles.rebased(['roles', 'implementer', 'max_concurrent']) == [
+        'plugins',
+        'role',
+        'implementer',
+        'max_concurrent',
+    ]
+    assert model.rebased(['model', 'claude']) == ['plugins', 'harness', 'claude', 'model']
+    assert roles.rebased(['roles']) is None, 'shorter than the old path'
+    assert roles.rebased(['model', 'claude']) is None, 'another key'
+
+
+def test_the_harness_and_role_tables_of_0_3_are_their_plugin_tables_with_a_warning_at_each_old_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    toml = tmp_path / 'piloop.toml'
+    toml.write_text(NEW_SHAPE)
+    new = load_campaign_config(tmp_path)
+    toml.write_text(OLD_SHAPE)
+    with pytest.warns(PiloopDeprecationWarning) as record:
+        old = load_campaign_config(tmp_path)
+    assert old == new
+    lines = OLD_SHAPE.splitlines()
+    assert [(str(w.message).partition(';')[0], w.lineno) for w in record] == [
+        ('`harness.<name>` is deprecated', lines.index('[harness.script]') + 1),
+        ('`model.<name>` is deprecated', lines.index('model = { script = "test-model", pi = "p" }') + 1),
+        ('`max_concurrent.<name>` is deprecated', lines.index('max_concurrent = { script = 2 }') + 1),
+        ('`roles.<name>` is deprecated', lines.index('[roles.implementer]') + 1),
+        ('`harnesses` is deprecated', lines.index('harnesses = ["script"]') + 1),
+    ], 'an inline table warns at the key that holds it'
+    assert str(record[0].message) == (
+        '`harness.<name>` is deprecated; write `plugins.harness.<name>`; removed in piloop 0.5.0'
+    )
+    toml.write_text(NEW_SHAPE)
+    monkeypatch.setenv('PILOOP_CAMPAIGN_ROLES__IMPLEMENTER__MAX_CONCURRENT', '7')
+    with pytest.warns(
+        PiloopDeprecationWarning,
+        match='PILOOP_CAMPAIGN_ROLES__IMPLEMENTER__MAX_CONCURRENT is deprecated; set PILOOP_CAMPAIGN_PLUGINS__ROLE__IMPLEMENTER__MAX_CONCURRENT',
+    ):
+        cfg = load_campaign_config(tmp_path)
+    assert cfg.roles.doing_runs()[IMPLEMENTER].max_concurrent == 7, 'the old variable wins over the file'
+
+
+def test_the_runtimes_of_config_toml_are_its_runtime_plugin_tables(tmp_path: Path) -> None:
+    (tmp_path / 'config.toml').write_text('[runtimes.subprocess]\n')
+    with pytest.warns(
+        PiloopDeprecationWarning, match=r'`runtimes.<name>` is deprecated; write `plugins.runtime.<name>`'
+    ):
+        raw = config_file(tmp_path)
+    assert raw == {'plugins': {'runtime': {'subprocess': {}}}}
 
 
 @dataclass(frozen=True)
@@ -438,7 +582,7 @@ def test_stop_the_spend_limit_and_confidence_are_keys_of_the_rules(campaign_path
         (lines.index('limit = 300') + 1, '[spend] limit is deprecated'),
     ]
     toml = deprecated_config(campaign_path, '[stop]\nmax_runs = 7\n')
-    toml.write_text('plugins = 3\n' + toml.read_text())
+    toml.write_text('plugins = 3\n' + without_plugin_tables(toml.read_text()))
     with pytest.warns(PiloopDeprecationWarning), pytest.raises(ConfigError, match='plugins'):
         load_campaign_config(campaign_path)
 
@@ -495,7 +639,7 @@ def test_the_variables_of_stop_and_confidence_set_the_rules_and_win_over_the_fil
         ' piloop 0.4.0',
     ]
     toml = campaign_path / 'piloop.toml'
-    toml.write_text('plugins = 3\n' + toml.read_text().replace('[plugins.stop_rule]\nmax_runs = 7\n', ''))
+    toml.write_text('plugins = 3\n' + without_plugin_tables(toml.read_text()))
     with pytest.warns(PiloopDeprecationWarning), pytest.raises(ConfigError, match='plugins'):
         load_campaign_config(campaign_path)
 

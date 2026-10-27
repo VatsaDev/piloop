@@ -217,7 +217,7 @@ def check_takes(path: Path, cfg: CampaignConfig) -> None:
         ConfigError: one line for each bad condition, as ``load_campaign_config`` gives one for each bad key.
     """
     bad = [
-        f'  roles.{name}.takes = {role.takes!r}: the condition does not run on the ideas table: {error}'
+        f'  plugins.role.{name}.takes = {role.takes!r}: the condition does not run on the ideas table: {error}'
         for name, role in cfg.roles.doing_runs().items()
         if role.takes is not None and (error := sql_error(ideas_taken(role.takes))) is not None
     ]

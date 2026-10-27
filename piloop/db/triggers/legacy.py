@@ -7,7 +7,8 @@ before it inserts the kind itself. A migration before such a change runs on a sc
 ``rendered`` gives a trigger its old name, its old identifiers and its old text there. Only identifiers, the role names
 that a trigger lists and the event insert change: any other string literal keeps its text. Revision 0040 took the
 built-in roles out of the role trigger, so a migration before it gets them back. Revision 0059 added
-``comments.in_reply_to`` to the comment events, so a schema without the column gets the event without it.
+``comments.in_reply_to`` to the comment events, so a schema without the column gets the event without it. Revision 0065
+moved the roles of a stored config to ``plugins.role``, so the role trigger before it reads ``roles``.
 """
 
 import re
@@ -47,10 +48,20 @@ EVENT_INSERT = (
     "INSERT INTO events (at, actor, target_kind, target_id, payload)\n  VALUES (strftime('%Y-%m-%d %H:%M:%f', 'now'),"
     " NEW.author, 'comment', NEW.id, json_object('kind', 'comment.' || NEW.kind, "
 )
-KNOWN_ROLE = "\nWHEN NEW.campaign_id IS NOT NULL AND (SELECT json_type(config, '$.roles.' || json_quote(NEW.kind))"
-KNOWN_ROLE_ERROR = "a role of the campaign: a key of roles in its config'"
+KNOWN_ROLE = "json_type(config, '$.plugins.role.' || json_quote(NEW.kind))"
+KNOWN_ROLE_ERROR = "a role of the campaign: a key of plugins.role in its config'"
+ROLES_KEY = "\nWHEN NEW.campaign_id IS NOT NULL AND (SELECT json_type(config, '$.roles.' || json_quote(NEW.kind))"
+ROLES_KEY_ERROR = "a role of the campaign: a key of roles in its config'"
 IN_REPLY_TO = ", 'in_reply_to', NEW.in_reply_to"
 STAGES = (
+    Stage(
+        '0065',
+        "SELECT 1 FROM alembic_version WHERE version_num < '0065'",
+        literals={
+            KNOWN_ROLE: "json_type(config, '$.roles.' || json_quote(NEW.kind))",
+            KNOWN_ROLE_ERROR: ROLES_KEY_ERROR,
+        },
+    ),
     Stage(
         '0059',
         "SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM pragma_table_xinfo('comments') WHERE name = 'in_reply_to')",
@@ -60,9 +71,9 @@ STAGES = (
         '0040',
         "SELECT 1 FROM alembic_version WHERE version_num < '0040'",
         literals={
-            KNOWN_ROLE: "\nWHEN NEW.kind NOT IN ('implementer', 'watchdog', 'research', 'scout') AND (SELECT"
+            ROLES_KEY: "\nWHEN NEW.kind NOT IN ('implementer', 'watchdog', 'research', 'scout') AND (SELECT"
             " json_type(config, '$.roles.' || json_quote(NEW.kind))",
-            KNOWN_ROLE_ERROR: 'a role of the campaign: implementer, watchdog, research, scout or a [roles.<name>] table'
+            ROLES_KEY_ERROR: 'a role of the campaign: implementer, watchdog, research, scout or a [roles.<name>] table'
             " of its piloop.toml'",
         },
     ),

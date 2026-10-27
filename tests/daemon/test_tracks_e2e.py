@@ -21,18 +21,19 @@ from tests.conftest import SETTLE, ScriptRuntime, factory, register, run_all, wo
 TOML = """
 name = "tracks"
 evaluate = ["sh", "-c", "echo METRIC accuracy=$(wc -l < acc.txt); echo METRIC cost=$(wc -l < cost.txt)"]
-runtime = "subprocess"
-harnesses = ["script"]
 evaluate_timeout = 30
 
-[model]
-script = "test-model"
+[plugins.runtime]
+use = "subprocess"
 
-[roles.implementer]
+[plugins.harness]
+use = ["script"]
+
+[plugins.role.implementer]
 timeout = 30
 max_concurrent = 2
 
-[roles.research]
+[plugins.role.research]
 max_ideas = 0
 
 [[metrics]]
@@ -57,7 +58,8 @@ share = 0.5
 [tracks.cost]
 share = 0.5
 
-[harness.script]
+[plugins.harness.script]
+model = "test-model"
 executable = "{script}"
 headless = ["{{prompt}}"]
 """

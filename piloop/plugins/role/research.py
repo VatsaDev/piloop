@@ -5,6 +5,7 @@ from sqlalchemy import select
 
 from piloop.db.models import Idea, count
 from piloop.ids import IdeaStatus
+from piloop.plugins.harness.contract import HarnessName
 from piloop.plugins.role.contract import Files, Sweep, SweepRole
 from piloop.plugins.trigger.contract import TriggerEntry
 from piloop.plugins.trigger.low_water import LowWaterTrigger
@@ -12,7 +13,7 @@ from piloop.plugins.trigger.stalled import StalledTrigger
 
 
 class ResearchRole(SweepRole):
-    """``[roles.research]``: research develops seeds and keeps ideas ready for the implementers."""
+    """``[plugins.role.research]``: research develops seeds and keeps ideas ready for the implementers."""
 
     PROMPT = files(__package__) / 'prompts' / 'research.md'
 
@@ -27,8 +28,8 @@ class ResearchRole(SweepRole):
         'comments(note) on an idea',
     ]
     """What a research sweep may write, as its brief states it."""
-    model: dict[str, str] | None = {'claude': 'claude-opus-5-5', 'codex': 'gpt-6.1-sol'}
-    """The model for each harness in this role, merged over the campaign's ``model``. A table that you set replaces
+    model: dict[HarnessName, str] | None = {'claude': 'claude-opus-5-5', 'codex': 'gpt-6.1-sol'}
+    """The model for each harness in this role, over the harness's ``model``. A table that you set replaces
     this one."""
     files: Files = Files.IDEAS
     """Research develops seeds into ideas and adds ideas of its own."""

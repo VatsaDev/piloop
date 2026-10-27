@@ -130,7 +130,7 @@ def installed() -> tuple[Contributes, ...]:
     """
     found: list[Contributes] = []
     for capability in declared():
-        if capability.choice is not None and capability.choice.scope is not Scope.CAMPAIGN:
+        if capability.table is not None and capability.table.scope is not Scope.CAMPAIGN:
             continue
         for name, provider in capability.providers().items():
             if not issubclass(provider.model, Contributes):

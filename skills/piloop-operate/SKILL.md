@@ -92,7 +92,7 @@ Run the loop yourself, or give it to a background subagent so that the human's s
 this skill and the campaign name. Tell it to report decisions and status back.
 
 Run one orchestrator per campaign. Two loops answer the same escalation twice. When `piloop status` lists live or
-past `orchestrator#…` agents, or `[roles.orchestrator]` in `piloop.toml` has triggers, piloop launches the campaign's
+past `orchestrator#…` agents, or `[plugins.role.orchestrator]` in `piloop.toml` has triggers, piloop launches the campaign's
 orchestrator itself: do not loop. Write to it with `piloop message <name> '<text>'`, and read its answer in
 `piloop inbox`.
 
@@ -169,7 +169,7 @@ PILOOP_ACTOR=human piloop idea seed <name> '<its mechanism, one line>' --from '<
 
 ### Scout for outside techniques
 
-- This needs `[roles.scout]` in `piloop.toml`, with `interval` set.
+- This needs `[plugins.role.scout]` in `piloop.toml`, with `interval` set.
 - The scout then sweeps on that timer. Each sweep searches X, GitHub and arXiv for techniques that address a measured
   loss.
 - A scout sweep files at most `seeds` seeds, signed `scout#…`. The other techniques go to the `techniques` library.
@@ -268,7 +268,7 @@ Branch runs:
 - A run pinned to a candidate that has the head's changes (a merge onto the head, or a compose that cherry-picked it)
   is a trunk run too: its keep can move the head.
 - So pin a follow-up to a lead. Do not tell its implementer to reset onto the lead.
-- One run in `[roles.implementer] explore_every` (default 4) takes the most urgent ready idea pinned to a base other than
+- One run in `[plugins.role.implementer] explore_every` (default 4) takes the most urgent ready idea pinned to a base other than
   the head, whatever its priority.
 
 ### Keep a failed result as a lead
@@ -429,7 +429,7 @@ session that worked a past idea.
   when the campaign stops. Search them with `documents_fts MATCH '<words>'`. Point the globs at reports, never at
   anything derived from validation or test data.
 - Briefs of implementers, research and the scout show the current lessons of the repo: the `lessons` section of
-  `[roles.<kind>] sections`, in its `budget` of tokens. Leave the entry out to turn it off for a role.
+  `[plugins.role.<kind>] sections`, in its `budget` of tokens. Leave the entry out to turn it off for a role.
 
 ## Judge candidates
 

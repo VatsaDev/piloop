@@ -138,10 +138,10 @@ GATHERERS: dict[Fact[FactValue], Gatherer] = {
 class OptimizationFacts(FactSource):
     """``optimization``: the research of the campaign: its head, runs, keeps, evaluations and funnel.
 
-    It is on by default (``ON_BY_DEFAULT``). A campaign that lists its ``[[facts]]`` lists it too, to keep these facts.
+    It is on by default (``DEFAULT``). A campaign that lists its ``[[facts]]`` lists it too, to keep these facts.
     """
 
-    ON_BY_DEFAULT = True
+    DEFAULT = True
 
     def supplies(self) -> tuple[Fact[FactValue], ...]:
         """``OPTIMIZATION``."""

@@ -305,7 +305,7 @@ def test_a_seed_developed_with_its_links_is_never_runnable_without_them(
 
 
 def research_files(campaign_path: Path, most: int) -> None:
-    """Set ``[roles.research] max_ideas`` in the campaign's ``piloop.toml`` (the test file sets 0)."""
+    """Set ``[plugins.role.research] max_ideas`` in the campaign's ``piloop.toml`` (the test file sets 0)."""
     toml = campaign_path / 'piloop.toml'
     toml.write_text(re.sub(r'max_ideas = \d+', f'max_ideas = {most}', toml.read_text()))
 
@@ -339,7 +339,7 @@ def test_a_sweep_files_its_new_ideas_as_proposed_while_its_role_may_file_none(
     define = ['--hypothesis', 'h', '--evidence', 'e', '--check', 'c', '--metric', 'score', '--effect', '+1']
     as_('research#8', 'idea', 'develop', '4', *define)
     assert out().splitlines() == [
-        'idea#2 proposed p2: after the pause ([roles.research] max_ideas = 0: it waits for a review)',
+        'idea#2 proposed p2: after the pause ([plugins.role.research] max_ideas = 0: it waits for a review)',
         'idea#3 ready p2: the orchestrator is not paused',
         'idea#4 seed: a hunch; research develops it next',
         'idea#4 ready p2: a hunch',
@@ -526,8 +526,8 @@ def test_init_example(tmp_path: Path, out, monkeypatch: pytest.MonkeyPatch) -> N
     template = tmp_path / 'templates' / 'demo'
     template.mkdir(parents=True)
     (template / 'piloop.toml').write_text(
-        'name = "demo"\nevaluate = ["sh", "-c", "echo METRIC score=3"]\nmodel = { pi = "m" }\n'
-        '[[metrics]]\nname = "score"\ndirection = "higher"\nrole = "primary"\n'
+        'name = "demo"\nevaluate = ["sh", "-c", "echo METRIC score=3"]\n'
+        '[[metrics]]\nname = "score"\ndirection = "higher"\nrole = "primary"\n[plugins.harness.pi]\nmodel = "m"\n'
     )
     monkeypatch.setattr(campaign_cli, 'TEMPLATES', tmp_path / 'templates')
     monkeypatch.setattr(campaign_cli, 'EXAMPLE_DATA', {'demo': {}})
@@ -1578,7 +1578,9 @@ def test_the_service_unit_carries_what_the_homes_of_a_campaigns_harnesses_name(
 ) -> None:
     toml = campaign_path / 'piloop.toml'
     toml.write_text(
-        toml.read_text().replace('[harness.script]', '[harness.script]\nhome = "{env:SCRIPT_HOME:~/.script}"')
+        toml.read_text().replace(
+            '[plugins.harness.script]', '[plugins.harness.script]\nhome = "{env:SCRIPT_HOME:~/.script}"'
+        )
     )
     run_cli(['init', str(campaign_path)])
     monkeypatch.setenv('SCRIPT_HOME', '/somewhere/script')
@@ -1988,13 +1990,13 @@ def test_restart_and_upgrade_keep_the_daemon_running_when_the_code_would_not_sta
     run_cli(['serve', '--detach'])
     pid = int(common.settings.pid_file.read_text())
     started = common.settings.pid_file.stat().st_mtime_ns
-    (common.settings.home / 'config.toml').write_text('[runtimes.gone]\nx = 1\n')
+    (common.settings.home / 'config.toml').write_text('[plugins.runtime.gone]\nx = 1\n')
     # each command reads config.toml when it starts
     monkeypatch.setattr(
         common, 'settings', Settings(home=common.settings.home, uv_tool_dir=common.settings.uv_tool_dir)
     )
     cause = (
-        f'the daemon cannot start: {common.settings.home}/config.toml: 1 validation error for \\[runtimes\\]\\ngone\\n'
+        f'the daemon cannot start: {common.settings.home}/config.toml: 1 validation error for \\[plugins\\]\\nruntime\\.gone\\n'
         '  Value error, no runtime has that name'
     )
     with pytest.raises(SystemExit, match=f'^{cause}'):

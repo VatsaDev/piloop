@@ -306,7 +306,7 @@ class LimitBody(Reasoned):
 
 
 class LaunchBody(Reasoned):
-    """One more agent of a sweeping role (``[roles.<name>]``). The agent's brief includes the reason."""
+    """One more agent of a sweeping role (``[plugins.role.<name>]``). The agent's brief includes the reason."""
 
     role: RoleName
     harness: str | None = None

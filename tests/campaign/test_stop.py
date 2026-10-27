@@ -130,7 +130,7 @@ def configure(
 ) -> CampaignConfig:
     write_toml(Path(campaign.path), harness, max_implementers=max_implementers)
     with db.session() as s:
-        cfg = load_campaign_config(Path(campaign.path), plugins={'stop_rule': stop}, roles=roles)
+        cfg = load_campaign_config(Path(campaign.path), plugins={'role': roles or {}, 'stop_rule': stop})
         s.get_one(Campaign, campaign.id).config = cfg
         s.commit()
     return cfg
@@ -538,19 +538,23 @@ def test_the_stall_mark_is_every_else_two_rounds_of_the_implementer_slots() -> N
         'name': 'bare',
         'metrics': [{'name': 'a', 'direction': 'higher', 'role': 'primary'}],
         'evaluate': ['true'],
-        'model': {'pi': 'm'},
     }
-    plateau = CampaignConfig.model_validate({**bare, 'plugins': {'stop_rule': {'plateau': 15}}})
+    pi = {'pi': {'model': 'm'}}
+    plateau = CampaignConfig.model_validate({**bare, 'plugins': {'harness': pi, 'stop_rule': {'plateau': 15}}})
     assert StalledTrigger(every=8).mark(plateau) == (8, 'every = 8 of the stalled trigger')
-    assert StalledTrigger().mark(plateau) == (8, 'two rounds of [roles.implementer] max_concurrent = 4'), (
+    assert StalledTrigger().mark(plateau) == (8, 'two rounds of [plugins.role.implementer] max_concurrent = 4'), (
         'the stop rule does not set the mark'
     )
-    agent_sessions = CampaignConfig.model_validate({**bare, 'roles': {'implementer': {'max_concurrent': 3}}})
-    assert StalledTrigger().mark(agent_sessions) == (6, 'two rounds of [roles.implementer] max_concurrent = 3')
+    agent_sessions = CampaignConfig.model_validate(
+        {**bare, 'plugins': {'harness': pi, 'role': {'implementer': {'max_concurrent': 3}}}}
+    )
+    assert StalledTrigger().mark(agent_sessions) == (6, 'two rounds of [plugins.role.implementer] max_concurrent = 3')
     quick = {'implementer': {'max_concurrent': 3}, 'quick': {'runs': True, 'max_concurrent': 2}}
-    assert StalledTrigger().mark(CampaignConfig.model_validate({**bare, 'roles': quick})) == (
+    assert StalledTrigger().mark(
+        CampaignConfig.model_validate({**bare, 'plugins': {'harness': pi, 'role': quick}})
+    ) == (
         10,
-        'two rounds of [roles.quick] max_concurrent + [roles.implementer] max_concurrent = 5',
+        'two rounds of [plugins.role.quick] max_concurrent + [plugins.role.implementer] max_concurrent = 5',
     )
 
 
@@ -811,7 +815,7 @@ def test_the_closing_review_waits_until_the_stopped_campaigns_runs_are_judged_an
 def test_the_closing_sweep_is_each_stopped_trigger_and_none_without_one(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    """``[roles.watchdog] triggers = []`` drops the closing review; a ``stopped`` trigger of another role fires once."""
+    """``[plugins.role.watchdog] triggers = []`` drops the closing review; a ``stopped`` trigger of another role fires once."""
     (Path(campaign.path) / 'closer.md').write_text('# Close\n')
     closer = {'prompt': 'closer.md', 'triggers': [{'provider': 'stopped'}]}
     configure(db, campaign, harness=HARNESS_WORSE, roles={'watchdog': {'triggers': []}, 'closer': closer}, max_runs=1)

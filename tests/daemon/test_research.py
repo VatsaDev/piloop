@@ -164,7 +164,7 @@ def test_a_seed_sweep_develops_one_seed_and_rejects_the_other_however_full_the_b
     assert '- Seeds to develop first: 2, listed in the research pack oldest first.' in brief
     assert '- Ideas of your own after the seeds: propose 1 (the backlog holds 1 of 1 runnable ideas' in brief
     assert (
-        '- Measured runs since the last keep: 2, of the 2 that mark a stall (two rounds of [roles.implementer]'
+        '- Measured runs since the last keep: 2, of the 2 that mark a stall (two rounds of [plugins.role.implementer]'
         ' max_concurrent = 1): stalled, so one of your own ideas pivots (section 3).' in brief
     )
     assert '- idea#1 by orchestrator: deeper trees — pointers: run#3' in brief
@@ -194,7 +194,7 @@ def test_with_several_tracks_research_reads_them_and_which_are_short_of_their_sh
                 {'name': 'size', 'direction': 'lower', 'role': 'primary', 'track': 'cost', 'margin': 5},
             ],
             'tracks': {'accuracy': {'share': 0.5}, 'cost': {'share': 0.5}},
-            'roles': {'research': {'max_ideas': 1, 'timeout': 20}, 'implementer': {'max_concurrent': 2}},
+            'plugins': {'role': {'research': {'max_ideas': 1, 'timeout': 20}, 'implementer': {'max_concurrent': 2}}},
         }
         s.get_one(Campaign, campaign.id).config = load_campaign_config(Path(campaign.path), **tracks)
         s.commit()

@@ -5,6 +5,7 @@ import os
 import re
 import sys
 import tomllib
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -259,47 +260,56 @@ def test_pi_refuses_an_argv_that_keeps_its_extensions_on() -> None:
     assert ClaudeMcp().refuses(['anything']) is None, 'the default accepts every argv'
 
 
+MODELS = {'claude': {'model': 'c'}, 'codex': {'model': 'x'}, 'pi': {'model': 'p'}}
+
+
 def config(**extra: object) -> dict[str, object]:
     """A minimal campaign config table with ``extra`` keys on top."""
     base: dict[str, object] = {
         'name': 'demo',
         'evaluate': ['true'],
-        'runtime': 'subprocess',
-        'harnesses': ['claude', 'codex', 'pi'],
-        'model': {'claude': 'c', 'codex': 'x', 'pi': 'p'},
         'metrics': [{'name': 's', 'direction': 'higher', 'role': 'primary'}],
         'mcp': {'exa': EXA.model_dump(), 'xai': XAI.model_dump()},
+        'plugins': {'harness': {'use': ['claude', 'codex', 'pi'], **MODELS}, 'runtime': {'use': 'subprocess'}},
     }
     return base | extra
 
 
 def test_a_role_lists_servers_by_table_and_gets_exactly_those() -> None:
-    cfg = CampaignConfig.model_validate(config(roles={'research': {'mcp': ['xai', 'exa']}}))
+    cfg = CampaignConfig.model_validate(
+        config(plugins={'harness': MODELS, 'role': {'research': {'mcp': ['xai', 'exa']}}})
+    )
     assert cfg.role_servers(RESEARCH) == {'xai': XAI, 'exa': EXA}
     assert cfg.role_servers(IMPLEMENTER) == {}, 'a role lists none by default'
-    with pytest.raises(ValidationError, match=re.escape("roles.implementer.mcp: no [mcp.<name>] table for ['nope']")):
-        CampaignConfig.model_validate(config(roles={'implementer': {'mcp': ['exa', 'nope']}}))
+    with pytest.raises(
+        ValidationError, match=re.escape("plugins.role.implementer.mcp: no [mcp.<name>] table for ['nope']")
+    ):
+        CampaignConfig.model_validate(
+            config(plugins={'harness': MODELS, 'role': {'implementer': {'mcp': ['exa', 'nope']}}})
+        )
     with pytest.raises(ValidationError, match='String should match pattern'):
         CampaignConfig.model_validate(config(mcp={'a.b': OPEN.model_dump()}))
 
 
 def test_every_harness_a_role_with_servers_may_run_must_carry_them() -> None:
+    def with_plain(plain: Mapping[str, object], **role: object) -> dict[str, object]:
+        harness = {'use': ['claude', 'plain'], 'claude': {'model': 'c'}, 'plain': {'model': 'p', **plain}}
+        return config(plugins={'harness': harness, 'role': {'watchdog': role}})
+
     plain = {'executable': 'x', 'headless': ['{prompt}']}
-    custom = config(harnesses=['claude', 'plain'], model={'claude': 'c', 'plain': 'p'}, harness={'plain': plain})
+    custom = with_plain(plain)
     assert CampaignConfig.model_validate(custom).harnesses == ['claude', 'plain'], 'no role lists a server: any will do'
     with pytest.raises(
         ValidationError,
         match=re.escape("harness 'plain': it takes no MCP servers"),
     ):
-        CampaignConfig.model_validate(custom | {'roles': {'watchdog': {'mcp': ['exa']}}})
+        CampaignConfig.model_validate(with_plain(plain, mcp=['exa']))
     without = {'provider': 'claude', 'executable': 'x', 'headless': ['--session-id', '{session_id}', '{prompt}']}
     with pytest.raises(ValidationError, match="harness 'plain': its headless argv has no {mcp} element"):
-        CampaignConfig.model_validate(custom | {'harness': {'plain': without}, 'roles': {'watchdog': {'mcp': ['exa']}}})
+        CampaignConfig.model_validate(with_plain(without, mcp=['exa']))
     extended = {'provider': 'pi', 'headless': ['--session-id', '{session_id}', MCP, '{prompt}']}
     with pytest.raises(ValidationError, match=re.escape("harness 'plain': pi takes MCP servers only with")):
-        CampaignConfig.model_validate(
-            custom | {'harness': {'plain': extended}, 'roles': {'watchdog': {'mcp': ['exa']}}}
-        )
+        CampaignConfig.model_validate(with_plain(extended, mcp=['exa']))
 
 
 def test_only_a_harness_that_takes_servers_has_an_mcp_element() -> None:

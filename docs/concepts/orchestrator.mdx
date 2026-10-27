@@ -25,11 +25,11 @@ runs without one. Run one orchestrator for each campaign: two would answer an es
 
 ## Let piloop launch it
 
-With the `news` trigger on `[roles.orchestrator]`, the daemon launches the orchestrator when news arrives, and nobody
+With the `news` trigger on `[plugins.role.orchestrator]`, the daemon launches the orchestrator when news arrives, and nobody
 needs to keep a session open:
 
 ```toml
-[roles.orchestrator]
+[plugins.role.orchestrator]
 triggers = [{ provider = "news" }]
 ```
 

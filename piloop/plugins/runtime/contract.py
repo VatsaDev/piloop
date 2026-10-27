@@ -2,7 +2,7 @@
 
 The daemon and the CLI depend only on the ``Runtime`` protocol, and never on the name of a runtime. To add a runtime
 (a container, a remote host), subclass ``RuntimeConfig``, whose ``open`` returns your ``Runtime``, and register the
-subclass with an entry point in the group of ``RUNTIMES``. Its fields are its settings, from ``[runtimes.<name>]`` of
+subclass with an entry point in the group of ``RUNTIMES``. Its fields are its settings, from ``[plugins.runtime.<name>]`` of
 ``config.toml``: they depend on the machine, not on the campaign.
 """
 
@@ -14,13 +14,13 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Protocol
+from typing import Annotated, ClassVar, Protocol
 
 from pydantic import BeforeValidator
 
 from piloop import deprecated
 from piloop.plugins.harness.contract import fill
-from piloop.plugins.host import Capability, Parameters
+from piloop.plugins.host import Capability, Many, Parameters, Pick, Scope, Use
 
 
 class ExitStatus(StrEnum):
@@ -183,18 +183,19 @@ def locked(log_dir: Path) -> Generator[None]:
 
 
 class RuntimeConfig(Parameters, ABC):
-    """A runtime, with its settings: ``[runtimes.<name>]`` of ``config.toml``.
+    """A runtime, with its settings on this machine: ``[plugins.runtime.<name>]`` of ``config.toml``.
 
-    Its name is ``runtime`` in ``piloop.toml``, and ``agent_sessions.runtime``.
+    ``[plugins.runtime] use`` of ``piloop.toml`` names the instance of a campaign, and ``agent_sessions.runtime`` that of
+    an agent.
     """
 
+    DEFAULT: ClassVar[bool] = False
+    """Whether a campaign that does not set ``[plugins.runtime] use`` uses this one. One installed runtime is. Only the class that
+    sets it is the default: a subclass is not (``is_default``)."""
+
     @abstractmethod
-    def open(self) -> Runtime:
-        """Make the runtime. Raise when it cannot run on this machine."""
-
-
-RUNTIMES = Capability('runtime', RuntimeConfig)
-"""Every runtime by name."""
+    def open(self, name: str) -> Runtime:
+        """Make the runtime of the instance ``name``. Raise when it cannot run on this machine."""
 
 
 def _not_removed(name: object) -> object:
@@ -203,5 +204,15 @@ def _not_removed(name: object) -> object:
     return name
 
 
-RuntimeName = Annotated[str, RUNTIMES.named, BeforeValidator(_not_removed)]
-"""The name of a registered runtime (``RUNTIMES``): ``subprocess``, or one that a package adds."""
+RUNTIMES = Capability(
+    'runtime',
+    RuntimeConfig,
+    table=Many(Scope.HOME, use=Use(Scope.CAMPAIGN, Pick.ONE, refuses=deprecated.removed_runtime)),
+)
+"""Every runtime by name. ``config.toml`` has their settings, and ``[plugins.runtime] use`` of ``piloop.toml`` picks
+the campaign's."""
+
+
+RuntimeName = Annotated[str, RUNTIMES.ref, BeforeValidator(_not_removed)]
+"""The name of a runtime of ``config.toml`` (``[plugins.runtime.<name>]``): ``subprocess``, or one that a package
+adds."""

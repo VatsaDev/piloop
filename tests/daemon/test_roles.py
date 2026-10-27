@@ -12,6 +12,7 @@ import pytest
 from covalence import Cas as Covalence
 from sqlalchemy import select
 
+from piloop import settings as settings_module
 from piloop.actor import System
 from piloop.agents.results import PromptOutcome
 from piloop.campaign import ops
@@ -44,6 +45,7 @@ from piloop.plugins import host as plugins_module
 from piloop.plugins.campaign_type.consumers import awake_roles, quiet_phase
 from piloop.plugins.cas.contract import CAS
 from piloop.plugins.executor.workers import Workers
+from piloop.plugins.harness.contract import HARNESSES
 from piloop.plugins.host import PluginError, compose
 from piloop.plugins.role.contract import ROLES
 from piloop.plugins.runtime.contract import RUNTIMES, Runtime
@@ -94,7 +96,7 @@ def scheduler(db: Database, make: RuntimeFactory, tmp_path: Path) -> Scheduler:
 def configure(db: Database, campaign: Campaign, harness_body: str, **roles: dict[str, object]) -> None:
     write_toml(Path(campaign.path), harness_body)
     with db.session() as s:
-        cfg = load_campaign_config(Path(campaign.path), roles=roles)
+        cfg = load_campaign_config(Path(campaign.path), plugins={'role': roles})
         s.get_one(Campaign, campaign.id).config = cfg
         s.commit()
 
@@ -116,7 +118,7 @@ def decide(db: Database, campaign: Campaign, body: str) -> None:
 def test_a_role_that_piloop_toml_defines_runs_on_its_sql_trigger_with_its_prompt_and_runtime(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, typed: None
 ) -> None:
-    """A ``[roles.reviewer]`` table with a ``sql`` trigger: each new decision requests one reviewer.
+    """A ``[plugins.role.reviewer]`` table with a ``sql`` trigger: each new decision requests one reviewer.
 
     The reviewer runs with its own prompt, in a worktree of its own, under its own runtime, one at a time.
     """
@@ -194,8 +196,8 @@ def test_a_role_adds_its_incident_prompt_to_an_incident_sweep_and_its_routine_pr
     incident, routine = ((tmp_path / 'agent_sessions' / str(w) / 'brief.md').read_text() for w in (1, 2))
     assert incident.startswith('# Triage\n\n## An incident\n\n# Demo') and '## Incidents to investigate' in incident
     assert routine.startswith('# Triage\n\n## A routine\n\n# Demo') and '## Research pack' in routine
-    with pytest.raises(ConfigError, match=r"roles\.triage\.routine_prompt = 'gone\.md': no such file"):
-        load_campaign_config(repo, roles={'triage': triage | {'routine_prompt': 'gone.md'}})
+    with pytest.raises(ConfigError, match=r"plugins\.role\.triage\.routine_prompt = 'gone\.md': no such file"):
+        load_campaign_config(repo, plugins={'role': {'triage': triage | {'routine_prompt': 'gone.md'}}})
 
 
 def test_a_role_that_defines_ideas_is_told_how_many_its_sweep_may_add(
@@ -257,7 +259,7 @@ def queue(db: Database, sched: Scheduler, campaign: Campaign) -> None:
 def test_a_role_that_does_runs_takes_its_ideas_with_its_own_prompt_and_its_commits_are_scored(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    """``[roles.quick]`` with ``runs = true`` takes the idea that ``takes`` selects, and the implementer takes the other one.
+    """``[plugins.role.quick]`` with ``runs = true`` takes the idea that ``takes`` selects, and the implementer takes the other one.
 
     The quick agent works with its own prompt in a new worktree at the run's base, and its commit is measured and
     judged.
@@ -311,7 +313,7 @@ def test_a_queued_run_of_a_role_that_piloop_toml_no_longer_has_fails_and_its_ide
         assert (run.status, run.end) == (RunStatus.FAILED, RunEnd.ROLE_REMOVED)
         assert (agent_session.state, agent_session.error) == (
             AgentSessionState.KILLED,
-            'no [roles.quick] in piloop.toml',
+            'no [plugins.role.quick] in piloop.toml',
         )
         assert idea.status is IdeaStatus.READY, 'the removed role was not an attempt at the idea'
     assert run_all(sched) == [2]
@@ -360,7 +362,7 @@ def test_a_request_for_a_role_that_piloop_toml_no_longer_has_is_refused(
     sched.stop(timeout=5)
     with db.session() as s:
         row = s.get_one(AgentSession, 1)
-    assert (row.state, row.error) == (AgentSessionState.KILLED, 'no [roles.reviewer] in piloop.toml')
+    assert (row.state, row.error) == (AgentSessionState.KILLED, 'no [plugins.role.reviewer] in piloop.toml')
 
 
 def test_a_note_on_a_sweep_that_has_not_started_is_in_its_brief_and_is_not_sent_again(
@@ -420,7 +422,9 @@ ENTRY_POINTS = [
 
 
 def forget_loaded() -> None:
+    """Forget the loaded plugins, and the instances of ``config.toml`` that the process validated with them."""
     plugins_module.close()
+    vars(settings_module.settings).pop('providers', None)
 
 
 def installed(monkeypatch: pytest.MonkeyPatch, entries: list[EntryPoint]) -> None:
@@ -464,7 +468,7 @@ def test_a_package_adds_a_role_and_triggers_through_entry_points(
     auditor = cfg.roles.sweeping()[RoleName('auditor')]
     assert (auditor.timeout, TRIGGERS.name_of(auditor.triggers[0])) == (5, 'every_pass')
     toml = Path(campaign.path) / 'piloop.toml'
-    toml.write_text(toml.read_text() + '\n[roles.auditor]\ntimeout = 9\n')
+    toml.write_text(toml.read_text() + '\n[plugins.role.auditor]\ntimeout = 9\n')
     assert load_campaign_config(Path(campaign.path)).roles.sweeping()[RoleName('auditor')].timeout == 9, (
         'the table goes over'
     )
@@ -531,13 +535,16 @@ def test_only_a_trigger_that_names_the_quiet_phase_fires_and_launches_while_its_
 MINIMAL = """
 name = "demo"
 evaluate = ["true"]
-model = {{ pi = "m" }}
-{roles}
 
 [[metrics]]
 name = "score"
 direction = "higher"
 role = "primary"
+
+[plugins.harness.pi]
+model = "m"
+
+{roles}
 """
 
 
@@ -545,18 +552,18 @@ def test_a_package_role_takes_its_defaults_and_a_roles_value_that_is_not_a_table
     campaign_path: Path, plugins: None
 ) -> None:
     toml = campaign_path / 'piloop.toml'
-    toml.write_text(MINIMAL.format(roles='[roles.auditor]'))
+    toml.write_text(MINIMAL.format(roles='[plugins.role.auditor]'))
     assert load_campaign_config(campaign_path).roles.sweeping()[RoleName('auditor')].timeout == 5, (
         'an empty table: the defaults'
     )
-    toml.write_text(MINIMAL.format(roles='roles = { auditor = 3 }'))
-    with pytest.raises(ConfigError, match=r'roles\.auditor = 3: Input should be a valid dictionary'):
+    toml.write_text(MINIMAL.format(roles='[plugins.role]\nauditor = 3'))
+    with pytest.raises(ConfigError, match=r'plugins\.role\.auditor = 3: a role is a table'):
         load_campaign_config(campaign_path)
-    toml.write_text(MINIMAL.format(roles='roles = { mine = 3 }'))
-    with pytest.raises(ConfigError, match=r'roles\.mine = 3: a role is a table'):
+    toml.write_text(MINIMAL.format(roles='[plugins.role]\nmine = 3'))
+    with pytest.raises(ConfigError, match=r'plugins\.role\.mine = 3: a role is a table'):
         load_campaign_config(campaign_path)
-    toml.write_text(MINIMAL.format(roles='roles = 3'))
-    with pytest.raises(ConfigError, match=r'\n  roles = 3: a table of tables'):
+    toml.write_text(MINIMAL.format(roles='[plugins]\nrole = 3'))
+    with pytest.raises(ConfigError, match=r'\n  plugins\.role = 3: a table of tables'):
         load_campaign_config(campaign_path)
 
 
@@ -611,7 +618,7 @@ def test_example_plugins_replace_the_built_in_runtime_and_cas_through_the_config
 
     ``runtime = "nice"`` in piloop.toml and ``[plugins.cas] provider = "sqlite"`` in config.toml bind them in place of
     ``subprocess`` and of ``disk``. The daemon composes them before it starts, its agents start through ``nice`` at
-    the niceness of ``[runtimes.nice]``, and ``piloop plugins`` shows each binding with its package, its version and
+    the niceness of ``[plugins.runtime.nice]``, and ``piloop plugins`` shows each binding with its package, its version and
     where the choice comes from.
     """
     example(tmp_path / 'site', 'nice-runtime')
@@ -622,12 +629,14 @@ def test_example_plugins_replace_the_built_in_runtime_and_cas_through_the_config
     forget_loaded()
     write_toml(Path(campaign.path), HARNESS_NICENESS)
     with db.session() as s:
-        cfg = load_campaign_config(Path(campaign.path), runtime='nice', roles={'watchdog': {'runtime': 'nice'}})
+        cfg = load_campaign_config(
+            Path(campaign.path), plugins={'runtime': {'use': 'nice'}, 'role': {'watchdog': {'runtime': 'nice'}}}
+        )
         s.get_one(Campaign, campaign.id).config = cfg
         s.add(AgentSession(kind=WATCHDOG, campaign_id=campaign.id, reason='by hand'))
         s.commit()
     cas = f'[plugins.cas]\nprovider = "sqlite"\npath = "{tmp_path / "blobs.sqlite"}"\n'
-    (tmp_path / 'config.toml').write_text(f'{cas}[runtimes.nice]\nniceness = 5\n')
+    (tmp_path / 'config.toml').write_text(f'{cas}[plugins.runtime.nice]\nniceness = 5\n')
     home = Settings(home=tmp_path)
     assert isinstance(CAS.selected(home.providers).open(home.home), Covalence)
     daemon = Daemon(home)
@@ -655,18 +664,23 @@ def test_example_plugins_replace_the_built_in_runtime_and_cas_through_the_config
     store = f'CAS provider sqlite, from piloop-sqlite-cas 0.1.0 ([plugins.cas] provider, in {config})'
     stored = f'in the config of demo that the last `piloop init` stored from {toml}'
     nice = 'runtime nice, from piloop-nice 0.1.0'
+    research_model = f'[plugins.role.research] model, {stored}'
     assert lines[lines.index('selected:') + 1 :] == [
         f'  {store}',
-        f'  demo: {nice} (runtime, {stored})',
-        f'  demo watchdog: {nice} ([roles.watchdog] runtime, {stored})',
-        f'  demo fast: {nice} ([roles.fast] runtime, {stored})',
+        *(
+            f'  demo: harness provider {h}, from {HARNESSES.sources()[h].release} ({research_model})'
+            for h in ('claude', 'codex')
+        ),
+        f'  demo: {nice} ([plugins.runtime] use, {stored})',
+        f'  demo: {nice} ([plugins.role.watchdog] runtime, {stored})',
+        f'  demo: {nice} ([plugins.role.fast] runtime, {stored})',
     ]
     with db.session() as s:
         row = s.get_one(Campaign, campaign.id)
-        row.config = reconfigured(row.config, runtime='subprocess')
+        row.config = reconfigured(row.config, plugins={'runtime': {'use': 'subprocess'}})
         s.commit()
     built_in = RUNTIMES.sources()['subprocess'].release
-    assert selections(home)[1] == f'demo: runtime subprocess, from {built_in} (runtime, {stored})'
+    assert f'demo: runtime subprocess, from {built_in} ([plugins.runtime] use, {stored})' in selections(home)
     store_config(db, campaign.id, {})
     assert selections(home) == [store], 'a stored config that does not load binds nothing; piloop doctor says why'
     forget_loaded()
@@ -676,9 +690,11 @@ def test_a_runtime_that_is_not_registered_fails_with_the_registered_ones(campaig
     with pytest.raises(
         ConfigError,
         match=re.escape(
-            f"runtime = 'tmux': unknown runtime 'tmux'; registered runtimes: {', '.join(RUNTIMES.providers())}"
+            f"plugins.runtime.use[0] = 'tmux': no [plugins.runtime.tmux]; there are {', '.join(RUNTIMES.providers())}"
         ),
     ):
-        load_campaign_config(campaign_path, runtime='tmux')
-    with pytest.raises(ConfigError, match=r"roles.research.runtime = 'tmux': unknown runtime 'tmux'"):
-        load_campaign_config(campaign_path, roles={'research': {'runtime': 'tmux'}})
+        load_campaign_config(campaign_path, plugins={'runtime': {'use': 'tmux'}})
+    with pytest.raises(
+        ConfigError, match=re.escape("plugins.role.research.runtime = 'tmux': no [plugins.runtime.tmux]")
+    ):
+        load_campaign_config(campaign_path, plugins={'role': {'research': {'runtime': 'tmux'}}})

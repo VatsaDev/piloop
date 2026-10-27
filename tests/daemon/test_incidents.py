@@ -162,8 +162,10 @@ def test_no_idle_queue_while_nothing_may_start(db: Database, campaign: Campaign,
         p = s.get_one(Campaign, campaign.id)
         p.config = load_campaign_config(
             Path(campaign.path),
-            plugins={'stop_rule': {'max_runs': 2}} if held == 'max_runs' else {},
-            roles={'implementer': {'max_concurrent': 4}},
+            plugins={
+                'role': {'implementer': {'max_concurrent': 4}},
+                **({'stop_rule': {'max_runs': 2}} if held == 'max_runs' else {}),
+            },
         )
         p.status = CampaignStatus.STOPPED if held == 'stopped' else p.status
         p.paused = Pause.LAUNCHES if held == 'paused' else None

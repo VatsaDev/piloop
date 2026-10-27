@@ -71,7 +71,7 @@ def configure(db: Database, campaign: Campaign, harness_body: str = HARNESS_NOOP
     """Rewrite the campaign's harness script and role settings (merged over the test toml)."""
     write_toml(Path(campaign.path), harness_body)
     with db.session() as s:
-        cfg = load_campaign_config(Path(campaign.path), roles=roles)
+        cfg = load_campaign_config(Path(campaign.path), plugins={'role': roles})
         s.get_one(Campaign, campaign.id).config = cfg
         s.commit()
 
@@ -551,15 +551,17 @@ def test_low_water_sizes_the_batch_to_the_shortfall_net_of_the_sweeps_in_flight(
     script = {'executable': str(tmp_path / 'harness.sh'), 'headless': ['{prompt}']}
     cfg = load_campaign_config(
         Path(campaign.path),
-        harness={'b': script, 'c': script},
-        roles={
-            'implementer': {'max_concurrent': 5},
-            'research': {
-                'harnesses': ['script', 'b', 'c'],
-                'model': {'b': 'mb', 'c': 'mc'},
-                'max_concurrent': 4,
-                'max_ideas': 2,
-                'triggers': low_water(1),
+        plugins={
+            'harness': {'b': {**script}, 'c': {**script}},
+            'role': {
+                'implementer': {'max_concurrent': 5},
+                'research': {
+                    'harnesses': ['script', 'b', 'c'],
+                    'model': {'b': 'mb', 'c': 'mc'},
+                    'max_concurrent': 4,
+                    'max_ideas': 2,
+                    'triggers': low_water(1),
+                },
             },
         },
     )
@@ -658,7 +660,7 @@ def test_low_water_wants_no_more_ideas_than_max_runs_leaves_to_run(
     release = tmp_path / 'release'
     write_toml(Path(campaign.path), BLOCKING.format(release=release))
     cfg = load_campaign_config(
-        Path(campaign.path), roles={'research': {'max_ideas': 1}}, plugins={'stop_rule': {'max_runs': 3}}
+        Path(campaign.path), plugins={'role': {'research': {'max_ideas': 1}}, 'stop_rule': {'max_runs': 3}}
     )
     with db.session() as s:
         s.get_one(Campaign, campaign.id).config = cfg

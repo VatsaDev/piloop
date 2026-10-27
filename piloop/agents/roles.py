@@ -1,6 +1,6 @@
 """The briefs of the roles: the prompt, the context and what the agent may write (https://piloop.autoresearch.inc/concepts/roles).
 
-Every role shares one lifecycle (``piloop.agents.launcher``). A role differs in its ``[roles.<name>]`` table
+Every role shares one lifecycle (``piloop.agents.launcher``). A role differs in its ``[plugins.role.<name>]`` table
 (``piloop.plugins.role``), its triggers (``piloop.plugins.trigger``) and the content of its brief, which this module composes.
 """
 
@@ -32,7 +32,7 @@ SQL_HINT = f'{PILOOP_HINT} sql'
 class Role:
     """The part of a brief that changes with the role. ``Launcher.launch`` does everything else.
 
-    It comes from the role's ``[roles.<kind>]`` table (``role``).
+    It comes from the role's ``[plugins.role.<kind>]`` table (``role``).
     """
 
     kind: RoleName
@@ -79,7 +79,7 @@ IDEAS: dict[Files, str] = {
 
 
 def role(cfg: CampaignConfig, kind: RoleName, repo: Path) -> Role:
-    """Return the role of ``[roles.<kind>]`` in a campaign at ``repo``.
+    """Return the role of ``[plugins.role.<kind>]`` in a campaign at ``repo``.
 
     Raises:
         KeyError: ``piloop.toml`` has no such role.

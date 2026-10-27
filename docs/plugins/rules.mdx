@@ -183,7 +183,7 @@ url = "https://billing.example.com/campaigns/enwik8"
 `hold_at = { spend = 1000 }` then holds the campaign at that spend.
 
 A fact source is a provider of `FACT_SOURCES`, a subclass of `FactSource`. `[[facts]]` lists a campaign's sources; a
-campaign that does not list them has every installed source that is on by default (`ON_BY_DEFAULT`): `campaign`, the
+campaign that does not list them has every installed source that is on by default (`DEFAULT`): `campaign`, the
 hours and tokens of any campaign, and `optimization`, its research. A list that adds a source lists those too. Two
 sources never supply the same fact.
 

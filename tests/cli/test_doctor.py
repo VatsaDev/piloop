@@ -17,7 +17,6 @@ from sqlalchemy import create_engine
 from piloop.actor import System
 from piloop.cli import doctor, skills, upgrade
 from piloop.cli.doctor import checks, report
-from piloop.config import CampaignConfig
 from piloop.db.models import Campaign
 from piloop.db.schema import CORE
 from piloop.db.session import Database, described, heads, migrate
@@ -176,10 +175,9 @@ def test_a_campaign_whose_toml_is_gone_invalid_or_whose_stored_copy_no_longer_va
     store_config(db, campaign.id, {'name': 'demo'})
     assert by_name(cfg)['campaign demo'] == Check(
         'campaign demo',
-        'its stored copy (campaigns.config, what the daemon schedules from) is not a valid piloop config (3 problem(s)):\n'
+        'its stored copy (campaigns.config, what the daemon schedules from) is not a valid piloop config (2 problem(s)):\n'
         '  metrics: Field required. Fix: add the key; https://piloop.autoresearch.inc/reference/configuration says what it takes\n'
-        '  evaluate: Field required. Fix: add the key; https://piloop.autoresearch.inc/reference/configuration says what it takes\n'
-        '  model: Field required. Fix: add the key; https://piloop.autoresearch.inc/reference/configuration says what it takes',
+        '  evaluate: Field required. Fix: add the key; https://piloop.autoresearch.inc/reference/configuration says what it takes',
         f'`piloop init {campaign.path}`',
     )
     assert by_name(cfg)['harnesses'].found == 'on PATH: none configured', 'no valid stored config, no harness to check'
@@ -239,12 +237,15 @@ def test_a_secret_that_a_stopped_campaign_lacks_is_a_warning(
 def test_a_missing_harness_is_named(cfg: Settings, db: Database, campaign: Campaign) -> None:
     with db.session() as s:
         row = s.get_one(Campaign, campaign.id)
-        row.config = reconfigured(row.config, harnesses=['script', 'codex'], model={'script': 'm', 'codex': 'm'})
+        row.config = reconfigured(
+            row.config,
+            plugins={'harness': {'use': ['script', 'codex'], 'script': {'model': 'm'}, 'codex': {'model': 'm'}}},
+        )
         s.commit()
     assert by_name(cfg)['harnesses'] == Check(
         'harnesses',
         'not on PATH: codex (codex)',
-        'install them, or take them out of `harnesses` in piloop.toml and `piloop init` the campaign',
+        'install them, or take them out of `[plugins.harness] use` in piloop.toml and `piloop init` the campaign',
     )
 
 
@@ -329,9 +330,11 @@ def give_watchdog(
     script = {'provider': 'claude', 'executable': 'script', 'headless': ['{mcp}', '{prompt}'], 'env': dict(env or {})}
     with db.session() as s:
         row = s.get_one(Campaign, campaign.id)
-        roles = CampaignConfig.model_validate(row.config).roles.model_dump(mode='json')
-        roles['watchdog']['mcp'] = list(servers)
-        row.config = reconfigured(row.config, mcp=dict(servers), harness={'script': script}, roles=roles)
+        row.config = reconfigured(
+            row.config,
+            mcp=dict(servers),
+            plugins={'harness': {'script': script}, 'role': {'watchdog': {'mcp': list(servers)}}},
+        )
         s.commit()
 
 

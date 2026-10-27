@@ -18,17 +18,21 @@ from sqlalchemy.orm import Session
 from piloop.cli import common, doctor
 from piloop.cli.main import app
 from piloop.cli.plugins import selections
-from piloop.config import ConfigError, load_campaign_config
+from piloop.config import CampaignConfig, ConfigError, load_campaign_config
 from piloop.daemon.main import Daemon
 from piloop.db.models import Campaign
 from piloop.db.session import Database
 from piloop.plugins import host as plugins
 from piloop.plugins.cas.contract import CAS
 from piloop.plugins.executor.workers import Workers
+from piloop.plugins.harness.claude import Claude
+from piloop.plugins.harness.contract import HARNESSES, HarnessName
 from piloop.plugins.host import (
     Capability,
-    Choice,
+    ContractBroken,
+    Instances,
     MissingProvider,
+    One,
     Parameters,
     PluginError,
     PythonSource,
@@ -36,27 +40,30 @@ from piloop.plugins.host import (
     Tier,
     compose,
     data_errors,
+    is_default,
+    refs,
 )
 from piloop.plugins.metric import Direction
 from piloop.plugins.role.contract import ROLES, SweepRole
-from piloop.plugins.runtime.contract import RUNTIMES
+from piloop.plugins.runtime.contract import RUNTIMES, RuntimeName
 from piloop.plugins.runtime.subprocess import Subprocess
 from piloop.plugins.trigger.contract import TRIGGERS
 from piloop.plugins.verdict_rule.bootstrap import Bootstrap
 from piloop.plugins.verdict_rule.contract import VERDICT_RULES, Case, Criterion, Judgement, Outcome, Side, VerdictRule
-from piloop.runtime.factory import RUNTIME_TABLES, make_runtime
+from piloop.runtime.factory import make_runtime, runtimes
 from piloop.settings import HOME_PLUGINS, Settings
 from tests.conftest import example, package
-from tests.daemon.test_roles import PLUGIN, installed
-from tests.fixtures.plugin import Checked, EveryPass, NoUnitRegression, Typed
+from tests.daemon.test_roles import PLUGIN, forget_loaded, installed
+from tests.fixtures.plugin import Checked, EveryPass, Needy, NoUnitRegression, Typed
+from tests.test_docs import BASE_CONFIG
 
 
 @pytest.fixture(autouse=True)
 def unloaded() -> Iterator[None]:
     """Start and end each test with nothing loaded, so that the entry points of the test are the ones loaded."""
-    plugins.close()
+    forget_loaded()
     yield
-    plugins.close()
+    forget_loaded()
 
 
 def test_an_installed_package_mounts_its_runtime_and_shows_where_it_comes_from(
@@ -91,14 +98,21 @@ def test_the_runtimes_of_config_toml_hold_every_runtime_with_its_settings(
 ) -> None:
     example(tmp_path, 'nice-runtime')
     monkeypatch.syspath_prepend(tmp_path)
-    tables = RUNTIME_TABLES.validate_python({'nice': {'niceness': 5}})
+    plugins = HOME_PLUGINS.validate_python({'runtime': {'nice': {'niceness': 5}}})
+    tables = RUNTIMES.instances(plugins)
     assert tables == {'subprocess': Subprocess(), 'nice': Nice(niceness=5)}, 'every runtime, over its defaults'
-    assert RUNTIME_TABLES.validate_python(tables) == tables
-    assert RUNTIME_TABLES.dump_python(tables) == {'subprocess': {}, 'nice': {'niceness': 5}}
-    with pytest.raises(ValidationError, match=r'\nnice\.niceness\n  Input should be a valid integer'):
-        RUNTIME_TABLES.validate_python({'nice': {'niceness': 'low'}})
+    assert HOME_PLUGINS.validate_python(plugins) == plugins
+    assert HOME_PLUGINS.dump_python(plugins) == {'runtime': {'subprocess': {}, 'nice': {'niceness': 5}}}
+    home = Settings(home=tmp_path, plugins={'runtime': {'fast': {'provider': 'nice', 'niceness': 1}}})
+    assert runtimes(home)['fast'] == Nice(niceness=1), 'a table with a new name and a provider'
+    fast = make_runtime('fast', home)
+    assert isinstance(fast, NiceRuntime) and fast.name == 'fast', 'the runtime reports the name of its instance'
+    with pytest.raises(MissingProvider, match="no runtime 'slow' on this machine; there are: subprocess, nice, fast"):
+        make_runtime('slow', home)
+    with pytest.raises(ValidationError, match=r'\nruntime\.nice\.niceness\n  Input should be a valid integer'):
+        HOME_PLUGINS.validate_python({'runtime': {'nice': {'niceness': 'low'}}})
     with pytest.raises(ValidationError, match='a table of tables'):
-        RUNTIME_TABLES.validate_python(3)
+        HOME_PLUGINS.validate_python({'runtime': 3})
 
 
 def test_two_packages_with_the_same_name_fail_before_the_daemon_starts(
@@ -132,9 +146,9 @@ def test_two_packages_with_the_same_name_fail_before_the_daemon_starts(
     ('config', 'error'),
     [
         (
-            '[runtimes.tmux]\nx = 1\n',
-            r'config.toml: 1 validation error for \[runtimes\]\ntmux\n  Value error, no runtime has that name; registered'
-            r' runtimes: subprocess',
+            '[plugins.runtime.tmux]\nx = 1\n',
+            r'config.toml: 1 validation error for \[plugins\]\nruntime\.tmux\n  Value error, no runtime has that name: add'
+            r' provider = "<runtime>"; registered runtimes: subprocess',
         ),
         (
             '[plugins.cas]\nprovider = "azure"\n',
@@ -335,7 +349,7 @@ def test_a_pure_plugin_is_installed_selected_by_config_and_answers_with_data(
         ({'verdict_rule': {'provider': 'min_gain'}}, 'min_gain: Field required'),
         (
             {'planner': {'provider': 'min_gain'}},
-            'plugins.planner: no capability has that name; there is memory, stop_rule, vcs, verdict_rule',
+            'plugins.planner: no capability has that name; there is harness, memory, role, runtime, stop_rule, vcs, verdict_rule',
         ),
         (
             {'verdict_rule': {'provider': 'bootstrap', 'min_gain': 2}},
@@ -457,7 +471,7 @@ def test_a_plugin_declares_a_capability_calls_its_providers_and_another_package_
         ],
     )
     checks = next(c for c in plugins.declared() if c.name == 'verdict_check')
-    assert (checks.tier, checks.group, checks.choice) == (Tier.PURE, 'piloop.verdict_checks', None)
+    assert (checks.tier, checks.group, checks.table) == (Tier.PURE, 'piloop.verdict_checks', None)
     with pytest.raises(
         ConfigError, match=re.escape("unknown verdict check 'none'; registered verdict checks: no_unit")
     ):
@@ -496,7 +510,7 @@ class Extra(Parameters):
     """The contract of a capability of the home that a plugin declares."""
 
 
-EXTRAS = Capability('extra', Extra, choice=Choice(Scope.HOME), group='piloop.example.extras')
+EXTRAS = Capability('extra', Extra, table=One(Scope.HOME), group='piloop.example.extras')
 """A capability of the home that a plugin declares, which nothing selects by default."""
 
 
@@ -524,12 +538,15 @@ class Unregistered(Bootstrap):
 
 def test_a_capability_selects_the_table_of_its_file_else_its_default_else_nothing() -> None:
     workers = Workers(renew_seconds=5, grace_seconds=40)
-    assert HOME_PLUGINS.validate_python({'executor': workers}) == {'executor': workers}
+    assert HOME_PLUGINS.validate_python({'executor': workers}) == {
+        'executor': workers,
+        'runtime': Instances(RUNTIMES, (), {'subprocess': Subprocess()}),
+    }, 'a capability of several instances has those of its providers that need no keys, and no use in config.toml'
     with pytest.raises(ValidationError, match=r'\[plugins\] is a table of tables'):
         HOME_PLUGINS.validate_python(1)
     with pytest.raises(MissingProvider, match=r'^Unregistered is no verdict rule of an entry point$'):
         VERDICT_RULES.name_of(Unregistered())
-    chosen = Capability('odd', Parameters, choice=Choice(Scope.CAMPAIGN))
+    chosen = Capability('odd', Parameters, table=One(Scope.CAMPAIGN))
     with pytest.raises(MissingProvider, match=r'^no \[plugins.odd\] chooses a odd, and there is no default$'):
         chosen.selected({})
     with pytest.raises(ValueError, match='^provider: missing; registered odds: $'):
@@ -538,3 +555,86 @@ def test_a_capability_selects_the_table_of_its_file_else_its_default_else_nothin
 
 def test_a_role_takes_trigger_objects_as_its_defaults_do() -> None:
     assert SweepRole(prompt='p.md', triggers=[EveryPass()]).triggers == [EveryPass()]
+
+
+def test_only_the_class_that_sets_default_is_a_default_and_a_campaign_has_one_default_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A subclass of a default provider inherits its code, not its place among the defaults."""
+    installed(monkeypatch, [EntryPoint('typed', f'{PLUGIN}:Typed', RUNTIMES.group)])
+    assert (is_default(Subprocess), is_default(Typed)) == (True, False)
+    assert RUNTIMES.used({}) == ('subprocess',), 'Typed subclasses Subprocess, and is no second default'
+    assert HARNESSES.used({}) == ('pi',)
+    installed(monkeypatch, [EntryPoint('also', f'{PLUGIN}:AlsoDefault', RUNTIMES.group)])
+    with pytest.raises(ContractBroken, match='^one installed runtime is DEFAULT, not 2: subprocess, also$'):
+        RUNTIMES.used({})
+    installed(monkeypatch, [])
+    monkeypatch.setattr(Subprocess, 'DEFAULT', False)
+    with pytest.raises(ContractBroken, match='^one installed runtime is DEFAULT, not 0: none$'):
+        RUNTIMES.used({})
+    forget_loaded()
+
+
+class Inner(BaseModel):
+    runtime: RuntimeName
+
+
+class Referring(BaseModel):
+    """A model with references at every depth that ``refs`` walks."""
+
+    one: HarnessName
+    maybe: HarnessName | None = None
+    rotation: tuple[HarnessName, ...] = ()
+    by: dict[HarnessName, list[RuntimeName]] = {}
+    inner: Inner | None = None
+    plain: str = 'not a reference'
+
+
+def test_refs_finds_each_name_of_an_instance_and_where_it_is() -> None:
+    model = Referring(
+        one='pi', rotation=('claude', 'codex'), by={'pi': ['subprocess']}, inner=Inner(runtime='subprocess')
+    )
+    found = [(r.capability.name, r.name, r.at) for r in refs(model)]
+    assert found == [
+        ('harness', 'pi', ('one',)),
+        ('harness', 'claude', ('rotation', 0)),
+        ('harness', 'codex', ('rotation', 1)),
+        ('harness', 'pi', ('by',)),
+        ('runtime', 'subprocess', ('by', 'pi', 0)),
+        ('runtime', 'subprocess', ('inner', 'runtime')),
+    ]
+    roles = refs(CampaignConfig.model_validate(BASE_CONFIG))
+    assert ('harness', 'claude', ('plugins', 'role', 'research', 'model')) in [
+        (r.capability.name, r.name, r.at) for r in roles
+    ], 'the instances of [plugins] too'
+
+
+def test_the_instances_of_a_capability_of_several_by_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    eu = HARNESSES.validated_instances({'eu': {'provider': 'claude', 'model': 'm'}, 'claude': Claude(model='c')})
+    assert (type(eu['eu']), eu['eu'].model, eu['claude'].model) == (Claude, 'm', 'c'), (
+        'a new name with a provider is that provider; an instance is itself'
+    )
+    assert HARNESSES.dumped_instance('eu', eu['eu'], 'json') == {'provider': 'claude', 'model': 'm'}
+    assert HARNESSES.dumped_instance('claude', eu['claude'], 'json') == {'model': 'c'}, 'its own name: no provider'
+    plain = HARNESSES.validated_instances({'plain': {'executable': 'x', 'headless': ['{prompt}']}})['plain']
+    assert HARNESSES.dumped_instance('plain', plain, 'json') == {'executable': 'x', 'headless': ['{prompt}']}
+    with pytest.raises(ValueError, match='^a table of tables, one for each instance by its name$'):
+        HARNESSES.validated_instances(3)
+    with pytest.raises(ValidationError, match=r'\nx\n  Value error, a harness provider is a table'):
+        HARNESSES.validated_instances({'x': 3})
+    with pytest.raises(ContractBroken, match=r'^\[plugins.harness\] is not a table of harness providers$'):
+        HARNESSES.instances({'harness': 3})
+    assert list(HARNESSES.instances({})) == ['claude', 'codex', 'pi'], 'unvalidated: the providers with their defaults'
+    with pytest.raises(ContractBroken, match=r'^the roles have no \[plugins.role\] use$'):
+        ROLES.used({})
+    with pytest.raises(ContractBroken, match='^the verdict rules are not of several instances$'):
+        VERDICT_RULES.instances({})
+    with pytest.raises(ValidationError, match='use of the runtimes is not set in this file'):
+        HOME_PLUGINS.validate_python({'runtime': {'use': 'subprocess'}})
+    installed(monkeypatch, [EntryPoint('needy', f'{PLUGIN}:Needy', RUNTIMES.group)])
+    assert list(RUNTIMES.instances(HOME_PLUGINS.validate_python({}))) == ['subprocess'], (
+        'a provider that needs keys is an instance only through a table'
+    )
+    needy = RUNTIMES.instances(HOME_PLUGINS.validate_python({'runtime': {'needy': {'level': 2}}}))
+    assert needy['needy'] == Needy(level=2)
+    forget_loaded()

@@ -690,7 +690,7 @@ class Campaigns:
             AgentSession.kind.not_in(all_roles),
         )
         for agent_session in s.scalars(unknown):
-            close(s, agent_session, f'no [roles.{agent_session.kind}] in piloop.toml', self._tracer)
+            close(s, agent_session, f'no [plugins.role.{agent_session.kind}] in piloop.toml', self._tracer)
             self._planner(campaign).ended(s, agent_session, RunEnd.ROLE_REMOVED)
         full = full_harnesses(s, campaign, cfg)
         for kind, rc in all_roles.items():
@@ -787,7 +787,7 @@ class Campaigns:
 
         The context of the brief has the daemon's lines (the checkout, the workspace), then the role's own
         (``SweepRole.context``), then the notes on the row so far, which it gets here and not again, then the role's
-        sections (``[roles.<name>] sections``). A sweep that got anomalies is
+        sections (``[plugins.role.<name>] sections``). A sweep that got anomalies is
         an incident sweep: its sections read them (``Rendering.given``), and the brief adds the role's incident prompt.
         Every other sweep's brief adds the role's routine prompt. The watchdog's are its incident sweep and its
         progress review. Nothing that a sweep commits is scored. In a worktree at the head, the commits are removed

@@ -22,12 +22,14 @@ pytestmark = pytest.mark.e2e
 AGENTS = 2
 """The agent slots of the pool ``serve``."""
 CONFIG = {
-    'roles': {
-        'implementer': {'max_concurrent': 4, 'timeout': 600},
-        'research': {'triggers': []},
-        'watchdog': {'triggers': []},
+    'plugins': {
+        'role': {
+            'implementer': {'max_concurrent': 4, 'timeout': 600},
+            'research': {'triggers': []},
+            'watchdog': {'triggers': []},
+        },
+        'stop_rule': {'max_runs': 5, 'max_hours': 1, 'max_tokens': 20_000_000},
     },
-    'plugins': {'stop_rule': {'max_runs': 5, 'max_hours': 1, 'max_tokens': 20_000_000}},
 }
 OTHERS = ('enwik8-b', 'enwik8-c')
 """The two campaigns that join the first one's home."""

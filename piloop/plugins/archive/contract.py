@@ -20,7 +20,7 @@ from piloop.ids import TargetRef
 from piloop.otel import Tracer
 from piloop.plugins.cas.contract import Cas
 from piloop.plugins.contribution import Contributes, Contribution
-from piloop.plugins.host import Capability, Choice, Parameters, Scope
+from piloop.plugins.host import Capability, One, Parameters, Scope
 from piloop.store.tree import Materialised
 
 CONSUMER: Final = 'archiver'
@@ -100,6 +100,6 @@ class ArchiveConfig(Parameters, ABC):
         """What the archive holds and what waits for its archiving, for ``piloop store status``."""
 
 
-ARCHIVES = Capability('archive', ArchiveConfig, choice=Choice(Scope.HOME, default='local'), noun='archive provider')
+ARCHIVES = Capability('archive', ArchiveConfig, table=One(Scope.HOME, default='local'), noun='archive provider')
 """Every archive provider by name. ``local``, built in and the default, records each archiving in the home's
 database."""

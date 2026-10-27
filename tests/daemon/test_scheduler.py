@@ -351,9 +351,10 @@ def test_harness_rotation_and_pinning(db: Database, campaign: Campaign, runtime:
     write_toml(Path(campaign.path), '#!/bin/sh\ntrue\n')
     cfg = load_campaign_config(
         Path(campaign.path),
-        harnesses=['script', 'pi'],
-        model={'script': 'm', 'pi': 'p'},
-        roles={'implementer': {'max_concurrent': 3}},
+        plugins={
+            'harness': {'use': ['script', 'pi'], 'script': {'model': 'm'}, 'pi': {'model': 'p'}},
+            'role': {'implementer': {'max_concurrent': 3}},
+        },
     )
     with db.session() as s:
         s.get_one(Campaign, campaign.id).config = cfg
@@ -380,10 +381,14 @@ def test_a_harness_at_its_cap_passes_its_turn_and_an_idea_pinned_to_it_waits(
     set_config(
         db,
         campaign,
-        harnesses=['script', 'pi'],
-        model={'script': 'm', 'pi': 'p'},
-        max_concurrent={'script': 1, 'pi': 2},
-        roles={'implementer': {'max_concurrent': 5}},
+        plugins={
+            'harness': {
+                'use': ['script', 'pi'],
+                'script': {'model': 'm', 'max_concurrent': 1},
+                'pi': {'model': 'p', 'max_concurrent': 2},
+            },
+            'role': {'implementer': {'max_concurrent': 5}},
+        },
     )
     a, b, c, d = add_ideas(db, campaign, 'a', 'b', 'c', 'd')
     (pinned,) = add_ideas(db, campaign, 'pinned', harness='script', priority=0)
@@ -410,10 +415,10 @@ def test_a_sweep_passes_over_a_harness_at_its_cap_and_a_pinned_one_stays_request
     set_config(
         db,
         campaign,
-        harnesses=['script', 'pi'],
-        model={'script': 'm', 'pi': 'p'},
-        max_concurrent={'script': 1},
-        roles={'watchdog': {'harnesses': ['script', 'pi'], 'max_concurrent': 4}},
+        plugins={
+            'harness': {'use': ['script', 'pi'], 'script': {'model': 'm', 'max_concurrent': 1}, 'pi': {'model': 'p'}},
+            'role': {'watchdog': {'harnesses': ['script', 'pi'], 'max_concurrent': 4}},
+        },
     )
     with db.session() as s:
         rows = [AgentSession(kind=WATCHDOG, campaign_id=campaign.id, reason='by hand') for _ in range(3)]
@@ -442,9 +447,10 @@ def test_a_queued_run_whose_harness_left_the_rotation_launches_on_the_new_one_un
     set_config(
         db,
         campaign,
-        harnesses=['script'],
-        model={'script': 'm', 'pi': 'p'},
-        roles={'implementer': {'max_concurrent': 3}},
+        plugins={
+            'harness': {'use': ['script'], 'script': {'model': 'm'}, 'pi': {'model': 'p'}},
+            'role': {'implementer': {'max_concurrent': 3}},
+        },
     )
     a, b = add_ideas(db, campaign, 'a', 'b')
     (pinned,) = add_ideas(db, campaign, 'pinned', harness='script')
@@ -456,10 +462,10 @@ def test_a_queued_run_whose_harness_left_the_rotation_launches_on_the_new_one_un
     set_config(
         db,
         campaign,
-        harnesses=['pi'],
-        model={'script': 'm', 'pi': 'p'},
-        max_concurrent={'pi': 1},
-        roles={'implementer': {'max_concurrent': 3}},
+        plugins={
+            'harness': {'use': ['pi'], 'script': {'model': 'm'}, 'pi': {'model': 'p', 'max_concurrent': 1}},
+            'role': {'implementer': {'max_concurrent': 3}},
+        },
     )
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
@@ -518,7 +524,7 @@ def test_a_pin_is_honored_over_the_after_link_and_the_run_records_both_bases(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
     """A pin to an older candidate wins over the ``after`` link, and ``run.queued`` records both bases."""
-    set_config(db, campaign, roles={'implementer': {'max_concurrent': 2}})
+    set_config(db, campaign, plugins={'role': {'implementer': {'max_concurrent': 2}}})
     (done,) = add_ideas(db, campaign, 'prerequisite', status=IdeaStatus.DONE)
     (branch,) = add_ideas(db, campaign, 'branch from the baseline', after=(done,))
     (missing,) = add_ideas(db, campaign, 'pinned to nothing', priority=3)
@@ -581,7 +587,7 @@ def test_a_run_pinned_to_a_non_keep_is_a_branch_run_only_when_its_nearest_keep_i
     A pin that has the head's changes builds on the head too, whatever its nearest keep. Here
     a compose off the baseline repeats the head's change. Its run is a trunk run, so its keep can move the head.
     """
-    set_config(db, campaign, roles={'implementer': {'max_concurrent': 3}})
+    set_config(db, campaign, plugins={'role': {'implementer': {'max_concurrent': 3}}})
     on_head, on_older, on_compose = add_ideas(
         db, campaign, 'on a note of the head', 'on a discard of the baseline', 'on a compose of the head'
     )
@@ -738,7 +744,7 @@ def test_a_prerequisite_that_ended_without_a_keep_parks_the_ideas_after_it_with_
 def test_low_water_does_not_count_blocked_ideas_as_backlog(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    set_config(db, campaign, roles={'research': {'max_ideas': 1, 'max_concurrent': 1, 'timeout': 20}})
+    set_config(db, campaign, plugins={'role': {'research': {'max_ideas': 1, 'max_concurrent': 1, 'timeout': 20}}})
     (gate,) = add_ideas(db, campaign, 'gate', status=IdeaStatus.PROPOSED)
     add_ideas(db, campaign, 'behind the gate', after=(gate,))
     scheduler = make_scheduler(db, runtime, tmp_path)
@@ -1166,7 +1172,7 @@ def test_a_cut_run_whose_role_allows_no_requeue_keeps_its_base_and_a_known_tree_
     write_toml(Path(campaign.path), harness, implementer_timeout=60)
     with db.session() as s:
         s.get_one(Campaign, campaign.id).config = load_campaign_config(
-            Path(campaign.path), roles={'implementer': {'recovery_requeues': 0}}
+            Path(campaign.path), plugins={'role': {'implementer': {'recovery_requeues': 0}}}
         )
         s.commit()
     (idea,) = add_ideas(db, campaign, 'long')
@@ -2526,7 +2532,7 @@ def explore_setup(db: Database, campaign: Campaign, explore_every: int) -> tuple
     The ideas are an urgent one, one pinned to the head (a trunk run), and a someday one pinned to the baseline (a
     branch run).
     """
-    set_config(db, campaign, roles={'implementer': {'max_concurrent': 1, 'explore_every': explore_every}})
+    set_config(db, campaign, plugins={'role': {'implementer': {'max_concurrent': 1, 'explore_every': explore_every}}})
     (done,) = add_ideas(db, campaign, 'history', status=IdeaStatus.DONE)
     urgent, level, explore = (
         add_ideas(db, campaign, t, priority=p)[0] for t, p in (('urgent', 0), ('level', 1), ('explore', 4))
@@ -2616,7 +2622,7 @@ def queue(db: Database, scheduler: Scheduler, campaign: Campaign) -> list[tuple[
 def test_a_free_slot_goes_to_the_track_furthest_below_its_share_whatever_the_priorities(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    set_config(db, campaign, roles={'implementer': {'max_concurrent': 4}}, **TWO_TRACKS)
+    set_config(db, campaign, plugins={'role': {'implementer': {'max_concurrent': 4}}}, **TWO_TRACKS)
     accuracy = add_ideas(db, campaign, 'a1', 'a2', 'a3', 'a4', priority=0, track='accuracy')
     (cost,) = add_ideas(db, campaign, 'c1', priority=3, track='cost')
     queued = queue(db, make_scheduler(db, runtime, tmp_path), campaign)
@@ -2634,7 +2640,7 @@ def test_a_free_slot_goes_to_the_track_furthest_below_its_share_whatever_the_pri
 def test_a_track_with_nothing_runnable_gives_its_slot_away(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    set_config(db, campaign, roles={'implementer': {'max_concurrent': 4}}, **TWO_TRACKS)
+    set_config(db, campaign, plugins={'role': {'implementer': {'max_concurrent': 4}}}, **TWO_TRACKS)
     accuracy = add_ideas(db, campaign, 'a1', 'a2', 'a3', 'a4', track='accuracy')
     queued = queue(db, make_scheduler(db, runtime, tmp_path), campaign)
     assert [idea for idea, _ in queued] == accuracy, 'no cost idea: its slot goes to accuracy'
@@ -2682,7 +2688,9 @@ def test_low_water_counts_each_track_short_of_its_share_whatever_the_others_hold
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
     research = {'triggers': low_water(0), 'max_ideas': 1}
-    set_config(db, campaign, roles={'implementer': {'max_concurrent': 4}, 'research': research}, **TWO_TRACKS)
+    set_config(
+        db, campaign, plugins={'role': {'implementer': {'max_concurrent': 4}, 'research': research}}, **TWO_TRACKS
+    )
     add_ideas(db, campaign, *(f'a{i}' for i in range(6)), track='accuracy')
     scheduler = make_scheduler(db, runtime, tmp_path)
     with db.session() as s:
@@ -2749,7 +2757,7 @@ def test_an_implementer_is_told_to_wrap_up_before_the_campaign_stops_when_that_c
     db: Database, campaign: Campaign, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A run that started minutes before a ``max_hours`` stop was cut by the stop, never told to wrap up."""
-    set_config(db, campaign, plugins={'stop_rule': {'max_hours': 0.25}}, roles={'implementer': {'timeout': 3600}})
+    set_config(db, campaign, plugins={'role': {'implementer': {'timeout': 3600}}, 'stop_rule': {'max_hours': 0.25}})
     runtime = PromptingRuntime()
     running_agent_session(db, campaign, 'late')
     lease_running(db)

@@ -518,7 +518,10 @@ def test_an_agent_whose_session_has_ended_leaves_no_finding(db: Database, tmp_pa
 def test_only_the_daemon_writes_an_agents_usage_and_session_file(con: sqlite3.Connection) -> None:
     """``usage`` loads as a ``Usage`` and ``session_file`` as a CID: an agent's UPDATE of either is denied, its other
     columns are not."""
-    sql.run(con, """INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', '{"roles": {"watchdog": {}}}')""")
+    sql.run(
+        con,
+        """INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', '{"plugins": {"role": {"watchdog": {}}}}')""",
+    )
     sql.run(con, "INSERT INTO agent_sessions (kind, campaign_id) VALUES ('watchdog', 1)")
     with pytest.raises(sqlite3.DatabaseError, match='not authorized'):
         sql.run(con, """UPDATE agent_sessions SET usage = '{"total": "many"}' WHERE id = 1""")

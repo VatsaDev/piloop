@@ -323,7 +323,7 @@ def _harnesses(configs: list[CampaignConfig]) -> Check:
         return Check(
             'harnesses',
             f'not on PATH: {", ".join(missing)}',
-            'install them, or take them out of `harnesses` in piloop.toml and `piloop init` the campaign',
+            'install them, or take them out of `[plugins.harness] use` in piloop.toml and `piloop init` the campaign',
         )
     return Check('harnesses', f'on PATH: {", ".join(sorted(executables.values())) or "none configured"}')
 

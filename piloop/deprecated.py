@@ -5,7 +5,8 @@ marker and fails once ``pyproject.toml`` reaches its release, so the code goes b
 
 A deprecated key still loads, with a warning, until that release. To deprecate a key, write a bridge: a function that
 takes the file path, the parsed TOML and the release that removes the key, changes the old key to the new form in place
-and calls ``warn`` with that release. Declare it with ``bridge``, which marks it as ``until`` does and registers it.
+and calls ``warn`` with that release. A key that only moved is a ``Move``: ``moved`` applies a list of them to the
+file and to its environment variables, and the revision that rewrites the stored copies applies the same list. Declare it with ``bridge``, which marks it as ``until`` does and registers it.
 Its docstring is its entry under "Deprecated keys" in the generated configuration reference
 (``docs/reference/configuration.mdx``). The release notes list it under ``Deprecated``.
 
@@ -20,7 +21,7 @@ role), one that would silently change nothing (a ``PILOOP_PROJECT_<KEY>`` variab
 import os
 import re
 import warnings
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol, assert_never
@@ -91,6 +92,127 @@ def bridge(version: str, reason: str, into: list[Bridge] = BRIDGES) -> Callable[
     return register
 
 
+@dataclass(frozen=True)
+class Move:
+    """A key that moved: ``old`` is ``new`` now. Both are dotted paths, and each ``*`` stands for one name, in order.
+
+    ``Move('roles.*', 'plugins.role.*')`` moves ``[roles.research]`` to ``[plugins.role.research]``, and
+    ``Move('model.*', 'plugins.harness.*.model')`` moves ``model = { claude = "…" }`` into each harness's table. A key
+    that ``new`` already sets keeps its value, and a table merges into the table at ``new`` key by key.
+    """
+
+    old: str
+    new: str
+
+    def apply(self, raw: dict[str, object]) -> list[str]:
+        """Move every key of ``raw`` that ``old`` matches, in place. Return the old keys, dotted, in the file's order.
+
+        A table that the move leaves empty goes too, and so does an empty table at the names, such as ``model = {}``.
+        """
+        found = list(_matches(raw, self.old.split('.'), ()))
+        for names in found:
+            value = _pop(raw, _filled(self.old, names))
+            _put(raw, _filled(self.new, names), value, wins=False)
+        head = self.old.partition('.*')[0].split('.')
+        if not found and next(_matches(raw, head, ()), None) is not None and _value(raw, head) == {}:
+            _pop(raw, head)
+            return ['.'.join(head)]
+        return ['.'.join(_filled(self.old, names)) for names in found]
+
+    def rebased(self, path: list[str]) -> list[str] | None:
+        """``path`` at its new place when ``old`` matches it or a table above it, else None. Names are not wildcards."""
+        old = self.old.split('.')
+        if len(path) < len(old) or any(o not in ('*', p) for o, p in zip(old, path, strict=False)):
+            return None
+        names = tuple(p for o, p in zip(old, path, strict=False) if o == '*')
+        return [*_filled(self.new, names), *path[len(old) :]]
+
+    def inverse(self) -> Move:
+        """The move back, for a downgrade."""
+        return Move(self.new, self.old)
+
+
+def moved(toml: Path, raw: dict[str, object], moves: Sequence[Move], env: str, removed_in: Version) -> None:
+    """Apply ``moves`` to the parsed file, and to the variables of its keys (``<env><KEY>__<KEY>``), with a warning.
+
+    A variable of an old key sets the new key, over the file, as the variable of the new key would.
+    """
+    for move in moves:
+        if found := move.apply(raw):
+            parts = found[0].split('.')
+            # an inline table sets none of its keys on a line of its own: warn at the key that holds it
+            key = next((k for n in range(len(parts), 0, -1) if _lines(toml, k := '.'.join(parts[:n]))), found[0])
+            warn(toml, key, f'{_written(move.old)} is deprecated; write {_written(move.new)}', removed_in=removed_in)
+        for name, value in sorted(os.environ.items()):
+            if not name.upper().startswith(env) or (path := move.rebased(name[len(env) :].lower().split('__'))) is None:
+                continue
+            _put(raw, path, value, wins=True)
+            new = env + '__'.join(path).upper()
+            warn(toml, name, f'{name} is deprecated; set {new}', removed_in=removed_in)
+
+
+def _written(path: str) -> str:
+    return f'`{path.replace("*", "<name>")}`'
+
+
+def _filled(pattern: str, names: tuple[str, ...]) -> list[str]:
+    """``pattern``'s parts, with ``names`` in place of its wildcards, in order."""
+    found = iter(names)
+    return [next(found) if part == '*' else part for part in pattern.split('.')]
+
+
+def _matches(table: object, parts: list[str], names: tuple[str, ...]) -> Iterator[tuple[str, ...]]:
+    """The names that fill the wildcards of each key of ``table`` that ``parts`` matches."""
+    if not parts:
+        yield names
+        return
+    if not isinstance(table, dict):
+        return
+    head, rest = parts[0], parts[1:]
+    for key in list(table) if head == '*' else [head] if head in table else []:
+        yield from _matches(table[key], rest, (*names, key) if head == '*' else names)
+
+
+def _value(raw: dict[str, object], path: list[str]) -> object:
+    """The value at ``path``, which ``_matches`` found."""
+    value: object = raw
+    for key in path:
+        assert isinstance(value, dict)  # _matches found a table on the way
+        value = value[key]
+    return value
+
+
+def _pop(raw: dict[str, object], path: list[str]) -> object:
+    """Remove the key at ``path`` and return its value. Remove each table above it that is left empty."""
+    parents = [raw]
+    for key in path[:-1]:
+        child = parents[-1][key]
+        assert isinstance(child, dict)  # _matches found a table on the way
+        parents.append(child)
+    value = parents[-1].pop(path[-1])
+    for parent, key in zip(reversed(parents[:-1]), reversed(path[:-1]), strict=True):
+        if parent[key] == {}:
+            del parent[key]
+    return value
+
+
+def _put(raw: dict[str, object], path: list[str], value: object, *, wins: bool) -> None:
+    """Set ``path`` to ``value``. A table merges into the table there, and the value that ``wins`` keeps its keys.
+
+    A value on the way that is not a table is left as it is: the validation refuses it.
+    """
+    table: object = raw
+    for key in path[:-1]:
+        table = table.setdefault(key, {}) if isinstance(table, dict) else None
+    if not isinstance(table, dict):
+        return
+    there = table.get(path[-1])
+    if isinstance(there, dict) and isinstance(value, dict):
+        table[path[-1]] = {**there, **value} if wins else {**value, **there}
+    elif there is None or wins:
+        table[path[-1]] = value
+
+
 # Where the ``default`` action records the warnings it showed, so a file loaded twice in one process warns once.
 _shown: dict[str | tuple[str, type[Warning], int], int] = {}
 
@@ -114,11 +236,42 @@ def _nth(toml: Path, table: str, key: str) -> int:
     return sum(line.partition('=')[0].strip() == key for line in lines[:header])
 
 
+PLUGIN_TABLES = (
+    Move('harness.*', 'plugins.harness.*'),
+    Move('model.*', 'plugins.harness.*.model'),
+    Move('max_concurrent.*', 'plugins.harness.*.max_concurrent'),
+    Move('roles.*', 'plugins.role.*'),
+    Move('harnesses', 'plugins.harness.use'),
+    Move('runtime', 'plugins.runtime.use'),
+)
+"""The tables of the harnesses and the roles, and the keys of each harness, as ``[plugins.<capability>.<name>]``, and
+the instances that the campaign uses, as ``[plugins.<capability>] use``."""
+
+
+@bridge('0.5.0', 'the harness and role tables are under [plugins]: delete plugin_tables and PLUGIN_TABLES')
+def plugin_tables(toml: Path, raw: dict[str, object], removed_in: Version) -> None:
+    """The tables of the harnesses and the roles are under ``[plugins]``, with the keys of each harness.
+
+    ``[harness.<name>]`` is ``[plugins.harness.<name>]``. ``model = { <name> = "…" }`` and ``max_concurrent = { <name> =
+    n }`` are ``model`` and ``max_concurrent`` of ``[plugins.harness.<name>]``. ``[roles.<name>]`` is
+    ``[plugins.role.<name>]``. ``harnesses`` is ``[plugins.harness] use``, and ``runtime`` is ``[plugins.runtime] use``.
+    Their ``PILOOP_CAMPAIGN_*`` variables move with them. A key that the new table sets too keeps its value there.
+    """
+    moved(toml, raw, PLUGIN_TABLES, 'PILOOP_CAMPAIGN_', removed_in)
+
+
+def _roles(raw: dict[str, object]) -> dict[str, object] | None:
+    """``[plugins.role]`` of the parsed file, added when it is missing. None when a value on its way is not a table."""
+    plugins = raw.setdefault('plugins', {})
+    roles = plugins.setdefault('role', {}) if isinstance(plugins, dict) else None
+    return roles if isinstance(roles, dict) else None
+
+
 @bridge('0.4.0', 'kind in a trigger entry is provider: delete the trigger_kind bridge')
 def trigger_kind(toml: Path, raw: dict[str, object], removed_in: Version) -> None:
-    """``kind`` in an entry of ``[roles.<name>] triggers`` is ``provider``: ``{ provider = "cron" }``."""
-    for name in _table(raw, 'roles') or {}:
-        role = _table(raw, 'roles', name)
+    """``kind`` in an entry of ``[plugins.role.<name>] triggers`` is ``provider``: ``{ provider = "cron" }``."""
+    for name in _table(raw, 'plugins', 'role') or {}:
+        role = _table(raw, 'plugins', 'role', name)
         triggers = role.get('triggers') if role is not None else None
         if (
             role is None
@@ -132,10 +285,10 @@ def trigger_kind(toml: Path, raw: dict[str, object], removed_in: Version) -> Non
         ]
         warn(
             toml,
-            f'roles.{name}.triggers',
+            f'plugins.role.{name}.triggers',
             'kind in a trigger is deprecated; write { provider = "<trigger>", … }',
             removed_in=removed_in,
-            nth=_nth(toml, f'roles.{name}', 'triggers'),
+            nth=_nth(toml, f'plugins.role.{name}', 'triggers'),
         )
 
 
@@ -272,7 +425,7 @@ INCIDENT_TRIGGERS = ('run_failed', 'dead_at_startup')
 @bridge('0.5.0', 'the anomaly trigger is run_failed and dead_at_startup: delete anomaly_trigger and INCIDENT_TRIGGERS')
 def anomaly_trigger(toml: Path, raw: dict[str, object], removed_in: Version) -> None:
     """The ``anomaly`` trigger is two triggers: ``run_failed`` and ``dead_at_startup``, in its place in the list."""
-    for name, role in (_table(raw, 'roles') or {}).items():
+    for name, role in (_table(raw, 'plugins', 'role') or {}).items():
         triggers = role.get('triggers') if isinstance(role, dict) else None
         if not isinstance(role, dict) or not isinstance(triggers, list):
             continue
@@ -284,10 +437,10 @@ def anomaly_trigger(toml: Path, raw: dict[str, object], removed_in: Version) -> 
         ]
         warn(
             toml,
-            f'roles.{name}.triggers',
+            f'plugins.role.{name}.triggers',
             'the anomaly trigger is deprecated; write { provider = "run_failed" }, { provider = "dead_at_startup" }',
             removed_in=removed_in,
-            nth=_nth(toml, f'roles.{name}', 'triggers'),
+            nth=_nth(toml, f'plugins.role.{name}', 'triggers'),
         )
 
 
@@ -315,7 +468,7 @@ OLD_BUDGETS = {'watchdog': 0}
 
 @bridge('0.5.0', 'wake_budget is the budget of the lessons section: delete wake_budget, LESSONS and OLD_BUDGETS')
 def wake_budget(toml: Path, raw: dict[str, object], removed_in: Version) -> None:
-    """``[memory] wake_budget`` and ``[roles.<name>] wake_budget`` are the ``budget`` of the role's ``lessons`` section.
+    """``[memory] wake_budget`` and ``[plugins.role.<name>] wake_budget`` are the ``budget`` of the ``lessons`` section.
 
     A role's own value wins over ``[memory]``'s. A budget that differs from the role's old default sets the role's
     ``sections`` to its defaults with the lessons at that budget, or without them at 0. A role that sets ``sections``
@@ -325,8 +478,7 @@ def wake_budget(toml: Path, raw: dict[str, object], removed_in: Version) -> None
     from piloop.plugins.section.contract import SECTIONS, defaults  # here: the sections import this module
 
     shared = _popped(raw, 'memory', 'wake_budget')
-    roles = raw.setdefault('roles', {})
-    if not isinstance(roles, dict):
+    if (roles := _roles(raw)) is None:
         return
     owned = {n: t.pop('wake_budget') for n, t in roles.items() if isinstance(t, dict) and 'wake_budget' in t}
     if shared is not None:
@@ -334,20 +486,19 @@ def wake_budget(toml: Path, raw: dict[str, object], removed_in: Version) -> None
     for name in owned:
         warn(
             toml,
-            f'roles.{name}.wake_budget',
+            f'plugins.role.{name}.wake_budget',
             _MOVED,
             removed_in=removed_in,
-            nth=_nth(toml, f'roles.{name}', 'wake_budget'),
+            nth=_nth(toml, f'plugins.role.{name}', 'wake_budget'),
         )
     for name in dict.fromkeys([*ROLES.providers(), *roles]):
         table = roles.setdefault(name, {})
         budget = owned.get(name, None if name in OLD_BUDGETS else shared)
         if not isinstance(table, dict) or 'sections' in table or budget in (None, OLD_BUDGETS.get(name, 400)):
             continue
-        model = ROLES.model_of(name) if name in ROLES.providers() else new_role(table)
-        if (
-            model.model_fields['sections'].default is not None
-        ):  # a role of its own sections, which wake_budget never sized
+        model = ROLES.model_of(name) if name in ROLES.providers() else new_role(name, table)
+        # a role of its own sections, which wake_budget never sized
+        if model.model_fields['sections'].default is not None:
             continue
         listed = [SECTIONS.dumped(s, 'python') for s in defaults(model.SURFACE)]
         others = [e for e in listed if e['provider'] != LESSONS]
@@ -391,13 +542,13 @@ OLD_HARNESSES = ('pi', 'claude', 'codex')
 
 @bridge('0.4.0', 'mcp and usage of a [harness.<name>] table are its provider: delete the harness_providers bridge')
 def harness_providers(toml: Path, raw: dict[str, object], removed_in: Version) -> None:
-    """``mcp`` and ``[harness.<name>.usage]`` are the harness's provider: it renders the servers and reads the usage.
+    """``mcp`` and ``[plugins.harness.<name>.usage]`` are the harness's provider: it renders the servers, reads usage.
 
     A table named after a built-in harness drops them: the provider's own come from ``home``. A table with a new name
     gets ``provider``: its usage's ``tally``, else its ``mcp``. A table that sets neither runs its argv and does
     nothing else, as before.
     """
-    tables = _table(raw, 'harness')
+    tables = _table(raw, 'plugins', 'harness')
     for name, table in tables.items() if tables is not None else ():
         if not isinstance(table, dict) or not {'mcp', 'usage'} & table.keys():
             continue
@@ -405,13 +556,13 @@ def harness_providers(toml: Path, raw: dict[str, object], removed_in: Version) -
         tally = usage.get('tally') if isinstance(usage, dict) else None
         if name in OLD_HARNESSES:
             message = (
-                f'mcp and usage of [harness.{name}] are deprecated: the harness renders its servers and reads its'
-                ' usage itself, under its home'
+                f'mcp and usage of [plugins.harness.{name}] are deprecated: the harness renders its servers and reads'
+                ' its usage itself, under its home'
             )
         else:
             table['provider'] = named = tally or mcp
-            message = f'mcp and usage of [harness.{name}] are deprecated; write provider = "{named}"'
-        warn(toml, f'harness.{name}', message, removed_in=removed_in)
+            message = f'mcp and usage of [plugins.harness.{name}] are deprecated; write provider = "{named}"'
+        warn(toml, f'plugins.harness.{name}', message, removed_in=removed_in)
 
 
 @bridge(
@@ -464,6 +615,21 @@ def max_evaluations(toml: Path, raw: dict[str, object], removed_in: Version) -> 
         'max_evaluations is deprecated; write evaluations in [plugins.executor.pools.serve]',
         removed_in=removed_in,
     )
+
+
+RUNTIME_TABLES = (Move('runtimes.*', 'plugins.runtime.*'),)
+"""The settings of each runtime, as ``[plugins.runtime.<name>]``."""
+
+
+@bridge(
+    '0.5.0', '[runtimes.<name>] is [plugins.runtime.<name>]: delete runtime_tables and RUNTIME_TABLES', CONFIG_BRIDGES
+)
+def runtime_tables(toml: Path, raw: dict[str, object], removed_in: Version) -> None:
+    """In ``config.toml``, ``[runtimes.<name>]`` is ``[plugins.runtime.<name>]``.
+
+    ``PILOOP_RUNTIMES__<NAME>__<KEY>`` is ``PILOOP_PLUGINS__RUNTIME__<NAME>__<KEY>``.
+    """
+    moved(toml, raw, RUNTIME_TABLES, 'PILOOP_', removed_in)
 
 
 @bridge('0.4.0', 'tick_seconds in config.toml does nothing: delete the tick_seconds bridge', CONFIG_BRIDGES)
@@ -542,7 +708,8 @@ HERDR_UPGRADE = 'https://piloop.autoresearch.inc/guides/upgrading#the-herdr-runt
 
 @until(
     '0.4.0',
-    'runtime = "herdr" of a 0.2 piloop.toml: delete removed_runtime, HERDR, HERDR_UPGRADE and the runtime\'s _not_removed',
+    'runtime = "herdr" of a 0.2 piloop.toml: delete removed_runtime, HERDR, HERDR_UPGRADE, the runtime\'s _not_removed'
+    ' and the refuses of its use',
 )
 def removed_runtime(name: str) -> str | None:
     """Why ``runtime = <name>`` does not load when piloop removed that runtime, else None."""
@@ -594,7 +761,7 @@ REMOVED_KEYS = 'https://piloop.autoresearch.inc/guides/upgrading#removed-keys'
 """The keys that 0.2.0 deprecated and 0.3.0 removed."""
 
 
-@until('0.4.0', '[roles.worker] of a 0.2 piloop.toml: delete removed_worker and its call in Roles')
+@until('0.4.0', '[roles.worker] of a 0.2 piloop.toml: delete removed_worker and its call in new_role')
 def removed_worker() -> str:
     """Why ``[roles.worker]`` does not load: it would define a new role, not set the implementer's keys."""
     return f'[roles.worker] is removed in piloop 0.3.0: rename the table [roles.implementer] ({REMOVED_KEYS})'
@@ -643,15 +810,20 @@ def warn(toml: Path, key: str, message: str, *, removed_in: Version, nth: int = 
     A dotted ``key`` (``roles.research.scout``) is set by its table header, or by a line that sets its last part. The
     output looks like a compiler error: ``piloop.toml:12: PiloopDeprecationWarning: …``, then the line.
     """
+    lines = _lines(toml, key)
+    lineno = lines[nth] if nth < len(lines) else 0
+    text = f'{message}; removed in piloop {removed_in}'
+    warnings.warn_explicit(text, PiloopDeprecationWarning, str(toml), lineno, registry=_shown)
+
+
+def _lines(toml: Path, key: str) -> list[int]:
+    """The numbers of the lines of ``toml`` that set the dotted ``key``: its table header, or its last part."""
     last = key.rpartition('.')[2]
-    lines = [
+    return [
         n
         for n, line in enumerate(toml.read_text().splitlines(), 1)
         if line.strip() == f'[{key}]' or line.partition('=')[0].strip() == last
     ]
-    lineno = lines[nth] if nth < len(lines) else 0
-    text = f'{message}; removed in piloop {removed_in}'
-    warnings.warn_explicit(text, PiloopDeprecationWarning, str(toml), lineno, registry=_shown)
 
 
 def apply(toml: Path, raw: dict[str, object], bridges: list[Bridge] = BRIDGES) -> None:

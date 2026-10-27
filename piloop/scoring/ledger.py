@@ -972,7 +972,7 @@ def follow_up(
     A title that the campaign already has gets `` (from candidate#<id>)``. A follow-up already filed from this candidate
     with that title, under either name and in any status, is not filed again: a rejected compose seed stays rejected
     when the candidate is judged again. These are seeds, not ready ideas: research develops them before they run. A
-    pinned one runs as a branch run when its candidate is not the computed base (``[roles.implementer] explore_every``). An
+    pinned one runs as a branch run when its candidate is not the computed base (``[plugins.role.implementer] explore_every``). An
     unpinned one runs from the head, as a trunk run.
     """
     ideas: list[Idea] = []

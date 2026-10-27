@@ -351,7 +351,7 @@ def test_open_runs_say_how_far_they_got(db: Database, campaign: Campaign) -> Non
         going = run(s, idea(s, p, 'going', IdeaStatus.SCHEDULED), RunStatus.RUNNING, 1, 110, None)
         s.add(AgentSession(kind=IMPLEMENTER, campaign_id=p.id, run_id=going.id, state=AgentSessionState.RUNNING))
         s.commit()
-    cfg = load_campaign_config(Path(campaign.path), roles={'implementer': {'max_concurrent': 2}})
+    cfg = load_campaign_config(Path(campaign.path), plugins={'role': {'implementer': {'max_concurrent': 2}}})
     lines = render(db, campaign, cfg).splitlines()
     start = lines.index('- Implementer slots: 2 of 2 busy.')
     assert lines[start + 1 : start + 3] == [

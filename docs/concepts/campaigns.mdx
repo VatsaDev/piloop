@@ -12,9 +12,13 @@ A **campaign** is a git repo, an **evaluate command** that scores its code, and 
 ```toml
 name = "enwik8"
 evaluate = ["uv", "run", "python", "evaluate.py"]
-harnesses = ["claude"]
-model = { claude = "claude-opus-5-5" }
 link = ["data", ".venv"]
+
+[plugins.harness]
+use = ["claude"]
+
+[plugins.harness.claude]
+model = "claude-opus-5-5"
 
 [[metrics]]
 name = "bytes"

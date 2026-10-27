@@ -25,10 +25,10 @@ bearer_token_env = "FIRECRAWL_API_KEY"
 command = ["python3", "/path/to/piloop/scripts/xai_search_mcp.py", "grok-4.7", "--max-usd", "1"]
 env = ["XAI_API_KEY"]
 
-[roles.research]
+[plugins.role.research]
 mcp = ["exa", "firecrawl"]
 
-[roles.scout]
+[plugins.role.scout]
 mcp = ["exa", "xai"]
 ```
 
@@ -66,7 +66,7 @@ So the agents see only the role's servers, never the servers in your own configu
 <Harnesses />
 
 `piloop init` refuses a role that lists servers when a harness of its rotation cannot take them. Then leave that
-harness out of the role's rotation, for example `harnesses = ["claude", "codex"]` under `[roles.research]`.
+harness out of the role's rotation, for example `harnesses = ["claude", "codex"]` under `[plugins.role.research]`.
 
 A [harness of your own](/plugins/agents#harnesses) takes servers when its command has an `{mcp}`
 element and it names a provider that takes them, such as `provider = "claude"`.

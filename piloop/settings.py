@@ -206,8 +206,9 @@ class Settings(BaseSettings):
     them."""
 
     plugins: dict[str, dict[str, JsonValue]] = {}
-    """``[plugins.<capability>]``: the provider of each capability of this home that ``config.toml`` selects, and its
-    parameters. ``providers`` validates them."""
+    """``[plugins.<capability>]``: the instance of each capability of this home that ``config.toml`` selects, its
+    provider and its parameters, or ``[plugins.<capability>.<name>]``: the instances of one that has several, by name.
+    ``providers`` validates them."""
 
     migration_backups: int = Field(default=3, ge=0)
     """The number of copies of the database to keep, one written before each migration: ``piloop.db.bak-<revision>-<UTC
@@ -264,10 +265,6 @@ class Settings(BaseSettings):
 
     agents: AgentSettings = AgentSettings()
     """``[agents]`` in ``config.toml``: how the daemon steers and ends agents."""
-
-    runtimes: dict[str, dict[str, JsonValue]] = {}
-    """``[runtimes.<name>]`` in ``config.toml``: the settings of each runtime on this machine, by its name.
-    ``piloop.runtime.factory.runtimes`` validates them."""
 
     @classmethod
     def settings_customise_sources(

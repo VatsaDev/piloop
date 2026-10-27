@@ -185,7 +185,7 @@ def environment(settings: type[BaseSettings]) -> str:
         alias = field.validation_alias
         variable = alias if isinstance(alias, str) else f'{prefix}{name}'.upper()
         value = field.default
-        if isinstance(value, dict):  # [runtimes.<name>]: each runtime's own settings class has its variables
+        if isinstance(value, dict):  # [plugins]: each provider's own settings class has its variables
             continue
         if isinstance(value, BaseModel):  # a table of config.toml: one variable for each of its keys
             rows.append(

@@ -2,7 +2,7 @@
 
 A section is a provider of ``SECTIONS``: its fields are its parameters, from its entry in a list of sections. ``piloop
 status``, the API and a UI show the campaign's ``[status] sections``. A brief shows its role's
-``[roles.<name>] sections``. A list that is not set shows the installed sections that declare its surface
+``[plugins.role.<name>] sections``. A list that is not set shows the installed sections that declare its surface
 (``Section.SHOWN_IN``), in their ``ORDER``. Each reader gets the sections in the order of the list, and leaves out a
 section with nothing to show. A package adds a section with an entry point in the group of ``SECTIONS``: nothing in
 piloop changes.
@@ -57,9 +57,9 @@ class Surface(StrEnum):
     STATUS = 'status'
     """``piloop status``, the API's overview and a UI: ``[status] sections``."""
     SWEEP = 'sweep'
-    """The brief of a sweeping role: ``[roles.<name>] sections``."""
+    """The brief of a sweeping role: ``[plugins.role.<name>] sections``."""
     RUN = 'run'
-    """The brief of a role that does runs: ``[roles.<name>] sections``."""
+    """The brief of a role that does runs: ``[plugins.role.<name>] sections``."""
 
 
 class Section(Parameters, ABC):

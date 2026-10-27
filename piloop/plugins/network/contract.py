@@ -22,7 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, WithJsonSchema, mo
 from piloop.actor import Actor
 from piloop.api.contract import Access
 from piloop.net.tokens import Caller, Tokens
-from piloop.plugins.host import Capability, Choice, Parameters, Scope
+from piloop.plugins.host import Capability, One, Parameters, Scope
 from piloop.plugins.secrets.contract import HomeSecrets
 
 
@@ -199,5 +199,5 @@ class NetworkConfig(Parameters, ABC):
         return type(self).model_validate(self.model_dump(exclude_unset=True) | {'listen': listen})
 
 
-NETWORKS = Capability('network', NetworkConfig, choice=Choice(Scope.HOME, default='https'))
+NETWORKS = Capability('network', NetworkConfig, table=One(Scope.HOME, default='https'))
 """Every network by name. ``https``, built in and the default, takes bearer tokens over TLS."""

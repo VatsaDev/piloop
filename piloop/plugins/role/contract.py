@@ -1,10 +1,11 @@
-"""The role capability: what the agents of a role do, and the defaults of its ``[roles.<name>]`` table.
+"""The role capability: what the agents of a role do, and the defaults of its ``[plugins.role.<name>]`` table.
 
 Every role is a provider of ``ROLES``, a built-in one or a package's, and so are its defaults: a subclass of
 ``SweepRole`` or of ``ImplementerRole`` whose fields have the role's defaults. Its prompt is a resource of its package
 (``PROMPT``). A table with another name defines a new role (``new_role``).
 """
 
+import re
 from collections.abc import Mapping
 from enum import StrEnum
 from importlib.resources import files
@@ -14,8 +15,9 @@ from typing import TYPE_CHECKING, ClassVar, Literal, Protocol, Self
 from pydantic import Field, model_validator
 
 from piloop import deprecated
-from piloop.ids import CommentKind
-from piloop.plugins.host import Capability, Parameters
+from piloop.ids import ROLE_NAME, CommentKind
+from piloop.plugins.harness.contract import HarnessName
+from piloop.plugins.host import Capability, Many, Parameters, Scope
 from piloop.plugins.runtime.contract import RuntimeName
 from piloop.plugins.section.contract import Section, SectionEntry, Surface, chosen
 from piloop.plugins.trigger.contract import Pass, TriggerEntry
@@ -70,7 +72,7 @@ class Continuity(StrEnum):
 
 
 class RoleConfig(Parameters):
-    """The keys that every ``[roles.<name>]`` table accepts. Each role's table below adds keys and sets defaults."""
+    """The keys that every ``[plugins.role.<name>]`` table accepts. Each role's table below adds keys and sets defaults."""
 
     @model_validator(mode='before')
     @classmethod
@@ -93,11 +95,11 @@ class RoleConfig(Parameters):
     """The file that starts the brief of this role: a path relative to the repo root, or an absolute path. When unset,
     the role's own prompt (``PROMPT``). A new role needs it."""
     runtime: RuntimeName | None = None
-    """Where the agents of this role run. When unset, the role uses the campaign's ``runtime``."""
-    harnesses: list[str] | None = Field(default=None, min_length=1)
-    """The harness rotation of this role. When unset, the role uses the campaign's ``harnesses``."""
-    model: dict[str, str] | None = None
-    """The model for each harness in this role. It is merged over the campaign's ``model``."""
+    """Where the agents of this role run. When unset, the role uses the campaign's, ``[plugins.runtime] use``."""
+    harnesses: list[HarnessName] | None = Field(default=None, min_length=1)
+    """The harness rotation of this role. When unset, the role uses the campaign's, ``[plugins.harness] use``."""
+    model: dict[HarnessName, str] | None = None
+    """The model for each harness in this role, over the ``model`` of each ``[plugins.harness.<name>]``."""
     effort: str = 'high'
     """How hard the agents of this role think, as the harness names it, for example ``high``. It fills ``{effort}`` in
     the harness's argv, and the harness checks it."""
@@ -111,7 +113,7 @@ class RoleConfig(Parameters):
     that only this role needs, for example how the research agent searches."""
     mcp: list[str] = []
     """The MCP servers that the agents of this role get, by the name of their ``[mcp.<name>]`` table. Every harness in
-    the role's rotation must be able to take them in the invocation of the role's runtime (``[harness.<name>] mcp``)."""
+    the role's rotation must be able to take them in the invocation of the role's runtime (``[plugins.harness.<name>] mcp``)."""
     writes: list[str] = []
     """What the agents of this role may write, as their brief states it. Only ``files`` is enforced."""
     files: Files = Files.SEEDS
@@ -131,7 +133,7 @@ class RoleConfig(Parameters):
 
 
 class ImplementerRole(RoleConfig):
-    """``[roles.implementer]``, and every ``[roles.<name>]`` table with ``runs = true``: a role that does runs.
+    """``[plugins.role.implementer]``, and every ``[plugins.role.<name>]`` table with ``runs = true``: a role that does runs.
 
     The run queue starts its agents. Each agent does one idea in a new checkout at its run's base, and its versions are
     scored and judged when it ends. A new role of this kind takes the implementer's defaults, its prompt included.
@@ -171,7 +173,7 @@ class ImplementerRole(RoleConfig):
 
 
 def ideas_taken(takes: str) -> str:
-    """Return the query that selects the ids of the ideas that ``[roles.<name>] takes`` selects."""
+    """Return the query that selects the ids of the ideas that ``[plugins.role.<name>] takes`` selects."""
     return f'SELECT id FROM ideas WHERE {takes}'
 
 
@@ -185,7 +187,7 @@ class Sweep(Pass, Protocol):
 
 
 class SweepRole(RoleConfig):
-    """``[roles.<name>]`` of a sweeping role: the watchdog, research, the scout, or a new role that you define.
+    """``[plugins.role.<name>]`` of a sweeping role: the watchdog, research, the scout, or a new role that you define.
 
     A sweep is an agent without a run. Its triggers request it, and nothing is scored when it ends. A table with a new
     name defines a new role, and needs ``prompt`` and ``triggers``.
@@ -240,11 +242,26 @@ class SweepRole(RoleConfig):
         return self
 
 
-ROLES = Capability('role', RoleConfig)
+RESERVED_NAMES = frozenset({'run', 'orchestrator', 'human', 'daemon'})
+"""Names that already sign writes: a run, and the actors that are not roles."""
+
+
+def new_role(name: str, table: Mapping[str, object]) -> type[ImplementerRole] | type[SweepRole]:
+    """The class of a ``[plugins.role.<name>]`` table with a new name: with ``runs = true`` a role that does runs.
+
+    Raises:
+        ValueError: ``name`` is no role name, or one that signs writes already.
+    """
+    if name == 'worker':
+        raise ValueError(deprecated.removed_worker())
+    if not re.fullmatch(ROLE_NAME, name) or name in RESERVED_NAMES:
+        raise ValueError(
+            f'{name!r} is not a role name: use lowercase letters, digits, _ and - ({ROLE_NAME}), and none of'
+            f' {sorted(RESERVED_NAMES)}'
+        )
+    return ImplementerRole if table.get('runs') else SweepRole
+
+
+ROLES = Capability('role', RoleConfig, table=Many(Scope.CAMPAIGN, new=new_role))
 """Every role by name, with its defaults: the built-in ones, then the ones that packages add. Each entry point of the
 group names a subclass of ``SweepRole`` or of ``ImplementerRole``, whose defaults are the role's."""
-
-
-def new_role(table: Mapping[str, object]) -> type[ImplementerRole] | type[SweepRole]:
-    """The class of a ``[roles.<name>]`` table with a new name: with ``runs = true`` a role that does runs."""
-    return ImplementerRole if table.get('runs') else SweepRole

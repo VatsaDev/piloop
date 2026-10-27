@@ -2,7 +2,7 @@
 
 A **secret** is a name and a value. Its name is an environment variable's (``EnvName``). It belongs to the home, for
 every campaign, or to one campaign, whose secret wins over the home's of the same name: a GitHub repository's secret
-wins over its organization's. Config names a secret, never its value: ``{ secret = "NAME" }`` in ``[harness.<name>]
+wins over its organization's. Config names a secret, never its value: ``{ secret = "NAME" }`` in ``[plugins.harness.<name>]
 env`` (``piloop.plugins.harness.contract.SecretRef``), and each variable of an ``[mcp.<name>]`` server, which is the name of a
 secret. An agent's job
 names the secrets that it needs (``AgentJob.secrets``), and its worker gets their values when it starts the job. No
@@ -29,7 +29,7 @@ from piloop.db.models import AgentSession, Event, EventModel, ReadBy
 from piloop.db.session import Database
 from piloop.ids import HOME, AgentSessionId, CampaignId, TargetKind, TargetRef
 from piloop.mcp import EnvName
-from piloop.plugins.host import Capability, Choice, Parameters, Scope
+from piloop.plugins.host import Capability, One, Parameters, Scope
 
 type Owner = CampaignId | None
 """Whose a secret is: a campaign's, or None for the home's."""
@@ -66,7 +66,7 @@ class SecretsProvider(Parameters, ABC):
 SECRETS = Capability(
     'secrets',
     SecretsProvider,
-    choice=Choice(Scope.HOME, default='local'),
+    table=One(Scope.HOME, default='local'),
     group='piloop.secrets',
     noun='secrets provider',
 )

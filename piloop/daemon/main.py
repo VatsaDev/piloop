@@ -53,8 +53,8 @@ def bound(cfg: Settings) -> list[plugins.Capability[plugins.Parameters]]:
     """
 
     def used(c: plugins.Capability[plugins.Parameters]) -> bool:
-        match c.choice:
-            case plugins.Choice(scope=plugins.Scope.HOME, default=default):
+        match c.table:
+            case plugins.One(scope=plugins.Scope.HOME, default=default):
                 return default is not None or c.name in cfg.plugins
             case _:
                 return True
@@ -85,7 +85,7 @@ def preflight(cfg: Settings, listen: network.Address | None = None) -> network.N
     Raises:
         PluginError: A provider, a schema (``schemas``) or another declaration (``DECLARED``) does not load, or
             ``config.toml``
-            selects a provider that there is not, or one that refuses its parameters (``[plugins]``, ``[runtimes]``),
+            selects a provider that there is not, or one that refuses its parameters (``[plugins]``),
             or the network refuses ``listen``.
     """
     plugins.compose(*bound(cfg))

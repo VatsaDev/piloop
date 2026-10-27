@@ -9,5 +9,5 @@ uv tool install piloop --with ./examples/plugins/nice-runtime   # or: uv pip ins
 piloop plugins                                                  # lists `nice  piloop-nice 0.1.0`
 ```
 
-Select it in `piloop.toml` with `runtime = "nice"`, then `piloop init .`. Set the niceness in
-`$PILOOP_HOME/config.toml` with `[runtimes.nice]` and `niceness = 15` (default 10).
+Select it in `piloop.toml` with `use = "nice"` in `[plugins.runtime]`, then `piloop init .`. Set the niceness in
+`$PILOOP_HOME/config.toml` with `[plugins.runtime.nice]` and `niceness = 15` (default 10).

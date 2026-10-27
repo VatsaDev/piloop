@@ -1,12 +1,12 @@
 """``nice``: a piloop runtime that starts each agent as ``subprocess`` does, under ``nice``.
 
-The agents of a long campaign then leave the CPU to your own work first. ``[runtimes.nice] niceness`` in
+The agents of a long campaign then leave the CPU to your own work first. ``[plugins.runtime.nice] niceness`` in
 ``$PILOOP_HOME/config.toml`` sets how much lower (default 10).
 """
 
 from dataclasses import replace
 
-from piloop.capabilities import RUNTIMES, AgentSpec, Handle, Subprocess, SubprocessRuntime
+from piloop.capabilities import AgentSpec, Handle, Subprocess, SubprocessRuntime
 
 
 class Nice(Subprocess):
@@ -15,8 +15,8 @@ class Nice(Subprocess):
     niceness: int = 10
     """How much lower than piloop's own priority the agents run."""
 
-    def open(self) -> NiceRuntime:
-        return NiceRuntime(RUNTIMES.name_of(self), self.niceness)
+    def open(self, name: str) -> NiceRuntime:
+        return NiceRuntime(name, self.niceness)
 
 
 class NiceRuntime(SubprocessRuntime):

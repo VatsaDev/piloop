@@ -7,24 +7,31 @@
 name = "my-campaign"                       # required; short identifier; piloop names git refs after it
 evaluate = ["uv", "run", "python", "evaluate.py"]  # required; run in a clean checkout of each version; writes {"metrics": …} to $PILOOP_RESULT_FILE
 evaluate_timeout = 600                    # seconds; a slower evaluation is stopped and recorded as a crash
-runtime = "subprocess"                    # subprocess: a background process per agent · or a package's runtime
-harnesses = ["pi", "claude", "codex"]     # not the default, which is ["pi"]; runs use these in turn, unless an idea names one
 link = []                                 # gitignored paths put into every worktree read-only, for example "data" or ".venv"
 context = []                              # analysis files that every sweep reads first, for example ["docs/error-analysis.md"]
 
-[model]                                   # required; the model for each harness, in that harness's own naming
-pi = "anthropic/claude-opus-5-5"
-claude = "claude-opus-5-5"
-codex = "gpt-6.1-sol"
+[plugins.runtime]                         # a capability's own settings are in its table, next to its instances
+use = "subprocess"                        # a [plugins.runtime.<name>] of config.toml; subprocess: a background process per agent
 
-[max_concurrent]                          # the most agents of one harness at the same time, all roles together; e.g. claude = 2
+[plugins.harness]
+use = ["pi", "claude", "codex"]           # not the default, which is ["pi"]; runs use these in turn, unless an idea names one
 
-# [harness.<name>]                        # overrides a built-in harness (pi, claude, codex), or defines a new one
-# provider = "claude"                     # a new name: that harness over its defaults; without it, the argv only
-# executable = "my-agent"                 # keys: executable, headless, resume, session_id_pattern,
-# headless = ["--model", "{model}", "{prompt}"]  # home, session_env; see the reference
+[plugins.harness.pi]                      # a harness: a built-in one (pi, claude, codex) over its defaults, or a new name
+model = "anthropic/claude-opus-5-5"       # required for a harness in a rotation, in that harness's own naming
+# max_concurrent = 2                      # the most agents of this harness at the same time, all roles together
+
+[plugins.harness.claude]
+model = "claude-opus-5-5"
 # env = { ANTHROPIC_BASE_URL = "https://gw.example.com", ANTHROPIC_API_KEY = { secret = "ANTHROPIC_API_KEY" } }
 #                                         # more variables of its agents: a value, or a secret (`piloop secret set`)
+
+[plugins.harness.codex]
+model = "gpt-6.1-sol"
+
+# [plugins.harness.<name>]                # a harness of your own
+# provider = "claude"                     # that harness over its defaults; without it, the argv only
+# executable = "my-agent"                 # keys: executable, headless, resume, session_id_pattern,
+# headless = ["--model", "{model}", "{prompt}"]  # home, session_env; see the reference
 
 # [mcp.exa]                               # an MCP server that a role can list in its `mcp` key; see the MCP servers guide
 # url = "https://mcp.exa.ai/mcp"          # a streamable HTTP server (keys: url, headers_env, bearer_token_env)
@@ -32,16 +39,16 @@ codex = "gpt-6.1-sol"
 # command = ["python3", "server.py"]      # or a stdio server (keys: command, env)
 # env = ["XAI_API_KEY"]                   # the variables that a stdio server reads
 
-[roles.implementer]                            # an implementer tries one idea in a new worktree; its commits are scored
+[plugins.role.implementer]                # an implementer tries one idea in a new worktree; its commits are scored
 runs = true                               # its agents do runs; a sweeping role has runs = false
 # takes = "priority < 3"                  # the ideas it takes: an SQL condition on the ideas table; if not set: every one
-# harnesses = ["pi", "claude", "codex"]   # if not set: the campaign's harnesses
-# model = { pi = "..." }                  # merged over [model]
+# harnesses = ["pi", "claude", "codex"]   # if not set: [plugins.harness] use
+# model = { pi = "..." }                  # over the model of each [plugins.harness.<name>]
 # effort = "high"                         # how hard its agents think, as the harness names it
 # addendum = "briefs/implementer.md"           # a file appended to brief.md in this role's briefs only
 # mcp = ["exa"]                           # the [mcp.<name>] servers that this role's agents get; none by default
 # prompt = "briefs/my-implementer.md"          # a file that replaces the built-in start of this role's brief
-# runtime = "subprocess"                  # if not set: the campaign's runtime
+# runtime = "subprocess"                  # if not set: [plugins.runtime] use
 # writes = ["commits"]                    # what the brief says the role may write; default: what piloop expects of it
 # files = "nothing"                       # what its agents may file with `piloop idea`: nothing, seeds or ideas
 # sections = [{ provider = "lessons", budget = 400 }, …]  # if not set: the installed sections of its briefs; see the sections
@@ -50,14 +57,14 @@ max_concurrent = 4                        # the most runs at the same time, on a
 explore_every = 4                         # at least 1 run in 4 starts from a pinned idea, when one is ready; 0 = off
 recovery_requeues = 2                     # times an idea is requeued from the last commit of a failed implementer
 
-[roles.watchdog]                          # a watchdog investigates anomalies and reviews progress every `interval` seconds
-# harnesses = ["pi", "claude", "codex"]   # if not set: the campaign's harnesses
-# model = { pi = "..." }                  # merged over [model]
+[plugins.role.watchdog]                   # a watchdog investigates anomalies and reviews progress every `interval` seconds
+# harnesses = ["pi", "claude", "codex"]   # if not set: [plugins.harness] use
+# model = { pi = "..." }                  # over the model of each [plugins.harness.<name>]
 # effort = "high"                         # how hard its agents think, as the harness names it
 # addendum = "briefs/watchdog.md"         # a file appended to brief.md in this role's briefs only
 # mcp = []                                # the [mcp.<name>] servers that this role's agents get; none by default
 # prompt = "briefs/my-watchdog.md"        # a file that replaces the built-in start of this role's brief
-# runtime = "subprocess"                  # if not set: the campaign's runtime
+# runtime = "subprocess"                  # if not set: [plugins.runtime] use
 # writes = ["comments(finding)"]          # what the brief says the role may write; default: what piloop expects of it
 # files = "seeds"                         # what its agents may file with `piloop idea`: nothing, seeds or ideas
 runs = false                              # a sweeping role: its triggers start it and nothing it commits is scored
@@ -71,14 +78,14 @@ max_ideas = 1                             # new ideas per sweep for a low_water 
 timeout = 600
 max_concurrent = 1
 
-[roles.research]                          # research keeps one runnable idea per run slot, plus the `buffer` of low_water
-# harnesses = ["pi", "claude", "codex"]   # if not set: the campaign's harnesses
-# model = { claude = "claude-opus-5-5", codex = "gpt-6.1-sol" }  # merged over [model]; a table replaces it
+[plugins.role.research]                   # research keeps one runnable idea per run slot, plus the `buffer` of low_water
+# harnesses = ["pi", "claude", "codex"]   # if not set: [plugins.harness] use
+# model = { claude = "claude-opus-5-5", codex = "gpt-6.1-sol" }  # over the harnesses' model; a table replaces it
 # effort = "high"                         # how hard its agents think, as the harness names it
 # addendum = "briefs/research.md"         # a file appended to brief.md in this role's briefs only
 # mcp = ["exa"]                           # the [mcp.<name>] servers that this role's agents get; none by default
 # prompt = "briefs/my-research.md"        # a file that replaces the built-in start of this role's brief
-# runtime = "subprocess"                  # if not set: the campaign's runtime
+# runtime = "subprocess"                  # if not set: [plugins.runtime] use
 # writes = ["ideas via idea add"]         # what the brief says the role may write; default: what piloop expects of it
 # files = "ideas"                         # what its agents may file with `piloop idea`: nothing, seeds or ideas
 runs = false                              # a sweeping role
@@ -92,14 +99,14 @@ max_ideas = 1                             # new ideas per sweep, after the seeds
 timeout = 900
 max_concurrent = 1                        # sweeps at the same time; more than one duplicate each other's work
 
-[roles.scout]                             # experimental: sweeps that search X, GitHub and arXiv for outside techniques
-# harnesses = ["pi", "claude", "codex"]   # if not set: the campaign's harnesses
-# model = { pi = "..." }                  # merged over [model]
+[plugins.role.scout]                      # experimental: sweeps that search X, GitHub and arXiv for outside techniques
+# harnesses = ["pi", "claude", "codex"]   # if not set: [plugins.harness] use
+# model = { pi = "..." }                  # over the model of each [plugins.harness.<name>]
 # effort = "high"                         # how hard its agents think, as the harness names it
 # addendum = "briefs/scout.md"            # a file appended to brief.md in this role's briefs only
 # mcp = ["xai"]                           # its search tools: an X search server, for example; none by default
 # prompt = "briefs/my-scout.md"           # a file that replaces the built-in start of this role's brief
-# runtime = "subprocess"                  # if not set: the campaign's runtime
+# runtime = "subprocess"                  # if not set: [plugins.runtime] use
 # writes = ["seeds via idea seed"]        # what the brief says the role may write; default: what piloop expects of it
 # files = "seeds"                         # what its agents may file with `piloop idea`: nothing, seeds or ideas
 runs = false                              # a sweeping role
@@ -114,14 +121,14 @@ max_ideas = 1                             # new ideas per sweep for a low_water 
 timeout = 900
 max_concurrent = 1
 
-[roles.orchestrator]                      # piloop launches the campaign's orchestrator when news arrives for it
-# harnesses = ["claude"]                  # if not set: the campaign's harnesses; it keeps the harness of its last session
-# model = { claude = "claude-opus-5-5" }  # merged over [model]
+[plugins.role.orchestrator]               # piloop launches the campaign's orchestrator when news arrives for it
+# harnesses = ["claude"]                  # if not set: [plugins.harness] use; it keeps the harness of its last session
+# model = { claude = "claude-opus-5-5" }  # over the model of each [plugins.harness.<name>]
 # effort = "high"                         # how hard its agents think, as the harness names it
 # addendum = "briefs/orchestrator.md"     # a file appended to brief.md in this role's briefs only
 # mcp = ["exa"]                           # the [mcp.<name>] servers that this role's agents get; none by default
 # prompt = "briefs/my-orchestrator.md"    # a file that replaces the built-in start of this role's brief
-# runtime = "subprocess"                  # if not set: the campaign's runtime
+# runtime = "subprocess"                  # if not set: [plugins.runtime] use
 # writes = ["decisions"]                  # what the brief says the role may write; default: what piloop expects of it
 # files = "ideas"                         # what its agents may file with `piloop idea`: nothing, seeds or ideas
 runs = false                              # a sweeping role
@@ -135,13 +142,13 @@ triggers = []                             # off: you run your own orchestrator; 
 timeout = 900
 max_concurrent = 1                        # at most 1: two orchestrators would answer the same news twice
 
-# [roles.reviewer]                        # a role of your own: any new name; it needs a prompt and triggers
+# [plugins.role.reviewer]                 # a role of your own: any new name; it needs a prompt and triggers
 # prompt = "briefs/reviewer.md"           # the file that starts its brief
 # triggers = [{ provider = "sql", when = "SELECT 1 FROM candidates WHERE campaign_id = :campaign AND verdict = 'keep' AND created_at > :since" }]
-# max_concurrent = 1                      # it takes every key of [roles.watchdog] except its defaults
+# max_concurrent = 1                      # it takes every key of [plugins.role.watchdog] except its defaults
 
-# [roles.quick]                           # a role of your own that does runs: any new name with runs = true
-# runs = true                             # it takes every key and default of [roles.implementer], its prompt included
+# [plugins.role.quick]                    # a role of your own that does runs: any new name with runs = true
+# runs = true                             # it takes every key and default of [plugins.role.implementer], its prompt included
 # takes = "priority >= 3"                 # the ideas it takes; its slots fill before the implementer's
 # timeout = 300
 # max_concurrent = 2
@@ -155,6 +162,7 @@ max_concurrent = 1                        # at most 1: two orchestrators would a
 
 # [plugins.<name>]                        # the provider of a capability that a plugin package adds, by its name
 # provider = "<name>"                     # the other keys of the table are its parameters; `piloop plugins` lists them
+#                                         # a capability of several instances: [plugins.<name>.<instance>] for each
 
 # [plugins.verdict_rule]                  # how a candidate is judged; without the table: bootstrap
 # confidence = 0.95                       # a keep needs the primary metric's gain to be above zero at this confidence

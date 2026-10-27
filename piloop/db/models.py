@@ -680,7 +680,7 @@ class Idea(Tracked, Base):
     priority: Mapped[int] = mapped_column(default=2, server_default=text('2'))
     """0 (urgent) to 4 (someday). The scheduler takes the lowest number first."""
     harness: Mapped[str | None]
-    """The harness for this idea. None lets the scheduler use the campaign's harnesses in turn."""
+    """The harness for this idea. None lets the scheduler use the campaign's harnesses (``[plugins.harness] use``) in turn."""
     base_candidate_id: Mapped[CandidateId | None]
     """A deliberate branch: the ``candidates.id`` to start from, instead of the head at the time the run starts. NULL
     unless the idea gives a reason for that starting point. Never pin the current head by default: when the idea
@@ -1247,7 +1247,7 @@ class AgentSession(Tracked, Base):
 
     id: Mapped[AgentSessionId] = mapped_column(primary_key=True)
     kind: Mapped[RoleName]
-    """The agent's role: a role of its campaign, a built-in one or a ``[roles.<name>]`` table. A trigger refuses other
+    """The agent's role: a role of its campaign, a built-in one or a ``[plugins.role.<name>]`` table. A trigger refuses other
     names."""
     campaign_id: Mapped[CampaignId | None] = mapped_column(ForeignKey('campaigns.id', ondelete='CASCADE'))
     """The campaign the agent works for. piloop always sets it, but readers must accept NULL."""

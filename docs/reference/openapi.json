@@ -4971,7 +4971,7 @@
           "role"
         ],
         "title": "LaunchBody",
-        "description": "One more agent of a sweeping role (``[roles.<name>]``). The agent's brief includes the reason."
+        "description": "One more agent of a sweeping role (``[plugins.role.<name>]``). The agent's brief includes the reason."
       },
       "LimitBody": {
         "properties": {

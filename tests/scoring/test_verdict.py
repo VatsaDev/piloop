@@ -50,8 +50,7 @@ def config(*guardrails: Metric, confidence: float = 0.95) -> CampaignConfig:
         name='v',
         metrics=[Metric(name='accuracy', direction=Direction.HIGHER, role=MetricRole.PRIMARY), *guardrails],
         evaluate=['true'],
-        model={'pi': 'm'},
-        plugins={'verdict_rule': Bootstrap(confidence=confidence)},
+        plugins={'harness': {'pi': {'model': 'm'}}, 'verdict_rule': Bootstrap(confidence=confidence)},
     )
 
 
@@ -313,7 +312,7 @@ def test_a_lower_is_better_primary_reads_in_its_own_direction() -> None:
         name='v',
         metrics=[Metric(name='loss', direction=Direction.LOWER, role=MetricRole.PRIMARY)],
         evaluate=['true'],
-        model={'pi': 'm'},
+        plugins={'harness': {'pi': {'model': 'm'}}},
     )
     theirs = {f'u{i}': 1.0 for i in range(30)}
     mine = {f'u{i}': 0.5 for i in range(30)}
@@ -369,7 +368,7 @@ def test_every_other_track_primary_is_a_guardrail_with_its_margin_and_floor() ->
         ],
         tracks={TrackName('accuracy'): TrackConfig(share=0.75), TrackName('serving'): TrackConfig(share=0.25)},
         evaluate=['true'],
-        model={'pi': 'm'},
+        plugins={'harness': {'pi': {'model': 'm'}}},
     )
     serving, accuracy = cfg.track(TrackName('serving')), cfg.track(TrackName('accuracy'))
     assert ([m.name for m in serving.guardrails], [m.name for m in accuracy.guardrails]) == (

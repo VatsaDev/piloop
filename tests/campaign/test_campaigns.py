@@ -1,4 +1,5 @@
 import re
+from collections.abc import Collection
 from pathlib import Path
 from typing import get_args, get_origin
 
@@ -19,8 +20,7 @@ from piloop.config import CampaignConfig, ConfigError, load_campaign_config
 from piloop.db.models import Campaign
 from piloop.db.session import Database
 from piloop.ids import CampaignStatus
-from piloop.plugins.host import Scope, declared
-from piloop.plugins.role.contract import ROLES
+from piloop.plugins.host import Many, One, Scope, declared
 from tests.conftest import store_config
 
 
@@ -123,9 +123,11 @@ def unnamed_keys(template: str) -> list[str]:
             name = header.group(1)
         sections[name] = sections.get(name, '') + line + '\n'
 
-    def walk(model: type[BaseModel], path: str, label: str, text: str) -> list[str]:
+    def walk(model: type[BaseModel], path: str, label: str, text: str, skip: Collection[str] = ()) -> list[str]:
         missing = []
         for key, field in model.model_fields.items():
+            if key in skip:
+                continue
             full = f'{path}\\.{re.escape(key)}' if path else re.escape(key)
             where = f'{label}.{key}' if label else key
             headed = any(re.fullmatch(rf'{full}(\..+)?', n) for n in sections)
@@ -143,18 +145,24 @@ def unnamed_keys(template: str) -> list[str]:
         return missing
 
     missing = walk(CampaignConfig, '', '', sections.get('', ''))
-    for name, role in ROLES.builtins().items():
-        table = f'roles.{name}'
-        missing += walk(role, re.escape(table), table, sections.get(table, ''))
     for capability in declared():
-        if capability.choice is None or capability.choice.scope is not Scope.CAMPAIGN:
-            continue
-        # a capability without a default provider names the keys of its built-in ones
-        default = capability.choice.default
-        models = [capability.get(default).model] if default is not None else capability.builtins().values()
         table = f'plugins.{capability.name}'
-        for model in models:
-            missing += walk(model, re.escape(table), table, sections.get(table, ''))
+        match capability.table:
+            case One(scope=Scope.CAMPAIGN, default=default):
+                # a capability without a default provider names the keys of its built-in ones
+                models = [capability.get(default).model] if default is not None else capability.builtins().values()
+                for model in models:
+                    missing += walk(model, re.escape(table), table, sections.get(table, ''))
+            case Many(scope=Scope.CAMPAIGN):
+                # the keys of the contract in any table of an instance; those that a provider adds, in its own
+                every = ''.join(t for n, t in sections.items() if n.startswith(f'{table}.'))
+                missing += walk(capability.contract, rf'{re.escape(table)}\.[^.]+', f'{table}.<name>', every)
+                common = capability.contract.model_fields.keys()
+                for name, model in capability.builtins().items():
+                    own = f'{table}.{name}'
+                    missing += walk(model, re.escape(own), own, sections.get(own, ''), skip=common)
+            case _:
+                pass
     return missing
 
 
@@ -168,7 +176,7 @@ def test_the_campaign_template_names_every_key_of_the_config() -> None:
         without = without.replace(old, new)
     assert unnamed_keys(without) == [
         'mcp.<name>.bearer_token_env',
-        'roles.implementer.explore_every',
+        'plugins.role.implementer.explore_every',
         'plugins.stop_rule.plateau',
     ], 'the check finds a key missing from a table, and from a keys: comment'
 

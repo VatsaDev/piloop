@@ -11,7 +11,6 @@ from piloop.plugins.harness.contract import fill
 from piloop.plugins.runtime.contract import (
     MESSAGES_ENV,
     QUEUE,
-    RUNTIMES,
     TAG_ENV,
     AgentExit,
     AgentSpec,
@@ -41,10 +40,12 @@ turn replaced the first process. Every instance reads it, so ``kill`` and ``stat
 
 
 class Subprocess(RuntimeConfig):
-    """``subprocess``: each agent as a background process on this machine. It has no settings."""
+    """``subprocess``: each agent as a background process on this machine. It has no settings, and it is the default."""
 
-    def open(self) -> SubprocessRuntime:
-        return SubprocessRuntime(RUNTIMES.name_of(self))
+    DEFAULT = True
+
+    def open(self, name: str) -> SubprocessRuntime:
+        return SubprocessRuntime(name)
 
 
 class SubprocessRuntime:
@@ -151,7 +152,7 @@ class SubprocessRuntime:
     def prompt(self, handle: Handle, text: str) -> None:
         """Keeps the message in a queue, which a hook of the harness can take in the turn, or else the next turn takes.
 
-        When the turn ends with messages queued, piloop runs the harness again with ``[harness.<name>] resume``, with the queued messages as the prompt. A
+        When the turn ends with messages queued, piloop runs the harness again with ``[plugins.harness.<name>] resume``, with the queued messages as the prompt. A
         harness without ``resume`` takes no message. Neither does an agent that the daemon re-attached to after
         ``piloop restart``.
 

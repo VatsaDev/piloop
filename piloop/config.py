@@ -11,7 +11,6 @@ import hashlib
 import json
 import math
 import os
-import re
 import tomllib
 from dataclasses import dataclass
 from datetime import timedelta
@@ -24,7 +23,6 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    RootModel,
     ValidationError,
     model_validator,
 )
@@ -36,17 +34,17 @@ from pydantic_settings import (
 )
 
 from piloop import deprecated
-from piloop.ids import IMPLEMENTER, ROLE_NAME, RoleName, RungName, TrackName
+from piloop.ids import IMPLEMENTER, RoleName, RungName, TrackName
 from piloop.mcp import EnvName, McpServer, ServerName, env_names
 from piloop.plugins.fact_source.contract import FACT_SOURCES, FactSource, FactSourceEntry, sources
-from piloop.plugins.harness.contract import Harness, Harnesses, defaults
-from piloop.plugins.host import Plugins, PluginTables, Scope
+from piloop.plugins.harness.contract import HARNESSES, Harness
+from piloop.plugins.host import Plugins, PluginTables, Scope, refs
 from piloop.plugins.metric import Direction
-from piloop.plugins.role.contract import ROLES, ImplementerRole, RoleConfig, SweepRole, new_role
-from piloop.plugins.runtime.contract import RuntimeName
+from piloop.plugins.role.contract import ROLES, ImplementerRole, RoleConfig, SweepRole
+from piloop.plugins.runtime.contract import RUNTIMES
 from piloop.plugins.section.contract import Section, SectionEntry, Surface, chosen
 from piloop.plugins.stop_rule.contract import STOP_RULES, Shape
-from piloop.settings import AgentSettings
+from piloop.settings import AgentSettings, settings
 
 CONFIG_FILE = 'piloop.toml'
 BRIEF_FILE = 'brief.md'
@@ -213,7 +211,7 @@ class TrackConfig(BaseModel):
     urgent idea of that track. A track with no idea that can run gives its slot to another track. A share of 0 stops the track: its ideas
     wait."""
     addendum: str | None = None
-    """A repo-relative file that is appended to the brief of this track's runs, after ``[roles.implementer] addendum``. Use
+    """A repo-relative file that is appended to the brief of this track's runs, after ``[plugins.role.implementer] addendum``. Use
     it to say how work on this objective is done, for example "profile first" or "keep the output identical"."""
 
 
@@ -236,11 +234,6 @@ class Track:
         None: one sample, unpaired.
         """
         return max((m.repeats for m in (self.primary, *self.guardrails) if m.repeats is not None), default=None)
-
-
-"""The form of a role name: the agents' signature and ``agent_sessions.kind``."""
-RESERVED_NAMES = frozenset({'run', 'orchestrator', 'human', 'daemon'})
-"""Names that already sign writes: a run, and the actors that are not roles."""
 
 
 class AgentTimings(BaseModel):
@@ -274,40 +267,23 @@ class StatusConfig(BaseModel):
         return chosen(self.sections, Surface.STATUS)
 
 
-class Roles(RootModel[dict[str, RoleConfig]]):
-    """``[roles]``: one table for each role, by its name, over the role's defaults.
+@dataclass(frozen=True)
+class Roles:
+    """The campaign's roles: one instance of ``ROLES`` for each, by its name (``[plugins.role.<name>]``).
 
-    Every role is a provider (``ROLES``): piloop's (implementer, watchdog, research, scout) and those that packages add,
-    each with its table over its defaults, then the roles that the file defines. A table with a new name defines a new
-    role: a role that does runs (``ImplementerRole``) with ``runs = true``, else a sweeping role (``SweepRole``).
+    Every role is a provider: piloop's (implementer, watchdog, research, scout) and those that packages add, each with
+    its table over its defaults, then the roles that the file defines. A table with a new name defines a new role: a
+    role that does runs (``ImplementerRole``) with ``runs = true``, else a sweeping role (``SweepRole``).
     """
 
-    model_config = ConfigDict(frozen=True)
-    root: Annotated[dict[str, RoleConfig], ROLES.tables(new=new_role)] = Field(default={}, validate_default=True)
-
-    @model_validator(mode='before')
-    @classmethod
-    def _no_worker(cls, data: object) -> object:
-        if isinstance(data, dict) and 'worker' in data:
-            raise ValueError(deprecated.removed_worker())
-        return data
-
-    @model_validator(mode='after')
-    def _check(self) -> Self:
-        for name in self.root.keys() - ROLES.providers().keys():
-            if not re.fullmatch(ROLE_NAME, name) or name in RESERVED_NAMES:
-                raise ValueError(
-                    f'{name!r} is not a role name: use lowercase letters, digits, _ and - ({ROLE_NAME}), and none of'
-                    f' {sorted(RESERVED_NAMES)}'
-                )
-        return self
+    by_name: dict[str, RoleConfig]
 
     def all(self) -> dict[RoleName, RoleConfig]:
         """Every role by name: the providers, then the roles that the file defines, in its order.
 
-        ``_check`` makes each key a ``RoleName``.
+        ``new_role`` makes each key a ``RoleName``.
         """
-        return {RoleName(name): role for name, role in self.root.items()}
+        return {RoleName(name): role for name, role in self.by_name.items()}
 
     def sweeping(self) -> dict[RoleName, SweepRole]:
         """The sweeping roles by name, in the order of ``all``."""
@@ -336,33 +312,12 @@ class CampaignConfig(BaseModel):
     evaluate: list[str] = Field(min_length=1)
     """The command (argv) that scores a commit. It runs in a clean worktree of the commit and writes one JSON line,
     ``{"metrics": {"<name>": <value>}}``, to ``$PILOOP_RESULT_FILE``."""
-    runtime: RuntimeName = 'subprocess'
-    """Where the agents run: the name of a runtime, which starts, watches, steers and stops them. A package can
-    add a runtime with a ``piloop.runtimes`` entry point. A role can override it (``[roles.<name>] runtime``)."""
-    harnesses: list[str] = Field(default_factory=defaults, min_length=1)
-    """The enabled harnesses. Runs use them in turn, unless an idea pins one. When unset, the harnesses that are on by
-    default: ``pi``."""
-    model: dict[str, str]
-    """The model id for each harness, for example
-    ``{pi = "anthropic/claude-opus-5-5", claude = "claude-opus-5-5", codex = "gpt-6.1-sol"}``."""
-    harness: Harnesses = Field(default={}, validate_default=True)
-    """``[harness.<name>]``: the table of each harness over its defaults: the built-in harnesses (``pi``, ``claude``,
-    ``codex``), those that packages add, and new ones. A table with a new name and ``provider = "<harness>"`` is that
-    harness over its defaults, with another name; without ``provider``, it runs its argv and does nothing else."""
-    max_concurrent: dict[str, Annotated[int, Field(ge=1)]] = {}
-    """The maximum number of agents of one harness, across all roles of the campaign, that are started or queued to
-    start. Example: ``{claude = 2}`` when the provider of its model limits the request rate. When it is the turn of a
-    harness at its limit, the slot goes to the next harness of the rotation. An idea or request that pins that harness
-    waits. When unset, only the limits of the roles apply."""
     evaluate_timeout: float = 600
     """The number of seconds before the evaluate command is stopped. The evaluation is then a crash."""
     ladder: list[Rung] = []
     """``[[ladder]]``: the rungs that a run's evaluation of its own version climbs before the full panel, cheapest
     first. The climb stops at the first rung whose ``stop`` holds. A baseline, a head, a bar, a reference and a
     remeasure climb every rung and never stop."""
-    roles: Roles = Field(default={}, validate_default=True)
-    """``[roles.<name>]``: the table of each role over its defaults: the built-in roles (implementer, watchdog,
-    research, scout), the roles that packages add, and the roles that you define."""
     link: list[str] = []
     """Repo-relative paths, ignored by git, that piloop puts into every worktree read-only, for example data or virtual
     environments. Each job gets them as they are when it is made."""
@@ -371,7 +326,7 @@ class CampaignConfig(BaseModel):
     error analyses, comparisons with a reference, evaluation reports. The research pack lists each one with its
     outline, newest first, so that every sweep that reads the pack reads them before it proposes work."""
     mcp: dict[ServerName, McpServer] = {}
-    """``[mcp.<name>]``: the MCP servers that a role can list in ``[roles.<name>] mcp``."""
+    """``[mcp.<name>]``: the MCP servers that a role can list in ``[plugins.role.<name>] mcp``."""
     status: StatusConfig = StatusConfig()
     """``[status]``: the sections that ``piloop status``, the API and a UI show."""
     agents: AgentTimings = AgentTimings()
@@ -381,10 +336,8 @@ class CampaignConfig(BaseModel):
     ``{ provider = "<source>", ... }`` entries. When unset, every installed source that is on by default: ``campaign``,
     the hours and tokens of any campaign, and ``optimization``, its research. A list that adds a source lists those
     too, to keep their facts."""
-    plugins: Annotated[Plugins, PluginTables(Scope.CAMPAIGN)] = {}
-    """``[plugins.<capability>]``: the provider of each capability of the campaign, by its name (``provider``), and its
-    parameters, the other keys of the table. A capability without a table, or a table without ``provider``,
-    has its default provider."""
+    plugins: Annotated[Plugins, PluginTables(Scope.CAMPAIGN)] = Field(default={}, validate_default=True)
+    """``[plugins]``: the campaign's plugins, a table for each capability (``PluginTables``)."""
 
     @model_validator(mode='after')
     def _check(self) -> Self:
@@ -393,14 +346,17 @@ class CampaignConfig(BaseModel):
         self._check_ladder()
         self._check_facts()
         self._check_stop_rule()
-        self._check_harnesses(self.harnesses, self.model, 'campaign')
-        if unknown := [h for h in self.max_concurrent if h not in self.harness]:
-            raise ValueError(f'max_concurrent: unknown harnesses {unknown}; known: {sorted(self.harness)}')
+        self._check_refs(Scope.CAMPAIGN, self.plugins)
         roles = self.roles.all()
-        for name in roles:
-            self._check_harnesses(self.role_harnesses(name), self.role_models(name), f'roles.{name}')
-        for name in roles:
-            self._check_mcp(name)
+        harnesses = self.harness
+        models = {name: model for name, h in harnesses.items() if (model := h.model) is not None}
+        for name, role in roles.items():
+            rotation = role.harnesses or self.harnesses
+            if missing := [h for h in rotation if h not in models and h not in (role.model or {})]:
+                raise ValueError(
+                    f'plugins.role.{name}: no model for the harnesses {missing}: set [plugins.harness.<name>] model'
+                )
+            self._check_mcp(name, role, [harnesses[h] for h in rotation])
         addenda = [a for role in roles.values() if (a := role.addendum) is not None]
         addenda += [t.addendum for t in self.tracks.values() if t.addendum is not None]
         for rel in [*self.link, *addenda, *self.context]:
@@ -503,24 +459,42 @@ class CampaignConfig(BaseModel):
         if not math.isclose(total, 1):
             raise ValueError(f'track shares sum to {total:g}, not 1')
 
-    def _check_harnesses(self, harnesses: list[str], models: dict[str, str], where: str) -> None:
-        unknown = [h for h in harnesses if h not in self.harness]
-        if unknown:
-            raise ValueError(f'{where}: unknown harnesses {unknown}; known: {sorted(self.harness)}')
-        missing = [h for h in harnesses if h not in models]
-        if missing:
-            raise ValueError(f'{where}: no model configured for harnesses {missing}')
+    def _check_refs(self, scope: Scope, plugins: Plugins) -> None:
+        """Check that each name of an instance (``Ref``) of a capability of ``scope`` names an instance in ``plugins``.
 
-    def _check_mcp(self, name: RoleName) -> None:
+        Raises:
+            ValueError: A name names no instance. The message lists the instances.
+        """
+        for ref in refs(self):
+            if (table := ref.capability.table) is None or table.scope is not scope:
+                continue
+            if ref.name not in (found := ref.capability.instances(plugins)):
+                where = ''.join(f'[{k}]' if isinstance(k, int) else f'.{k}' for k in ref.at).lstrip('.')
+                raise ValueError(
+                    f'{where} = {ref.name!r}: no [plugins.{ref.capability.name}.{ref.name}]; there are'
+                    f' {", ".join(found)}'
+                )
+
+    def check_home(self, home: Plugins) -> None:
+        """Check the names of instances of ``config.toml`` (``home``, its ``[plugins]``), such as a runtime.
+
+        Raises:
+            ValueError: A name names no instance of the home.
+        """
+        self._check_refs(Scope.HOME, home)
+
+    def _check_mcp(self, name: RoleName, role: RoleConfig, rotation: list[Harness]) -> None:
         """Every server the role lists exists, and every harness the role may run can take them in its argv."""
-        unknown = [n for n in self.role(name).mcp if n not in self.mcp]
+        unknown = [n for n in role.mcp if n not in self.mcp]
         if unknown:
-            raise ValueError(f'roles.{name}.mcp: no [mcp.<name>] table for {unknown}')
-        if not self.role(name).mcp:
+            raise ValueError(f'plugins.role.{name}.mcp: no [mcp.<name>] table for {unknown}')
+        if not role.mcp:
             return
-        for harness in self.role_harnesses(name):
-            if why := self.harness_for(harness).refuses_servers():
-                raise ValueError(f'roles.{name}.mcp: harness {harness!r}: {why}; or take it out of the rotation')
+        for harness_name, harness in zip(role.harnesses or self.harnesses, rotation, strict=True):
+            if why := harness.refuses_servers():
+                raise ValueError(
+                    f'plugins.role.{name}.mcp: harness {harness_name!r}: {why}; or take it out of the rotation'
+                )
 
     def role_servers(self, name: RoleName) -> dict[str, McpServer]:
         """The MCP servers that the agents of a role get, by name."""
@@ -536,8 +510,34 @@ class CampaignConfig(BaseModel):
         servers = env_names(self.role_servers(name).values())
         return {n: n for n in servers if n not in definition.env} | definition.secrets
 
+    @property
+    def roles(self) -> Roles:
+        """The roles of the campaign: ``[plugins.role.<name>]``."""
+        return Roles(ROLES.instances(self.plugins))
+
+    @property
+    def harnesses(self) -> list[str]:
+        """The harness rotation: ``[plugins.harness] use``, else the harnesses that are on by default (``pi``)."""
+        return list(HARNESSES.used(self.plugins))
+
+    @property
+    def runtime(self) -> str:
+        """Where the agents run: ``[plugins.runtime] use``, a runtime of ``config.toml``, else ``subprocess``."""
+        [name] = RUNTIMES.used(self.plugins)
+        return name
+
+    @property
+    def harness(self) -> dict[str, Harness]:
+        """The harnesses of the campaign, by name: ``[plugins.harness.<name>]``."""
+        return HARNESSES.instances(self.plugins)
+
+    @property
+    def harness_caps(self) -> dict[str, int]:
+        """The ``max_concurrent`` of each harness that sets one, by name."""
+        return {name: cap for name, h in self.harness.items() if (cap := h.max_concurrent) is not None}
+
     def role(self, name: RoleName) -> RoleConfig:
-        """The ``[roles.<name>]`` table. The keys that only one role has need ``self.roles.<name>``.
+        """The ``[plugins.role.<name>]`` table. The keys that only one role has need ``self.roles``.
 
         Raises:
             KeyError: ``piloop.toml`` has no such role.
@@ -549,8 +549,9 @@ class CampaignConfig(BaseModel):
         return self.role(name).harnesses or self.harnesses
 
     def role_models(self, name: RoleName) -> dict[str, str]:
-        """The model for each harness of a role: the campaign's map, with the role's overrides on top."""
-        return {**self.model, **(self.role(name).model or {})}
+        """The model for each harness of a role: each harness's ``model``, with the role's map on top."""
+        own = {harness: model for harness, h in self.harness.items() if (model := h.model) is not None}
+        return {**own, **(self.role(name).model or {})}
 
     def role_runtime(self, name: RoleName) -> str:
         """The name of the runtime a role uses: its own, or else the campaign's."""
@@ -673,7 +674,8 @@ def load_campaign_config(campaign: Path, **overrides: object) -> CampaignConfig:
 
     Raises:
         FileNotFoundError: The campaign has no ``piloop.toml``.
-        ConfigError: The file is not valid TOML, not a valid config, or names a prompt file that does not exist.
+        ConfigError: The file is not valid TOML, not a valid config, names an instance that the home's ``config.toml``
+            lacks, or names a prompt file that does not exist.
     """
     toml = campaign / CONFIG_FILE
     if not toml.is_file():
@@ -706,8 +708,12 @@ def load_campaign_config(campaign: Path, **overrides: object) -> CampaignConfig:
         cfg = CampaignConfig.model_validate(_Loader(**kwargs).model_dump())
     except ValidationError as e:
         raise ConfigError(explain(toml, e)) from e
+    try:
+        cfg.check_home(settings.providers)
+    except ValueError as e:
+        raise ConfigError(f'{toml} is not a valid piloop config for {settings.home / "config.toml"}: {e}') from e
     missing = [
-        f'  roles.{name}.{key} = {rel!r}: no such file. Fix: create it, or correct the path'
+        f'  plugins.role.{name}.{key} = {rel!r}: no such file. Fix: create it, or correct the path'
         for name, role in cfg.roles.all().items()
         for key, rel in prompt_files(role).items()
         if not (campaign / rel).is_file()

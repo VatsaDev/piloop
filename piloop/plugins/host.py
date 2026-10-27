@@ -3,8 +3,11 @@
 Terms:
 
 - A **capability** is a public interface with a registry of named providers: the executors, the verdict rules, the
-  runtimes. It declares its contract, a class, and where the configuration chooses a provider: a ``[plugins.<name>]``
-  table (``Choice``), or a field that names one (``Entry``, ``Named``, ``Tables``).
+  runtimes. It declares its contract, a class, and where the configuration has its instances: one at
+  ``[plugins.<name>]`` (``One``), several at ``[plugins.<name>.<instance>]`` (``Many``), or a table that holds one
+  (``Entry``). A field that names an instance is a reference (``Ref``).
+- An **instance** is a provider with its parameters: the table ``{ provider = "<name>", <its parameters> }``, wherever
+  it is.
 - A **provider** is a class that subclasses the contract, named by an entry point whose name is the provider's name.
   It is a ``Parameters`` model: its fields are its parameters, and its methods are the contract. The host validates
   its table into it once, when the file loads.
@@ -27,7 +30,8 @@ Inspiration:
 
 - pluggy: providers found through entry points, each with the distribution that declares it.
 - Cordis (DeepSeek Harness): registrations as owned, reversible effects; a failed activation unwinds what it did.
-- The OpenTelemetry Collector: a component's configuration, validated with its defaults, makes the live component.
+- The OpenTelemetry Collector: a component's configuration, validated with its defaults, makes the live component,
+  and ``<type>/<name>`` names one of several instances of a type, which a pipeline lists by name.
 - The WebAssembly component model: pure contracts of data only, and errors as values.
 """
 
@@ -38,15 +42,19 @@ import re
 from collections.abc import Callable, Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass
-from enum import StrEnum
+from datetime import datetime, timedelta
+from enum import Enum, StrEnum
 from functools import cache
 from importlib.metadata import EntryPoint, entry_points
+from pathlib import Path
 from threading import RLock
-from typing import get_args, get_type_hints
+from types import UnionType
+from typing import Annotated, Literal, Union, get_args, get_origin, get_type_hints
 
 from pydantic import (
     BaseModel,
     ConfigDict,
+    Field,
     GetCoreSchemaHandler,
     GetJsonSchemaHandler,
     PydanticSchemaGenerationError,
@@ -164,12 +172,69 @@ class Live:
 
 
 @dataclass(frozen=True)
-class Choice:
-    """``[plugins.<name>]`` of the file of ``scope`` chooses the capability's provider, and gives its parameters."""
+class One:
+    """``[plugins.<name>]`` of the file of ``scope`` is the capability's one instance: its provider and parameters."""
 
     scope: Scope
     default: str | None = None
-    """The provider when the file has no table. None: then no provider is chosen."""
+    """The provider when the file has no table, or a table without ``provider``. None: then no provider is chosen.
+
+    A declared default, not a flag of a provider: installing a package never changes the one instance of a file."""
+
+
+class Pick(StrEnum):
+    """How many instances ``[plugins.<name>] use`` names."""
+
+    ONE = 'one'
+    """One name: the instance in use."""
+    ORDERED = 'ordered'
+    """A list of names: the instances in use, in order, such as a rotation."""
+
+
+@dataclass(frozen=True)
+class Use:
+    """``[plugins.<name>] use`` in the file of ``scope``: the instances that the campaign uses.
+
+    Unset, it is the providers that are ``DEFAULT`` (``is_default``): all of them for ``ORDERED``, and the one for
+    ``ONE``. The instances may be in another file: the runtimes are in ``config.toml``, and ``piloop.toml`` uses one.
+    """
+
+    scope: Scope
+    pick: Pick
+    refuses: Callable[[str], str | None] | None = None
+    """Why a name is refused before it is looked up, such as a provider that a release removed. None: none is."""
+
+
+@dataclass(frozen=True)
+class Many[P: Parameters]:
+    """``[plugins.<name>.<instance>]`` of the file of ``scope``: the capability's instances, by name.
+
+    A table's ``provider`` is the provider of its own name when it has none. Each provider that needs no keys is also an
+    instance of its own name, with its defaults, unless a table of that name changes them. ``[plugins.<name>]`` itself
+    holds the capability's own settings: ``use``, when the capability declares it.
+    """
+
+    scope: Scope
+    new: Callable[[str, Mapping[str, object]], type[P]] | None = None
+    """The class of a table with a name that no provider has and without ``provider``, from its name and its keys.
+    None: such a table is refused."""
+    use: Use | None = None
+    """Whether ``[plugins.<name>] use`` picks the instances that the campaign uses, and where."""
+
+
+USE = 'use'
+"""The key of ``[plugins.<name>]`` that names the instances in use: no instance has this name."""
+
+
+@dataclass(frozen=True)
+class Instances[P: Parameters]:
+    """``[plugins.<name>]`` of a capability of several instances, validated: what it uses, and its instances by name."""
+
+    capability: Capability[P]
+    use: tuple[str, ...]
+    """The instances in use, in order. Empty when the file of this table does not hold ``use``."""
+    instances: dict[str, P]
+    """The instances by name. Empty when the file of this table does not hold them."""
 
 
 @dataclass(frozen=True)
@@ -209,7 +274,7 @@ class Capability[P: Parameters]:
         contract: type[P],
         *,
         tier: Tier = Tier.HOST,
-        choice: Choice | None = None,
+        table: One | Many[P] | None = None,
         group: str | None = None,
         noun: str | None = None,
     ) -> None:
@@ -220,8 +285,8 @@ class Capability[P: Parameters]:
             contract: The class that a provider subclasses: its fields are the provider's parameters. A pure contract
                 takes and returns data only (``data_errors``).
             tier: What the contract lets cross to a provider.
-            choice: The ``[plugins.<name>]`` table that chooses the provider. Without it, the fields of the configuration
-                that name a provider say where it is used (``entry``, ``named``, ``tables``).
+            table: Where the file of its scope has its instances: one (``One``) or several (``Many``). Without it, an
+                instance is a table that a parameter or a key holds (``entry``).
             group: The entry point group of its providers, piloop's own included. ``piloop.<name>s`` by default.
             noun: What one provider is, for messages, when ``name`` does not say it: ``CAS provider``.
 
@@ -235,12 +300,12 @@ class Capability[P: Parameters]:
         """What one provider is, for messages: ``verdict rule``."""
         self.contract = contract
         self.tier = tier
-        self.choice = choice
+        self.table = table
         self.group = group or f'piloop.{name}s'
         self.entry = Entry(self)
         """``Annotated[P, CAP.entry]``: a table ``{ provider = "<name>", <its parameters> }``."""
-        self.named = Named(self)
-        """``Annotated[str, CAP.named]``: the name of a provider."""
+        self.ref = Ref(self)
+        """``Annotated[str, CAP.ref]``: the name of an instance, which ``refs`` finds."""
         self._providers: dict[str, Provider[P]] | None = None
         self.activating = False
         """Whether its providers are being loaded now."""
@@ -293,8 +358,8 @@ class Capability[P: Parameters]:
             raise MissingProvider(f'{type(provider).__qualname__} is no {self.noun} of an entry point')
         return found
 
-    def selected(self, plugins: Mapping[str, Parameters]) -> P:
-        """The provider that ``[plugins.<name>]`` chooses, with its parameters, else the default with its defaults.
+    def selected(self, plugins: Mapping[str, object]) -> P:
+        """The one instance that ``[plugins.<name>]`` gives, else the default provider with its defaults.
 
         ``plugins`` is a file's ``[plugins]``, validated (``PluginTables``).
 
@@ -303,9 +368,56 @@ class Capability[P: Parameters]:
         """
         if isinstance(found := plugins.get(self.name), self.contract):
             return found
-        if self.choice is None or self.choice.default is None:
+        if (default := self._default()) is None:
             raise MissingProvider(f'no [plugins.{self.name}] chooses a {self.noun}, and there is no default')
-        return self.get(self.choice.default).model()
+        return self.get(default).model()
+
+    def instances(self, plugins: Mapping[str, object]) -> dict[str, P]:
+        """The instances that ``[plugins.<name>.<instance>]`` gives, by name.
+
+        They are every provider that needs no keys or has a table, in registry order, then the tables with other names,
+        in the order of the file.
+
+        ``plugins`` is a file's ``[plugins]``, validated (``PluginTables``), which has every capability of ``Many``.
+
+        Raises:
+            ContractBroken: ``plugins`` was not validated.
+        """
+        return dict(self._table(plugins, self._many().scope).instances)
+
+    def used(self, plugins: Mapping[str, object]) -> tuple[str, ...]:
+        """The names of the instances that ``[plugins.<name>] use`` picks, in order, else the default ones.
+
+        Raises:
+            ContractBroken: ``plugins`` was not validated, or the capability declares no ``use``.
+        """
+        if (use := self._many().use) is None:
+            raise ContractBroken(f'the {self.noun}s have no [plugins.{self.name}] {USE}')
+        return self._table(plugins, use.scope).use
+
+    def _table(self, plugins: Mapping[str, object], scope: Scope) -> Instances[P]:
+        """``[plugins.<name>]`` of ``plugins``, else the table of a file of ``scope`` that leaves it out."""
+        found = plugins.get(self.name)
+        if found is None:
+            return self.validated_table({}, scope)
+        if not isinstance(found, Instances):
+            raise ContractBroken(f'[plugins.{self.name}] is not a table of {self.noun}s')
+        return found
+
+    def _many(self) -> Many[P]:
+        match self.table:
+            case Many() as many:
+                return many
+            case _:
+                raise ContractBroken(f'the {self.noun}s are not of several instances')
+
+    def _default(self) -> str | None:
+        """The provider of a table without ``provider``: the declared default of a ``One``."""
+        match self.table:
+            case One(default=default):
+                return default
+            case _:
+                return None
 
     def validated(self, table: object) -> P:
         """Validate a table as the provider that its ``provider`` key names, else the default. A provider is itself.
@@ -319,10 +431,20 @@ class Capability[P: Parameters]:
         if not isinstance(table, Mapping):
             raise ValueError('not a table')
         keys = {str(k): v for k, v in table.items() if k != 'provider'}
-        name = table.get('provider', self.choice.default if self.choice is not None else None)
+        name = table.get('provider', self._default())
         if name is None:
             raise ValueError(f'provider: missing; registered {self.noun}s: {", ".join(self.providers())}')
         return self.model_of(str(name), f'provider = {name!r}: ').model_validate(keys)
+
+    def named_tables(self, table: object) -> list[str]:
+        """The keys of a table of one instance that its provider does not take and that hold a table.
+
+        ``[plugins.<name>.<other>]`` writes such a key: an instance by name, which a capability of one instance has not.
+        """
+        if not isinstance(table, Mapping) or (name := table.get('provider', self._default())) not in self.providers():
+            return []
+        fields = self.model_of(str(name)).model_fields
+        return [str(k) for k, v in table.items() if k != 'provider' and k not in fields and isinstance(v, Mapping)]
 
     def dumped(self, provider: P, mode: str) -> dict[str, object]:
         """``provider`` as a table that ``validated`` reads back: its name, then the parameters that were set."""
@@ -335,13 +457,122 @@ class Capability[P: Parameters]:
         except MissingProvider as e:
             raise ValueError(f'{where}{e}') from e
 
-    def tables(self, new: Callable[[Mapping[str, object]], type[P]] | None = None) -> Tables[P]:
-        """``Annotated[dict[str, P], CAP.tables()]``: one table for each provider, by its name, over its defaults.
+    def validated_table(self, value: object, scope: Scope) -> Instances[P]:
+        """Validate ``[plugins.<name>]`` of the file of ``scope``: ``use`` when the file holds it, and the instances.
 
-        Every provider is in the result, in registry order, then each table with another name, in the order of the
-        file. ``new`` gives the class of such a table; without it, such a table is refused.
+        Raises:
+            ValidationError: ``use`` or an instance is refused.
+            ValueError: ``value`` is not a table, or sets what the file of ``scope`` does not hold.
         """
-        return Tables(self, new)
+        if isinstance(value, Instances):
+            return value
+        if not isinstance(value, Mapping):
+            raise ValueError('a table of tables, one for each instance by its name')
+        many, tables = self._many(), {str(k): v for k, v in value.items() if k != USE}
+        if many.scope is not scope and tables:
+            raise ValueError(f'the instances are in the other file; this one may set only {USE}: {", ".join(tables)}')
+        here = many.use is not None and many.use.scope is scope
+        if USE in value and not here:
+            raise ValueError(f'{USE} of the {self.noun}s is not set in this file')
+        try:
+            use = self._used(value.get(USE)) if here else ()
+        except ValidationError as e:
+            errors = [_at((USE, *err['loc']), err) for err in e.errors()]
+            raise ValidationError.from_exception_data(self.name, errors) from e
+        except ValueError as e:
+            error = InitErrorDetails(type='value_error', loc=(USE,), input=value.get(USE), ctx={'error': e})
+            raise ValidationError.from_exception_data(self.name, [error]) from e
+        return Instances(self, use, self.validated_instances(tables) if many.scope is scope else {})
+
+    def _used(self, value: object) -> tuple[str, ...]:
+        """``use`` as the names it picks, else the providers that are ``DEFAULT``.
+
+        Raises:
+            ValidationError: ``use`` is not one name, or not a list of at least one (a JSON list, from a variable).
+            ContractBroken: Unset, with ``ONE``, but not one installed provider is ``DEFAULT``.
+        """
+        many = self._many()
+        assert many.use is not None  # validated_table asks only a capability that declares it
+        defaults = [name for name, p in self.providers().items() if is_default(p.model)]
+        match many.use.pick:
+            case Pick.ONE if value is None:
+                if len(defaults) != 1:
+                    raise ContractBroken(
+                        f'one installed {self.noun} is DEFAULT, not {len(defaults)}: {", ".join(defaults) or "none"}'
+                    )
+                return tuple(defaults)
+            case Pick.ONE:
+                name = _ONE.validate_python(value)
+                if many.use.refuses is not None and (why := many.use.refuses(name)) is not None:
+                    raise ValueError(why)
+                return (name,)
+            case Pick.ORDERED if value is None:
+                return tuple(defaults)
+            case _:  # ORDERED, set
+                return tuple(
+                    _ORDERED.validate_json(value) if isinstance(value, str) else _ORDERED.validate_python(value)
+                )
+
+    def validated_instances(self, value: object) -> dict[str, P]:
+        """Validate the tables of ``[plugins.<name>.<instance>]``. A refused one is an error at its key.
+
+        Each provider that needs no keys is an instance of its own name too (``instances``).
+
+        Raises:
+            ValidationError: A table is refused: the error is at ``<instance>.<field>``.
+            ValueError: ``value`` is not a table of tables.
+        """
+        if not isinstance(value, Mapping):
+            raise ValueError('a table of tables, one for each instance by its name')
+        providers = self.providers()
+        implied = [name for name, p in providers.items() if name not in value and not _needs_keys(p.model)]
+        found: dict[str, P] = {}
+        errors: list[InitErrorDetails] = []
+        named = [n for n in providers if n in value or n in implied]
+        for name in [*named, *(str(n) for n in value if n not in providers)]:
+            table = value.get(name, {})
+            try:
+                found[name] = self._instance(name, table)
+            except ValidationError as e:
+                errors += [_at((name, *err['loc']), err) for err in e.errors()]
+            except ValueError as e:
+                errors.append(InitErrorDetails(type='value_error', loc=(name,), input=table, ctx={'error': e}))
+        if errors:
+            raise ValidationError.from_exception_data(self.name, errors)
+        return found
+
+    def _instance(self, name: str, table: object) -> P:
+        """The table ``name`` as the provider that its ``provider`` names, else the provider ``name``, else ``new``'s.
+
+        Raises:
+            ValidationError: The provider refuses its parameters.
+            ValueError: The table is not a table, or no provider is named and ``new`` gives no class.
+        """
+        if isinstance(table, self.contract):
+            return table
+        if not isinstance(table, Mapping):
+            raise ValueError(f'a {self.noun} is a table')
+        if 'provider' in table:
+            return self.validated(table)
+        if name in self.providers():
+            return self.model_of(name).model_validate(table)
+        match self.table:
+            case Many(new=new) if new is not None:
+                return new(name, table).model_validate(table)
+            case _:
+                raise ValueError(
+                    f'no {self.noun} has that name: add provider = "<{self.noun}>"; registered {self.noun}s:'
+                    f' {", ".join(self.providers())}'
+                )
+
+    def dumped_instance(self, name: str, instance: P, mode: str) -> dict[str, object]:
+        """The instance ``name`` as ``validated_instances`` reads it back.
+
+        It has ``provider`` only when that is not ``name``, and never for a class of ``new``.
+        """
+        own = instance.model_dump(mode=mode, exclude_unset=True)
+        provider = next((n for n, p in self.providers().items() if p.model is type(instance)), None)
+        return own if provider in (None, name) else {'provider': provider, **own}
 
     def activate(self, stack: ExitStack) -> None:
         """Load and check every provider, then register them all, with their unregistration on ``stack``.
@@ -445,17 +676,22 @@ class Slot[T]:
         return found
 
 
-type Plugins = dict[str, Parameters]
-"""A file's ``[plugins]``, validated: the provider that each table chooses, with its parameters, by capability."""
+type Plugins = dict[str, Parameters | Instances[Parameters]]
+"""A file's ``[plugins]``, validated, by capability: the instance of a ``One``, or the ``Instances`` of a ``Many``.
+``Capability.selected``, ``Capability.instances`` and ``Capability.used`` read it."""
+
+_ONE: TypeAdapter[str] = TypeAdapter(Annotated[str, Field(min_length=1)])
+_ORDERED: TypeAdapter[list[str]] = TypeAdapter(Annotated[list[str], Field(min_length=1)])
 
 
 @dataclass(frozen=True)
 class PluginTables:
     """``Annotated[Plugins, PluginTables(scope)]``: ``[plugins]`` of the file of ``scope``.
 
-    Each ``[plugins.<name>]`` is validated by the capability of ``scope`` that its key names, into the provider that its
-    ``provider`` key names, and dumped back with that key. A capability without a table has its default
-    (``Capability.selected``). The capabilities are looked up when a file validates, after every plugin can load.
+    Each ``[plugins.<name>]`` is validated by the capability of ``scope`` that its key names: as its one instance, the
+    provider that its ``provider`` key names (``One``), or as its instances by name (``Many``). Each is dumped back as it
+    reads. A ``One`` without a table has its default (``Capability.selected``), and a ``Many`` without one has the
+    providers that need no keys. The capabilities are looked up when a file validates, after every plugin can load.
     """
 
     scope: Scope
@@ -470,8 +706,17 @@ class PluginTables:
         return {'type': 'object', 'additionalProperties': {'type': 'object'}}
 
     def _capabilities(self) -> dict[str, Capability[Parameters]]:
-        """The capabilities that a table of the file chooses, by name."""
-        return {c.name: c for c in declared() if c.choice is not None and c.choice.scope is self.scope}
+        """The capabilities that have their instances in the file, or their ``use``, by name."""
+        return {c.name: c for c in declared() if self._here(c)}
+
+    def _here(self, capability: Capability[Parameters]) -> bool:
+        match capability.table:
+            case Many(scope=scope, use=Use(scope=used)):
+                return self.scope in (scope, used)
+            case One(scope=scope) | Many(scope=scope):
+                return scope is self.scope
+            case _:  # None: no table holds it
+                return False
 
     def validate(self, value: object) -> Plugins:
         """Validate each table. A refused table is an error at its key: ``plugins.<name>.<field>``."""
@@ -480,7 +725,8 @@ class PluginTables:
         known = self._capabilities()
         found: Plugins = {}
         errors: list[InitErrorDetails] = []
-        for name, table in value.items():
+        many = [c.name for c in known.values() if isinstance(c.table, Many) and c.name not in value]
+        for name, table in [*value.items(), *((name, {}) for name in many)]:
             try:
                 found[str(name)] = self._table(known, str(name), table)
             except ValidationError as e:
@@ -491,15 +737,43 @@ class PluginTables:
             raise ValidationError.from_exception_data('plugins', errors)
         return found
 
-    @staticmethod
-    def _table(known: Mapping[str, Capability[Parameters]], name: str, table: object) -> Parameters:
-        if (capability := known.get(name)) is None:
-            raise ValueError(f'no capability has that name; there is {", ".join(sorted(known)) or "none"}')
-        return capability.validated(table)
+    def _table(
+        self, known: Mapping[str, Capability[Parameters]], name: str, table: object
+    ) -> Parameters | Instances[Parameters]:
+        match capability := known.get(name):
+            case None:
+                raise ValueError(f'no capability has that name; there is {", ".join(sorted(known)) or "none"}')
+            case Capability(table=Many()):
+                return capability.validated_table(table, self.scope)
+            case _:
+                if named := capability.named_tables(table):
+                    raise ValueError(
+                        f'a {capability.noun} has one instance, not one for each name ({", ".join(named)}): write its'
+                        f' keys in [plugins.{name}], with provider = "<{capability.noun}>" to choose one'
+                    )
+                return capability.validated(table)
 
     def dump(self, plugins: Plugins, info: core_schema.SerializationInfo) -> dict[str, dict[str, object]]:
         known = self._capabilities()
-        return {name: known[name].dumped(provider, info.mode) for name, provider in plugins.items()}
+        return {name: self._dumped(known[name], found, info.mode) for name, found in plugins.items()}
+
+    @staticmethod
+    def _dumped(
+        capability: Capability[Parameters], found: Parameters | Instances[Parameters], mode: str
+    ) -> dict[str, object]:
+        match found:
+            case Instances(use=use, instances=instances):
+                picked: dict[str, object] = {}
+                match capability.table:
+                    case Many(use=Use(pick=Pick.ONE)) if use:
+                        picked[USE] = use[0]
+                    case Many(use=Use(pick=Pick.ORDERED)) if use:
+                        picked[USE] = list(use)
+                    case _:
+                        pass
+                return picked | {name: capability.dumped_instance(name, p, mode) for name, p in instances.items()}
+            case _:
+                return capability.dumped(found, mode)
 
 
 @dataclass(frozen=True)
@@ -534,86 +808,94 @@ class Entry[P: Parameters]:
 
 
 @dataclass(frozen=True)
-class Named[P: Parameters]:
-    """``Annotated[str, CAP.named]``: the name of a provider of ``capability``."""
+class Ref[P: Parameters]:
+    """``Annotated[str, CAP.ref]``: the name of an instance of ``capability``, in the file of its scope.
 
-    capability: Capability[P]
-
-    def __get_pydantic_core_schema__(self, source: type[object], handler: GetCoreSchemaHandler) -> CoreSchema:
-        return core_schema.no_info_after_validator_function(self.validate, handler(source))
-
-    def validate(self, name: str) -> str:
-        """Raises ``MissingProvider``, a ``ValueError``, when no provider has that name."""
-        self.capability.get(name)
-        return name
-
-
-@dataclass(frozen=True)
-class Tables[P: Parameters]:
-    """``Annotated[dict[str, P], CAP.tables()]``: a table for each provider, by its name, over the provider's defaults.
-
-    Every provider is in the result, in registry order, then the tables with other names, in their order. The runtimes
-    of ``config.toml`` are tables (``[runtimes.<name>]``), and so are the roles of ``piloop.toml`` (``[roles.<name>]``).
+    It is a marker: ``refs`` finds every reference of a validated model, and the owner of the file checks them against
+    the instances (``Capability.instances``), once every table of the file is validated.
     """
 
     capability: Capability[P]
-    new: Callable[[Mapping[str, object]], type[P]] | None = None
-    """The class of a table with a name that no provider has. None: such a table is refused."""
 
-    def __get_pydantic_core_schema__(self, source: object, handler: GetCoreSchemaHandler) -> CoreSchema:
-        return core_schema.no_info_plain_validator_function(
-            self.validate,
-            serialization=core_schema.plain_serializer_function_ser_schema(self.dump, info_arg=True),
-        )
 
-    def __get_pydantic_json_schema__(self, schema: CoreSchema, handler: GetJsonSchemaHandler) -> JsonSchemaValue:
-        return {'type': 'object', 'additionalProperties': {'type': 'object'}}
+@dataclass(frozen=True)
+class Reference:
+    """A name of an instance (``Ref``) in a validated model, and where it is."""
 
-    def validate(self, value: object) -> dict[str, P]:
-        """Validate each table. A refused one is an error at its key: ``<name>.<field>``."""
-        if not isinstance(value, Mapping):
-            raise ValueError('a table of tables')
-        providers = self.capability.providers()
-        others = [str(name) for name in value if name not in providers]
-        found: dict[str, P] = {}
-        errors: list[InitErrorDetails] = []
-        for name in [*providers, *others]:
-            table = value.get(name, {})
-            try:
-                found[name] = self._validated(name, table)
-            except ValidationError as e:
-                errors += [_at((name, *err['loc']), err) for err in e.errors()]
-            except ValueError as e:
-                errors.append(InitErrorDetails(type='value_error', loc=(name,), input=table, ctx={'error': e}))
-        if errors:
-            raise ValidationError.from_exception_data(self.capability.name, errors)
-        return found
+    capability: Capability[Parameters]
+    name: str
+    at: tuple[str | int, ...]
+    """The keys and list indexes from the model to the name, as in a validation error."""
 
-    def _validated(self, name: str, table: object) -> P:
-        """The table ``name`` as its class: its provider's, else the class that ``new`` gives it."""
-        return table if isinstance(table, self.capability.contract) else self._model(name, table).model_validate(table)
 
-    def _model(self, name: str, table: object) -> type[P]:
-        """The class of the table ``name``: its provider's, else the class that ``new`` gives it.
+def refs(value: object, annotation: object = None, at: tuple[str | int, ...] = ()) -> list[Reference]:
+    """Every name of an instance (``Ref``) in a validated model, in the order of its fields.
 
-        Raises:
-            ValueError: No provider has that name, and there is no ``new``, or the table is not a table.
-        """
-        if name in self.capability.providers():
-            return self.capability.model_of(name)
-        noun = self.capability.noun
-        if self.new is None:
-            raise ValueError(f'no {noun} has that name; registered {noun}s: {", ".join(self.capability.providers())}')
-        if not isinstance(table, Mapping):
-            raise ValueError(f'a {noun} is a table')
-        return self.new(table)
+    It walks the fields, the items of lists, the keys and values of dicts, and the instances of ``[plugins]``.
+    """
+    if annotation is None and isinstance(value, BaseModel):
+        fields = _referring(type(value))
+        return [r for name, field in fields for r in refs(getattr(value, name), field, (*at, name))]
+    origin, args = get_origin(annotation), get_args(annotation)
+    if origin is Annotated:
+        marks = [Reference(m.capability, value, at) for m in args[1:] if isinstance(m, Ref) and isinstance(value, str)]
+        return [*marks, *refs(value, args[0], at)]
+    if origin in (Union, UnionType):  # the value fits one arm: the first that finds references is it
+        return next((found for arg in args if (found := refs(value, arg, at))), [])
+    match value:
+        case Instances(capability=capability, use=use, instances=instances):
+            used = [Reference(capability, name, (*at, USE, n)) for n, name in enumerate(use)]
+            return [*used, *(r for name, p in instances.items() for r in refs(p, None, (*at, name)))]
+        case BaseModel():
+            return refs(value, None, at)
+        case list() | tuple():
+            item = args[0] if args else None
+            return [r for i, v in enumerate(value) for r in refs(v, item, (*at, i))]
+        case dict():
+            keys, values = (args[0], args[1]) if len(args) == 2 else (None, None)
+            return [r for k, v in value.items() for r in (*refs(k, keys, at), *refs(v, values, (*at, str(k))))]
+        case _:
+            return []
 
-    def dump(self, tables: Mapping[str, P], info: core_schema.SerializationInfo) -> dict[str, object]:
-        return {name: self._dumped(name, p, info.mode) for name, p in tables.items()}
 
-    def _dumped(self, name: str, table: P, mode: str) -> dict[str, object]:
-        """The table ``name`` as ``validate`` reads it back: the parameters that it set."""
-        return table.model_dump(mode=mode, exclude_unset=True)
+def is_default(model: type) -> bool:
+    """Whether the provider class ``model`` itself sets ``DEFAULT = True``: on when nothing is configured.
+
+    A subclass of a default provider, such as a runtime that runs agents as ``subprocess`` does, inherits its code and
+    not its place among the defaults.
+    """
+    return vars(model).get('DEFAULT') is True
+
+
+INERT = (str, bytes, int, float, bool, type(None), Enum, Path, datetime, timedelta)
+"""The types of a value that holds no reference: ``refs`` does not walk a field of only these."""
+
+
+@cache
+def _referring(model: type[BaseModel]) -> tuple[tuple[str, object], ...]:
+    """The fields of ``model`` that can hold a reference, with their annotations: those that ``refs`` walks.
+
+    A validation of a campaign's config walks them every time, so the inert fields are left out once per class.
+    """
+    fields = ((name, info.rebuild_annotation()) for name, info in model.model_fields.items())
+    return tuple((name, annotation) for name, annotation in fields if _can_refer(annotation))
+
+
+def _can_refer(annotation: object) -> bool:
+    """Whether a value of ``annotation`` can hold a reference: a ``Ref``, or a type that is not ``INERT``."""
+    origin, args = get_origin(annotation), get_args(annotation)
+    if origin is Annotated:
+        return any(isinstance(m, Ref) for m in args[1:]) or _can_refer(args[0])
+    if origin is Literal:
+        return False
+    if args:
+        return any(_can_refer(arg) for arg in args if arg is not Ellipsis)
+    return not (isinstance(annotation, type) and issubclass(annotation, INERT))
+
+
+def _needs_keys(model: type[BaseModel]) -> bool:
+    """Whether a provider has a parameter without a default: then only a table makes it an instance."""
+    return any(info.is_required() for info in model.model_fields.values())
 
 
 CORE_ERRORS = frozenset(get_args(ErrorType))

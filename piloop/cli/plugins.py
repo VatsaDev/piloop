@@ -1,15 +1,23 @@
 """``piloop plugins``: every capability, its providers, and which provider the configuration selects."""
 
 from pathlib import Path
-from typing import Annotated, get_args, get_origin
-
-from pydantic import BaseModel
 
 from piloop.cli import common
 from piloop.cli.doctor import stored_campaigns
 from piloop.config import CampaignConfig
 from piloop.daemon.main import preflight, unbound_failures
-from piloop.plugins.host import Capability, Choice, Named, Parameters, PluginError, Plugins, Scope, declared
+from piloop.plugins.host import (
+    Capability,
+    Many,
+    MissingProvider,
+    One,
+    Parameters,
+    PluginError,
+    Plugins,
+    Scope,
+    declared,
+    refs,
+)
 from piloop.settings import CONFIG_FILE, Settings
 
 
@@ -52,47 +60,52 @@ def selections(cfg: Settings) -> list[str]:
     ]
     found: list[str] = []
     for capability in declared():
-        match capability.choice:
-            case None:
-                for stored, campaign in campaigns:
-                    found += _named_in(capability, campaign, stored)
-            case Choice(scope=Scope.HOME):
+        match capability.table:
+            case One(scope=Scope.HOME):
                 found += _chosen(capability, cfg.providers, f'in {config}')
-            case _:  # a [plugins] table of piloop.toml
+            case One():  # a [plugins] table of piloop.toml
                 for stored, campaign in campaigns:
                     found += _chosen(capability, campaign.plugins, stored, f'{campaign.name}: ')
+            case Many(scope=scope):
+                for stored, campaign in campaigns:
+                    home = cfg.providers if scope is Scope.HOME else campaign.plugins
+                    found += _named_in(capability, campaign, capability.instances(home), stored)
+            case _:  # no table: nothing chooses it
+                pass
     return found
 
 
 def _chosen(capability: Capability[Parameters], plugins: Plugins, where: str, who: str = '') -> list[str]:
     """What ``[plugins.<name>]`` of one file chooses: nothing without the table."""
-    if (provider := plugins.get(capability.name)) is None:
+    if not isinstance(provider := plugins.get(capability.name), Parameters):
         return []
     name = capability.name_of(provider)
     return [f'{who}{_provider(capability, name)} ([plugins.{capability.name}] provider, {where})']
 
 
-def _named_in(capability: Capability[Parameters], campaign: CampaignConfig, stored: str) -> list[str]:
-    """What the keys of one campaign that name a provider of ``capability`` name: at the top, then in each role."""
-    roles = [(f'{campaign.name} {name}', f'[roles.{name}] ', role) for name, role in campaign.roles.all().items()]
-    tables: list[tuple[str, str, BaseModel]] = [(campaign.name, '', campaign), *roles]
-    return [
-        f'{who}: {_provider(capability, name)} ({table}{key}, {stored})'
-        for who, table, model in tables
-        for key, name in _names(model, capability).items()
-    ]
+def _named_in(
+    capability: Capability[Parameters], campaign: CampaignConfig, instances: dict[str, Parameters], stored: str
+) -> list[str]:
+    """The provider of each instance of ``capability`` that a key of the campaign names (``Ref``), and the key.
 
-
-def _names(model: BaseModel, capability: Capability[Parameters]) -> dict[str, str]:
-    """The fields of ``model`` that name a provider of ``capability`` (``Named``) and are set, with the name."""
-    found: dict[str, str] = {}
-    for field, info in type(model).model_fields.items():
-        optional = [m for h in get_args(info.annotation) if get_origin(h) is Annotated for m in h.__metadata__]
-        metadata = [*info.metadata, *optional]
-        named = any(isinstance(m, Named) and m.capability is capability for m in metadata)
-        if named and isinstance(value := getattr(model, field), str):
-            found[field] = value
+    An instance of no provider, such as a harness that only runs its argv, is left out.
+    """
+    found: list[str] = []
+    for ref in refs(campaign):
+        if ref.capability is not capability or (instance := instances.get(ref.name)) is None:
+            continue
+        try:
+            provider = capability.name_of(instance)
+        except MissingProvider:
+            continue
+        found.append(f'{campaign.name}: {_provider(capability, provider)} ({_key(ref.at)}, {stored})')
     return found
+
+
+def _key(at: tuple[str | int, ...]) -> str:
+    """Where a reference is, as a user writes it: ``runtime``, or ``[plugins.role.fast] runtime``."""
+    *table, key = [str(k) for k in at if isinstance(k, str)]
+    return f'[{".".join(table)}] {key}' if table else key
 
 
 def _provider(capability: Capability[Parameters], name: str) -> str:

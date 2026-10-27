@@ -1,4 +1,4 @@
-"""``[roles.orchestrator]``: piloop launches the campaign's orchestrator when news arrives for it.
+"""``[plugins.role.orchestrator]``: piloop launches the campaign's orchestrator when news arrives for it.
 
 Off by default: with ``triggers = []``, the person runs an orchestrator of their own (the ``piloop-operate`` skill), and
 piloop launches none. ``triggers = [{ provider = "news" }]`` turns it on. Each agent of the role resumes the session of
@@ -16,7 +16,7 @@ from piloop.plugins.trigger.contract import TriggerEntry
 
 
 class OrchestratorRole(SweepRole):
-    """``[roles.orchestrator]``: decides escalations, answers messages, steers the work and records each decision."""
+    """``[plugins.role.orchestrator]``: decides escalations, answers messages, steers the work and records each decision."""
 
     PROMPT = files(__package__) / 'prompts' / 'orchestrator.md'
     RELAYED: ClassVar[frozenset[Verb]] = frozenset(

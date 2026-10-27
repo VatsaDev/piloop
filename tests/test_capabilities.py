@@ -37,6 +37,7 @@ HELPERS: tuple[object, ...] = (  # a tuple: some are values that do not hash, su
     capabilities.EventModel,  # what a provider's events subclass, as an executor's capacity_events
     capabilities.Base,  # what a package's tables subclass (piloop.schemas)
     capabilities.Schema,  # what a package declares its tables in (piloop.schemas)
+    capabilities.Parameters,  # what every contract subclasses
     capabilities.MissingProvider,
     capabilities.Live,
     NotSteerable,
@@ -196,7 +197,7 @@ def _contracts() -> set[type]:
     found: set[type] = set()
     for capability in _declared():
         found |= {type(capability), capability.contract}
-        found |= {type(c) for c in (capability.choice, capability.entry, capability.named, capability.tables()) if c}
+        found |= {type(c) for c in (capability.table, capability.entry, capability.ref) if c}
         for provider in capability.builtins().values():
             found |= {b for b in provider.__mro__[1:] if capability.contract in b.__mro__}
     queue = list(found)

@@ -18,21 +18,21 @@ from sqlalchemy.orm import Session
 from piloop.api.views import LiveKey
 from piloop.db.models import Limit, utcnow
 from piloop.ids import KeyOrigin
-from piloop.plugins.host import Choice, Live, Parameters, Scope, declared
+from piloop.plugins.host import Live, One, Parameters, Scope, declared
 
 
 class Refused(ValueError):
     """A limit that is not set: its key is not ``Live``, or its parameters refuse the value. The message says why."""
 
 
-def selected(plugins: Mapping[str, Parameters]) -> dict[str, Parameters]:
+def selected(plugins: Mapping[str, object]) -> dict[str, Parameters]:
     """The provider of each capability of the home that ``[plugins.<name>]`` chooses, or its default, by name."""
     found: dict[str, Parameters] = {}
     for c in declared():
-        match c.choice:
-            case Choice(scope=Scope.HOME, default=default) if c.name in plugins or default is not None:
+        match c.table:
+            case One(scope=Scope.HOME, default=default) if c.name in plugins or default is not None:
                 provider = c.selected(plugins)
-                assert isinstance(provider, Parameters)  # Capability refuses a Choice of a contract that is not one
+                assert isinstance(provider, Parameters)  # Capability refuses a One of a contract that is not one
                 found[c.name] = provider
     return found
 
@@ -81,7 +81,7 @@ def live(model: BaseModel, prefix: str) -> Iterator[tuple[str, object]]:
 
 
 def set_limit(
-    s: Session, plugins: Mapping[str, Parameters], key: str, value: JsonValue, *, reason: str, actor: str
+    s: Session, plugins: Mapping[str, object], key: str, value: JsonValue, *, reason: str, actor: str
 ) -> Limit:
     """Set the limit of ``key``, for the daemon's next pass. The caller commits.
 
@@ -113,7 +113,7 @@ def unset_limit(s: Session, key: str) -> bool:
     return limit is not None
 
 
-def sources(s: Session, plugins: Mapping[str, Parameters]) -> list[tuple[str, object, KeyOrigin, Limit | None]]:
+def sources(s: Session, plugins: Mapping[str, object]) -> list[tuple[str, object, KeyOrigin, Limit | None]]:
     """Each ``Live`` key of the home's providers: its value, where it comes from, and its limit if one sets it."""
     limits = {limit.key: limit for limit in s.scalars(select(Limit))}
     out: list[tuple[str, object, KeyOrigin, Limit | None]] = []
@@ -130,7 +130,7 @@ def sources(s: Session, plugins: Mapping[str, Parameters]) -> list[tuple[str, ob
     return out
 
 
-def live_keys(s: Session, plugins: Mapping[str, Parameters], origins: Collection[KeyOrigin]) -> list[LiveKey]:
+def live_keys(s: Session, plugins: Mapping[str, object], origins: Collection[KeyOrigin]) -> list[LiveKey]:
     """``sources`` whose value comes from one of ``origins``, as the API answers them."""
     return [
         LiveKey(

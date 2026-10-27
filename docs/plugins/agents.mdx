@@ -40,7 +40,7 @@ claude_beta = "my_package:ClaudeBeta"
 
 ### The contract
 
-A harness provider is a subclass of `Harness`. Its fields are the keys of `[harness.<name>]` with its defaults. Its
+A harness provider is a subclass of `Harness`. Its fields are the keys of `[plugins.harness.<name>]` with its defaults. Its
 methods hold what piloop knows about the CLI: `mcp` writes a role's MCP servers in its flags, `usage` reads the tokens
 from its session files when an agent ends, `messages` is what its hook prints for a message, and `skills_dir` is where
 it reads user skills.
@@ -65,16 +65,17 @@ This runtime starts each agent as the built-in runtime `subprocess` does, but wi
 Install it, then select it in `piloop.toml` and run `piloop init .`:
 
 ```toml
-runtime = "nice"
+[plugins.runtime]
+use = "nice"
 ```
 
-A role can select its own: `[roles.research] runtime = "nice"`. `[runtimes.nice]` in `config.toml` holds the
-runtime's settings.
+A role can select its own: `[plugins.role.research] runtime = "nice"`. `[plugins.runtime.nice]` in `config.toml` holds
+the runtime's settings.
 
 ### The contract
 
 A runtime is a pydantic model, a subclass of `RuntimeConfig`: the name of its entry point is its name, and its fields
-are the keys of `[runtimes.<name>]`. Its `open()` returns an object with the methods of the `Runtime` protocol. That
+are the keys of `[plugins.runtime.<name>]`. Its `open(name)`, with the name of the instance, returns an object with the methods of the `Runtime` protocol. That
 object starts the `headless` argv of a harness, with the first prompt in it. [Runtimes](/concepts/roles#runtimes)
 says what a runtime does for you.
 
@@ -164,7 +165,7 @@ A `sql` trigger needs no code: its query fires the role when it returns a row, a
 
 ### The contract
 
-A trigger is an entry of `[roles.<name>] triggers`: `{ provider = "<trigger>", <parameter> = <value> }`. A plugin's
+A trigger is an entry of `[plugins.role.<name>] triggers`: `{ provider = "<trigger>", <parameter> = <value> }`. A plugin's
 trigger is a subclass of `Trigger`: its fields are its parameters. On each pass, for each sweeping role
 without a pending request, the daemon calls `fire(p)` of each trigger of the role in order. A pass comes when
 something changes in the campaign, or in what a trigger names in `WAKES_ON`, and when the time that a trigger's

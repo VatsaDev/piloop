@@ -54,11 +54,8 @@ from tests.isolation import CALLER_ENV
 pytestmark = pytest.mark.e2e
 
 ROLE_TIMEOUT = 300
-CONFIG = {
-    'evaluate': ['python3', 'evaluate.py'],
-    'evaluate_timeout': 120,
-    'runtime': 'subprocess',
-    'roles': {
+PLUGINS: dict[str, object] = {
+    'role': {
         'implementer': {'timeout': ROLE_TIMEOUT, 'max_concurrent': 2},
         'research': {'triggers': [], 'max_ideas': 0},
         'watchdog': {'triggers': [], 'interval': 0},
@@ -68,7 +65,12 @@ CONFIG = {
             'timeout': ROLE_TIMEOUT,
         },
     },
-    'plugins': {'stop_rule': {'max_runs': 3, 'max_tokens': 4_000_000, 'hold_at': {'tokens': 3_000_000}}},
+    'stop_rule': {'max_runs': 3, 'max_tokens': 4_000_000, 'hold_at': {'tokens': 3_000_000}},
+}
+CONFIG = {
+    'evaluate': ['python3', 'evaluate.py'],
+    'evaluate_timeout': 120,
+    'plugins': PLUGINS,
     'metrics': [{'name': 'bytes', 'direction': 'lower', 'role': 'primary'}],
 }
 """The toy's ``piloop.toml``, without its name and harness: no research or watchdog sweeps, an orchestrator that piloop
@@ -255,11 +257,10 @@ def server(request: pytest.FixtureRequest) -> Iterator[Server]:
     name = request.config.getoption('e2e_campaign') or 'e2e-remote'
     directory = piloop_install.root / name
     directory.mkdir()
+    harnesses = {'use': [harness], harness: {'model': model, 'env': {s: {'secret': s} for s in secrets}}}
     toml = CONFIG | {
         'name': name,
-        'harnesses': [harness],
-        'model': {harness: model},
-        'harness': {harness: {'env': {s: {'secret': s} for s in secrets}}},
+        'plugins': {**PLUGINS, 'harness': harnesses},
     }
     files = {
         'piloop.toml': tomli_w.dumps(toml),

@@ -2,7 +2,9 @@
 
 | Member | What it is |
 |---|---|
-| `Harness.DEFAULT: ClassVar[bool]` | Whether a campaign that does not set `harnesses` rotates through this one. |
+| `Harness.DEFAULT: ClassVar[bool]` | Whether a campaign that does not set `[plugins.harness] use` rotates through this one. Only the class that sets it is a default: a subclass is not (`is_default`). |
+| `Harness.model: str \| None` | The model id, which fills `{model}` in the argv, for example `claude-opus-5-5`. A role overrides it (`[plugins.role.<name>] model`). A harness in a rotation needs one of the two. |
+| `Harness.max_concurrent: int \| None` | The maximum number of agents of this harness, across all roles of the campaign, that are started or queued to start. Example: 2 when the provider of its model limits the request rate. When it is the turn of a harness at its limit, the slot goes to the next harness of the rotation. An idea or request that pins this harness waits. When unset, only the limits of the roles apply. |
 | `Harness.executable: str` | The program to run. |
 | `Harness.headless: list[str]` | The arguments for a run without a terminal. Must include `{prompt}`. |
 | `Harness.resume: list[str]` | The arguments that continue the session of a run with a new prompt. When the agent's turn ends with messages queued for it (comments, `piloop prompt`), the runtime runs the harness again with these, `{prompt}` being the messages and `{session_id}` the session's id. Must include both. When empty, the agent takes no message while it runs. |

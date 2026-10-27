@@ -46,7 +46,7 @@ class Renames:
     """``(table, column, old value)`` to the new value, in the new names, for example a role's name."""
     roles: Mapping[str, str] = field(default_factory=dict)
     """A renamed role: in the signatures (``SIGNED``, and a quoted ``"<role>#`` in a payload), and as a
-    ``[roles.<role>]`` table of a stored config."""
+    ``[plugins.role.<role>]`` table of a stored config."""
     payload_keys: Mapping[str, str] = field(default_factory=dict)
     """A renamed top-level key of an event's payload."""
     blobs: frozenset[tuple[str, str]] = frozenset()

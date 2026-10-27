@@ -2,19 +2,27 @@
 name = "enwik8"
 evaluate = ["uv", "run", "python", "evaluate.py"]
 evaluate_timeout = 900
-runtime = "subprocess"
-harnesses = ["claude"]                   # add "codex" or "pi" if you have them
 link = ["data", ".venv"]
 
-[model]
-pi = "anthropic/claude-opus-5-5"
-claude = "claude-opus-5-5"
-codex = "gpt-6.1-sol"
+[plugins.runtime]
+use = "subprocess"
+
+[plugins.harness]
+use = ["claude"]                   # add "codex" or "pi" if you have them
+
+[plugins.harness.pi]
+model = "anthropic/claude-opus-5-5"
+
+[plugins.harness.claude]
+model = "claude-opus-5-5"
+
+[plugins.harness.codex]
+model = "gpt-6.1-sol"
 
 [plugins.stop_rule]
 max_runs = 20                            # the campaign ends after 20 scored implementer runs
 
-[roles.implementer]
+[plugins.role.implementer]
 timeout = 1800
 max_concurrent = 2
 

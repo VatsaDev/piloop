@@ -92,7 +92,9 @@ def populate(path: Path, volume: Volume, seed: int = 0) -> None:
     implementers and events are spread over the campaigns, with statuses drawn at the frequencies of a real campaign.
     """
     rng = random.Random(seed)
-    cfg = load_campaign_config(BLANK, runtime='subprocess', max_concurrent={'pi': 2})
+    cfg = load_campaign_config(
+        BLANK, plugins={'runtime': {'use': 'subprocess'}, 'harness': {'pi': {'max_concurrent': 2}}}
+    )
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
         con.execute('PRAGMA foreign_keys=OFF')  # parents are inserted first, and the check costs a scan per row
         con.execute('BEGIN')

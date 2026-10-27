@@ -58,7 +58,7 @@ def scout_due(db: Database, campaign: Campaign, seconds: float) -> None:
 def test_the_scout_is_off_until_it_has_an_interval(campaign: Campaign) -> None:
     scout = role_of(load_campaign_config(Path(campaign.path)), ScoutRole)
     assert (scout.interval, scout.seeds, scout.files) == (0, ScoutRole().seeds, 'seeds')
-    on = role_of(load_campaign_config(Path(campaign.path), roles={'scout': {'interval': 3600}}), ScoutRole)
+    on = role_of(load_campaign_config(Path(campaign.path), plugins={'role': {'scout': {'interval': 3600}}}), ScoutRole)
     assert (on.interval, on.triggers) == (3600, [CronTrigger()])
 
 

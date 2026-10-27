@@ -11,7 +11,7 @@ from piloop.ids import CandidateId
 from piloop.plugins.fact_source.facts import ATTEMPTS, EVALUATIONS, FUNNEL, Fact, FactValue, since_keep
 from piloop.plugins.host import Capability, Parameters, Tier
 from piloop.plugins.role.contract import ImplementerRole, SweepRole
-from piloop.plugins.runtime.contract import RUNTIMES, Handle, RuntimeName
+from piloop.plugins.runtime.contract import Handle, RuntimeName
 from piloop.plugins.runtime.subprocess import Subprocess, SubprocessRuntime
 from piloop.plugins.stop_rule.contract import GO, Escalate, Go, Hold, Stop, StopCase, StopRule
 from piloop.plugins.trigger.contract import Fire, Pass, Quiet, Trigger, TriggerEntry
@@ -67,8 +67,8 @@ class Typed(Subprocess):
 class Shown(Subprocess):
     """``shown``: a background process, like ``subprocess``, whose output is one line that names its pid."""
 
-    def open(self) -> ShownRuntime:
-        return ShownRuntime(RUNTIMES.name_of(self))
+    def open(self, name: str) -> ShownRuntime:
+        return ShownRuntime(name)
 
 
 class ShownRuntime(SubprocessRuntime):
@@ -237,3 +237,15 @@ class StopIsInteresting(Bootstrap):
         if stopped is not None and case.primary.name not in case.candidate.means:
             return Judgement(Outcome.INTERESTING, f'stopped at {stopped.rung}, worth a full look: {stopped.reason}')
         return super().decide(case)
+
+
+class AlsoDefault(Subprocess):
+    """A runtime that claims to be the default as well: two defaults, which piloop refuses."""
+
+    DEFAULT = True
+
+
+class Needy(Subprocess):
+    """A runtime with a setting that has no default: an instance only through a table that sets it."""
+
+    level: int

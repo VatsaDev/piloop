@@ -55,13 +55,13 @@ def full_harnesses(s: Session, campaign: Campaign, cfg: CampaignConfig) -> set[s
     A queued run's harness was chosen when it was queued (``_enqueue``), so its requested implementer holds its place.
     A requested sweep gets its harness only when it is taken (``_take``).
     """
-    if not cfg.max_concurrent:
+    if not (caps := cfg.harness_caps):
         return set()
     queued = (AgentSession.state == AgentSessionState.REQUESTED) & AgentSession.kind.in_(cfg.roles.doing_runs())
     on = select(AgentSession.harness).where(
         AgentSession.campaign_id == campaign.id,
         AgentSession.state.in_(LIVE) | queued,
-        AgentSession.harness.in_(cfg.max_concurrent),
+        AgentSession.harness.in_(caps),
     )
     agents = Counter(s.scalars(on))
-    return {harness for harness, cap in cfg.max_concurrent.items() if agents[harness] >= cap}
+    return {harness for harness, cap in caps.items() if agents[harness] >= cap}

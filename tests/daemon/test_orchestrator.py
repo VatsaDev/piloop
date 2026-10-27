@@ -65,7 +65,7 @@ def turn_on(db: Database, campaign: Campaign, body: str) -> None:
     script = {**load_campaign_config(path).harness['script'].model_dump(mode='json', exclude_unset=True), **HARNESS}
     news = {'triggers': [{'provider': 'news', 'quiet_seconds': 0, 'routine_every': 3600}]}
     with db.session() as s:
-        cfg = load_campaign_config(path, roles={'orchestrator': news}, harness={'script': script})
+        cfg = load_campaign_config(path, plugins={'role': {'orchestrator': news}, 'harness': {'script': script}})
         s.get_one(Campaign, campaign.id).config = cfg
         s.commit()
 

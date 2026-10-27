@@ -64,7 +64,7 @@ from piloop.plugins.trigger.low_water import LowWaterTrigger
 from piloop.plugins.trigger.seed import SeedTrigger
 from piloop.store.chunks import read
 from piloop.version import Version, installed
-from tests.conftest import bare_config, disk, role_of
+from tests.conftest import bare_config, disk, reconfigured, role_of
 from tests.test_deprecated import piloop_version
 
 INBOX = 'ix_comments_inbox'
@@ -252,9 +252,9 @@ END;\
 """,
             'agent_sessions_kind': """\
 CREATE TRIGGER agent_sessions_kind BEFORE INSERT ON agent_sessions
-WHEN NEW.campaign_id IS NOT NULL AND (SELECT json_type(config, '$.roles.' || json_quote(NEW.kind)) FROM campaigns WHERE id = NEW.campaign_id) IS NULL
+WHEN NEW.campaign_id IS NOT NULL AND (SELECT json_type(config, '$.plugins.role.' || json_quote(NEW.kind)) FROM campaigns WHERE id = NEW.campaign_id) IS NULL
 BEGIN
-  SELECT RAISE(ABORT, 'agent_sessions.kind must be a role of the campaign: a key of roles in its config');
+  SELECT RAISE(ABORT, 'agent_sessions.kind must be a role of the campaign: a key of plugins.role in its config');
 END;\
 """,
             'campaigns_parent_insert': """\
@@ -966,7 +966,8 @@ def test_0011_makes_scout_sweeps_scout_rows_and_stored_configs_valid_and_downgra
 def upgraded(config: dict[str, object]) -> object:
     """``config`` as revisions 0018 (``roles.implementer``), 0034 (no herdr), 0035 (no ``workdir``), 0036 (no Entire),
     0038 (a trigger's ``provider``), 0039 (the rules' limits), 0055 (the incident triggers), 0056 (``[[facts]]``),
-    0057 (an inherited ``mcp``), 0061 (``plugins.memory``) and 0063 (a harness's ``provider``) store it, so that today's piloop reads it."""
+    0057 (an inherited ``mcp``), 0061 (``plugins.memory``), 0063 (a harness's ``provider``) and 0065 (the harnesses and
+    roles under ``plugins``) store it, so that today's piloop reads it."""
     roles = config.get('roles')
     if isinstance(roles, dict) and 'worker' in roles:
         roles['implementer'] = roles.pop('worker')
@@ -980,7 +981,8 @@ def upgraded(config: dict[str, object]) -> object:
     config = revisions.get_revision('0056').module.upgraded(config)
     config = revisions.get_revision('0057').module.upgraded(config)
     config = revisions.get_revision('0061').module.upgraded(config)
-    return revisions.get_revision('0063').module.upgraded(config)
+    config = revisions.get_revision('0063').module.upgraded(config)
+    return revisions.get_revision('0065').module.moved(config)
 
 
 def test_0012_leaves_the_cached_input_out_of_the_input_of_codex_rows_and_downgrades(tmp_path: Path) -> None:
@@ -1892,8 +1894,8 @@ def test_0057_a_built_in_harness_table_that_inherits_an_argv_with_mcp_inherits_i
         'pi': harness['pi'],
         'mine': harness['mine'],
     }, 'codex inherits resume; claude sets both of its argvs; a harness that is no built-in inherits nothing'
-    whole = bare_config('p').model_dump(mode='json') | {'harness': {'codex': loads(stored)['harness']['codex']}}
-    assert isinstance(CampaignConfig.model_validate(whole).harness['codex'].mcp(), CodexMcp)
+    whole = reconfigured(bare_config('p'), plugins={'harness': {'codex': loads(stored)['harness']['codex']}})
+    assert isinstance(whole.harness['codex'].mcp(), CodexMcp)
     command.downgrade(cfg, '0056')
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
         assert con.execute('SELECT config FROM campaigns').fetchall() == [(stored,)]
@@ -2026,8 +2028,8 @@ def test_0061_moves_the_memory_documents_into_plugins_memory_and_downgrades(tmp_
         {},
         {},
     ]
-    whole = bare_config('p').model_dump(mode='json') | upgraded_[0]
-    assert MEMORY.selected(CampaignConfig.model_validate(whole).plugins) == LocalMemory(documents=['docs/*.md'])
+    whole = reconfigured(bare_config('p'), **upgraded_[0])
+    assert MEMORY.selected(whole.plugins) == LocalMemory(documents=['docs/*.md'])
     command.downgrade(cfg, '0060')
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
         assert [loads(c) for (c,) in con.execute(stored)] == [
@@ -2626,13 +2628,15 @@ def test_0056_makes_spend_a_command_source_of_facts_its_latest_reading_events_an
         ], 'the spend it read, then its error'
         assert 'spend_usd' not in [c[1] for c in con.execute('PRAGMA table_info(campaigns)')]
         stored = CampaignConfig.model_validate(
-            {
-                'name': 'a',
-                'evaluate': ['true'],
-                'model': {'pi': 'm'},
-                'metrics': [{'name': 'score', 'direction': 'higher', 'role': 'primary'}],
-            }
-            | loads(con.execute(configs).fetchone()[0])
+            upgraded(
+                {
+                    'name': 'a',
+                    'evaluate': ['true'],
+                    'model': {'pi': 'm'},
+                    'metrics': [{'name': 'score', 'direction': 'higher', 'role': 'primary'}],
+                }
+                | loads(con.execute(configs).fetchone()[0])
+            )
         )
         assert len(stored.fact_sources()) == 3, 'the upgraded config loads'
     command.downgrade(cfg, '0055')
@@ -2667,7 +2671,7 @@ def test_memory_0002_gives_each_journal_line_of_an_agent_its_campaign_keeps_the_
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
         con.execute(
             'INSERT INTO campaigns (name, path, config) VALUES (?, ?, ?), (?, ?, ?)',
-            ('enwik8', '/a', '{}', 'enwik8-r2', '/b', dumps({'roles': {'research': {}}})),
+            ('enwik8', '/a', '{}', 'enwik8-r2', '/b', dumps({'plugins': {'role': {'research': {}}}})),
         )
         con.execute("INSERT INTO agent_sessions (kind, campaign_id) VALUES ('research', 2)")
         con.executemany('INSERT INTO journal (author, line) VALUES (?, ?)', lines)
@@ -2741,3 +2745,51 @@ def test_0063_names_the_provider_of_a_harness_table_in_place_of_its_renderer_and
             'headless': ['{prompt}'],
             'mcp': 'claude',
         }, 'the provider is the renderer again: the older piloop reads no usage for it'
+
+
+def test_0065_moves_the_harnesses_their_models_and_caps_the_roles_and_what_they_use_under_plugins_and_downgrades(
+    tmp_path: Path,
+) -> None:
+    """The stored config moves as ``piloop.deprecated`` moves the file, and the role trigger reads ``plugins.role``."""
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0064')
+    old = {
+        'runtime': 'subprocess',
+        'harnesses': ['claude'],
+        'model': {'claude': 'c', 'pi': 'p'},
+        'max_concurrent': {'claude': 2},
+        'harness': {'claude': {'env': {'X': '1'}}, 'mine': {'executable': 'x', 'headless': ['{prompt}']}},
+        'roles': {'research': {'timeout': 9}, 'auditor': {'prompt': 'a.md'}},
+        'plugins': {'stop_rule': {'max_runs': 3}},
+    }
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute("INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', ?)", (dumps(old),))
+        con.execute("INSERT INTO campaigns (name, path, config) VALUES ('q', '/q', '{}')")
+    stored = 'SELECT config FROM campaigns ORDER BY id'
+    command.upgrade(cfg, '0065')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert [loads(c) for (c,) in con.execute(stored)] == [
+            {
+                'plugins': {
+                    'stop_rule': {'max_runs': 3},
+                    'harness': {
+                        'claude': {'env': {'X': '1'}, 'model': 'c', 'max_concurrent': 2},
+                        'mine': {'executable': 'x', 'headless': ['{prompt}']},
+                        'pi': {'model': 'p'},
+                        'use': ['claude'],
+                    },
+                    'role': {'research': {'timeout': 9}, 'auditor': {'prompt': 'a.md'}},
+                    'runtime': {'use': 'subprocess'},
+                },
+            },
+            {},
+        ]
+        con.execute("INSERT INTO agent_sessions (kind, campaign_id) VALUES ('auditor', 1)")
+        with pytest.raises(sqlite3.IntegrityError, match='a key of plugins.role in its config'):
+            con.execute("INSERT INTO agent_sessions (kind, campaign_id) VALUES ('janitor', 1)")
+    command.downgrade(cfg, '0064')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert [loads(c) for (c,) in con.execute(stored)] == [old, {}], 'each key back where it was'
+        with pytest.raises(sqlite3.IntegrityError, match='a key of roles in its config'):
+            con.execute("INSERT INTO agent_sessions (kind, campaign_id) VALUES ('janitor', 1)")

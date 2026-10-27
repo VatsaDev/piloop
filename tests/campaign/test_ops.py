@@ -208,7 +208,8 @@ def test_only_a_sweeping_agent_files_its_ideas_for_review_while_the_campaign_is_
         campaign = s.get_one(Campaign, 1)
         assert ops.review_first(campaign, Agent(role='research', session=4), new=False) is None, 'not paused'
         assert (
-            ops.review_first(campaign, Agent(role='research', session=4), new=True) == '[roles.research] max_ideas = 0'
+            ops.review_first(campaign, Agent(role='research', session=4), new=True)
+            == '[plugins.role.research] max_ideas = 0'
         ), 'the test file'
         ops.pause(s, CampaignId(1), evals=False, reason='why')
         assert ops.review_first(campaign, Agent(role='watchdog', session=5), new=False) == 'campaign demo is paused'

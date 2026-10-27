@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, ConfigDict
 
 from piloop.actor import Actor
-from piloop.plugins.host import Capability, Choice, Parameters, Scope
+from piloop.plugins.host import Capability, One, Parameters, Scope
 
 if TYPE_CHECKING:  # the API's views, which a light client loads, answer Synced: only the annotations name the database
     from sqlalchemy.orm import Session
@@ -48,7 +48,7 @@ class MemoryProvider(Parameters, ABC):
 MEMORY = Capability(
     'memory',
     MemoryProvider,
-    choice=Choice(Scope.CAMPAIGN, default='local'),
+    table=One(Scope.CAMPAIGN, default='local'),
     group='piloop.memory',
     noun='memory provider',
 )

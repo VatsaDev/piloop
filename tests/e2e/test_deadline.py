@@ -25,12 +25,14 @@ pytestmark = pytest.mark.e2e
 
 TIMEOUT = 300
 CONFIG = {
-    'roles': {
-        'implementer': {'max_concurrent': 1, 'timeout': TIMEOUT},
-        'research': {'triggers': []},
-        'watchdog': {'triggers': []},
+    'plugins': {
+        'role': {
+            'implementer': {'max_concurrent': 1, 'timeout': TIMEOUT},
+            'research': {'triggers': []},
+            'watchdog': {'triggers': []},
+        },
+        'stop_rule': {'max_runs': 3, 'max_hours': 1, 'max_tokens': 5_000_000},
     },
-    'plugins': {'stop_rule': {'max_runs': 3, 'max_hours': 1, 'max_tokens': 5_000_000}},
 }
 PLAN = (
     'This idea tests the time limit, not the compressor. Do ten steps in this one turn. Each step is one Bash tool'

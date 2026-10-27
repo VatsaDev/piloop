@@ -117,7 +117,7 @@ The second example, `piloop init --example titanic-tracks ~/piloop-titanic`, has
     JSON line with each metric to `$PILOOP_RESULT_FILE`. See [the evaluate command](/concepts/campaigns#the-evaluate-command).
   </Step>
   <Step title="Edit piloop.toml">
-    Set `name`, `evaluate`, the `[[metrics]]` tables, `harnesses` and `[model]`. The template lists every key, and the
+    Set `name`, `evaluate`, the `[[metrics]]` tables, `harnesses` and the `model` of each harness. The template lists every key, and the
     [configuration reference](/reference/configuration) describes them. The daemon enforces only the limits in
     `piloop.toml`, not the ones in `brief.md`.
   </Step>

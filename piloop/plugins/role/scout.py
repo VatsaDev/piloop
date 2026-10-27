@@ -1,4 +1,4 @@
-"""Experimental: the context of a scout sweep (``[roles.scout]``), which files outside techniques as seeds.
+"""Experimental: the context of a scout sweep (``[plugins.role.scout]``), which files outside techniques as seeds.
 
 A scout sweep runs ``prompts/scout.md`` and signs ``<role>#<agent session id>``. So its seeds have their own row in the
 keeps-by-source count (``piloop.campaign.ideas.yields``), next to research's own ideas.
@@ -131,7 +131,7 @@ def window(
 
 
 class ScoutRole(SweepRole):
-    """``[roles.scout]``: the scout files outside techniques as seeds for the measured losses. It is off by default.
+    """``[plugins.role.scout]``: the scout files outside techniques as seeds for the measured losses. It is off by default.
 
     Every ``interval`` seconds, a scout sweep states the open problems of the campaign from the evidence, and searches
     X, GitHub and arXiv for outside techniques that address them. It files at most ``seeds`` of them as seeds, signed

@@ -49,7 +49,7 @@ Where the gains come from:
 - What just changed: a new keep, new data, a finding nobody followed up.
 - Removals: a component of the head that costs more than it earns.
 - Other starting points when the lineage looks stuck: an older keep, a note or a reference (`--base`, with the reason
-  in the plan). One run in `[roles.implementer] explore_every` takes such an idea; keep one ready while a branch is
+  in the plan). One run in `[plugins.role.implementer] explore_every` takes such an idea; keep one ready while a branch is
   worth extending.
 
 When the Context says the campaign has stalled, one of your ideas must be a structural change (a different model

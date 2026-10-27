@@ -261,7 +261,7 @@ def review_first(campaign: Campaign, actor: Actor, *, new: bool) -> str | None:
     if campaign.paused is not None:
         return f'campaign {campaign.name} is paused'
     if new and role.max_ideas == 0:
-        return f'[roles.{name}] max_ideas = 0'
+        return f'[plugins.role.{name}] max_ideas = 0'
     return None
 
 
@@ -436,7 +436,7 @@ def measuring_held(s: Session, campaign: Campaign, cfg: CampaignConfig) -> str:
 
 
 def files(campaign: Campaign, actor: Actor) -> Files | None:
-    """Return what ``actor`` may file in ``campaign`` (``[roles.<name>] files``); None when it is not a role.
+    """Return what ``actor`` may file in ``campaign`` (``[plugins.role.<name>] files``); None when it is not a role.
 
     Raises:
         Refused: the actor's role files nothing.

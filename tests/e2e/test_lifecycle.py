@@ -34,12 +34,14 @@ MAX_EVALUATIONS = 1
 """One evaluation slot, so that the evaluation queue has something to order."""
 CONFIG = {
     'evaluate_timeout': 300,
-    'roles': {
-        'implementer': {'max_concurrent': 2, 'timeout': 600},
-        'research': {'triggers': []},
-        'watchdog': {'triggers': []},
+    'plugins': {
+        'role': {
+            'implementer': {'max_concurrent': 2, 'timeout': 600},
+            'research': {'triggers': []},
+            'watchdog': {'triggers': []},
+        },
+        'stop_rule': {'max_runs': 5, 'max_hours': 1, 'max_tokens': 20_000_000},
     },
-    'plugins': {'stop_rule': {'max_runs': 5, 'max_hours': 1, 'max_tokens': 20_000_000}},
 }
 """Over the template's ``piloop.toml``: two implementers, no sweeps (the tests add the ideas), and stop conditions only as a
 backstop (the tests stop the campaign)."""

@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 from piloop.plugins.fact_source.facts import Fact, Facts, FactValue
-from piloop.plugins.host import Capability, Choice, Parameters, Scope, Tier
+from piloop.plugins.host import Capability, One, Parameters, Scope, Tier
 from piloop.plugins.metric import Direction
 
 
@@ -133,6 +133,6 @@ class StopRule(Parameters, ABC):
         return None
 
 
-STOP_RULES = Capability('stop_rule', StopRule, tier=Tier.PURE, choice=Choice(Scope.CAMPAIGN, default='limits'))
+STOP_RULES = Capability('stop_rule', StopRule, tier=Tier.PURE, table=One(Scope.CAMPAIGN, default='limits'))
 """The stop rule capability: every stop rule by name. The built-in rule is ``limits``
 (``piloop.plugins.stop_rule.limits``)."""

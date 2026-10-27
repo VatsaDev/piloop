@@ -1,6 +1,6 @@
 """The triggers of the roles: the conditions that make the daemon request an agent (https://piloop.autoresearch.inc/concepts/roles#triggers).
 
-A trigger is a provider of ``TRIGGERS``: its fields are its parameters, from its entry in ``[roles.<name>] triggers``. On each
+A trigger is a provider of ``TRIGGERS``: its fields are its parameters, from its entry in ``[plugins.role.<name>] triggers``. On each
 **pass** over the campaigns, for each campaign and each sweeping role without a pending request, the scheduler calls
 ``Trigger.fire`` of each trigger of the role, in the order of the list. Once a stopped campaign's last runs are judged,
 it calls only the triggers with ``ON_STOP``, and while the campaign runs, only the others. A package adds a trigger with
@@ -143,7 +143,7 @@ class Pass(Protocol):
 
     @property
     def role(self) -> str:
-        """The name of the role: its ``[roles.<name>]`` table and ``agent_sessions.kind``."""
+        """The name of the role: its ``[plugins.role.<name>]`` table and ``agent_sessions.kind``."""
         ...
 
     @property
@@ -236,7 +236,7 @@ class Steer:
 
 
 class Trigger(Parameters, ABC):
-    """One entry of ``[roles.<name>] triggers``: ``{ provider = "<trigger>", <parameter> = <value> }``.
+    """One entry of ``[plugins.role.<name>] triggers``: ``{ provider = "<trigger>", <parameter> = <value> }``.
 
     The daemon checks the entries in the order of the list.
     """
