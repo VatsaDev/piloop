@@ -369,8 +369,8 @@ def campaign(db: Database, campaign_path: Path) -> Campaign:
 
 def register(db: Database, campaign_path: Path) -> Campaign:
     cfg = load_campaign_config(campaign_path)
-    repo = Repo(campaign_path)
-    sha = repo.head.commit.hexsha
+    with Repo(campaign_path) as repo:
+        sha, tree_sha = repo.head.commit.hexsha, repo.head.commit.tree.hexsha
     [result] = run_evaluate(
         cfg.evaluate,
         cwd=campaign_path,
@@ -388,7 +388,7 @@ def register(db: Database, campaign_path: Path) -> Campaign:
         evaluator = current_evaluator(s, proj, cfg)
         base = Candidate(
             campaign_id=proj.id,
-            tree_sha=repo.head.commit.tree.hexsha,
+            tree_sha=tree_sha,
             revision=sha,
             summary='baseline',
             origin=Origin.BASELINE,
