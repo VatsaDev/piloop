@@ -213,7 +213,7 @@ With `provider = "git"`:
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `email` | string | `"piloop@localhost"` | The email of every commit that piloop makes, whatever git's config says: a merge, `piloop init`'s, and the save of what an agent left uncommitted, which its run authors. Their name is `piloop`. A worker can have no git config. |
+| `email` | string | `"piloop@localhost"` | The email of every commit that piloop makes or launches, whatever git's config says: a merge, `piloop init`'s, the save of what an agent left uncommitted, which its run authors, and an agent's own. Their name is `piloop`, or the agent's signature for an agent's own. A worker can have no git config. |
 
 ### `[plugins.verdict_rule]`
 
