@@ -11,6 +11,7 @@ into a ``note`` on the row. An operation emits the events of the changes that no
 """
 
 from collections.abc import Sequence
+from contextlib import closing
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, assert_never
@@ -343,7 +344,8 @@ def set_verdict(
         reason = MOVED.format(head=trunk.id) + f'kept by hand: {why}'
         write(candidate, Outcome.INTERESTING, cause=Cause.MOVED, reason=reason, by=actor)
         campaign = s.get_one(Campaign, candidate.campaign_id)
-        return Overridden(old, on_moved(s, campaign.config, repository(campaign), candidate, trunk))
+        with closing(repository(campaign)) as repo:
+            return Overridden(old, on_moved(s, campaign.config, repo, candidate, trunk))
     override(candidate, to, cause=cause, reason=why, by=actor)
     return Overridden(old)
 
@@ -370,7 +372,8 @@ def missing_head(s: Session, candidate: Candidate) -> Candidate | None:
     if trunk is None or ancestor is not None:
         return None
     try:
-        builds = repository(campaign).contains(candidate.revision, trunk.revision)
+        with closing(repository(campaign)) as repo:
+            builds = repo.contains(candidate.revision, trunk.revision)
     except VcsError as e:
         raise Refused(
             f'the vcs cannot tell if candidate#{candidate.id} builds on the head candidate#{trunk.id}: {e}'

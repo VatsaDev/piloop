@@ -7,6 +7,7 @@ The run closes when its implementer ends, so the implementer slot is free while 
 import json
 import re
 from collections.abc import Callable
+from contextlib import ExitStack, closing
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import partial
@@ -452,43 +453,43 @@ class RunController:
             harness, model, idea_id, campaign_id = run.harness, run.model, run.idea_id, campaign.id
             name, vcs, campaign_path = campaign.name, vcs_of(campaign), Path(campaign.path)
         log_dir = self._runs_dir / str(run_id)
-        repo = vcs.open(campaign_path)
-        span.set(idea=idea_id, agent_session=agent_session_id, harness=harness, model=model)
-        if brief is None:
-            ended = self.launcher.reattach(agent_session_id)
-        else:
-            ended = self.launcher.launch(
-                agent_session_id,
-                brief=brief,
-                place=run_place(run_id),
-                artifact=self.sources.agent(self._campaign(campaign_id), base_revision),
-                timeout=timeout,
-                capture=run_id,
-            )
-        # a daemon stop owns the rows, also when it came just after the report applied
-        stopping = self.launcher.cancelled.is_set()
-        match ended:
-            case HandedOver():  # the next daemon waits for the agent again
-                span.set(status='handed_over')
-            case DaemonStopped(work=work):
-                self._cut(span, run_id, idea_id, agent_session_id, name, repo, base_revision, work)
-            case Ran(work=work) if stopping:
-                self._cut(span, run_id, idea_id, agent_session_id, name, repo, base_revision, work)
-            case NotStarted() | Lost() if stopping:
-                self._cut(span, run_id, idea_id, agent_session_id, name, repo, base_revision, None)
-            case Lost(reason=reason):
-                self._close(span, run_id, RunEnd.WORKER_LOST, reason)
-                self._settle(span, run_id, idea_id, RunEnd.WORKER_LOST, startup_failed=False, last=None)
-            case NotStarted():
-                if not self._relaunch(span, run_id, agent_session_id, log_dir):
-                    with self._db.session() as s:
-                        end = RunEnd.CANCELLED if run_cancel(s, run_id) is not None else RunEnd.NOT_STARTED
-                    self._close(span, run_id, end, None)
-                    self._settle(span, run_id, idea_id, end, startup_failed=True, last=None)
-            case Ran():
-                self._ran(span, run_id, idea_id, campaign_id, agent_session_id, repo, base_revision, ended, log_dir)
-            case _:
-                assert_never(ended)
+        with closing(vcs.open(campaign_path)) as repo:
+            span.set(idea=idea_id, agent_session=agent_session_id, harness=harness, model=model)
+            if brief is None:
+                ended = self.launcher.reattach(agent_session_id)
+            else:
+                ended = self.launcher.launch(
+                    agent_session_id,
+                    brief=brief,
+                    place=run_place(run_id),
+                    artifact=self.sources.agent(self._campaign(campaign_id), base_revision),
+                    timeout=timeout,
+                    capture=run_id,
+                )
+            # a daemon stop owns the rows, also when it came just after the report applied
+            stopping = self.launcher.cancelled.is_set()
+            match ended:
+                case HandedOver():  # the next daemon waits for the agent again
+                    span.set(status='handed_over')
+                case DaemonStopped(work=work):
+                    self._cut(span, run_id, idea_id, agent_session_id, name, repo, base_revision, work)
+                case Ran(work=work) if stopping:
+                    self._cut(span, run_id, idea_id, agent_session_id, name, repo, base_revision, work)
+                case NotStarted() | Lost() if stopping:
+                    self._cut(span, run_id, idea_id, agent_session_id, name, repo, base_revision, None)
+                case Lost(reason=reason):
+                    self._close(span, run_id, RunEnd.WORKER_LOST, reason)
+                    self._settle(span, run_id, idea_id, RunEnd.WORKER_LOST, startup_failed=False, last=None)
+                case NotStarted():
+                    if not self._relaunch(span, run_id, agent_session_id, log_dir):
+                        with self._db.session() as s:
+                            end = RunEnd.CANCELLED if run_cancel(s, run_id) is not None else RunEnd.NOT_STARTED
+                        self._close(span, run_id, end, None)
+                        self._settle(span, run_id, idea_id, end, startup_failed=True, last=None)
+                case Ran():
+                    self._ran(span, run_id, idea_id, campaign_id, agent_session_id, repo, base_revision, ended, log_dir)
+                case _:
+                    assert_never(ended)
 
     def _cut(
         self,
@@ -669,13 +670,13 @@ class RunController:
                 received = latest(s, RunReceived, Event.target == TargetRef(TargetKind.RUN, run_id))
             last = None
             try:
-                repo = vcs.open(campaign_path)
-                if received is not None:
-                    versions = [repo.version(revision) for revision in received[1].revisions]
-                else:
-                    versions = repo.kept(name, run_id)
-                span.set(versions=len(versions))
-                last = self._score(run_id, campaign_id, repo, versions, self._runs_dir / str(run_id))
+                with closing(vcs.open(campaign_path)) as repo:
+                    if received is not None:
+                        versions = [repo.version(revision) for revision in received[1].revisions]
+                    else:
+                        versions = repo.kept(name, run_id)
+                    span.set(versions=len(versions))
+                    last = self._score(run_id, campaign_id, repo, versions, self._runs_dir / str(run_id))
             except Exception as e:
                 span.error(e)
                 end = RunEnd.FAILED
@@ -708,23 +709,24 @@ class RunController:
             campaign_id, revision = campaign.id, candidate.revision
             vcs, campaign_path = vcs_of(campaign), Path(campaign.path)
         eval_dir = campaign_dir(self._home, campaign_id) / 'measure' / f'{candidate_id}-e{evaluator_id}'
-        try:
-            repo = vcs.open(campaign_path)
-            if not self._measure(
-                None, campaign_id, cfg, revision, candidate_id, evaluator_id, eval_dir, bar=bar, repeats=repeats
-            ):
-                return  # a stop killed the evaluator: there is nothing new to judge
-        except Exception as e:
+        with ExitStack() as opened:
+            try:
+                repo = opened.enter_context(closing(vcs.open(campaign_path)))
+                if not self._measure(
+                    None, campaign_id, cfg, revision, candidate_id, evaluator_id, eval_dir, bar=bar, repeats=repeats
+                ):
+                    return  # a stop killed the evaluator: there is nothing new to judge
+            except Exception as e:
+                with self._db.session() as s:
+                    error = Sample(metrics={}, seconds=0.0, error=f'{type(e).__name__}: {e}')
+                    record(s, self._units_dir, None, candidate_id, evaluator_id, error)
+                    hold_on_failed_baseline(s, s.get_one(Candidate, candidate_id), None)
+                    s.commit()
+                return
             with self._db.session() as s:
-                error = Sample(metrics={}, seconds=0.0, error=f'{type(e).__name__}: {e}')
-                record(s, self._units_dir, None, candidate_id, evaluator_id, error)
-                hold_on_failed_baseline(s, s.get_one(Candidate, candidate_id), None)
+                hold_on_failed_baseline(s, s.get_one(Candidate, candidate_id), eval_dir)
                 s.commit()
-            return
-        with self._db.session() as s:
-            hold_on_failed_baseline(s, s.get_one(Candidate, candidate_id), eval_dir)
-            s.commit()
-        self._rejudge(candidate_id, repo, eval_dir)
+            self._rejudge(candidate_id, repo, eval_dir)
 
     def rejudge(self, candidate_id: CandidateId) -> None:
         """Judge again a candidate that someone measured by hand (``ledger.rejudges``), with all its measurements.
@@ -738,7 +740,8 @@ class RunController:
             campaign_id, vcs, campaign_path = campaign.id, vcs_of(campaign), Path(campaign.path)
         try:
             eval_dir = campaign_dir(self._home, campaign_id) / 'measure' / f'{candidate_id}-rejudge'
-            self._rejudge(candidate_id, vcs.open(campaign_path), eval_dir)
+            with closing(vcs.open(campaign_path)) as repo:
+                self._rejudge(candidate_id, repo, eval_dir)
         except Exception as e:
             with self._db.session() as s:
                 failed = RejudgeFailed(error=f'{type(e).__name__}: {e}')
@@ -1456,7 +1459,8 @@ def branches(s: Session, campaign: Campaign, pinned: Candidate | None, computed:
         return pinned is not None
     if bar_of(s, pinned).id == computed.id:
         return False
-    return not repository(campaign).contains(pinned.revision, computed.revision)
+    with closing(repository(campaign)) as repo:
+        return not repo.contains(pinned.revision, computed.revision)
 
 
 def gate_of(bar: Candidate, evaluator_id: EvaluatorId, cfg: CampaignConfig) -> Gate:

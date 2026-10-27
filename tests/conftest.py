@@ -1,6 +1,7 @@
 import tests.isolation  # noqa: F401  # first: piloop reads its home from the environment when it is imported
 
 # isort: split
+import contextlib
 import json
 import re
 import shutil
@@ -19,6 +20,7 @@ from pathlib import Path
 from typing import Concatenate
 
 import httpx2 as httpx
+import psutil
 import pytest
 from git import Repo
 from opentelemetry.sdk.trace import ReadableSpan
@@ -292,6 +294,42 @@ def at_head(schema: Path, path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(schema, path)
     return path
+
+
+@pytest.fixture(autouse=True)
+def repos(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Close each GitPython repo that the test opened, once the test ends.
+
+    GitPython keeps a ``git cat-file`` running for a repo that read an object, and an unclosed repo is cyclic garbage:
+    only the GC ends it, and it can finalize the ``Popen`` first, which warns of a subprocess that still runs. A list
+    of weak references, not a ``WeakSet``: two repos of one path are equal.
+    """
+    made: list[weakref.ref[Repo]] = []
+
+    def tracking[**P](init: Callable[Concatenate[Repo, P], None]) -> Callable[Concatenate[Repo, P], None]:
+        def tracked(self: Repo, *args: P.args, **kwargs: P.kwargs) -> None:
+            init(self, *args, **kwargs)
+            made.append(weakref.ref(self))
+
+        return tracked
+
+    monkeypatch.setattr(Repo, '__init__', tracking(Repo.__init__))
+    yield
+    for ref in made:
+        if (repo := ref()) is not None:
+            repo.close()
+
+
+def git_processes(under: Path) -> list[str]:
+    """The command lines of this process's ``git cat-file`` children that still run in a directory under ``under``."""
+    running: list[str] = []
+    for child in psutil.Process().children():
+        with contextlib.suppress(psutil.Error):
+            line = ' '.join(child.cmdline())
+            alive = child.status() != psutil.STATUS_ZOMBIE
+            if 'cat-file' in line and alive and Path(child.cwd()).is_relative_to(under.resolve()):
+                running.append(line)
+    return running
 
 
 @pytest.fixture

@@ -110,7 +110,7 @@ def test_a_shared_evaluation_that_cannot_start_is_a_crash_for_every_request(
     waits = mocker.spy(queue, 'request')
     add_worktree = git.add_worktree
 
-    def cannot_check_out(repo: Repo, path: Path, sha: str, links: dict[str, Path]) -> Repo:
+    def cannot_check_out(repo: Repo, path: Path, sha: str, links: dict[str, Path]) -> None:
         if 'eval-' not in str(path):  # the implementer's worktree
             return add_worktree(repo, path, sha, links)
         wait_until(lambda: waits.call_count == 2, 'the second request')

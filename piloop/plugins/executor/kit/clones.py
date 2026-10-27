@@ -11,6 +11,7 @@ is the repo of record.
 import threading
 from collections import defaultdict
 from collections.abc import Callable, Sequence
+from contextlib import ExitStack, closing
 from functools import partial
 from pathlib import Path
 
@@ -74,7 +75,7 @@ class Clones:
         return self._repo_of(artifact.repo)
 
     def repository(self, artifact: Source) -> Repository:
-        """The worker's clone of the artifact's repo, opened with the artifact's vcs provider."""
+        """The worker's clone of the artifact's repo, opened with the artifact's vcs provider. The caller closes it."""
         return self._opener(artifact.vcs, self.path(artifact))
 
     def checkout(self, source: Source, cwd: Path) -> Materialised:
@@ -87,10 +88,11 @@ class Clones:
         """
         with self._guard:
             making = self._making[source.repo]
-        with making:
-            repo = self.repository(source)
-            repo.fetch(self._cas, [source.revision, *source.history], partial(self._fetch, source.repo))
-        repo.checkout(source.revision, cwd)
+        with ExitStack() as opened:
+            with making:  # a clone that is still being made is not a repository yet: open it under the lock
+                repo = opened.enter_context(closing(self.repository(source)))
+                repo.fetch(self._cas, [source.revision, *source.history], partial(self._fetch, source.repo))
+            repo.checkout(source.revision, cwd)
         links = Materialised()
         for blob in source.links.values():
             done = materialise(self._cas, Manifest.get(self._cas, blob), cwd, into=self._copies)
@@ -114,13 +116,17 @@ class Clones:
     def ignored(self, source: Source) -> list[str]:
         """What the checkout has that is not the agent's work: the links and the workspace that its revision lacks."""
         names = [*source.links, *([WORKSPACE] if source.workspace is not None else [])]
-        return self.repository(source).untracked(source.revision, names)
+        with closing(self.repository(source)) as repo:
+            return repo.untracked(source.revision, names)
 
     def bring_back(self, source: Source, cwd: Path, run: RunId) -> Captured:
         """Save what the agent left unsaved for ``run``, and put its versions into the CAS (``Repository.capture``)."""
-        return source.vcs.open(cwd).capture(self._cas, source.revision, run, self.ignored(source))
+        ignored = self.ignored(source)
+        with closing(source.vcs.open(cwd)) as checkout:
+            return checkout.capture(self._cas, source.revision, run, ignored)
 
     def remove(self, artifact: Source, cwd: Path) -> None:
         """Remove the checkout at ``cwd``."""
         self._workspaces.pop(cwd, None)
-        self.repository(artifact).discard(cwd)
+        with closing(self.repository(artifact)) as repo:
+            repo.discard(cwd)

@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 from collections.abc import Collection
+from contextlib import closing
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
@@ -183,7 +184,7 @@ def register_clone(
     (home / REPOS).mkdir(parents=True, exist_ok=True)
     cloning = home / REPOS / f'.cloning-{uuid4().hex}'
     try:
-        vcs.clone(url, cloning, credential)
+        vcs.clone(url, cloning, credential).close()
         campaign, baseline = register(s, cloning, actor, name)
         checkout = home / REPOS / str(campaign.id)
         if checkout.exists():
@@ -254,7 +255,8 @@ def register(s: Session, path: Path, actor: Actor, name: CampaignName | None = N
             f' campaign #{other.id}'
         )
     vcs = VCS.selected(cfg.plugins)
-    version = vcs.open(path).head()
+    with closing(vcs.open(path)) as repo:
+        version = repo.head()
     campaign = Campaign(name=name, path=str(path.resolve()), repo=vcs.identity(path), config=cfg)
     s.add(campaign)
     s.flush()
@@ -441,7 +443,7 @@ def vcs_of(campaign: Campaign) -> Vcs:
 
 
 def repository(campaign: Campaign) -> Repository:
-    """The campaign's repo of record, opened with its vcs provider.
+    """The campaign's repo of record, opened with its vcs provider. The caller closes it.
 
     Raises:
         NotARepository: Its checkout is gone, or is no checkout of the provider.
@@ -460,7 +462,7 @@ def checkout_of(db: Database, repo: RepoId) -> Path:
 
 
 def record_of(db: Database, repo: RepoId) -> Repository:
-    """The repo of record ``repo``, opened with its campaign's vcs provider.
+    """The repo of record ``repo``, opened with its campaign's vcs provider. The caller closes it.
 
     Raises:
         KeyError: The campaign is gone.

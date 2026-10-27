@@ -3,8 +3,8 @@
 | Member | What it is |
 |---|---|
 | `Vcs.init(path: Path, summary: str, owned: Sequence[str], ignore: Sequence[str]) -> list[str]` | Make `path` a repository if it is not one, and save its files for `piloop init`. |
-| `Vcs.open(path: Path) -> Repository` | The repository of the checkout at `path`. |
-| `Vcs.clone(url: str, path: Path, credential: SecretStr \| None) -> Repository` | Clone the repository at `url` into `path`, and return it. |
+| `Vcs.open(path: Path) -> Repository` | The repository of the checkout at `path`. The caller closes it. |
+| `Vcs.clone(url: str, path: Path, credential: SecretStr \| None) -> Repository` | Clone the repository at `url` into `path`, and return it. The caller closes it. |
 | `Vcs.replica(path: Path) -> Repository` | A worker's replica of a repo of record at `path`, made empty if none is there: `Repository.fetch` fills it. |
 | `Vcs.agent_env(agent: Agent) -> dict[str, str]` | The variables of `agent`'s job that the provider sets: who the versions that it saves are by. Empty: none. |
 | `Vcs.identity(path: Path) -> str` | The project that the checkout at `path` is, the same for each clone of it: `campaigns.repo`. |
@@ -12,6 +12,7 @@
 | `Vcs.changed(path: Path, ignore: Sequence[str]) -> bool` | Whether an agent changed the checkout at `path`: a saved version, or a changed file outside `ignore`. |
 | `Vcs.prompt(part: Part) -> str` | What the built-in prompts say about `part` for this provider (`prompted`). |
 | `Vcs.checks() -> list[Check]` | Check that the provider can work on this machine. `piloop doctor` shows the result. Read only. |
+| `Repository.close() -> None` | Release what the open repository holds. Later calls do nothing. |
 | `Repository.head() -> Version` | The version that the checkout is at. |
 | `Repository.version(native: str) -> Version` | The version that `native` names in the provider's own terms: a revision, or under `git` a branch or tag. |
 | `Repository.receive(cas: Cas, transfer: Transfer, base: Revision) -> list[Version]` | Take the versions of `transfer` from `cas`, and return those from `base` to its head, oldest first. |

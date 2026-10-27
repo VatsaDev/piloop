@@ -69,13 +69,14 @@ def identity(path: Path) -> str:
     Frozen here, as of this revision, when every project was a git checkout.
     """
     try:
-        remotes = {remote.name: remote for remote in Repo(path).remotes}
+        with Repo(path) as repo:
+            urls = {remote.name: remote.url for remote in repo.remotes}
     except InvalidGitRepositoryError, NoSuchPathError:
         return str(path.resolve())
-    name = 'origin' if 'origin' in remotes else min(remotes, default=None)
+    name = 'origin' if 'origin' in urls else min(urls, default=None)
     if name is None:
         return str(path.resolve())
-    url = remotes[name].url.strip().rstrip('/').removesuffix('.git')
+    url = urls[name].strip().rstrip('/').removesuffix('.git')
     url = re.sub(r'^[a-z+]+://', '', url)
     url = re.sub(r'^[^@/]+@', '', url)
     return re.sub(r'^([^/:]+):(?!\d+/)', r'\1/', url)

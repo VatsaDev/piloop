@@ -94,6 +94,7 @@ from tests.conftest import (
     baseline,
     disk,
     factory,
+    git_processes,
     home_cas,
     role_timeout,
     serving,
@@ -127,7 +128,8 @@ def head_of(ex: RunController, agent_session_id: AgentSessionId) -> Source:
     """The HEAD of the agent's campaign, as its artifact."""
     with ex.launcher.db.session() as s:
         campaign = s.get_one(Campaign, s.get_one(AgentSession, agent_session_id).campaign_id)
-        return ex.sources.source(campaign, Repo(campaign.path).head.commit.hexsha)
+        with Repo(campaign.path) as repo:
+            return ex.sources.source(campaign, repo.head.commit.hexsha)
 
 
 def launch(ex: RunController, agent_session_id: AgentSessionId, tmp_path: Path) -> Ended:
@@ -416,6 +418,14 @@ def test_an_agent_whose_lease_ends_while_it_starts_is_ended_and_not_reported(
     assert outcomes[0] == DaemonStopped() and rows(db, agent_session_id)[1].state is LeaseState.CANCELLED
 
 
+def test_the_head_of_an_agents_campaign_leaves_no_git_process_running(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    ex = RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers())
+    head_of(ex, request_agent(db, campaign))
+    assert git_processes(Path(campaign.path)) == []
+
+
 def test_an_agent_that_removes_its_own_worktree_is_still_reported(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
@@ -497,11 +507,11 @@ def test_a_stale_evaluation_never_touches_the_files_of_the_lease_that_replaced_i
     entered, release = threading.Event(), threading.Event()
     add_worktree = git.add_worktree
 
-    def first_held(repo: Repo, path: Path, sha: str, links: dict[str, Path]) -> Repo:
+    def first_held(repo: Repo, path: Path, sha: str, links: dict[str, Path]) -> None:
         if not entered.is_set():
             entered.set()
             release.wait(10)
-        return add_worktree(repo, path, sha, links)
+        add_worktree(repo, path, sha, links)
 
     monkeypatch.setattr('piloop.plugins.vcs.git.commands.add_worktree', first_held)
     ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
@@ -631,6 +641,10 @@ def test_a_failing_turn_never_ends_the_loop_and_a_failing_streak_is_an_anomaly(
         renewed_while(ex, db, agent_session_id, 0.1)
     assert 'worker.turn_failed' in names and names.count(WORKER_ANOMALY) == 1, 'one anomaly for one failing streak'
     hold.unlink()
+    # its loop fails a turn every renew: one that logs as pytest moves from the call to the teardown escapes the capture
+    worker = workers_of(ex).worker
+    worker.stop()
+    worker.wait()
 
 
 def test_a_kill_that_fails_is_tried_again_on_the_next_heartbeat(

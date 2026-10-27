@@ -2,6 +2,7 @@
 
 from collections import Counter
 from collections.abc import Collection, Sequence
+from contextlib import closing
 from pathlib import Path
 
 from sqlalchemy import select
@@ -28,8 +29,9 @@ def remove_checkouts(agent_dir: Path, campaign: Campaign, tracer: Tracer) -> Non
     except NotARepository:
         tracer.event('worktrees.orphaned', agent_dir=str(agent_dir), campaign_path=campaign.path)
         return
-    for checkout in repo.checkouts(agent_dir):
-        repo.discard(checkout)
+    with closing(repo):
+        for checkout in repo.checkouts(agent_dir):
+            repo.discard(checkout)
 
 
 def close(s: Session, agent_session: AgentSession, error: str, tracer: Tracer) -> None:

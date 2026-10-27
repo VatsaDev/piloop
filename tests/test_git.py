@@ -23,7 +23,7 @@ from piloop.api.client import CLONE_WAIT
 from piloop.ids import IMPLEMENTER, AgentSessionId, Revision, RunId
 from piloop.plugins.vcs.contract import CloneFailed, Version
 from piloop.plugins.vcs.git import PILOOP, UNCOMMITTED, Git, GitRepository, commands as git
-from tests.conftest import disk
+from tests.conftest import disk, git_processes
 
 
 def test_merge_and_contains_raise_on_a_commit_the_repo_does_not_have(campaign_path: Path) -> None:
@@ -153,7 +153,8 @@ def test_a_checkout_changed_by_an_edit_a_new_file_or_a_commit_not_by_what_was_li
     target = tmp_path / 'shared'
     target.mkdir()
     links = {'shared': target}
-    wt = git.add_worktree(repo, wt_path, repo.head.commit.hexsha, links)
+    git.add_worktree(repo, wt_path, repo.head.commit.hexsha, links)
+    wt = Repo(wt_path)
     ignore = git.untracked(repo, repo.head.commit.hexsha, [*links, 'piloop.toml'])
     assert ignore == ['shared'], 'a name that the commit tracks is not left out'
     assert not git.changed(wt_path, ignore), 'a link that .gitignore does not name is no change of the agent'
@@ -163,6 +164,14 @@ def test_a_checkout_changed_by_an_edit_a_new_file_or_a_commit_not_by_what_was_li
     git.commit_all(wt, 'add a file', ignore, PILOOP, PILOOP)
     assert git.changed(wt_path, ignore) and not git.is_dirty(wt, ignore), 'HEAD moved'
     assert not git.changed(tmp_path / 'gone', []), 'no checkout'
+
+
+def test_a_closed_repository_leaves_no_git_process_running(campaign_path: Path) -> None:
+    repo = Git().open(campaign_path)
+    repo.head()
+    assert git_processes(campaign_path), 'reading a version starts the git cat-file that GitPython keeps for the repo'
+    repo.close()
+    assert git_processes(campaign_path) == []
 
 
 def by(repo: Repo, sha: str) -> tuple[str, str]:

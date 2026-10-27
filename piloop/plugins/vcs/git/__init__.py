@@ -87,6 +87,10 @@ class GitRepository(Repository):
         self.repo = repo
         self.committer = committer
 
+    def close(self) -> None:
+        """End the ``git cat-file`` processes that GitPython keeps for the repo: else only the GC ends them."""
+        self.repo.close()
+
     def head(self) -> Version:
         return self._version(self.repo.head.commit.hexsha)
 
@@ -200,24 +204,24 @@ class Git(Vcs):
         written = [] if (path / GITIGNORE).exists() else [GITIGNORE]
         if written:
             (path / GITIGNORE).write_text(''.join(f'{p}\n' for p in ignore))
-        repo = Repo.init(path, initial_branch='main') if not (path / '.git').exists() else Repo(path)
-        if not repo.head.is_valid():
-            repo.git.add('-A')
-            repo.git.commit('-qm', summary, env=git.commit_env(self.piloop, self.piloop))
+        with Repo.init(path, initial_branch='main') if not (path / '.git').exists() else Repo(path) as repo:
+            if not repo.head.is_valid():
+                repo.git.add('-A')
+                repo.git.commit('-qm', summary, env=git.commit_env(self.piloop, self.piloop))
+                return written
+            owned = [*owned, GITIGNORE]
+            # git status leaves out what the repo's ignore file ignores, which git add would refuse to take by name
+            # and --no-renames reports a rename as its two paths, not as one "old -> new" record
+            status = repo.git.status('--porcelain', '-z', '--no-renames', '--untracked-files=all', '--', *owned)
+            entries = [entry for entry in status.split('\0') if entry]
+            changed = sorted(entry[3:] for entry in entries)
+            # only what the work tree changed: git add refuses a path whose deletion is staged already
+            if unstaged := sorted(entry[3:] for entry in entries if entry[1] != ' '):
+                repo.git.add('-A', '--', *unstaged)
+            if changed:
+                by = git.commit_env(self.piloop, self.piloop)
+                repo.git.commit('-qm', f'piloop init: {", ".join(changed)}', '--', *changed, env=by)
             return written
-        owned = [*owned, GITIGNORE]
-        # git status leaves out what the repo's ignore file ignores, which git add would refuse to take by name
-        # and --no-renames reports a rename as its two paths, not as one "old -> new" record
-        status = repo.git.status('--porcelain', '-z', '--no-renames', '--untracked-files=all', '--', *owned)
-        entries = [entry for entry in status.split('\0') if entry]
-        changed = sorted(entry[3:] for entry in entries)
-        # only what the work tree changed: git add refuses a path whose deletion is staged already
-        if unstaged := sorted(entry[3:] for entry in entries if entry[1] != ' '):
-            repo.git.add('-A', '--', *unstaged)
-        if changed:
-            by = git.commit_env(self.piloop, self.piloop)
-            repo.git.commit('-qm', f'piloop init: {", ".join(changed)}', '--', *changed, env=by)
-        return written
 
     def open(self, path: Path) -> GitRepository:
         try:
@@ -232,7 +236,7 @@ class Git(Vcs):
 
     def replica(self, path: Path) -> GitRepository:
         if not (path / '.git').is_dir():
-            Repo.init(path)
+            Repo.init(path).close()
         return self.open(path)
 
     def identity(self, path: Path) -> str:
@@ -245,8 +249,8 @@ class Git(Vcs):
 
     @classmethod
     def root(cls, path: Path) -> Path | None:
-        with suppress(InvalidGitRepositoryError, NoSuchPathError):
-            return Path(Repo(path, search_parent_directories=True).common_dir).resolve().parent
+        with suppress(InvalidGitRepositoryError, NoSuchPathError), Repo(path, search_parent_directories=True) as repo:
+            return Path(repo.common_dir).resolve().parent
         return None
 
     def changed(self, path: Path, ignore: Sequence[str]) -> bool:

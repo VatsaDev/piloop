@@ -8,6 +8,7 @@ lookups as dependencies (``Selected``, ``Narrowed``) over one session per reques
 import os
 import time
 from collections.abc import Generator
+from contextlib import closing
 from dataclasses import dataclass
 from http import HTTPStatus
 from pathlib import Path as FilePath
@@ -610,7 +611,8 @@ def _idea_answer(s: Session, idea: Idea) -> IdeaAnswer:
 )
 def import_candidate(s: Writing, me: Acting, campaign: Addressed, body: ImportBody) -> CandidateAnswer:
     """Register the files of a version as a reference candidate: a starting point for an idea."""
-    candidate = import_reference(s, campaign, repository(campaign), body.version, summary=body.summary, actor=me)
+    with closing(repository(campaign)) as repo:
+        candidate = import_reference(s, campaign, repo, body.version, summary=body.summary, actor=me)
     s.commit()
     with db_feed.snapshot(s) as cursor:
         return CandidateAnswer(cursor=cursor, candidate=candidate_view(candidate))

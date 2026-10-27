@@ -14,6 +14,7 @@ then fetches what is newer.
 import threading
 from collections.abc import Callable, Sequence
 from concurrent.futures import Future
+from contextlib import closing
 
 from covalence import Cid
 
@@ -41,7 +42,8 @@ def send_of_record(
 
     The repo of record is opened with its campaign's own vcs provider (``Host.records``), never one that a worker names.
     """
-    blob = records(repo).send(cas, revisions, have)
+    with closing(records(repo)) as record:
+        blob = record.send(cas, revisions, have)
     return [] if blob is None else [blob]
 
 
@@ -97,9 +99,9 @@ class FirstTransfers:
         """
         try:
             with self._tracer.span('piloop.first_transfer', repo=repo):
-                record = self._records(repo)
-                head = record.head().revision
-                blob = record.send(self._cas, [head], [])
+                with closing(self._records(repo)) as record:
+                    head = record.head().revision
+                    blob = record.send(self._cas, [head], [])
                 assert blob is not None  # with nothing had, the head is sent
             # under the lock: a poll that the commit wakes reads after the build left, so it finds the row. One that
             # found the build still there would wait for a wake that never comes, until its wait ends.

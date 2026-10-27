@@ -102,7 +102,7 @@ def open_repo(path: Path) -> Repo:
     return Repo(path)
 
 
-def add_worktree(repo: Repo, path: Path, sha: str, links: dict[str, Path]) -> Repo:
+def add_worktree(repo: Repo, path: Path, sha: str, links: dict[str, Path]) -> None:
     """Create a detached worktree at ``sha`` and symlink ``links`` (worktree-relative name → target) into it.
 
     A directory left from an interrupted run is removed first, whether git knows it or not.
@@ -116,7 +116,6 @@ def add_worktree(repo: Repo, path: Path, sha: str, links: dict[str, Path]) -> Re
         if target.exists() and not dest.exists():
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.symlink_to(target)
-    return Repo(path)
 
 
 def commits(repo: Repo, shas: Sequence[str]) -> list[str]:
@@ -334,8 +333,8 @@ def changed(path: Path, ignore: list[str]) -> bool:
     when there is no checkout there.
     """
     try:
-        wt = Repo(path)
-        return len(wt.head.log()) > 1 or is_dirty(wt, ignore)
+        with Repo(path) as wt:
+            return len(wt.head.log()) > 1 or is_dirty(wt, ignore)
     except NoSuchPathError, InvalidGitRepositoryError:
         return False
 
@@ -348,13 +347,14 @@ def identity(path: Path) -> str:
     absolute path.
     """
     try:
-        remotes = {remote.name: remote for remote in Repo(path).remotes}
+        with Repo(path) as repo:
+            urls = {remote.name: remote.url for remote in repo.remotes}
     except InvalidGitRepositoryError, NoSuchPathError:
         return str(path.resolve())
-    name = 'origin' if 'origin' in remotes else min(remotes, default=None)
+    name = 'origin' if 'origin' in urls else min(urls, default=None)
     if name is None:
         return str(path.resolve())
-    return remote_identity(remotes[name].url)
+    return remote_identity(urls[name])
 
 
 SCP_LIKE = re.compile(r'(?:[^@/]+@)?(?P<host>[^/:]+):(?P<path>.*)')

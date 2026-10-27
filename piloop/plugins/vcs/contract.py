@@ -166,7 +166,14 @@ class CloneFailed(VcsError):
 
 
 class Repository(Protocol):
-    """A checkout and the versions that it holds: the repo of record of a campaign, or a worker's replica of one."""
+    """A checkout and the versions that it holds: the repo of record of a campaign, or a worker's replica of one.
+
+    Whoever opens one closes it once done (``contextlib.closing``): an open one can hold processes of its tool.
+    """
+
+    def close(self) -> None:
+        """Release what the open repository holds. Later calls do nothing."""
+        ...
 
     def head(self) -> Version:
         """The version that the checkout is at."""
@@ -269,7 +276,7 @@ class Vcs(Parameters, ABC):
 
     @abstractmethod
     def open(self, path: Path) -> Repository:
-        """The repository of the checkout at ``path``.
+        """The repository of the checkout at ``path``. The caller closes it.
 
         Raises:
             NotARepository: ``path`` is no checkout of the provider.
@@ -277,7 +284,7 @@ class Vcs(Parameters, ABC):
 
     @abstractmethod
     def clone(self, url: str, path: Path, credential: SecretStr | None) -> Repository:
-        """Clone the repository at ``url`` into ``path``, and return it.
+        """Clone the repository at ``url`` into ``path``, and return it. The caller closes it.
 
         ``credential`` is a token that the host of ``url`` asks for. No argv, log or error holds it.
 
@@ -287,7 +294,10 @@ class Vcs(Parameters, ABC):
 
     @abstractmethod
     def replica(self, path: Path) -> Repository:
-        """A worker's replica of a repo of record at ``path``, made empty if none is there: ``Repository.fetch`` fills it."""
+        """A worker's replica of a repo of record at ``path``, made empty if none is there: ``Repository.fetch`` fills it.
+
+        The caller closes it.
+        """
 
     @abstractmethod
     def agent_env(self, agent: Agent) -> dict[str, str]:
