@@ -29,7 +29,7 @@ from piloop.plugins.network.https import Https
 from piloop.plugins.secrets.contract import HomeSecrets
 from piloop.plugins.secrets.local import LocalSecrets
 from piloop.plugins.vcs.contract import Repository
-from piloop.plugins.vcs.git import Git, GitRepository
+from piloop.plugins.vcs.git import PILOOP, Git, GitRepository
 from tests.conftest import Dial, disk, wait_until
 from tests.test_lease import POOLS, TIMING, Recorder
 from tests.test_lease_client import echoed, secret
@@ -39,7 +39,7 @@ class Counted(GitRepository):
     """The repo of record, which counts its sends with nothing had, and can be made to fail them or hold them."""
 
     def __init__(self, path: Path) -> None:
-        super().__init__(Repo(path))
+        super().__init__(Repo(path), PILOOP)
         self.full = 0
         self.fail: Exception | None = None
         self.hold = threading.Event()

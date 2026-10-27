@@ -14,7 +14,7 @@ from piloop.db.events import in_order
 from piloop.db.models import AgentSession, AgentSessionState, Campaign, Candidate, Comment, Origin
 from piloop.db.session import Database
 from piloop.ids import CampaignId, IdeaStatus, TargetKind
-from piloop.plugins.vcs.git import GitRepository
+from piloop.plugins.vcs.git import PILOOP, GitRepository
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring.ledger import RejudgeFailed, head, import_reference, rejudges, request_remeasure
 from tests.conftest import HARNESS_WORSE, SETTLE, Gate, ScriptRuntime, run_all, write_script
@@ -62,7 +62,7 @@ def test_a_pause_still_measures_what_the_evaluator_needs_unless_it_holds_the_eva
     with db.session() as s:
         proj = s.get_one(Campaign, campaign.id)
         reference = import_reference(
-            s, proj, GitRepository(repo), 'elsewhere', summary=None, actor=System.ORCHESTRATOR
+            s, proj, GitRepository(repo, PILOOP), 'elsewhere', summary=None, actor=System.ORCHESTRATOR
         ).id
         s.commit()
     sched = make_scheduler(db, runtime, tmp_path)

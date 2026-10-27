@@ -18,8 +18,10 @@ from git.exc import GitCommandError
 from pydantic import SecretStr
 
 from piloop.api.client import CLONE_WAIT
-from piloop.plugins.vcs.contract import CloneFailed
-from piloop.plugins.vcs.git import Git, GitRepository, commands as git
+from piloop.ids import Revision, RunId
+from piloop.plugins.vcs.contract import CloneFailed, Version
+from piloop.plugins.vcs.git import PILOOP, UNCOMMITTED, Git, GitRepository, commands as git
+from tests.conftest import disk
 
 
 def test_merge_and_contains_raise_on_a_commit_the_repo_does_not_have(campaign_path: Path) -> None:
@@ -28,7 +30,7 @@ def test_merge_and_contains_raise_on_a_commit_the_repo_does_not_have(campaign_pa
     head = repo.head.commit.hexsha
     assert git.contains(repo, head, head)
     with pytest.raises(GitCommandError, match='merge-tree'):
-        git.merge(repo, head, '0' * 40, 'm')
+        git.merge(repo, head, '0' * 40, 'm', PILOOP)
     with pytest.raises(GitCommandError, match='merge-base'):
         git.contains(repo, head, '0' * 40)
 
@@ -76,7 +78,7 @@ def test_a_merge_starts_from_a_copy_of_the_head_in_the_commits_history(tmp_path:
     assert copy != head and git.tree_sha(repo, copy) == git.tree_sha(repo, head)
     run = commit('f.txt', 'y\n')
     for onto in (head, later):
-        merged = git.merge(repo, onto, run, 'rebased')
+        merged = git.merge(repo, onto, run, 'rebased', PILOOP)
         assert isinstance(merged, str), f'onto {onto}: conflicts in {merged}'
         files = {name: repo.git.show(f'{merged}:{name}') for name in repo.git.ls_tree('--name-only', merged).split()}
         assert files == {'a.txt': 'a', 'f.txt': 'y'} | ({'g.txt': 'g'} if onto == later else {})
@@ -125,7 +127,7 @@ def test_piloop_trailers_count_on_any_line_after_the_subject(campaign_path: Path
     the last paragraph. A line that only mentions a trailer is not one."""
     repo = Repo(campaign_path)
     repo.git.commit('-q', '--allow-empty', '-m', message)
-    version = GitRepository(repo).head()
+    version = GitRepository(repo, PILOOP).head()
     assert version.skip
     assert version.notes == ('a lead',)
 
@@ -135,7 +137,7 @@ def test_a_line_that_mentions_a_trailer_or_the_subject_is_not_one(campaign_path:
     repo.git.commit(
         '-q', '--allow-empty', '-m', 'Piloop-Eval: skip\n\nThe trailer Piloop-Eval: skip is for scaffolding.'
     )
-    version = GitRepository(repo).head()
+    version = GitRepository(repo, PILOOP).head()
     assert not version.skip
     assert git.trailers(git.message(repo, version.revision), 'Piloop-Eval') == []
 
@@ -156,9 +158,79 @@ def test_a_checkout_changed_by_an_edit_a_new_file_or_a_commit_not_by_what_was_li
     assert git.changed(wt_path, []), 'without the links, it is an untracked file'
     (wt_path / 'new.txt').write_text('x')
     assert git.changed(wt_path, ignore)
-    git.commit_all(wt, 'add a file', ignore)
+    git.commit_all(wt, 'add a file', ignore, PILOOP, PILOOP)
     assert git.changed(wt_path, ignore) and not git.is_dirty(wt, ignore), 'HEAD moved'
     assert not git.changed(tmp_path / 'gone', []), 'no checkout'
+
+
+def by(repo: Repo, sha: str) -> tuple[str, str]:
+    """Who commit ``sha`` is by: its author and its committer, as ``name <email>``."""
+    author, committer = repo.git.show('-s', '--format=%an <%ae>%n%cn <%ce>', sha).splitlines()
+    return author, committer
+
+
+def test_piloops_own_commits_carry_its_identity_on_a_machine_that_has_none(
+    campaign_path: Path, tmp_path: Path, no_git_identity: None
+) -> None:
+    """A fresh worker has no ``user.*``: the save of an agent's unsaved work, a merge and ``piloop init`` commit anyway.
+
+    The save is by the run that left the work, committed by piloop.
+    """
+    vcs = Git()
+    record = vcs.open(campaign_path)
+    base = record.head().revision
+    record.checkout(base, tmp_path / 'wt')
+    (tmp_path / 'wt' / 'solve.txt').write_text('base\nmore\n')
+    captured = vcs.open(tmp_path / 'wt').capture(disk(tmp_path), base, RunId(5), ['data'])
+    assert captured.work is not None and captured.unsaved is None
+    saved = vcs.open(tmp_path / 'wt').head()
+    assert (saved.summary, saved.recovered) == (UNCOMMITTED, True)
+    repo = Repo(campaign_path)
+    assert by(repo, saved.revision) == ('run#5 <piloop@localhost>', 'piloop <piloop@localhost>')
+    merged = record.merge(base, saved.revision, 'a merge')
+    assert isinstance(merged, Version) and by(repo, merged.revision) == ('piloop <piloop@localhost>',) * 2
+    (tmp_path / 'new').mkdir()
+    vcs.init(tmp_path / 'new', 'baseline', [], [])
+    assert by(Repo(tmp_path / 'new'), 'HEAD') == ('piloop <piloop@localhost>',) * 2
+    (tmp_path / 'other').mkdir()
+    Git(email='ops@example.com').init(tmp_path / 'other', 'baseline', [], [])
+    assert by(Repo(tmp_path / 'other'), 'HEAD') == ('piloop <ops@example.com>',) * 2, '[plugins.vcs] email'
+
+
+def test_unsaved_work_is_saved_when_nothing_is_ignored(campaign_path: Path, tmp_path: Path) -> None:
+    """A checkout with no links, of a version that tracks its workspace, has nothing to leave out of the save."""
+    vcs = Git()
+    base = vcs.open(campaign_path).head().revision
+    vcs.open(campaign_path).checkout(base, tmp_path / 'wt')
+    (tmp_path / 'wt' / 'solve.txt').write_text('base\nmore\n')
+    assert vcs.open(tmp_path / 'wt').capture(disk(tmp_path), base, RunId(5), []).unsaved is None
+
+
+def test_a_save_that_git_refuses_keeps_the_unsaved_work_in_the_cas_and_brings_the_agents_own_commits_back(
+    campaign_path: Path, tmp_path: Path
+) -> None:
+    """A hook that refuses the commit: the unsaved changes are a patch in the CAS, which restores them on the head."""
+    hook = campaign_path / '.git' / 'hooks' / 'pre-commit'
+    hook.write_text('#!/bin/sh\necho refused >&2\nexit 1\n')
+    hook.chmod(0o755)
+    vcs, cas = Git(), disk(tmp_path)
+    base = vcs.open(campaign_path).head().revision
+    vcs.open(campaign_path).checkout(base, tmp_path / 'wt')
+    wt = Repo(tmp_path / 'wt')
+    (tmp_path / 'wt' / 'solve.txt').write_text('base\nthe agent\n')
+    wt.git.commit('-qam', 'the agents own', '--no-verify')
+    head = wt.head.commit.hexsha
+    (tmp_path / 'wt' / 'solve.txt').write_text('base\nthe agent\nunsaved\n')
+    (tmp_path / 'wt' / 'new.bin').write_bytes(b'\x00\x01')
+    captured = vcs.open(tmp_path / 'wt').capture(cas, base, RunId(5), ['data'])
+    assert captured.work is not None and captured.work.head == head, 'its own commit still comes back'
+    assert captured.unsaved is not None and 'refused' in captured.unsaved.error
+    patch = cas.get(captured.unsaved.blob)
+    assert patch is not None
+    vcs.open(campaign_path).checkout(Revision(head), tmp_path / 'restored')
+    subprocess.run(['git', 'apply', '-'], input=patch, cwd=tmp_path / 'restored', check=True)
+    assert (tmp_path / 'restored' / 'solve.txt').read_text() == 'base\nthe agent\nunsaved\n'
+    assert (tmp_path / 'restored' / 'new.bin').read_bytes() == b'\x00\x01'
 
 
 SECRET = SecretStr('s3cret-token')

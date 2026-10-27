@@ -596,6 +596,28 @@ def git_identity(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(key, value)
 
 
+@pytest.fixture
+def no_git_identity(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A machine with no git identity, as a fresh worker container: no ``user.*`` anywhere, and git guesses none.
+
+    Request it after the fixtures that commit, such as ``campaign_path``: they commit as ``git_identity``.
+    """
+    home = tmp_path / 'empty-home'
+    home.mkdir()
+    for key in ('GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL', 'EMAIL'):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv('HOME', str(home))
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(home))
+    monkeypatch.setenv('GIT_CONFIG_NOSYSTEM', '1')
+    # else git makes one up from the user's passwd entry and the host name, where they have a domain
+    for key, value in {
+        'GIT_CONFIG_COUNT': '1',
+        'GIT_CONFIG_KEY_0': 'user.useConfigOnly',
+        'GIT_CONFIG_VALUE_0': 'true',
+    }.items():
+        monkeypatch.setenv(key, value)
+
+
 def role_of[R: RoleConfig](cfg: CampaignConfig, kind: type[R]) -> R:
     """The role of ``cfg`` whose class is ``kind``: a built-in role, by its class."""
     [found] = [role for role in cfg.roles.all().values() if type(role) is kind]

@@ -44,7 +44,7 @@ from piloop.plugins.host import Capability, Choice, Parameters, Scope, Slot
 from piloop.plugins.network.contract import Network
 from piloop.plugins.runtime.contract import AgentExit, AgentStart
 from piloop.plugins.secrets.contract import SecretsProvider, values
-from piloop.plugins.vcs.contract import VCS, Repository, Transfer, Vcs
+from piloop.plugins.vcs.contract import VCS, Repository, Transfer, Unsaved, Vcs
 from piloop.proc import Channel
 from piloop.runtime.factory import RuntimeFactory
 from piloop.scoring.ladder import Gate
@@ -310,6 +310,8 @@ class AgentFinished(BaseModel):
     """Whether the agent changed its checkout: a saved version, or an unsaved change outside the links."""
     work: Transfer | None = None
     """Its work: its versions, when the job asked for them back (``AgentJob.capture``) and there are some."""
+    unsaved: Unsaved | None = None
+    """What it left unsaved, when the job asked for its work back and the save of it failed."""
     files: dict[str, BlobAddress] = Field(default_factory=dict)
     """Its log directory's files by relative path: core puts them in the job's place under its own home."""
     read: list[CommentId] = Field(default_factory=list)
@@ -322,8 +324,10 @@ class AgentFinished(BaseModel):
     def blobs(self) -> list[Cid]:
         """Every blob that it names: what the CAS holds before core applies it."""
         work = [self.work.blob] if self.work is not None else []
+        unsaved = [self.unsaved.blob] if self.unsaved is not None else []
         session = [self.session_file] if self.session_file is not None else []
-        return [*self.files.values(), *(blob for blob in self.workspace.values() if blob is not None), *work, *session]
+        workspace = [blob for blob in self.workspace.values() if blob is not None]
+        return [*self.files.values(), *workspace, *work, *unsaved, *session]
 
 
 class AgentNotStarted(BaseModel):

@@ -24,4 +24,4 @@
 | `Repository.discard(path: Path) -> None` | Remove what `checkout` put at `path`. Nothing fails if it is gone, or a directory of something else. |
 | `Repository.checkouts(root: Path) -> list[Path]` | The paths under `root` that `checkout` made and `discard` did not remove yet. |
 | `Repository.untracked(revision: Revision, names: Sequence[str]) -> list[str]` | Those of `names` that `revision` does not hold: what was put in its checkout from elsewhere. |
-| `Repository.capture(cas: Cas, base: Revision, run: RunId, ignore: Sequence[str]) -> Transfer \| None` | Put the versions that an agent saved in this checkout of `base` into `cas`, or None when it saved none. |
+| `Repository.capture(cas: Cas, base: Revision, run: RunId, ignore: Sequence[str]) -> Captured` | Put the versions that an agent saved in this checkout of `base` into `cas`. |

@@ -29,6 +29,7 @@ from piloop.agents.results import (
     NotStarted,
     PromptOutcome,
     Ran,
+    WorkUnsaved,
     record,
 )
 from piloop.agents.roles import compose_brief, read_brief, role
@@ -141,6 +142,7 @@ type Unmeasured = Literal[Origin.RECOVERED, Origin.SKIPPED]
 """A version that the daemon does not measure: its recovered work, or one that asked to be skipped."""
 UNMEASURED_REASONS: Final[dict[Unmeasured, str]] = {Origin.RECOVERED: RECOVERED_REASON, Origin.SKIPPED: SKIPPED_REASON}
 NO_CHANGES = 'implementer saved no versions'
+UNSAVED = 'what the implementer left unsaved could not be saved, agent_session.work_unsaved has it in the CAS'
 INTERRUPTED = (
     'implementer stopped without a version or a finding of its own; its unsaved changes are a recovered candidate'
 )
@@ -538,6 +540,7 @@ class RunController:
                 )
             )
             cancelled = run_cancel(s, run_id) is not None
+            unsaved = latest(s, WorkUnsaved, Event.target == TargetRef(TargetKind.AGENT_SESSION, agent_session_id))
         facts = RunFacts(
             finding=finding,
             ended=stop_ended is not None,
@@ -545,6 +548,7 @@ class RunController:
             timed_out=outcome.status is ExitStatus.TIMED_OUT,
             error=outcome.error,
             asked=asked,
+            unsaved=unsaved[1].error if unsaved is not None else None,
             versions=len(versions),
             recovered_only=bool(versions) and all(v.recovered for v in versions),
         )
@@ -1315,6 +1319,8 @@ class RunFacts:
     """How the implementer's process failed, a timeout included."""
     asked: CommentId | None = None
     """The implementer's escalation that waits for an answer (``open_escalation``)."""
+    unsaved: str | None = None
+    """Why the save of what the implementer left unsaved failed (``WorkUnsaved``)."""
     versions: int = 0
     recovered_only: bool = False
     """There are versions, and each is the one that the worker saved of unsaved work (``Version.recovered``)."""
@@ -1341,6 +1347,9 @@ def run_outcome(facts: RunFacts) -> tuple[RunEnd, str | None]:
         # Its process failed.
         case RunFacts(error=str() as error):
             return RunEnd.FAILED, error
+        # What it left unsaved is only in the CAS.
+        case RunFacts(unsaved=str() as error):
+            return RunEnd.FAILED, f'{UNSAVED}: {error}'
         # Its question is in the inbox. A commit does not make this a success.
         case RunFacts(asked=int() as comment):
             return RunEnd.AWAITING_ANSWER, f'comment#{comment}'

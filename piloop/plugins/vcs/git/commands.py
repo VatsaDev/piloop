@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 
 from git import Repo
 from git.exc import GitCommandError, InvalidGitRepositoryError, NoSuchPathError
-from pydantic import SecretStr
+from pydantic import BaseModel, ConfigDict, SecretStr
 
 from piloop.plugins.vcs.contract import CloneFailed
 from piloop.proc import kill_group
@@ -36,6 +36,25 @@ the variable, never its value. GitHub and GitLab take a token as the password of
 
 CLONE_TIMEOUT: Final = timedelta(minutes=10)
 """The longest that ``clone`` waits for git, so that a remote that stalls ends the clone instead of holding its thread."""
+
+
+class Identity(BaseModel):
+    """Who a commit is by: git's ``user.name`` and ``user.email``."""
+
+    model_config = ConfigDict(frozen=True, extra='forbid')
+
+    name: str
+    email: str
+
+
+def commit_env(author: Identity, committer: Identity) -> dict[str, str]:
+    """The environment of a git command that commits as ``author`` and ``committer``, whatever git's config says."""
+    return {
+        'GIT_AUTHOR_NAME': author.name,
+        'GIT_AUTHOR_EMAIL': author.email,
+        'GIT_COMMITTER_NAME': committer.name,
+        'GIT_COMMITTER_EMAIL': committer.email,
+    }
 
 
 def clone(url: str, path: Path, credential: SecretStr | None) -> None:
@@ -176,8 +195,8 @@ def pinned(repo: Repo, prefix: str) -> list[str]:
     return [sha for _, sha in sorted(refs, key=lambda ref: int(ref[0].removeprefix(prefix)))]
 
 
-def merge(repo: Repo, onto: str, sha: str, message: str) -> str | list[str]:
-    """Merge commit ``sha`` onto ``onto`` without a worktree.
+def merge(repo: Repo, onto: str, sha: str, message: str, by: Identity) -> str | list[str]:
+    """Merge commit ``sha`` onto ``onto`` without a worktree, as a commit ``by`` its author and committer.
 
     The merge commit has ``onto`` and ``sha`` as parents. The merge base is by tree before history (``merge_tree``):
     when the two histories already share commits (an earlier merge of the same run), only the new changes are merged,
@@ -192,7 +211,7 @@ def merge(repo: Repo, onto: str, sha: str, message: str) -> str | list[str]:
     merged = merge_tree(repo, onto, sha)
     if isinstance(merged, list):
         return merged
-    return str(repo.git.commit_tree(merged, '-p', onto, '-p', sha, '-m', message))
+    return str(repo.git.commit_tree(merged, '-p', onto, '-p', sha, '-m', message, env=commit_env(by, by)))
 
 
 def merge_tree(repo: Repo, onto: str, sha: str) -> str | list[str]:
@@ -254,15 +273,21 @@ def is_dirty(wt: Repo, ignore: list[str]) -> bool:
     return bool(wt.git.status('--porcelain', '--', '.', *(f':(exclude){p}' for p in ignore)))
 
 
-def commit_all(wt: Repo, message: str, ignore: list[str]) -> None:
-    """Stage everything except ``ignore`` and commit it.
+def commit_all(wt: Repo, message: str, ignore: list[str], author: Identity, committer: Identity) -> None:
+    """Stage everything except ``ignore`` and commit it, by ``author`` and ``committer``.
 
     ``git add`` refuses ``:(exclude)`` pathspecs that name ignored files, so the paths in ``ignore`` are unstaged
     after the ``add``.
     """
     wt.git.add('-A', '--', '.')
-    wt.git.rm('-rq', '--cached', '--ignore-unmatch', '--', *ignore)
-    wt.git.commit('-qm', message)
+    if ignore:  # git rm takes no empty pathspec
+        wt.git.rm('-rq', '--cached', '--ignore-unmatch', '--', *ignore)
+    wt.git.commit('-qm', message, env=commit_env(author, committer))
+
+
+def staged(wt: Repo) -> bytes:
+    """The staged changes as a binary patch onto HEAD, which ``git apply`` restores."""
+    return bytes(wt.git.diff('--cached', '--binary', stdout_as_string=False, strip_newline_in_stdout=False))
 
 
 def tree_sha(repo: Repo, sha: str) -> str:

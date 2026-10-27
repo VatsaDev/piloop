@@ -61,6 +61,27 @@ class Transfer(BaseModel):
     head: Revision
 
 
+class Unsaved(BaseModel):
+    """What an agent left unsaved that ``Repository.capture`` could not save as a version."""
+
+    model_config = ConfigDict(frozen=True)
+
+    blob: BlobAddress
+    """The changes in the CAS, in the provider's own form, for a person to restore."""
+    error: str
+    """Why the save failed."""
+
+
+@dataclass(frozen=True)
+class Captured:
+    """What ``Repository.capture`` brought back of an agent's work."""
+
+    work: Transfer | None = None
+    """Its versions, or None when it saved none."""
+    unsaved: Unsaved | None = None
+    """What it left unsaved, when the save of it failed."""
+
+
 @dataclass(frozen=True)
 class RunVersion:
     """The ``index``-th version of a run, oldest first."""
@@ -220,11 +241,12 @@ class Repository(Protocol):
         """Those of ``names`` that ``revision`` does not hold: what was put in its checkout from elsewhere."""
         ...
 
-    def capture(self, cas: Cas, base: Revision, run: RunId, ignore: Sequence[str]) -> Transfer | None:
-        """Put the versions that an agent saved in this checkout of ``base`` into ``cas``, or None when it saved none.
+    def capture(self, cas: Cas, base: Revision, run: RunId, ignore: Sequence[str]) -> Captured:
+        """Put the versions that an agent saved in this checkout of ``base`` into ``cas``.
 
         What it left unsaved, outside ``ignore`` (the paths that are not its work), is saved first as a ``recovered``
         version of ``run``, with a summary that the provider writes. A version that the agent saved is never changed: it is scored as the agent made it.
+        A save that fails puts the unsaved changes into ``cas`` instead (``Captured.unsaved``), and the versions still come.
         """
         ...
 

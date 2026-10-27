@@ -25,7 +25,15 @@ from sqlalchemy import func, insert, select
 
 from piloop.actor import System
 from piloop.agents.launcher import Launcher
-from piloop.agents.results import NEVER_WORKED, Ended, Lost, NotStarted, PromptOutcome, StartupAnomaly
+from piloop.agents.results import (
+    NEVER_WORKED,
+    Ended,
+    Lost,
+    NotStarted,
+    PromptOutcome,
+    StartupAnomaly,
+    WorkUnsaved,
+)
 from piloop.agents.roles import SQL_HINT, read_brief
 from piloop.campaign import stop
 from piloop.campaign.campaigns import sync
@@ -38,6 +46,7 @@ from piloop.daemon.run_controller import (
     NO_CHANGES,
     RECOVERED_REASON,
     SKIPPED_REASON,
+    UNSAVED,
     RecoveryRequeued,
     RunController,
     RunFacts,
@@ -93,7 +102,7 @@ from piloop.plugins.harness.kit.jsonl import dash_separators_wrapped
 from piloop.plugins.memory.local.tables import Lesson, LessonStatus
 from piloop.plugins.runtime.contract import AgentExit, Handle
 from piloop.plugins.vcs.contract import Part
-from piloop.plugins.vcs.git import UNCOMMITTED, Git, GitRepository, commands as git
+from piloop.plugins.vcs.git import PILOOP, UNCOMMITTED, Git, GitRepository, commands as git
 from piloop.plugins.vcs.git.commands import pin as git_pin
 from piloop.plugins.verdict_rule.contract import VERDICT_RULES, Branch, Outcome, Trunk
 from piloop.scoring.evaluate import CHANGED_INPUTS
@@ -1717,6 +1726,17 @@ TIMEOUT = 'implementer timeout after 1s'
         pytest.param(RunFacts(asked=CommentId(7)), (RunEnd.AWAITING_ANSWER, 'comment#7'), id='asked'),
         pytest.param(RunFacts(), (RunEnd.FAILED, NO_CHANGES), id='nothing'),
         pytest.param(RunFacts(versions=1, recovered_only=True), (RunEnd.FAILED, INTERRUPTED), id='recovered-only'),
+        pytest.param(RunFacts(unsaved='refused'), (RunEnd.FAILED, f'{UNSAVED}: refused'), id='unsaved'),
+        pytest.param(
+            RunFacts(error='implementer exit 1', unsaved='refused'),
+            (RunEnd.FAILED, 'implementer exit 1'),
+            id='error-unsaved',
+        ),
+        pytest.param(
+            RunFacts(unsaved='refused', asked=CommentId(7), versions=1),
+            (RunEnd.FAILED, f'{UNSAVED}: refused'),
+            id='unsaved-asked-commits',
+        ),
         pytest.param(RunFacts(versions=2), (RunEnd.FINISHED, None), id='commits'),
         # the overlaps that fix the order: each pair of neighbouring rows, and the #116 cases
         pytest.param(
@@ -1940,6 +1960,40 @@ def test_an_escalation_is_answered_once_a_reply_reaches_the_implementer_not_once
         )
     else:
         assert (run.end, run.error, idea) == (RunEnd.FINISHED, None, IdeaStatus.DONE)
+
+
+def test_uncommitted_changes_are_saved_on_a_machine_with_no_git_identity(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, no_git_identity: None
+) -> None:
+    """A fresh worker has no ``user.*``: the save of what the implementer left uncommitted commits anyway."""
+    write_toml(Path(campaign.path), HARNESS_FORGETS_COMMIT)
+    reload_campaign(db, campaign)
+    run_id = make_run(db, campaign)
+    execute(controller(db, runtime, tmp_path), db, run_id)
+    assert (run_row(db, run_id).status, run_row(db, run_id).error) == (RunStatus.FAILED, INTERRUPTED)
+    [(summary, verdict, *_)] = scored(db, run_id)
+    assert (summary, verdict) == (UNCOMMITTED, Origin.RECOVERED)
+
+
+def test_a_save_that_fails_fails_the_run_and_keeps_the_unsaved_changes_in_the_cas(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """A save that git refuses is never silent: ``WorkUnsaved`` on the implementer, and the run says so."""
+    write_toml(Path(campaign.path), HARNESS_FORGETS_COMMIT)
+    reload_campaign(db, campaign)
+    hook = Path(campaign.path) / '.git' / 'hooks' / 'pre-commit'
+    hook.write_text('#!/bin/sh\necho refused >&2\nexit 1\n')
+    hook.chmod(0o755)
+    run_id = make_run(db, campaign)
+    execute(controller(db, runtime, tmp_path), db, run_id)
+    run = run_row(db, run_id)
+    assert run.status is RunStatus.FAILED and run.error is not None and run.error.startswith(UNSAVED)
+    assert not scored(db, run_id)
+    with db.session() as s:
+        [(_, unsaved)] = in_order(s, WorkUnsaved)
+    assert 'refused' in unsaved.error
+    patch = home_cas(db).get(unsaved.blob)
+    assert patch is not None and b'+line' in patch
 
 
 def test_uncommitted_changes_without_a_finding_are_scored_but_not_an_attempt_that_finished(
@@ -2380,7 +2434,7 @@ def import_empty_solution(db: Database, campaign: Campaign) -> CandidateId:
     with db.session() as s:
         proj = s.get_one(Campaign, campaign.id)
         reference = import_reference(
-            s, proj, GitRepository(repo), 'elsewhere', summary=None, actor=System.ORCHESTRATOR
+            s, proj, GitRepository(repo, PILOOP), 'elsewhere', summary=None, actor=System.ORCHESTRATOR
         ).id
         s.commit()
     return reference
@@ -2488,7 +2542,7 @@ def keep_elsewhere(
         repo.git.checkout('-q', 'main')
         git_pin(repo, f'refs/piloop/demo/elsewhere/{summary.replace(" ", "-")}', sha)
         candidate, _ = resolve(
-            s, campaign.id, GitRepository(repo).version(sha), parent=parent, run_id=run_id, origin=Origin.RUN
+            s, campaign.id, GitRepository(repo, PILOOP).version(sha), parent=parent, run_id=run_id, origin=Origin.RUN
         )
         candidate.verdict, candidate.verdict_by = verdict, 'orchestrator'
         evaluator_id = s.get_one(Campaign, campaign.id).evaluator_id
@@ -2701,7 +2755,7 @@ def test_a_run_whose_chained_commits_each_conflict_on_the_head_leaves_one_compos
             (f'candidate#{first.id}', []),
             (f'candidate#{second.id}', [seeds[0].id]),
         ]
-        supersede_composed(s, GitRepository(Repo(campaign.path)), s.get_one(Candidate, first.id), seeds[0])
+        supersede_composed(s, GitRepository(Repo(campaign.path), PILOOP), s.get_one(Candidate, first.id), seeds[0])
         assert seeds[0].supersedes == [], 'the earlier commit does not compose the later one'
         assert list(supersede(s, campaign.id)) == [seeds[0].id]
         s.commit()
@@ -2797,11 +2851,11 @@ def test_two_sessions_that_register_one_new_tree_share_one_candidate(
 
         monkeypatch.setattr(b, 'scalar', stale)
         first, _ = resolve(
-            a, campaign.id, GitRepository(repo).version(sha), parent=parent, run_id=None, origin=Origin.RUN
+            a, campaign.id, GitRepository(repo, PILOOP).version(sha), parent=parent, run_id=None, origin=Origin.RUN
         )
         a.commit()
         found, created = resolve(
-            b, campaign.id, GitRepository(repo).version(sha), parent=parent, run_id=None, origin=Origin.RUN
+            b, campaign.id, GitRepository(repo, PILOOP).version(sha), parent=parent, run_id=None, origin=Origin.RUN
         )
         b.commit()
         assert (found.id, created) == (first.id, False)

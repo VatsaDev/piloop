@@ -15,7 +15,7 @@ from typing import assert_never
 
 from covalence import Cid
 from git import Repo
-from git.exc import BadName, GitError, InvalidGitRepositoryError, NoSuchPathError
+from git.exc import BadName, GitCommandError, GitError, InvalidGitRepositoryError, NoSuchPathError
 from pydantic import SecretStr
 
 from piloop.ids import Revision, RunId
@@ -23,6 +23,7 @@ from piloop.plugins.cas.contract import Cas
 from piloop.plugins.host import Check
 from piloop.plugins.vcs.contract import (
     MAX_HAVE,
+    Captured,
     Conflicts,
     Fetch,
     Keep,
@@ -34,6 +35,7 @@ from piloop.plugins.vcs.contract import (
     RunVersion,
     Transfer,
     UnknownRevision,
+    Unsaved,
     Vcs,
     VcsError,
     Version,
@@ -53,6 +55,8 @@ UNCOMMITTED = 'piloop: uncommitted implementer changes'
 PROMPTS = Path(__file__).parent / 'prompts'
 GITIGNORE = '.gitignore'
 """What the built-in prompts say about each ``Part``, one file each."""
+PILOOP = git.Identity(name='piloop', email='piloop@localhost')
+"""Who piloop's own commits are by, with the email of ``[plugins.vcs] email``."""
 FETCHED = 'refs/piloop/fetched/'
 """Where a replica pins each commit that came as a bundle: it stays, and the next fetch names it as a commit it has."""
 
@@ -78,8 +82,9 @@ def runs(campaign: str, run: RunId) -> str:
 class GitRepository(Repository):
     """A git checkout: the repo of record, a worker's replica, or a worktree of either."""
 
-    def __init__(self, repo: Repo) -> None:
+    def __init__(self, repo: Repo, committer: git.Identity) -> None:
         self.repo = repo
+        self.committer = committer
 
     def head(self) -> Version:
         return self._version(self.repo.head.commit.hexsha)
@@ -128,7 +133,7 @@ class GitRepository(Repository):
         git.pin_all(self.repo, {f'{FETCHED}{sha}': sha for sha in came})
 
     def merge(self, onto: Revision, other: Revision, message: str) -> Version | Conflicts:
-        merged = git.merge(self.repo, onto, other, message)
+        merged = git.merge(self.repo, onto, other, message, self.committer)
         return Conflicts(tuple(merged)) if isinstance(merged, list) else self._version(merged)
 
     def contains(self, revision: Revision, ancestor: Revision) -> bool:
@@ -156,19 +161,37 @@ class GitRepository(Repository):
     def untracked(self, revision: Revision, names: Sequence[str]) -> list[str]:
         return git.untracked(self.repo, revision, names)
 
-    def capture(self, cas: Cas, base: Revision, run: RunId, ignore: Sequence[str]) -> Transfer | None:
-        """Commit what the agent left uncommitted on its own, never amended into its last commit, then bundle them."""
+    def capture(self, cas: Cas, base: Revision, run: RunId, ignore: Sequence[str]) -> Captured:
+        """Commit what the agent left uncommitted on its own, never amended into its last commit, then bundle them.
+
+        The commit is by the run, and committed by piloop. When git refuses it, a hook say, the unsaved changes go into
+        ``cas`` as a patch onto the agent's last commit.
+        """
+        unsaved = None
         if git.is_dirty(self.repo, list(ignore)):
-            git.commit_all(self.repo, f'{UNCOMMITTED}\n\n{RECOVERED}: run#{run}', list(ignore))
+            by = f'run#{run}'
+            author = self.committer.model_copy(update={'name': by})
+            message = f'{UNCOMMITTED}\n\n{RECOVERED}: {by}'
+            try:
+                git.commit_all(self.repo, message, list(ignore), author, self.committer)
+            except GitCommandError as e:
+                unsaved = Unsaved(blob=cas.put(git.staged(self.repo)), error=str(e))
         head = self.repo.head.commit.hexsha
-        if head == base:
-            return None
-        blob = bundles.bundle(cas, self.repo, [head], [base])
-        return Transfer(blob=blob, head=Revision(head)) if blob is not None else None
+        blob = bundles.bundle(cas, self.repo, [head], [base]) if head != base else None
+        return Captured(Transfer(blob=blob, head=Revision(head)) if blob is not None else None, unsaved)
 
 
 class Git(Vcs):
     """Keep versions as commits of a git repository, git 2.40 or later."""
+
+    email: str = PILOOP.email
+    """The email of every commit that piloop makes, whatever git's config says: a merge, ``piloop init``'s, and the save
+    of what an agent left uncommitted, which its run authors. Their name is ``piloop``. A worker can have no git config."""
+
+    @property
+    def piloop(self) -> git.Identity:
+        """Piloop's own identity, with ``email``."""
+        return PILOOP.model_copy(update={'email': self.email})
 
     def init(self, path: Path, summary: str, owned: Sequence[str], ignore: Sequence[str]) -> list[str]:
         """An existing ``.gitignore`` is the campaign's: it is kept as it is."""
@@ -178,7 +201,7 @@ class Git(Vcs):
         repo = Repo.init(path, initial_branch='main') if not (path / '.git').exists() else Repo(path)
         if not repo.head.is_valid():
             repo.git.add('-A')
-            repo.git.commit('-qm', summary)
+            repo.git.commit('-qm', summary, env=git.commit_env(self.piloop, self.piloop))
             return written
         owned = [*owned, GITIGNORE]
         # git status leaves out what the repo's ignore file ignores, which git add would refuse to take by name
@@ -190,12 +213,13 @@ class Git(Vcs):
         if unstaged := sorted(entry[3:] for entry in entries if entry[1] != ' '):
             repo.git.add('-A', '--', *unstaged)
         if changed:
-            repo.git.commit('-qm', f'piloop init: {", ".join(changed)}', '--', *changed)
+            by = git.commit_env(self.piloop, self.piloop)
+            repo.git.commit('-qm', f'piloop init: {", ".join(changed)}', '--', *changed, env=by)
         return written
 
     def open(self, path: Path) -> GitRepository:
         try:
-            return GitRepository(git.open_repo(path))
+            return GitRepository(git.open_repo(path), self.piloop)
         except (InvalidGitRepositoryError, NoSuchPathError) as e:
             raise NotARepository(f'{path} is not a git checkout: {type(e).__name__}: {e}') from e
 

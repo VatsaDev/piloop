@@ -19,7 +19,7 @@ from covalence import Cid
 from piloop.ids import Revision, RunId
 from piloop.plugins.cas.contract import Cas
 from piloop.plugins.executor.contract import RepoId, Source
-from piloop.plugins.vcs.contract import Repository, Transfer, Vcs
+from piloop.plugins.vcs.contract import Captured, Repository, Vcs
 from piloop.settings import INPUTS_DIR
 from piloop.store.tree import Copies, Copy, Manifest, Materialised, Seen, changed, materialise
 
@@ -116,7 +116,7 @@ class Clones:
         names = [*source.links, *([WORKSPACE] if source.workspace is not None else [])]
         return self.repository(source).untracked(source.revision, names)
 
-    def bring_back(self, source: Source, cwd: Path, run: RunId) -> Transfer | None:
+    def bring_back(self, source: Source, cwd: Path, run: RunId) -> Captured:
         """Save what the agent left unsaved for ``run``, and put its versions into the CAS (``Repository.capture``)."""
         return source.vcs.open(cwd).capture(self._cas, source.revision, run, self.ignored(source))
 

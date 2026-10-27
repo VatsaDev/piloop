@@ -255,6 +255,20 @@ The stall mark is `every` of the `stalled` trigger. When it is not set, it is tw
 triggers = [{ provider = "low_water" }, { provider = "seed" }, { provider = "stalled", every = 15 }]
 ```
 
+### piloop's own commits
+
+piloop's own commits are by `piloop <piloop@localhost>`, whatever git's config says: merges, `piloop init`'s, and the
+save of what an implementer left uncommitted, which its run authors (`run#12`). Set another email in `[plugins.vcs]`:
+
+```toml
+[plugins.vcs]
+provider = "git"
+email = "piloop@example.com"
+```
+
+A vcs plugin's `Repository.capture` returns `Captured`. When the save of the unsaved changes fails, it puts them into
+the CAS (`Captured.unsaved`) and still returns the versions.
+
 ### Memory documents
 
 `[memory] documents` is `documents` in [`[plugins.memory]`](/concepts/memory#documents); the old key works

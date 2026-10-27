@@ -81,6 +81,8 @@ when the idea did not work.
 
 The run ends when the implementer exits, at its `timeout`, or a minute after it writes its `finding`. Then the daemon
 scores each new commit. What the implementer left uncommitted becomes a `recovered` commit, which is never measured.
+If git refuses that commit, the run fails, and an `agent_session.work_unsaved` event holds the changes as a patch.
+Restore them in a checkout of the implementer's last commit with `piloop cas get <blob> | git apply`.
 
 | How the run ended | What happens to the idea |
 |---|---|

@@ -174,6 +174,17 @@ class WorkspaceConflict(EventModel):
     """The paths that this agent removed and another one changed meanwhile: they stay."""
 
 
+class WorkUnsaved(EventModel):
+    """What the agent left unsaved could not be saved as a version (``Unsaved``): only the CAS has it."""
+
+    READ_BY: ClassVar[ReadBy] = ReadBy.READERS
+    kind: Literal['agent_session.work_unsaved'] = 'agent_session.work_unsaved'
+    blob: BlobAddress
+    """The changes, in the vcs provider's own form: under ``git``, a patch onto the agent's last commit."""
+    error: str
+    """Why the save failed."""
+
+
 class PromptOutcome(EventModel):
     """What came of a prompt to an agent, on the agent.
 
@@ -490,6 +501,10 @@ class CampaignResults:
                 for comment in report.unread:
                     _record(s, w.id, PromptOutcome(kind='comment.undelivered', comment=comment, error=UNREAD))
                 w.usage = report.usage
+                if (unsaved := report.unsaved) is not None:
+                    event = WorkUnsaved(blob=unsaved.blob, error=unsaved.error)
+                    emit(s, event, TargetRef(TargetKind.AGENT_SESSION, w.id), System.DAEMON)
+                    self._tracer.event(event.kind, agent_session=w.id, blob=str(event.blob), error=event.error)
                 if self._stopping():
                     self._stopped(s, w, report.work)
                     return

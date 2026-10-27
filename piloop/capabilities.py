@@ -161,7 +161,7 @@ from piloop.plugins.network.https import Https, HttpsNetwork
 from piloop.plugins.network.proxy import Proxy
 
 from piloop.ids import Revision
-from piloop.plugins.vcs.contract import VCS, Vcs, Repository, Version, Conflicts, Transfer, Fetch
+from piloop.plugins.vcs.contract import VCS, Vcs, Repository, Version, Conflicts, Transfer, Fetch, Captured, Unsaved
 from piloop.plugins.vcs.contract import Keep, RunVersion, RebaseVersion, ReferenceVersion
 from piloop.plugins.vcs.contract import VcsError, NotARepository, UnknownRevision, CloneFailed
 from piloop.plugins.vcs.contract import Part

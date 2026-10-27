@@ -179,6 +179,9 @@ max_concurrent = 1                        # at most 1: two orchestrators would a
 # notices = { spend = [300, 600] }        # piloop posts one inbox note when a value crosses each
 # interval = 300                          # seconds between two readings
 
+# [plugins.vcs]                           # how the campaign saves versions; default: git
+# email = "piloop@localhost"              # of every commit that piloop makes, whatever git's config says
+
 # [plugins.memory]                        # what past campaigns leave for the next ones; see the research memory page
 # documents = ["docs/evidence/**/*.md"]   # repo files that `piloop init` and the stop copy into `documents`; default none
 

@@ -15,7 +15,7 @@ from piloop.plugins.cas.contract import Cas
 from piloop.plugins.executor.contract import RepoId, Source, Workspace
 from piloop.plugins.executor.kit.clones import WORKSPACE, Clones, Fetch, of_record, own_replica
 from piloop.plugins.executor.kit.jobs import remote_site
-from piloop.plugins.vcs.contract import MAX_HAVE
+from piloop.plugins.vcs.contract import MAX_HAVE, Captured
 from piloop.plugins.vcs.git import FETCHED, Git
 from piloop.plugins.vcs.git.bundles import bundle, unbundle
 from piloop.plugins.vcs.git.commands import commits
@@ -167,7 +167,7 @@ def test_links_and_the_workspace_are_put_read_only(tmp_path: Path, origin: Path,
     assert (cwd / WORKSPACE / 'NOTES.md').stat().st_mode & 0o222 == 0, 'nor does the workspace that it starts from'
     assert clones.ignored(source) == ['data', WORKSPACE]
     (cwd / 'a.txt').write_text('changed')
-    assert clones.bring_back(source, cwd, LEFTOVERS) is not None, 'the change, without the links'
+    assert clones.bring_back(source, cwd, LEFTOVERS).work is not None, 'the change, without the links'
     assert Repo(cwd).git.show('--name-only', '--format=', 'HEAD').split() == ['a.txt']
     clones.remove(source, cwd)
     assert not cwd.exists()
@@ -177,7 +177,7 @@ def test_bring_back_is_none_without_a_commit(tmp_path: Path, origin: Path, store
     clones = Clones(store, {REPO: origin}.__getitem__, of_record, fetch_from(store, origin, []), tmp_path)
     source = Source(vcs=Git(), repo=REPO, revision=Repo(origin).head.commit.hexsha)
     clones.checkout(source, tmp_path / 'wt')
-    assert clones.bring_back(source, tmp_path / 'wt', LEFTOVERS) is None
+    assert clones.bring_back(source, tmp_path / 'wt', LEFTOVERS) == Captured()
 
 
 def test_a_commit_that_the_server_cannot_bundle_fails_the_checkout(tmp_path: Path, origin: Path, store: Cas) -> None:

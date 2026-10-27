@@ -495,7 +495,8 @@ def _finish(
     try:
         report.changed = job.artifact.vcs.changed(cwd, site.clones.ignored(job.artifact))
         if job.capture is not None:
-            report.work = site.clones.bring_back(job.artifact, cwd, job.capture)
+            captured = site.clones.bring_back(job.artifact, cwd, job.capture)
+            report.work, report.unsaved = captured.work, captured.unsaved
         report.workspace = site.clones.changed(job.artifact, cwd)
     except Exception as e:  # a worktree that is gone: the report says what is known
         span.error(e)

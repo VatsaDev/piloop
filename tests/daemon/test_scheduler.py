@@ -101,7 +101,7 @@ from piloop.plugins.trigger.seed import SeedTrigger
 from piloop.plugins.trigger.sql import SqlTrigger
 from piloop.plugins.trigger.stalled import StalledTrigger
 from piloop.plugins.trigger.stopped import StoppedTrigger
-from piloop.plugins.vcs.git import UNCOMMITTED, GitRepository, commands as git
+from piloop.plugins.vcs.git import PILOOP, UNCOMMITTED, GitRepository, commands as git
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring.ledger import current_evaluator, due, head, import_reference, request_remeasure
 from piloop.settings import AgentSettings, DaemonSettings
@@ -1711,7 +1711,7 @@ def test_an_imported_reference_is_measured_by_the_daemon_and_stays_a_reference(
     with db.session() as s:
         proj = s.get_one(Campaign, campaign.id)
         reference = import_reference(
-            s, proj, GitRepository(repo), 'elsewhere', summary=None, actor=System.ORCHESTRATOR
+            s, proj, GitRepository(repo, PILOOP), 'elsewhere', summary=None, actor=System.ORCHESTRATOR
         ).id
         evaluator = proj.evaluator_id
         s.commit()
