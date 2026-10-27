@@ -158,6 +158,8 @@ class Problem(StrEnum):
     CURSOR_AHEAD = 'cursor_ahead'
     REFUSED = 'refused'
     """An operation refused its input and changed nothing. The detail says why."""
+    STILL_STOPPING = 'still_stopping'
+    """A retire refused a campaign whose stop is not over. The detail names its open agents: retire it again later."""
     FORBIDDEN = 'forbidden'
     """The caller may not act as the actor that it asks for (``piloop.net.acting``). The detail says why."""
 

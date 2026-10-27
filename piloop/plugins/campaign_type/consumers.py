@@ -633,7 +633,8 @@ class Campaigns:
         """Take the requested agents of ``launching`` while the executor has a free agent slot (``_take``).
 
         Each slot goes to the campaign with the fewest live agents, so that a campaign with many requests never holds
-        back another. Returns ``(agent_session_id, run_id)`` pairs.
+        back another. A row whose campaign was retired since the pass read it is closed instead (``_unretired``).
+        Returns ``(agent_session_id, run_id)`` pairs.
         """
         # before the executor's count: a job submitted in between then counts twice, for one pass, never in neither
         unsubmitted = len(self._controller.launcher.unsubmitted)
@@ -653,7 +654,30 @@ class Campaigns:
                 free -= len(got)
             live[campaign.id] += len(got)
             taken += got
-        return taken
+        return self._unretired(s, taken)
+
+    def _unretired(
+        self, s: Session, taken: list[tuple[AgentSessionId, RunId | None]]
+    ) -> list[tuple[AgentSessionId, RunId | None]]:
+        """``taken`` without the rows of a campaign that is retired now, which are closed.
+
+        The pass read its campaigns before it held the write lock, so a retire can commit in between. The flush takes
+        the lock, so the read after it is the last word: no retire commits until the pass does.
+        """
+        if not taken:
+            return taken
+        s.flush()
+        ids = [agent_session_id for agent_session_id, _ in taken]
+        retired = set(
+            s.scalars(
+                select(AgentSession.id)
+                .join(Campaign, AgentSession.campaign_id == Campaign.id)
+                .where(AgentSession.id.in_(ids), Campaign.status == CampaignStatus.RETIRED)
+            )
+        )
+        for agent_session_id in retired:
+            close(s, s.get_one(AgentSession, agent_session_id), 'its campaign is retired', self._tracer)
+        return [pair for pair in taken if pair[0] not in retired]
 
     def _take(
         self,

@@ -922,6 +922,7 @@ def with_api(server: App, api: Handlers) -> App:
         server.mount_router(routes)
     for refused in REFUSALS:
         server.add_exception_handler(refused, _refused)
+    server.add_exception_handler(ops.StillStopping, _still_stopping)
     server.state.handlers = api
     return server
 
@@ -941,6 +942,10 @@ REFUSALS: tuple[type[Exception], ...] = (
 
 def _refused(_request: Request, e: Exception) -> Response:
     return JSONResponse({'error': Problem.REFUSED, 'detail': str(e)}, status_code=HTTPStatus.CONFLICT)
+
+
+def _still_stopping(_request: Request, e: Exception) -> Response:
+    return JSONResponse({'error': Problem.STILL_STOPPING, 'detail': str(e)}, status_code=HTTPStatus.CONFLICT)
 
 
 def daemon_state(started: str, listen: str | None) -> DaemonState:

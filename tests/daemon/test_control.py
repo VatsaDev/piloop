@@ -1,19 +1,23 @@
 """The daemon's side of the control operations: a pause holds the tick, and a measurement by hand is judged again."""
 
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
 from git import Repo
 from pytest_mock import MockerFixture
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from piloop.actor import System
 from piloop.campaign import ops
 from piloop.daemon.run_controller import RunController
 from piloop.db.events import in_order
-from piloop.db.models import AgentSession, AgentSessionState, Campaign, Candidate, Comment, Origin
+from piloop.db.models import ENDED, AgentSession, AgentSessionState, Campaign, Candidate, Comment, Origin
 from piloop.db.session import Database
-from piloop.ids import CampaignId, IdeaStatus, TargetKind
+from piloop.ids import CampaignId, CampaignStatus, IdeaStatus, TargetKind
+from piloop.plugins.campaign_type.optimization.planner import OptimizationPlanner
 from piloop.plugins.vcs.git import PILOOP, GitRepository
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring.ledger import RejudgeFailed, head, import_reference, rejudges, request_remeasure
@@ -220,3 +224,64 @@ def test_a_judgement_again_that_fails_answers_the_request_with_the_error(
         )
         assert s.get_one(Candidate, worse.id).verdict is Outcome.DISCARD
         assert rejudges(s, s.get_one(Campaign, campaign.id)) == [], 'not tried on every pass'
+
+
+def test_an_agent_requested_while_a_retire_checks_either_stops_the_retire_or_never_lands(
+    db: Database, campaign: Campaign, mocker: MockerFixture
+) -> None:
+    """A retire and a launch race: the retire must never pass while an agent of its campaign is open."""
+    with db.session() as s:
+        s.get_one(Campaign, campaign.id).status = CampaignStatus.STOPPED
+        s.commit()
+    path = db.engine.url.database
+    assert path is not None
+    landed: list[bool] = []
+
+    def scheduler_requests(*_: object) -> bool:
+        """The daemon's pass commits a request on its own connection, between the retire's check and its change."""
+        with closing(sqlite3.connect(path, timeout=0.2, isolation_level=None)) as con:
+            try:
+                con.execute("INSERT INTO agent_sessions (kind, campaign_id) VALUES ('research', ?)", (campaign.id,))
+                landed.append(True)
+            except sqlite3.OperationalError as e:
+                assert 'database is locked' in str(e), e
+                landed.append(False)
+        return False
+
+    mocker.patch.object(ops, 'unclosed', side_effect=scheduler_requests)
+    with db.session() as s:
+        try:
+            ops.retire(s, campaign.id, System.HUMAN, reason='done')
+            s.commit()
+        except ops.Refused:
+            s.rollback()
+    with db.session() as s:
+        retired = s.get_one(Campaign, campaign.id).status is CampaignStatus.RETIRED
+        open_ = s.scalars(select(AgentSession.id).where(AgentSession.state.not_in(ENDED))).all()
+    assert landed and not (retired and open_), (landed, retired, open_)
+
+
+def test_a_campaign_retired_while_the_daemon_takes_its_request_launches_nothing(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    """The second guard: a pass that read the campaign before a retire committed never launches its rows."""
+    with db.session() as s:
+        s.get_one(Campaign, campaign.id).status = CampaignStatus.STOPPED
+        s.commit()
+    asked = request_watchdog(db, campaign)
+    scheduler = make_scheduler(db, runtime, tmp_path)
+    path = db.engine.url.database
+    assert path is not None
+    tidy = OptimizationPlanner.tidy
+
+    def retired_first(planner: OptimizationPlanner, s: Session, read: Campaign) -> None:
+        """The retire commits on its own connection, after the pass read the campaign and before it writes."""
+        with closing(sqlite3.connect(path, timeout=0.2, isolation_level=None)) as con:
+            con.execute("UPDATE campaigns SET status = 'retired' WHERE id = ?", (read.id,))
+        tidy(planner, s, read)
+
+    mocker.patch.object(OptimizationPlanner, 'tidy', autospec=True, side_effect=retired_first)
+    assert run_all(scheduler) == []
+    with db.session() as s:
+        row = s.get_one(AgentSession, asked)
+        assert (row.state, row.error) == (AgentSessionState.KILLED, 'its campaign is retired')

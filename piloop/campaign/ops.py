@@ -41,7 +41,9 @@ from piloop.db.models import (
     Pause,
     Run,
 )
+from piloop.db.session import write_transaction
 from piloop.ids import (
+    AgentSessionId,
     CampaignId,
     CampaignStatus,
     CandidateId,
@@ -161,18 +163,33 @@ def stop(s: Session, campaign_id: CampaignId, actor: Actor, *, reason: str, endi
     return campaign
 
 
+class StillStopping(Refused):
+    """``retire`` refused a campaign whose stop is not over: ``agents`` are its open agents, by id."""
+
+    def __init__(self, campaign: Campaign, agents: Sequence[AgentSessionId]) -> None:
+        self.agents = tuple(agents)
+        named = f'; agents {", ".join(f"#{i}" for i in agents)} are not over' if agents else ''
+        super().__init__(
+            f'{campaign.name} is still stopping{named}: retire it once its closing review and runs are over'
+        )
+
+
 def retire(s: Session, campaign_id: CampaignId, actor: Actor, *, reason: str) -> Campaign:
     """Retire a stopped campaign for good: it changes no more, and another campaign may take its name.
 
     Its rows, events and archives stay, and it is found by its id. Listings leave it out unless asked. The reason goes
-    into a note on the campaign.
+    into a note on the campaign. It takes the write lock before it checks, so no agent is requested or launched between
+    the check and the change: the session must have no open transaction.
 
     Raises:
-        Refused: the reason is blank; the campaign is not stopped, or is retired already; or its stop is not over: the
-            closing review has not started, or an agent or a scoring of it is not over.
+        Refused: the reason is blank, or the campaign is not stopped, or is retired already.
+        StillStopping: the stop is not over: the closing review has not started, a run is not scored, or an agent of
+            the campaign is open (requested, starting, running or ending).
     """
-    campaign = _get(s, Campaign, campaign_id, 'campaign')
     why = _reason(reason)
+    write_transaction(s)
+    s.expire_all()  # read inside the lock what an earlier read of this session may have cached
+    campaign = _get(s, Campaign, campaign_id, 'campaign')
     match campaign.status:
         case CampaignStatus.ACTIVE:
             raise Refused(f'{campaign.name} is active: stop it first, with `piloop campaign stop {campaign.name}`')
@@ -182,12 +199,11 @@ def retire(s: Session, campaign_id: CampaignId, actor: Actor, *, reason: str) ->
             pass
         case never:
             assert_never(never)
-    live = s.scalars(
+    open_ = s.scalars(
         select(AgentSession.id).where(AgentSession.campaign_id == campaign.id, AgentSession.state.not_in(ENDED))
     ).all()
-    if unclosed(s, campaign) or not settled(s, campaign) or live:
-        agents = f'; agents {", ".join(f"#{i}" for i in live)} are not over' if live else ''
-        raise Refused(f'{campaign.name} is still stopping{agents}: retire it once its closing review and runs are over')
+    if unclosed(s, campaign) or not settled(s, campaign) or open_:
+        raise StillStopping(campaign, open_)
     campaign.status = CampaignStatus.RETIRED
     target = TargetRef(TargetKind.CAMPAIGN, campaign.id)
     s.add(Comment(target=target, author=actor.signature, kind=CommentKind.NOTE, body=f'retired: {why}'))

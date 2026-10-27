@@ -35,9 +35,11 @@ from piloop.api.contract import (
     MAX_LIMIT,
     MAX_POLL_SECONDS,
     AckBody,
+    CancelBody,
     Clone,
     EventsQuery,
     MessageBody,
+    Problem,
     Remote,
     RetireBody,
     SeedBody,
@@ -45,7 +47,7 @@ from piloop.api.contract import (
     StopBody,
 )
 from piloop.api.views import AckOutcome, CampaignState, Envelope
-from piloop.ids import CampaignId, Ending, RoleName
+from piloop.ids import AgentSessionId, CampaignId, Ending, RoleName
 from piloop.plugins.network.https import TOKEN_ENV, Https
 from tests.e2e.campaign import CHEAPEST_MODEL, CommandFailed, needs
 from tests.e2e.conftest import Install
@@ -294,13 +296,16 @@ def server(request: pytest.FixtureRequest) -> Iterator[Server]:
 def retire(api: Client, ref: str, reason: str) -> CampaignState:
     """Stop the campaign that ``ref`` names unless it is stopped, and retire it once its stop is over.
 
+    The orchestrator that the stop wakes, to report, is cancelled: nobody reads a report of a campaign about to retire,
+    and the retire would wait for it.
+
     Raises:
         Refused: ``ref`` names no campaign, or the stop is not over within ``RETIRE_WAIT``.
     """
     found = api.status(Selection(campaign=ref))
     [state] = found.campaigns
     campaign, cursor, deadline = str(state.id), found.cursor, time.monotonic() + RETIRE_WAIT
-    pending = ['is still stopping']
+    pending: list[str] = []
     if state.status == 'active':
         api.stop(campaign, StopBody(reason=reason, ending=Ending.NOW))
         pending.append('is active')  # until the daemon acts on the stop that it was asked for
@@ -308,12 +313,26 @@ def retire(api: Client, ref: str, reason: str) -> CampaignState:
         try:
             retired = api.retire(campaign, RetireBody(reason=reason)).campaign
         except Refused as e:
-            if not any(p in str(e) for p in pending) or time.monotonic() > deadline:
+            waits = e.error == Problem.STILL_STOPPING or any(p in str(e) for p in pending)
+            if not waits or time.monotonic() > deadline:
                 raise
-            cursor = api.events(EventsQuery(campaign=campaign, after=cursor, wait=MAX_POLL_SECONDS)).next
+            batch = api.events(EventsQuery(campaign=campaign, after=cursor, wait=MAX_POLL_SECONDS))
+            cursor = batch.next
+            for woken in batch.events:
+                if woken.kind == 'agent_session.requested' and payload(woken)['role'] == 'orchestrator':
+                    cancel(api, AgentSessionId(woken.subject.id))
             continue
         assert isinstance(retired, CampaignState), retired
         return retired
+
+
+def cancel(api: Client, agent: AgentSessionId) -> None:
+    """Cancel ``agent`` at once, unless it ended already."""
+    try:
+        api.cancel_agent(agent, CancelBody(ending=Ending.NOW))
+    except Refused as e:
+        if 'is not requested, starting or running' not in str(e):  # it ended before the cancel: nothing to cancel
+            raise
 
 
 def test_registers_a_repository_by_its_url(server: Server) -> None:
