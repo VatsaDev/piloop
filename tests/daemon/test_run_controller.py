@@ -151,6 +151,7 @@ from tests.conftest import (
     write_script,
     write_toml,
 )
+from tests.test_git import by
 from tests.test_vcs import git_words
 from tests.usage.test_usage import READS_PI, SESSIONS
 
@@ -1994,6 +1995,23 @@ def test_a_save_that_fails_fails_the_run_and_keeps_the_unsaved_changes_in_the_ca
     assert 'refused' in unsaved.error
     patch = home_cas(db).get(unsaved.blob)
     assert patch is not None and b'+line' in patch
+
+
+def test_an_implementers_own_commit_is_by_the_implementer_on_a_machine_with_no_git_identity(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, no_git_identity: None
+) -> None:
+    """Its job's environment names it: the commit is the implementer's, and no git config is written for it."""
+    write_toml(Path(campaign.path), '#!/bin/sh\necho line >> solve.txt\ngit commit -qam "a line"\n')
+    reload_campaign(db, campaign)
+    run_id = make_run(db, campaign)
+    execute(controller(db, runtime, tmp_path), db, run_id)
+    with db.session() as s:
+        session = s.scalars(select(AgentSession.id).where(AgentSession.run_id == run_id)).one()
+    [e] = candidates(db, run_id)
+    repo = Repo(campaign.path)
+    assert (e.summary, run_row(db, run_id).status) == ('a line', RunStatus.SUCCEEDED)
+    assert by(repo, e.revision) == (f'implementer#{session} <{PILOOP.email}>',) * 2
+    assert 'user.name' not in repo.git.config('--list')
 
 
 def test_uncommitted_changes_without_a_finding_are_scored_but_not_an_attempt_that_finished(

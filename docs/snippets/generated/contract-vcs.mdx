@@ -6,6 +6,7 @@
 | `Vcs.open(path: Path) -> Repository` | The repository of the checkout at `path`. |
 | `Vcs.clone(url: str, path: Path, credential: SecretStr \| None) -> Repository` | Clone the repository at `url` into `path`, and return it. |
 | `Vcs.replica(path: Path) -> Repository` | A worker's replica of a repo of record at `path`, made empty if none is there: `Repository.fetch` fills it. |
+| `Vcs.agent_env(agent: Agent) -> dict[str, str]` | The variables of `agent`'s job that the provider sets: who the versions that it saves are by. Empty: none. |
 | `Vcs.identity(path: Path) -> str` | The project that the checkout at `path` is, the same for each clone of it: `campaigns.repo`. |
 | `Vcs.root(path: Path) -> Path \| None` | The main checkout that `path` is in, also from a checkout that `Repository.checkout` made. None: none. |
 | `Vcs.changed(path: Path, ignore: Sequence[str]) -> bool` | Whether an agent changed the checkout at `path`: a saved version, or a changed file outside `ignore`. |

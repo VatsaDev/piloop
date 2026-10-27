@@ -23,6 +23,7 @@ from covalence import Cid
 from pydantic import BaseModel, ConfigDict, SecretStr
 
 from piloop import deprecated
+from piloop.actor import Agent
 from piloop.ids import CandidateId, Revision, RunId
 from piloop.plugins.cas.contract import BlobAddress, Cas
 from piloop.plugins.host import Capability, Check, One, Parameters, Scope
@@ -287,6 +288,13 @@ class Vcs(Parameters, ABC):
     @abstractmethod
     def replica(self, path: Path) -> Repository:
         """A worker's replica of a repo of record at ``path``, made empty if none is there: ``Repository.fetch`` fills it."""
+
+    @abstractmethod
+    def agent_env(self, agent: Agent) -> dict[str, str]:
+        """The variables of ``agent``'s job that the provider sets: who the versions that it saves are by. Empty: none.
+
+        They are set for its job only, never in the machine's config.
+        """
 
     @abstractmethod
     def identity(self, path: Path) -> str:

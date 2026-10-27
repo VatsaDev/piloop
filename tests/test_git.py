@@ -1,6 +1,7 @@
 import base64
 import contextlib
 import logging
+import os
 import socket
 import subprocess
 import threading
@@ -17,8 +18,9 @@ from git import Repo
 from git.exc import GitCommandError
 from pydantic import SecretStr
 
+from piloop.actor import Agent
 from piloop.api.client import CLONE_WAIT
-from piloop.ids import Revision, RunId
+from piloop.ids import IMPLEMENTER, AgentSessionId, Revision, RunId
 from piloop.plugins.vcs.contract import CloneFailed, Version
 from piloop.plugins.vcs.git import PILOOP, UNCOMMITTED, Git, GitRepository, commands as git
 from tests.conftest import disk
@@ -195,6 +197,21 @@ def test_piloops_own_commits_carry_its_identity_on_a_machine_that_has_none(
     (tmp_path / 'other').mkdir()
     Git(email='ops@example.com').init(tmp_path / 'other', 'baseline', [], [])
     assert by(Repo(tmp_path / 'other'), 'HEAD') == ('piloop <ops@example.com>',) * 2, '[plugins.vcs] email'
+
+
+def test_an_agents_own_commit_is_by_its_signature_on_a_machine_that_has_none(
+    campaign_path: Path, tmp_path: Path, no_git_identity: None
+) -> None:
+    """The variables of an agent's job commit as the agent, with the campaign's email."""
+    vcs = Git(email='piloop@example.com')
+    vcs.open(campaign_path).checkout(vcs.open(campaign_path).head().revision, tmp_path / 'wt')
+    (tmp_path / 'wt' / 'solve.txt').write_text('base\nmore\n')
+    env = vcs.agent_env(Agent(role=IMPLEMENTER, session=AgentSessionId(12)))
+    subprocess.run(['git', 'commit', '-qam', 'more'], cwd=tmp_path / 'wt', env={**os.environ, **env}, check=True)
+    assert (
+        by(Repo(campaign_path), vcs.open(tmp_path / 'wt').head().revision)
+        == ('implementer#12 <piloop@example.com>',) * 2
+    )
 
 
 def test_unsaved_work_is_saved_when_nothing_is_ignored(campaign_path: Path, tmp_path: Path) -> None:

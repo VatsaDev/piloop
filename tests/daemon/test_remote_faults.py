@@ -17,6 +17,7 @@ from pathlib import Path
 
 import httpx2 as httpx
 import pytest
+from git import Repo
 from pydantic import SecretStr
 from sqlalchemy import func, select
 
@@ -46,6 +47,7 @@ from piloop.plugins.executor.kit.door import AgentCall, Call
 from piloop.plugins.executor.kit.leases import StaleLease, StaleReport, read_job
 from piloop.plugins.executor.kit.remote import Remote
 from piloop.plugins.executor.workers import Workers
+from piloop.plugins.vcs.git import PILOOP
 from piloop.proc import alive
 from piloop.settings import STORE_DIR, Settings
 from tests.agents.test_launcher import MINTED_HARNESS, use_harness
@@ -53,6 +55,7 @@ from tests.conftest import Dial, ScriptRuntime, baseline, factory, home_cas, wai
 from tests.daemon.test_evaluation_queue import held_evaluate
 from tests.daemon.test_run_controller import candidates, execute, make_run, reload_campaign, run_row, set_config
 from tests.fixtures.netfault import Blackhole, CutResponse, Latency, Proxy
+from tests.test_git import by
 
 SERVER_PROCESS = Path(__file__).parent.parent / 'fixtures' / 'server_process.py'
 WORKER = 'gpu1'
@@ -385,8 +388,9 @@ def finding(db: Database) -> list[tuple[str, str]]:
 
 
 def test_a_remote_implementers_commits_come_back_as_a_bundle_and_are_scored_and_its_piloop_calls_reach_the_server(
-    db: Database, net: Net, core: RunController, campaign: Campaign, tmp_path: Path, dial: Dial
+    db: Database, net: Net, core: RunController, campaign: Campaign, tmp_path: Path, dial: Dial, no_git_identity: None
 ) -> None:
+    """The worker has no git identity, as a fresh container: the implementer commits as itself."""
     write_toml(Path(campaign.path), HARNESS_ELSEWHERE)
     reload_campaign(db, campaign)
     net.start_worker()
@@ -398,6 +402,7 @@ def test_a_remote_implementers_commits_come_back_as_a_bundle_and_are_scored_and_
         2.0,
         RunStatus.SUCCEEDED,
     ), 'its commit, imported from its bundle, then measured'
+    assert by(Repo(campaign.path), scored.revision) == (f'implementer#1 <{PILOOP.email}>',) * 2
     with db.session() as s:
         leases = s.execute(select(Lease.kind, Lease.worker).order_by(Lease.id)).all()
     assert leases == [(LeaseKind.AGENT, WORKER), (LeaseKind.EVALUATION, WORKER)], 'both ran on the worker elsewhere'

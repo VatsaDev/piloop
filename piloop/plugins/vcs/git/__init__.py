@@ -18,6 +18,7 @@ from git import Repo
 from git.exc import BadName, GitCommandError, GitError, InvalidGitRepositoryError, NoSuchPathError
 from pydantic import SecretStr
 
+from piloop.actor import Agent
 from piloop.ids import Revision, RunId
 from piloop.plugins.cas.contract import Cas
 from piloop.plugins.host import Check
@@ -185,8 +186,9 @@ class Git(Vcs):
     """Keep versions as commits of a git repository, git 2.40 or later."""
 
     email: str = PILOOP.email
-    """The email of every commit that piloop makes, whatever git's config says: a merge, ``piloop init``'s, and the save
-    of what an agent left uncommitted, which its run authors. Their name is ``piloop``. A worker can have no git config."""
+    """The email of every commit that piloop makes or launches, whatever git's config says: a merge, ``piloop init``'s,
+    the save of what an agent left uncommitted, which its run authors, and an agent's own. Their name is ``piloop``, or
+    the agent's signature for an agent's own. A worker can have no git config."""
 
     @property
     def piloop(self) -> git.Identity:
@@ -235,6 +237,11 @@ class Git(Vcs):
 
     def identity(self, path: Path) -> str:
         return git.identity(path)
+
+    def agent_env(self, agent: Agent) -> dict[str, str]:
+        """``GIT_AUTHOR_*`` and ``GIT_COMMITTER_*``: its commits are by its signature, with ``email``."""
+        by = git.Identity(name=agent.signature, email=self.email)
+        return git.commit_env(by, by)
 
     @classmethod
     def root(cls, path: Path) -> Path | None:

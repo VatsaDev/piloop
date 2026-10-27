@@ -186,9 +186,11 @@ class Launcher:
             span.set(kind=kind, harness=harness, model=model, reason=reason, session_id=session_id)
             prompt = PROMPT.format(path=f'{{log_dir}}/{BRIEF_FILE}')
             # the worker adds its PATH and its piloop (``jobs.Site.env``), and the values of the secrets
+            agent = Agent(role=kind, session=agent_session_id)
             env = {
                 **definition.literals,
-                'PILOOP_ACTOR': Agent(role=kind, session=agent_session_id).signature,
+                **artifact.vcs.agent_env(agent),
+                'PILOOP_ACTOR': agent.signature,
                 **dict.fromkeys(cleared_env() | {*definition.session_env}, ''),
             }
             # {cwd} and {log_dir} stay for the worker, which makes them (``AgentStart.at``)

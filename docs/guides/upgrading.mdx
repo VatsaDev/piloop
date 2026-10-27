@@ -266,6 +266,9 @@ provider = "git"
 email = "piloop@example.com"
 ```
 
+An agent's own commits are by the agent (`implementer#12`), with that email, no longer by you. A vcs plugin implements
+`Vcs.agent_env`.
+
 A vcs plugin's `Repository.capture` returns `Captured`. When the save of the unsaved changes fails, it puts them into
 the CAS (`Captured.unsaved`) and still returns the versions.
 
