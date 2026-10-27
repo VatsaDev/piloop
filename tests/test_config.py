@@ -304,6 +304,14 @@ def test_default_harnesses_take_the_roles_effort_in_every_argv() -> None:
         assert all(flags in ' '.join(argv) for argv in (h.headless, h.resume)), name
 
 
+@pytest.mark.parametrize('mode', ['headless', 'resume'])
+def test_pi_keeps_research_capabilities_enabled_with_skills_off(mode: str) -> None:
+    argv = getattr(each_provider()['pi'], mode)
+    assert '--no-skills' in argv
+    assert not {'--no-tools', '-nt', '--no-extensions', '-ne', '--no-context-files', '-nc'} & set(argv)
+    assert argv[argv.index('--thinking') + 1] == '{effort}'
+
+
 def test_metric_roles_are_validated(campaign_path: Path) -> None:
     primary = {'name': 'score', 'direction': 'higher', 'role': 'primary'}
     guard = {'name': 'size', 'direction': 'lower', 'role': 'guardrail', 'margin': 3, 'floor': 10}

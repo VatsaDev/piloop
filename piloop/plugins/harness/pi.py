@@ -23,9 +23,7 @@ ARGV = [
     '-p',
     '--mode',
     'json',
-    '--no-extensions',
     '--no-skills',
-    '--no-context-files',
     '--approve',
     '--session-id',
     SESSION_ID,
@@ -116,7 +114,7 @@ def said(rec: Record) -> str | None:
 
 
 class Pi(Harness):
-    """``pi`` in JSON mode, with its extensions, skills and context files off, and the session id that piloop makes.
+    """``pi`` in JSON mode, with tools, extensions and context files enabled, skills off, and a piloop session id.
 
     Its session file is ``<home>/sessions/--<cwd>--/*_<session id>.jsonl``, with ``message.usage`` on every assistant
     message. The convention is Anthropic's: ``input`` does not include cached tokens, and ``totalTokens`` is pi's own

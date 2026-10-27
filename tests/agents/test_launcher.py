@@ -1086,6 +1086,15 @@ def test_research_defaults_to_its_models_at_high_effort(
     assert {('--model', model), (flag, value.format('high'))} <= set(zip(args, args[1:], strict=False))
 
 
+def test_pi_research_starts_with_high_thinking_and_skills_off(
+    campaign: Campaign, db: Database, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    args = research_argv(db, campaign, runtime, tmp_path, mocker, 'pi')
+    assert args[args.index('--thinking') + 1] == 'high'
+    assert '--no-skills' in args
+    assert not {'--no-tools', '--no-extensions', '--no-context-files'} & set(args)
+
+
 @pytest.mark.parametrize('harness', ['claude', 'codex'])
 def test_the_research_table_overrides_its_model_and_effort(
     campaign: Campaign, db: Database, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture, harness: str

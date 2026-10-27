@@ -60,6 +60,13 @@ Each built-in harness puts the role's servers at the `{mcp}` element of its comm
 - **Codex**: every server of your Codex configuration is turned off, and the role's servers are added. A piloop
   server with the same name as one of yours makes the launch fail.
 - **pi**: through `pi-mcp-adapter` in exclusive mode. This works only when pi's own extensions are off.
+  Its default keeps extensions on and skills off. To give a pi role MCP servers, set both argument lists explicitly:
+
+```toml
+[plugins.harness.pi]
+headless = ["-p", "--mode", "json", "--no-extensions", "--no-skills", "--approve", "--session-id", "{session_id}", "--model", "{model}", "--thinking", "{effort}", "{mcp}", "{prompt}"]
+resume = ["-p", "--mode", "json", "--no-extensions", "--no-skills", "--approve", "--session-id", "{session_id}", "--model", "{model}", "--thinking", "{effort}", "{mcp}", "{prompt}"]
+```
 
 So the agents see only the role's servers, never the servers in your own configuration.
 

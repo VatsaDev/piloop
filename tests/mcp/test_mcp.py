@@ -260,7 +260,11 @@ def test_pi_refuses_an_argv_that_keeps_its_extensions_on() -> None:
     assert ClaudeMcp().refuses(['anything']) is None, 'the default accepts every argv'
 
 
-MODELS = {'claude': {'model': 'c'}, 'codex': {'model': 'x'}, 'pi': {'model': 'p'}}
+MODELS = {
+    'claude': {'model': 'c'},
+    'codex': {'model': 'x'},
+    'pi': {'model': 'p', 'headless': ['--no-extensions', MCP, '{prompt}']},
+}
 
 
 def config(**extra: object) -> dict[str, object]:
